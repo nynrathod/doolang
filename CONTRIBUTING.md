@@ -118,6 +118,7 @@ git checkout -b fix/bug-description
 
 ```bash
 For detailed testing instructions, see [TEST.md](./TEST.md).
+```
 
 ### 5. Commit and Push
 ### 6. Create a Pull Request
