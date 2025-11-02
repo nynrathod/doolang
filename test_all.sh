@@ -71,7 +71,7 @@ while read -r file; do
             fi
         fi
     fi
-done < <(find "$TESTS_DIR" -name '*.doo' 2>/dev/null | head -50)
+done < <(find "$TESTS_DIR" -name '*.doo' 2>/dev/null)
 
 echo -e "\n${BLUE}============================================${NC}"
 echo -e "${BLUE}Valgrind Results:${NC}"
