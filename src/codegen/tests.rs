@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod codegen_tests {
+    use bumpalo::Bump;
     use crate::analyzer::SemanticAnalyzer;
     use crate::codegen::core::CodeGen;
     use crate::lexar::lexer::lex;
@@ -8,7 +9,8 @@ mod codegen_tests {
     use inkwell::context::Context;
 
     fn compile_code(input: &str) -> Result<String, String> {
-        let tokens = lex(input);
+        let arena = Bump::new();
+        let tokens = lex(input, &arena);
         let mut parser = Parser::new(&tokens);
         let result = parser.parse_program();
 

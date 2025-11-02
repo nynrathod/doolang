@@ -6,7 +6,8 @@ use crate::codegen::core::CodeGen;
 use crate::diagnostics::{print_grouped, DiagnosticRecord};
 use crate::lexar::lexer::lex;
 use crate::mir::builder::MirBuilder;
-use crate::parser::{ast::AstNode, ParseError, Parser};
+use crate::parser::{ParseError, Parser};
+use bumpalo::Bump;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
@@ -118,9 +119,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let tokens = lex(&input);
+    let arena = Bump::new();
+    let tokens = lex(&input, &arena);
     let mut parser = Parser::new(&tokens);
-    let mut analyzer = SemanticAnalyzer::new(Some(project_root.clone()));
 
     let mut diagnostics: Vec<DiagnosticRecord> = Vec::new();
     let mut error_count = 0;

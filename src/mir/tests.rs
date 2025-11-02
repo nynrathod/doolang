@@ -1,12 +1,14 @@
 #[cfg(test)]
 mod mir_tests {
+    use bumpalo::Bump;
     use crate::analyzer::SemanticAnalyzer;
     use crate::lexar::lexer::lex;
     use crate::mir::builder::MirBuilder;
     use crate::parser::Parser;
 
     fn build_mir(input: &str) -> Result<MirBuilder, String> {
-        let tokens = lex(input);
+        let arena = Bump::new();
+        let tokens = lex(input, &arena);
         let mut parser = Parser::new(&tokens);
         let result = parser.parse_program();
 

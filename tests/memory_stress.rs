@@ -1,3 +1,4 @@
+use bumpalo::Bump;
 use doo::analyzer::SemanticAnalyzer;
 use doo::codegen::core::CodeGen;
 use doo::lexar::lexer::lex;
@@ -6,7 +7,8 @@ use doo::parser::Parser;
 use inkwell::context::Context;
 
 fn compile_full_pipeline(input: &str) -> Result<String, String> {
-    let tokens = lex(input);
+    let arena = Bump::new();
+    let tokens = lex(input, &arena);
     let mut parser = Parser::new(&tokens);
     let result = parser.parse_program();
 
