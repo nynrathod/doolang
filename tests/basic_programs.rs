@@ -1,5 +1,4 @@
 use doo::compiler::{compile_project, CompileOptions};
-use std::fs;
 use std::path::PathBuf;
 
 fn test_program_file(filename: &str) -> bool {

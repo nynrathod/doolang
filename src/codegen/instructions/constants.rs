@@ -1,7 +1,5 @@
 use crate::codegen::core::CodeGen;
-use crate::mir::MirInstr;
 use inkwell::values::BasicValueEnum;
-use inkwell::AddressSpace;
 
 impl<'ctx> CodeGen<'ctx> {
     pub fn generate_const_int(&mut self, name: &str, value: i32) -> Option<BasicValueEnum<'ctx>> {

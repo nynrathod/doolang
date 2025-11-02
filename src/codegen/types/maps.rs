@@ -1,7 +1,7 @@
-use crate::codegen::core::{CodeGen, MapMetadata};
-use inkwell::types::{BasicType, StructType};
+use crate::codegen::core::CodeGen;
+use inkwell::types::BasicType;
 use inkwell::values::BasicValue;
-use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
+use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
 
 impl<'ctx> CodeGen<'ctx> {

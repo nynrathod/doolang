@@ -1,4 +1,4 @@
-use crate::codegen::core::{ArrayMetadata, CodeGen};
+use crate::codegen::core::CodeGen;
 use inkwell::types::BasicType;
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;

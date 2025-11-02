@@ -1,5 +1,4 @@
 use crate::codegen::core::CodeGen;
-use crate::mir::MirInstr;
 impl<'ctx> CodeGen<'ctx> {
     pub fn generate_call(
         &mut self,

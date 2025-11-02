@@ -1,5 +1,3 @@
-use crate::parser::ast::AstNode;
-
 /// Mid-level Intermediate Representation for the language
 /// Contains the core data structures used after AST parsing
 /// and before LLVM IR generation

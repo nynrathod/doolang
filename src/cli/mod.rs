@@ -106,7 +106,6 @@ pub fn run_cli(cli: Cli) -> i32 {
         }) => {
             // Generate unique temp binary name
             let temp_name = format!("temp_doo_{}", std::process::id());
-            let temp_obj_name = format!("{}.o", temp_name);
 
             // Compile to temp binary, pass temp object name as env var
             let opts = CompileOptions {
