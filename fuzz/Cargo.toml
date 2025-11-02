@@ -1,0 +1,44 @@
+[package]
+name = "doo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+doo = { path = ".." }
+libfuzzer-sys = "0.4"
+rand = "0.8"
+bumpalo = "3.14"
+
+[[bin]]
+name = "fuzz_lexer"
+path = "fuzz_targets/fuzz_lexer.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_analyzer"
+path = "fuzz_targets/fuzz_analyzer.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_codegen"
+path = "fuzz_targets/fuzz_codegen.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_mir"
+path = "fuzz_targets/fuzz_mir.rs"
+test = false
+doc = false
