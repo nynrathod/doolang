@@ -13,6 +13,29 @@ To contribute to Doo, you'll need:
 - **LLVM 18.1.8**: Required for the code generation backend [Link](https://github.com/llvm/llvm-project/releases?page=4)
 - **Git**: For version control
 
+#### ⚠️ Windows-Specific Requirement: lld-link.exe
+
+If you are developing on **Windows**, you must place the `lld-link.exe` linker in the `linkers` folder at the root of this repository.
+
+##### Where to Find `lld-link.exe`
+
+- **Download from Official LLVM Releases:**
+  - Go to the [LLVM Releases page](https://github.com/llvm/llvm-project/releases?page=4).
+  - Download the Windows installer or zip for the version you need (e.g., `LLVM-18.1.8-win64.exe` or `LLVM-18.1.8-win64.zip`).
+  - After installation or extracting the zip, you’ll find `lld-link.exe` in the `bin` directory:
+    - Example: `C:\Program Files\LLVM\bin\lld-link.exe`
+
+**After downloading, copy `lld-link.exe` to the `linkers` directory at the root of this project:**
+```
+doo/
+├── linkers/
+│   └── lld-link.exe
+├── src/
+├── ...
+```
+
+> **Note:** Do not commit or upload `lld-link.exe` to the repository. Each contributor should obtain it from the official source.
+
 ### Building from Source
 
 ```bash
@@ -22,11 +45,6 @@ cd doo
 
 # Build in release mode (optimized)
 cargo build --release --bin doo
-
-# Run tests
-cargo test
-or
-cargo nextest run
 
 # Run the development compiler
 cargo run
@@ -99,10 +117,7 @@ git checkout -b fix/bug-description
 ### 4. Test Your Changes
 
 ```bash
-# Run all tests
-cargo test or  cargo nextest run
-```
-See [Testing_guide.md](./Testing_guide.md) for more details on running and writing tests.
+For detailed testing instructions, see [TEST.md](./TEST.md).
 
 ### 5. Commit and Push
 ### 6. Create a Pull Request

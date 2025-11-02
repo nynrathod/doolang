@@ -1,3 +1,7 @@
+# DooLang Testing Guide
+
+> **For Doo contributors only. If you just want to use Doo, see [README.md](README.md). For development setup, see [CONTRIBUTING.md](CONTRIBUTING.md).**
+
 ## 🚀 Quick Start Commands
 
 ### Run All Tests
@@ -22,6 +26,17 @@ This script will:
 - Run all regression tests (`cargo test --test regressions`)
 - Run all unit tests (`cargo test --lib`)
 - Print a summary of passed/failed/skipped tests
+
+#### Fuzz Testing Prerequisites
+
+Before running fuzz tests, you must install all dependencies for the fuzz testing package:
+
+```sh
+cd fuzz
+cargo install --path .
+```
+
+> **Tip:** Make sure you have all required Rust nightly toolchains and dependencies installed for fuzzing. See the `Cargo.toml` in the `fuzz` directory for specific requirements.
 
 #### Run all fuzzers (for 1 hour each, in parallel)
 ```bash

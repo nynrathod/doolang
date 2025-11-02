@@ -6,6 +6,10 @@
 
 Doo is a statically-typed, compiled programming language with a Rust-inspired syntax designed for simplicity and performance. It features automatic memory management through reference counting, a rich type system, and compiles to standalone native executables using clang and lld.
 
+> **Want to contribute? See [CONTRIBUTING.md](CONTRIBUTING.md)**
+>
+> **For testing and development, see [TEST.md](TEST.md)**
+
 
 ## 🚀 Features
 
@@ -385,9 +389,7 @@ fn main() {
 
 ## 📂 More Examples
 
-- See the **[examples folder](doo\examples)** for practical sample projects.
-- Explore the **[valid test programs](doo\tests\programs\valid)** for a wide range of language features and usage patterns.
-- Also check out the **[multifile test project](doo\tests\multifile_test_project)** for examples of multi-file projects and advanced import/module usage.
+- See the **[examples folder](doo/examples)** for practical sample projects; explore the **[valid test programs](doo\tests\programs\valid)** for a wide range of language features and usage patterns; and also check out the **[multifile test project](doo\tests\multifile_test_project)** for examples of multi-file projects and advanced import/module usage.
 
 ## 📜 License
 
@@ -403,6 +405,6 @@ This project is licensed under the MIT License
 
 **Happy coding with Doo! 🚀**
 
-## 📚 Additional Resources
-
-- **[CONTRIBUTING.md](CONTRIBUTING.md)**: Guide for developers who want to contribute to Doo
+> **Want to contribute? See [CONTRIBUTING.md](CONTRIBUTING.md)**
+>
+> **For testing and development, see [TEST.md](TEST.md)**
