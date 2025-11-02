@@ -383,6 +383,12 @@ fn main() {
 }
 ```
 
+## 📂 More Examples
+
+- See the **[examples folder](doo\examples)** for practical sample projects.
+- Explore the **[valid test programs](doo\tests\programs\valid)** for a wide range of language features and usage patterns.
+- Also check out the **[multifile test project](doo\tests\multifile_test_project)** for examples of multi-file projects and advanced import/module usage.
+
 ## 📜 License
 
 This project is licensed under the MIT License
