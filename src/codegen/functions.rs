@@ -158,6 +158,9 @@ impl<'ctx> CodeGen<'ctx> {
     /// - Handles block terminators (return, jump, conditional jump).
     /// Returns the LLVM FunctionValue for further manipulation or optimization.
     pub fn generate_function(&mut self, func: &MirFunction) -> FunctionValue<'ctx> {
+        // Reset recursion depth for this function to prevent accumulation across functions
+        self.recursion_depth = 0;
+
         // Clear symbols table to prevent conflicts between functions
         self.symbols.clear();
         self.temp_values.clear();

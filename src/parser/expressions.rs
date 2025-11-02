@@ -1,4 +1,5 @@
 use crate::lexar::token::TokenType;
+use crate::limits::{PARSER_MAX_ARRAY_SIZE, PARSER_MAX_DEPTH, PARSER_MAX_MAP_SIZE};
 use crate::parser::ast::AstNode;
 use crate::parser::{ParseError, ParseResult, Parser};
 
@@ -7,7 +8,7 @@ impl<'a> Parser<'a> {
     /// Delegates to precedence-based parser.
     pub fn parse_expression(&mut self) -> ParseResult<AstNode> {
         self.depth += 1;
-        if self.depth > super::parser::MAX_DEPTH {
+        if self.depth > PARSER_MAX_DEPTH {
             self.depth -= 1;
             return Err(ParseError::UnexpectedTokenAt {
                 msg: "Expression nesting too deep (recursion limit exceeded)".to_string(),
@@ -95,7 +96,7 @@ impl<'a> Parser<'a> {
     /// Can be chained: arr[0][1][2]
     fn parse_postfix(&mut self, mut expr: AstNode) -> ParseResult<AstNode> {
         while self.peek_is(TokenType::OpenBracket) {
-            if self.depth >= super::parser::MAX_DEPTH {
+            if self.depth >= PARSER_MAX_DEPTH {
                 return Err(ParseError::UnexpectedToken(
                     "Expression too deeply nested".to_string(),
                 ));
@@ -192,6 +193,19 @@ impl<'a> Parser<'a> {
 
         let elements = self
             .parse_comma_separated(|parser| parser.parse_expression(), TokenType::CloseBracket)?;
+
+        // Validate array size doesn't exceed limit
+        if elements.len() > PARSER_MAX_ARRAY_SIZE {
+            return Err(ParseError::UnexpectedTokenAt {
+                msg: format!(
+                    "Array literal exceeds maximum size of {}",
+                    PARSER_MAX_ARRAY_SIZE
+                ),
+                line: self.peek().map(|t| t.line).unwrap_or(0),
+                col: self.peek().map(|t| t.col).unwrap_or(0),
+            });
+        }
+
         self.expect(TokenType::CloseBracket)?;
         Ok(AstNode::ArrayLiteral(elements))
     }
@@ -211,6 +225,19 @@ impl<'a> Parser<'a> {
             },
             TokenType::CloseBrace,
         )?;
+
+        // Validate map size doesn't exceed limit
+        if entries.len() > PARSER_MAX_MAP_SIZE {
+            return Err(ParseError::UnexpectedTokenAt {
+                msg: format!(
+                    "Map literal exceeds maximum size of {}",
+                    PARSER_MAX_MAP_SIZE
+                ),
+                line: self.peek().map(|t| t.line).unwrap_or(0),
+                col: self.peek().map(|t| t.col).unwrap_or(0),
+            });
+        }
+
         self.expect(TokenType::CloseBrace)?;
         Ok(AstNode::MapLiteral(entries))
     }

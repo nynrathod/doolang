@@ -1,3 +1,4 @@
+use crate::limits::MIR_MAX_DEPTH;
 use crate::mir::declarations::{build_function_decl, build_let_decl, build_nested_collection};
 use crate::mir::{
     expresssions::build_expression, statements::build_statement, MirBlock, MirFunction, MirInstr,
@@ -17,6 +18,7 @@ pub struct MirBuilder {
     pub loop_stack: Vec<LoopContext>, // Stack for nested loop break/continue targets
     pub rc_tracked_vars: Vec<Vec<String>>, // Stack of scopes with reference-counted variables
     pub mir_symbol_table: std::collections::HashMap<String, crate::parser::ast::TypeNode>, // Track variable types for MIR
+    pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
 }
 
 /// Context for tracking loop break/continue targets
@@ -41,7 +43,16 @@ impl MirBuilder {
             loop_stack: vec![],
             rc_tracked_vars: vec![vec![]],
             mir_symbol_table: std::collections::HashMap::new(),
+            recursion_depth: 0,
         }
+    }
+
+    /// Check if we've exceeded maximum recursion depth
+    pub fn check_depth(&self) -> Result<(), String> {
+        if self.recursion_depth >= MIR_MAX_DEPTH {
+            return Err("Expression too deeply nested (recursion limit exceeded)".to_string());
+        }
+        Ok(())
     }
 
     /// Generate a unique temporary variable name for MIR instructions.

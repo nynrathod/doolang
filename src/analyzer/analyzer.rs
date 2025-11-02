@@ -1,5 +1,10 @@
 use crate::analyzer::types::{NamedError, SemanticError};
-use crate::parser::ast::{AstNode, Pattern, TypeNode};
+use crate::limits::{
+    ANALYZER_MAX_FUNCTION_DEPTH, ANALYZER_MAX_LOOP_DEPTH, ANALYZER_MAX_SCOPE_DEPTH,
+};
+use crate::parser::ast::{AstNode, TypeNode};
+use bumpalo::Bump;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -28,6 +33,7 @@ pub struct SemanticAnalyzer {
     pub scope_sizes_stack: Vec<usize>,    // Track symbol table size at each scope level
     pub collected_errors: Vec<SemanticError>, // Collect all errors for reporting
     pub is_main_module: bool,             // Track if analyzing main program or imported module
+    pub type_inference_depth: RefCell<usize>, // Track type inference recursion depth using interior mutability
 }
 
 impl SemanticAnalyzer {
@@ -43,9 +49,7 @@ impl SemanticAnalyzer {
         }
         None
     }
-}
 
-impl SemanticAnalyzer {
     /// Create a new semantic analyzer with empty symbol/function tables.
     pub fn new(project_root: Option<PathBuf>) -> Self {
         let project_root = project_root
@@ -67,7 +71,38 @@ impl SemanticAnalyzer {
             scope_sizes_stack: Vec::new(),
             collected_errors: Vec::new(),
             is_main_module: true,
+            type_inference_depth: RefCell::new(0),
         }
+    }
+
+    /// Check if function nesting is valid
+    pub(crate) fn check_function_depth(&self) -> Result<(), SemanticError> {
+        if self.function_depth > ANALYZER_MAX_FUNCTION_DEPTH {
+            return Err(SemanticError::UnexpectedNode {
+                expected: "Function nesting too deep".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Check if loop nesting is valid
+    pub(crate) fn check_loop_depth(&self) -> Result<(), SemanticError> {
+        if self.loop_depth > ANALYZER_MAX_LOOP_DEPTH {
+            return Err(SemanticError::UnexpectedNode {
+                expected: "Loop nesting too deep".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Check if scope nesting is valid
+    pub(crate) fn check_scope_depth(&self) -> Result<(), SemanticError> {
+        if self.scope_stack.len() > ANALYZER_MAX_SCOPE_DEPTH {
+            return Err(SemanticError::UnexpectedNode {
+                expected: "Scope nesting too deep".to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Analyze a list of AST nodes (entire program or a block).
@@ -184,6 +219,16 @@ impl SemanticAnalyzer {
     /// Calls the appropriate analysis function for each AST node variant.
     /// Ensures semantic correctness for declarations, assignments, control flow, etc.
     pub fn analyze_node(&mut self, node: &mut AstNode) -> Result<(), SemanticError> {
+        // Check other depth limits
+        self.check_function_depth()?;
+        self.check_loop_depth()?;
+        self.check_scope_depth()?;
+
+        let result = self.analyze_node_inner(node);
+        result
+    }
+
+    fn analyze_node_inner(&mut self, node: &mut AstNode) -> Result<(), SemanticError> {
         match node {
             // Declarations
             AstNode::LetDecl { .. } => self.analyze_let_decl(node),
@@ -405,7 +450,8 @@ impl SemanticAnalyzer {
 
             let code = fs::read_to_string(&file_path)
                 .map_err(|_| SemanticError::ModuleNotFound(file_path.display().to_string()))?;
-            let tokens = crate::lexar::lexer::lex(&code);
+            let arena = Bump::new();
+            let tokens = crate::lexar::lexer::lex(&code, &arena);
 
             let mut parser = crate::parser::Parser::new(&tokens);
 
@@ -440,7 +486,8 @@ impl SemanticAnalyzer {
 
             self.imported_modules.insert(module_key, true);
 
-            let tokens = crate::lexar::lexer::lex(&code);
+            let arena = Bump::new();
+            let tokens = crate::lexar::lexer::lex(&code, &arena);
 
             let mut parser = crate::parser::Parser::new(&tokens);
 

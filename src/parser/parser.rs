@@ -1,9 +1,10 @@
 use crate::lexar::token::{Token, TokenType};
+use crate::limits::PARSER_MAX_DEPTH;
 use crate::parser::ast::AstNode;
 use std::fmt;
 
-/// Maximum recursion depth for parsing to prevent stack overflow
-pub const MAX_DEPTH: usize = 64;
+/// Re-export for backwards compatibility
+pub const MAX_DEPTH: usize = PARSER_MAX_DEPTH;
 
 /// Error type for parser.
 /// Used to signal parsing failures, such as unexpected tokens or premature end of input.

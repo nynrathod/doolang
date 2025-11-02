@@ -58,7 +58,20 @@ pub fn determine_op_type(builder: &MirBuilder, lhs: &str, rhs: &str) -> Result<S
 }
 
 pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut MirBlock) -> String {
-    match expr {
+    // Check recursion depth to prevent stack overflow
+    builder.recursion_depth += 1;
+    if builder.recursion_depth > crate::limits::MIR_MAX_DEPTH {
+        builder.recursion_depth -= 1;
+        // Return error marker on depth exceeded
+        let tmp = builder.next_tmp();
+        block.instrs.push(MirInstr::ConstInt {
+            name: tmp.clone(),
+            value: 0,
+        });
+        return tmp;
+    }
+
+    let result = match expr {
         AstNode::NumberLiteral(n) => {
             let tmp = builder.next_tmp();
             block.instrs.push(MirInstr::ConstInt {
@@ -487,5 +500,8 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             // This is a safeguard for future AST node types.
             builder.next_tmp()
         }
-    }
+    };
+
+    builder.recursion_depth -= 1;
+    result
 }

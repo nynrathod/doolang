@@ -1,10 +1,23 @@
 use crate::lexar::token::TokenType;
+use crate::limits::MIR_MAX_DEPTH;
 use crate::mir::builder::MirBuilder;
 use crate::mir::expresssions::build_expression;
 use crate::mir::{MirBlock, MirInstr};
 use crate::parser::ast::{AstNode, Pattern};
 
 pub fn build_statement(builder: &mut MirBuilder, stmt: &AstNode, block: &mut MirBlock) {
+    // Check recursion depth to prevent stack overflow
+    builder.recursion_depth += 1;
+    if builder.recursion_depth > MIR_MAX_DEPTH {
+        builder.recursion_depth -= 1;
+        return;
+    }
+
+    build_statement_inner(builder, stmt, block);
+    builder.recursion_depth -= 1;
+}
+
+fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut MirBlock) {
     match stmt {
         // Handle variable declaration (`let` statement).
         // Supports both single variable and tuple destructuring patterns.

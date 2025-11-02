@@ -1,15 +1,22 @@
 use crate::codegen::core::{CodeGen, Symbol};
+use crate::limits::CODEGEN_MAX_DEPTH;
 use crate::mir::MirInstr;
-use inkwell::types::{BasicType, BasicTypeEnum};
+use inkwell::types::BasicTypeEnum;
 use inkwell::values::BasicValueEnum;
-use inkwell::IntPredicate;
 
 impl<'ctx> CodeGen<'ctx> {
     /// Generates LLVM IR for a single Intermediate Representation (MIR) instruction.
     /// Returns the resulting LLVM value if the instruction produces one (like an expression),
     /// or None if it's purely a control instruction (like a basic block jump).
     pub fn generate_instr(&mut self, instr: &MirInstr) -> Option<BasicValueEnum<'ctx>> {
-        match instr {
+        // Check recursion depth to prevent stack overflow
+        self.recursion_depth += 1;
+        if self.recursion_depth > CODEGEN_MAX_DEPTH {
+            self.recursion_depth -= 1;
+            return None;
+        }
+
+        let result = match instr {
             // Constants
             MirInstr::ConstInt { name, value } => self.generate_const_int(name, *value),
             MirInstr::ConstFloat { name, value } => self.generate_const_float(name, *value),
@@ -200,9 +207,6 @@ impl<'ctx> CodeGen<'ctx> {
                                         .build_load(sym.ty, sym.ptr, "extract_array_len")
                                 {
                                     if loaded.is_pointer_value() {
-                                        let array_ptr = loaded.into_pointer_value();
-                                        let ptr_type = array_ptr.get_type();
-
                                         // Try to determine element type and count
                                         // This is a heuristic - we assume string arrays if we can't find metadata
                                         let element_type = if self.heap_strings.contains(value) {
@@ -943,7 +947,10 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             _ => None,
-        }
+        };
+
+        self.recursion_depth -= 1;
+        result
     }
 
     /// Propagate array/map metadata from source to destination by checking all possible sources

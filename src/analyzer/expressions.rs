@@ -1,6 +1,7 @@
 use super::analyzer::SemanticAnalyzer;
 use super::types::{NamedError, SemanticError, TypeMismatch};
 use crate::lexar::token::TokenType;
+use crate::limits::ANALYZER_MAX_DEPTH;
 use crate::parser::ast::{AstNode, TypeNode};
 
 /// Helper to extract line/col from an AstNode
@@ -19,8 +20,18 @@ impl SemanticAnalyzer {
     /// - Checks types for binary/unary expressions, function calls, arrays, maps, etc.
     /// - Returns errors for undeclared variables, type mismatches, or invalid operations.
     pub fn infer_type(&self, node: &AstNode) -> Result<TypeNode, SemanticError> {
-        match node {
-            // Integer literal: always Int type
+        // Check and increment recursion depth for type inference
+        let mut depth = self.type_inference_depth.borrow_mut();
+        *depth += 1;
+        if *depth > ANALYZER_MAX_DEPTH {
+            *depth -= 1;
+            return Err(SemanticError::UnexpectedNode {
+                expected: "Type inference recursion too deep (limit exceeded)".to_string(),
+            });
+        }
+        drop(depth); // Release the borrow
+
+        let result = match node {
             AstNode::NumberLiteral(_) => Ok(TypeNode::Int),
             // Float literal: always Float type
             AstNode::FloatLiteral(_) => Ok(TypeNode::Float),
@@ -399,6 +410,16 @@ impl SemanticAnalyzer {
             // Any other AST node (usually statements): return Void type.
             // Actual semantic checking for statements happens elsewhere.
             _ => Ok(TypeNode::Void),
+        };
+
+        // Decrement recursion depth when returning
+        {
+            let mut depth = self.type_inference_depth.borrow_mut();
+            if *depth > 0 {
+                *depth -= 1;
+            }
         }
+
+        result
     }
 }

@@ -1,3 +1,4 @@
+use crate::limits::CODEGEN_MAX_DEPTH;
 use inkwell::{
     builder::Builder,
     context::Context,
@@ -95,9 +96,17 @@ pub struct CodeGen<'ctx> {
 
     pub declared_functions: std::collections::HashSet<String>,
     pub external_modules: HashMap<String, Vec<String>>,
+    pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
 }
 
 impl<'ctx> CodeGen<'ctx> {
+    /// Check if we've exceeded maximum recursion depth
+    pub fn check_depth(&self) -> Result<(), String> {
+        if self.recursion_depth >= CODEGEN_MAX_DEPTH {
+            return Err("Expression too deeply nested (recursion limit exceeded)".to_string());
+        }
+        Ok(())
+    }
     /// Creates a new CodeGen instance, initializing LLVM structures.
     pub fn new(module_name: &str, context: &'ctx Context) -> Self {
         let module = context.create_module(module_name);
@@ -136,6 +145,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             declared_functions: std::collections::HashSet::new(),
             external_modules: HashMap::new(),
+            recursion_depth: 0,
         }
     }
 
