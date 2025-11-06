@@ -1068,7 +1068,9 @@ fn regression_array_push_method() {
         }
     "#;
     let result = compile_full_pipeline(input);
-    assert!(result.is_err());
+    // Method syntax is now supported, but push is not fully implemented yet
+    // So this should compile but push is a stub
+    assert!(result.is_ok());
 }
 
 #[test]
