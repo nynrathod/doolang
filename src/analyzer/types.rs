@@ -151,6 +151,10 @@ impl fmt::Display for TypeNode {
                 if *inclusive { ", inclusive" } else { "" }
             ),
             TypeNode::TypeRef(s) => write!(f, "{}", s),
+            TypeNode::Function(params, ret) => {
+                let param_strs: Vec<String> = params.iter().map(|t| t.to_string()).collect();
+                write!(f, "Fn({}) -> {}", param_strs.join(", "), ret)
+            }
         }
     }
 }

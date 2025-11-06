@@ -3,6 +3,7 @@ use crate::limits::{
     ANALYZER_MAX_FUNCTION_DEPTH, ANALYZER_MAX_LOOP_DEPTH, ANALYZER_MAX_SCOPE_DEPTH,
 };
 use crate::parser::ast::{AstNode, TypeNode};
+use crate::path_resolver::PathResolver;
 use bumpalo::Bump;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -58,9 +59,19 @@ impl SemanticAnalyzer {
             println!("[DEBUG] Project root set to: {:?}", project_root);
         }
 
+        let mut function_table = HashMap::new();
+
+        function_table.insert("print".to_string(), (vec![], TypeNode::Void));
+        function_table.insert("println".to_string(), (vec![], TypeNode::Void));
+        function_table.insert(
+            "panic".to_string(),
+            (vec![TypeNode::String], TypeNode::Void),
+        );
+        function_table.insert("typeOf".to_string(), (vec![], TypeNode::String));
+
         Self {
             symbol_table: HashMap::new(),
-            function_table: HashMap::new(),
+            function_table,
             outer_symbol_table: None,
             project_root,
             imported_modules: HashMap::new(),
@@ -334,24 +345,31 @@ impl SemanticAnalyzer {
                             })
                         })?;
 
-                    // Check argument count
-                    if args.len() != param_types.len() {
-                        return Err(SemanticError::FunctionArgumentMismatch {
-                            name: func_name.clone(),
-                            expected: param_types.len(),
-                            found: args.len(),
-                        });
-                    }
-
-                    // Check argument types
-                    for (arg, expected_type) in args.iter().zip(param_types.iter()) {
-                        let arg_type = self.infer_type(arg)?;
-                        if arg_type != *expected_type {
-                            return Err(SemanticError::FunctionArgumentTypeMismatch {
+                    // Skip argument checking for variadic built-in functions
+                    if func_name != "print"
+                        && func_name != "println"
+                        && func_name != "panic"
+                        && func_name != "typeOf"
+                    {
+                        // Check argument count
+                        if args.len() != param_types.len() {
+                            return Err(SemanticError::FunctionArgumentMismatch {
                                 name: func_name.clone(),
-                                expected: expected_type.clone(),
-                                found: arg_type,
+                                expected: param_types.len(),
+                                found: args.len(),
                             });
+                        }
+
+                        // Check argument types
+                        for (arg, expected_type) in args.iter().zip(param_types.iter()) {
+                            let arg_type = self.infer_type(arg)?;
+                            if arg_type != *expected_type {
+                                return Err(SemanticError::FunctionArgumentTypeMismatch {
+                                    name: func_name.clone(),
+                                    expected: expected_type.clone(),
+                                    found: arg_type,
+                                });
+                            }
                         }
                     }
 
@@ -371,6 +389,26 @@ impl SemanticAnalyzer {
     /// For import http::Client::Fetchuser, we want http/Client.doo
     /// The last element before the symbol is the file name
     fn resolve_module_path(&self, path: &[String], symbol: &Option<String>) -> Option<PathBuf> {
+        // Check if this is a std import (starts with "std")
+        if path.first().map(|s| s.as_str()) == Some("std") {
+            // Use PathResolver to find std
+            if let Ok(resolver) = PathResolver::new() {
+                // Build the module path from stdlib root
+                // For "std::Math::Abs", we want std/Math.doo
+                if path.len() >= 2 {
+                    let mut stdlib_file = resolver.stdlib_path().to_path_buf();
+                    // Use the second element as the file name (Math, String, Array, etc.)
+                    stdlib_file.push(&path[1]);
+                    stdlib_file.set_extension("doo");
+
+                    if stdlib_file.exists() {
+                        return Some(stdlib_file);
+                    }
+                }
+            }
+        }
+
+        // Otherwise, try project-relative path
         let mut buf = self.project_root.clone();
 
         // For imports like http::Client::Fetchuser, we want http/Client.doo
