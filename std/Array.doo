@@ -1,0 +1,37 @@
+fn Unique(arr: [Int]) -> [Int] {
+    let mut result: [Int] = [];
+    let len: Int = arr.len();
+
+    for i in 0..len {
+        let item: Int = arr.get(i);
+        if result.contains(item) == false {
+            result.push(item);
+        }
+    }
+
+    return result;
+}
+
+fn Fill(length: Int, value: Int) -> [Int] {
+    let mut result: [Int] = [];
+
+    for i in 0..length {
+        result.push(value);
+    }
+
+    return result;
+}
+
+fn Range(start: Int, end: Int) -> [Int] {
+    let mut result: [Int] = [];
+
+    if start > end {
+        return result;
+    }
+
+    for i in start..end {
+        result.push(i);
+    }
+
+    return result;
+}

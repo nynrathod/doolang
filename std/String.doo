@@ -1,0 +1,76 @@
+fn TrimL(str: Str, padChar: Str) -> Str {
+    let len: Int = str.len();
+    let mut start: Int = 0;
+
+    for i in 0..len {
+        let char: Str = str.charAt(i);
+        if char != padChar {
+            start = i;
+            break;
+        }
+    }
+
+    return str.substring(start, len);
+}
+
+fn TrimR(str: Str, padChar: Str) -> Str {
+    let len: Int = str.len();
+    let mut end: Int = len;
+
+    for i in 0..len {
+        let idx: Int = len - 1 - i;
+        let char: Str = str.charAt(idx);
+        if char != padChar {
+            end = idx + 1;
+            break;
+        }
+    }
+
+    return str.substring(0, end);
+}
+
+fn PadL(str: Str, width: Int, padChar: Str) -> Str {
+    let len: Int = str.len();
+
+    if len >= width {
+        return str;
+    }
+
+    let padCount: Int = width - len;
+    let mut result: Str = "";
+
+    for i in 0..padCount {
+        result = result.concat(padChar);
+    }
+
+    result = result.concat(str);
+    return result;
+}
+
+fn PadR(str: Str, width: Int, padChar: Str) -> Str {
+    let len: Int = str.len();
+
+    if len >= width {
+        return str;
+    }
+
+    let padCount: Int = width - len;
+    let mut result: Str = str;
+
+    for i in 0..padCount {
+        result = result.concat(padChar);
+    }
+
+    return result;
+}
+
+// Capitalize the first character of the string, leaving the rest unchanged
+fn Capitalize(str: Str) -> Str {
+    let len: Int = str.len();
+    if len == 0 {
+        return str;
+    }
+    let first: Str = str.charAt(0).toUpper();
+    let rest: Str = str.substring(1, len);
+    return first.concat(rest);
+}

@@ -1,0 +1,22 @@
+
+
+fn Merge(map1: {Str: Int}, map2: {Str: Int}) -> {Str: Int} {
+    let mut result: {Str: Int} = {};
+    let keys1: [Str] = map1.keys();
+    let len1: Int = keys1.len();
+
+    for i in 0..len1 {
+        let key: Str = keys1.get(i);
+        result.set(key, map1.get(key));
+    }
+
+    let keys2: [Str] = map2.keys();
+    let len2: Int = keys2.len();
+
+    for j in 0..len2 {
+        let key: Str = keys2.get(j);
+        result.set(key, map2.get(key));
+    }
+
+    return result;
+}

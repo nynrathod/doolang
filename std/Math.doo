@@ -1,0 +1,105 @@
+fn Abs(x: Int) -> Int {
+    if x < 0 {
+        return 0 - x;
+    }
+    return x;
+}
+
+fn Pow(base: Int, exponent: Int) -> Int {
+    if exponent < 0 {
+        return 0;
+    }
+    if exponent == 0 {
+        return 1;
+    }
+
+    let mut result: Int = 1;
+    for i in 0..exponent {
+        result = result * base;
+    }
+    return result;
+}
+
+fn Sqrt(x: Int) -> Int {
+    // Integer square root using Newton's method
+    if x < 0 {
+        return 0;
+    }
+    if x == 0 || x == 1 {
+        return x;
+    }
+    let mut guess: Int = x / 2;
+    let mut prev: Int = 0;
+    while guess != prev {
+        prev = guess;
+        guess = (guess + x / guess) / 2;
+    }
+    return guess;
+}
+
+fn Min(a: Int, b: Int) -> Int {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+fn Max(a: Int, b: Int) -> Int {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+fn Floor(x: Float) -> Int {
+    // Returns the largest integer less than or equal to x
+    let xi: Int = x as Int;
+    if x < xi as Float {
+        return xi - 1;
+    }
+    return xi;
+}
+
+fn Ceil(x: Float) -> Int {
+    // Returns the smallest integer greater than or equal to x
+    let xi: Int = x as Int;
+    if x > xi as Float {
+        return xi + 1;
+    }
+    return xi;
+}
+
+fn Round(x: Float) -> Int {
+    // Returns the nearest integer to x
+    if x >= 0.0 {
+        return (x + 0.5) as Int;
+    } else {
+        return (x - 0.5) as Int;
+    }
+}
+
+fn Clamp(value: Int, minVal: Int, maxVal: Int) -> Int {
+    if value < minVal {
+        return minVal;
+    }
+    if value > maxVal {
+        return maxVal;
+    }
+    return value;
+}
+
+fn IsEven(x: Int) -> Bool {
+    return x % 2 == 0;
+}
+
+fn IsOdd(x: Int) -> Bool {
+    return x % 2 != 0;
+}
+
+fn Random() -> Float {
+    // Simple random number generator between 0.0 and 1.0
+    // Replace with a better RNG for production use
+    extern "C" fn rand() -> Int;
+    let r: Int = rand();
+    return (r % 10000) as Float / 10000.0;
+}
