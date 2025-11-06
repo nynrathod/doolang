@@ -25,7 +25,17 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Collections
             MirInstr::Array { name, elements } => self.generate_array_with_metadata(name, elements),
-            MirInstr::Map { name, entries } => self.generate_map_with_metadata(name, entries),
+            MirInstr::Map {
+                name,
+                entries,
+                key_type,
+                value_type,
+            } => self.generate_map_with_metadata(
+                name,
+                entries,
+                key_type.as_deref(),
+                value_type.as_deref(),
+            ),
 
             // String operations
             MirInstr::StringConcat { name, left, right } => {
@@ -53,6 +63,29 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             MirInstr::Call { dest, func, args } => self.generate_call(dest, func, args),
+            MirInstr::MethodCall {
+                dest,
+                object,
+                method,
+                args,
+            } => self.generate_method_call(dest, object, method, args),
+            MirInstr::Closure {
+                name,
+                params,
+                param_types,
+                body_expr,
+                body_ast,
+                return_type,
+                captures,
+            } => self.generate_closure(
+                name,
+                params,
+                param_types,
+                body_expr,
+                body_ast,
+                return_type,
+                captures,
+            ),
             MirInstr::ArrayLen { name, array } => self.generate_array_len(name, array),
 
             // ===== LOOP INSTRUCTIONS =====
@@ -163,6 +196,10 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     } else if value_is_heap_array {
                         self.heap_arrays.insert(name.clone());
+                        // Copy array metadata from source to destination
+                        if let Some(metadata) = self.array_metadata.get(value).cloned() {
+                            self.array_metadata.insert(name.clone(), metadata);
+                        }
                         // Only remove temp from tracking if source is NOT a user variable
                         // User variables (in symbols) should stay tracked for cleanup at function exit
                         // Only remove if source is a compiler temporary (starts with %)

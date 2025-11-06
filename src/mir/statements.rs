@@ -312,7 +312,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
         }
 
         // Handle standalone expressions (like function calls for their side effects).
-        AstNode::BinaryExpr { .. } | AstNode::FunctionCall { .. } => {
+        AstNode::BinaryExpr { .. } | AstNode::FunctionCall { .. } | AstNode::MethodCall { .. } => {
             // Evaluate the expression but don't necessarily store the result.
             build_expression(builder, stmt, block);
         }

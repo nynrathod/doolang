@@ -37,8 +37,22 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         // Store metadata
+        // Check if this is a bool array by seeing if all elements are 0 or 1
         let element_type_name = if elem_type.is_int_type() {
-            "Int"
+            // Heuristic: if all values are 0 or 1, treat as Bool array
+            let all_bool_like = element_values.iter().all(|v| {
+                if let Some(int_val) = v.into_int_value().get_zero_extended_constant() {
+                    int_val == 0 || int_val == 1
+                } else {
+                    false
+                }
+            });
+
+            if !element_values.is_empty() && all_bool_like {
+                "Bool"
+            } else {
+                "Int"
+            }
         } else if elem_type.is_pointer_type() {
             "Str"
         } else {
@@ -152,9 +166,6 @@ impl<'ctx> CodeGen<'ctx> {
             )
             .unwrap();
 
-        // Store the array pointer in temp_values IMMEDIATELY for metadata tracking
-        self.temp_values.insert(name.to_string(), data_ptr.into());
-
         // Store elements
         for (i, val) in element_values.iter().enumerate() {
             let idx = self.context.i32_type().const_int(i as u64, false);
@@ -181,19 +192,6 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.temp_values.insert(name.to_string(), data_ptr.into());
         self.heap_arrays.insert(name.to_string());
-
-        // CRITICAL: Also store element count in temp_values for later inference
-        for i in 0..elements.len() {
-            let elem_marker = format!("{}_elem_{}", name, i);
-            self.temp_values.insert(elem_marker, element_values[i]);
-        }
-
-        // CRITICAL: Also register the actual pointer value under variations
-        // This helps with later pointer equality checks
-        let ptr_variations = vec![format!("ptr_{}", name), format!("data_{}", name)];
-        for variation in ptr_variations {
-            self.temp_values.insert(variation, data_ptr.into());
-        }
 
         Some(data_ptr.into())
     }
@@ -463,61 +461,236 @@ impl<'ctx> CodeGen<'ctx> {
                 )
                 .unwrap();
 
-            // Print each element
-            for i in 0..metadata.length {
-                let index = self.context.i32_type().const_int(i as u64, false);
-                let elem_ptr = unsafe {
-                    self.builder.build_gep(
-                        array_type,
-                        typed_array_ptr,
-                        &[self.context.i32_type().const_zero(), index],
-                        "elem_ptr",
+            // Read heap length (for slices and dynamic arrays)
+            let heap_len_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        self.context.i8_type(),
+                        array_ptr,
+                        &[self.context.i32_type().const_int((-4_i32) as u64, true)],
+                        "heap_len_ptr_print",
                     )
-                }
+                    .unwrap()
+            };
+            let heap_len_ptr_cast = self
+                .builder
+                .build_pointer_cast(
+                    heap_len_ptr,
+                    self.context.ptr_type(AddressSpace::default()),
+                    "heap_len_ptr_cast_print",
+                )
+                .unwrap();
+            let heap_len = self
+                .builder
+                .build_load(self.context.i32_type(), heap_len_ptr_cast, "heap_len_print")
+                .unwrap()
+                .into_int_value();
+
+            // Create a dynamic loop to print elements based on runtime heap_len
+            let print_fn = self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
                 .unwrap();
 
-                let elem_val = self
+            let loop_header = self
+                .context
+                .append_basic_block(print_fn, "print_loop_header");
+            let loop_body = self.context.append_basic_block(print_fn, "print_loop_body");
+            let loop_end = self.context.append_basic_block(print_fn, "print_loop_end");
+
+            // Create a loop counter
+            let counter_alloca = self
+                .builder
+                .build_alloca(self.context.i32_type(), "print_counter")
+                .unwrap();
+            self.builder
+                .build_store(counter_alloca, self.context.i32_type().const_zero())
+                .unwrap();
+
+            // Jump to loop header
+            self.builder
+                .build_unconditional_branch(loop_header)
+                .unwrap();
+
+            // Loop header: check if counter < heap_len
+            self.builder.position_at_end(loop_header);
+            let counter_val = self
+                .builder
+                .build_load(self.context.i32_type(), counter_alloca, "counter")
+                .unwrap()
+                .into_int_value();
+            let should_continue = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::ULT,
+                    counter_val,
+                    heap_len,
+                    "should_continue",
+                )
+                .unwrap();
+            self.builder
+                .build_conditional_branch(should_continue, loop_body, loop_end)
+                .unwrap();
+
+            // Loop body: print element at counter_val index
+            self.builder.position_at_end(loop_body);
+
+            let elem_ptr = unsafe {
+                self.builder.build_gep(
+                    array_type,
+                    typed_array_ptr,
+                    &[self.context.i32_type().const_zero(), counter_val],
+                    "elem_ptr",
+                )
+            }
+            .unwrap();
+
+            let elem_val = self
+                .builder
+                .build_load(elem_type, elem_ptr, "elem")
+                .unwrap();
+
+            // Determine if this is the last element
+            let next_counter = self
+                .builder
+                .build_int_add(
+                    counter_val,
+                    self.context.i32_type().const_int(1, false),
+                    "next_counter",
+                )
+                .unwrap();
+            let is_last_element = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    next_counter,
+                    heap_len,
+                    "is_last_element",
+                )
+                .unwrap();
+
+            // Print the element based on its type
+            if metadata.element_type == "Str" {
+                let with_comma = self
                     .builder
-                    .build_load(elem_type, elem_ptr, "elem")
+                    .build_global_string_ptr("\"%s\", ", "array_elem_fmt_comma")
+                    .unwrap();
+                let without_comma = self
+                    .builder
+                    .build_global_string_ptr("\"%s\"", "array_elem_fmt_no_comma")
                     .unwrap();
 
-                // Print the element based on its type
-                if metadata.element_type == "Str" {
-                    let format_str = if i < metadata.length - 1 {
-                        "\"%s\", "
-                    } else {
-                        "\"%s\""
-                    };
-                    let format_global = self
-                        .builder
-                        .build_global_string_ptr(format_str, "array_elem_fmt")
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[format_global.as_pointer_value().into(), elem_val.into()],
-                            "",
-                        )
-                        .unwrap();
-                } else {
-                    let format_str = if i < metadata.length - 1 {
-                        "%d, "
-                    } else {
-                        "%d"
-                    };
-                    let format_global = self
-                        .builder
-                        .build_global_string_ptr(format_str, "array_elem_fmt")
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[format_global.as_pointer_value().into(), elem_val.into()],
-                            "",
-                        )
-                        .unwrap();
-                }
+                let format_global = self
+                    .builder
+                    .build_select(
+                        is_last_element,
+                        without_comma.as_pointer_value(),
+                        with_comma.as_pointer_value(),
+                        "select_format_str",
+                    )
+                    .unwrap()
+                    .into_pointer_value();
+
+                self.builder
+                    .build_call(printf_fn, &[format_global.into(), elem_val.into()], "")
+                    .unwrap();
+            } else if metadata.element_type == "Bool" {
+                // Check if bool value is true (non-zero) or false (zero)
+                let int_val = elem_val.into_int_value();
+                let zero = self.context.i32_type().const_int(0, false);
+                let is_true = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, int_val, zero, "bool_is_true")
+                    .unwrap();
+
+                // Build format strings for true/false with and without commas
+                let true_with_comma = self
+                    .builder
+                    .build_global_string_ptr("true, ", "array_bool_true_comma")
+                    .unwrap();
+                let true_without_comma = self
+                    .builder
+                    .build_global_string_ptr("true", "array_bool_true_no_comma")
+                    .unwrap();
+                let false_with_comma = self
+                    .builder
+                    .build_global_string_ptr("false, ", "array_bool_false_comma")
+                    .unwrap();
+                let false_without_comma = self
+                    .builder
+                    .build_global_string_ptr("false", "array_bool_false_no_comma")
+                    .unwrap();
+
+                // Select based on is_true
+                let true_format = self
+                    .builder
+                    .build_select(
+                        is_last_element,
+                        true_without_comma.as_pointer_value(),
+                        true_with_comma.as_pointer_value(),
+                        "select_true_format",
+                    )
+                    .unwrap()
+                    .into_pointer_value();
+
+                let false_format = self
+                    .builder
+                    .build_select(
+                        is_last_element,
+                        false_without_comma.as_pointer_value(),
+                        false_with_comma.as_pointer_value(),
+                        "select_false_format",
+                    )
+                    .unwrap()
+                    .into_pointer_value();
+
+                let final_format = self
+                    .builder
+                    .build_select(is_true, true_format, false_format, "select_bool_format")
+                    .unwrap()
+                    .into_pointer_value();
+
+                self.builder
+                    .build_call(printf_fn, &[final_format.into()], "")
+                    .unwrap();
+            } else {
+                let with_comma = self
+                    .builder
+                    .build_global_string_ptr("%d, ", "array_elem_fmt_comma_int")
+                    .unwrap();
+                let without_comma = self
+                    .builder
+                    .build_global_string_ptr("%d", "array_elem_fmt_no_comma_int")
+                    .unwrap();
+
+                let format_global = self
+                    .builder
+                    .build_select(
+                        is_last_element,
+                        without_comma.as_pointer_value(),
+                        with_comma.as_pointer_value(),
+                        "select_format_str_int",
+                    )
+                    .unwrap()
+                    .into_pointer_value();
+
+                self.builder
+                    .build_call(printf_fn, &[format_global.into(), elem_val.into()], "")
+                    .unwrap();
             }
+
+            // Increment counter and loop back
+            self.builder
+                .build_store(counter_alloca, next_counter)
+                .unwrap();
+            self.builder
+                .build_unconditional_branch(loop_header)
+                .unwrap();
+
+            // Loop end - exit the loop
+            self.builder.position_at_end(loop_end);
         }
 
         // Print closing bracket

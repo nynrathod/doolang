@@ -315,6 +315,71 @@ impl<'ctx> CodeGen<'ctx> {
                     ty: param_type,
                 },
             );
+
+            // Create metadata for array and map parameters
+            // This is crucial for imported functions to work with arrays/maps
+            if let Some(Some(ref type_str)) = func.param_types.get(i) {
+                if type_str.contains("Array") {
+                    // Extract element type from Array<Type> format
+                    let element_type = if type_str.contains("Array<Int>") {
+                        "Int"
+                    } else if type_str.contains("Array<Str>") || type_str.contains("Array<String>")
+                    {
+                        "Str"
+                    } else {
+                        "Int" // default
+                    };
+
+                    let contains_strings = element_type == "Str";
+
+                    // We don't know the actual length, so we need to extract it from the array pointer
+                    // For now, we'll mark it as having unknown length (0) and rely on builtin methods
+                    // The actual length will be computed when needed via array.len()
+                    self.array_metadata.insert(
+                        param.clone(),
+                        crate::codegen::ArrayMetadata {
+                            length: 0, // Unknown at function entry - will use runtime length checks
+                            element_type: element_type.to_string(),
+                            contains_strings,
+                        },
+                    );
+
+                    // Also store the parameter value so it can be resolved
+                    self.temp_values.insert(param.clone(), param_val);
+                } else if type_str.contains("Map") {
+                    // Extract key and value types from Map<Key, Value> format
+                    let (key_type, value_type) = if type_str.contains("Map<Str")
+                        || type_str.contains("Map<String")
+                    {
+                        if type_str.contains(", Int>") {
+                            ("Str", "Int")
+                        } else if type_str.contains(", Str>") || type_str.contains(", String>") {
+                            ("Str", "Str")
+                        } else {
+                            ("Str", "Int") // default
+                        }
+                    } else {
+                        ("Int", "Int") // default
+                    };
+
+                    let key_is_string = key_type == "Str";
+                    let value_is_string = value_type == "Str";
+
+                    self.map_metadata.insert(
+                        param.clone(),
+                        crate::codegen::MapMetadata {
+                            length: 0, // Unknown at function entry
+                            key_type: key_type.to_string(),
+                            value_type: value_type.to_string(),
+                            key_is_string,
+                            value_is_string,
+                        },
+                    );
+
+                    // Also store the parameter value so it can be resolved
+                    self.temp_values.insert(param.clone(), param_val);
+                }
+            }
         }
 
         // Pre-allocate variables that are used across multiple blocks

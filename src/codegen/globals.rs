@@ -231,7 +231,12 @@ impl<'ctx> CodeGen<'ctx> {
                 self.array_metadata.insert(name.clone(), metadata);
             }
             // Handles constant map initialization, represented as an array of structs.
-            MirInstr::Map { name, entries } => {
+            MirInstr::Map {
+                name,
+                entries,
+                key_type,
+                value_type,
+            } => {
                 // Determine the types of the key and value from the first entry.
                 let first_key = self.resolve_global_value(&entries[0].0);
                 let first_val = self.resolve_global_value(&entries[0].1);

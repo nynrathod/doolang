@@ -93,21 +93,55 @@ impl<'a> Parser<'a> {
 
     /// Parses postfix operations on an expression.
     /// Handles array/map element access: arr[0], map["key"], nested[i][j]
-    /// Can be chained: arr[0][1][2]
+    /// Also handles method calls: obj.method(args)
+    /// Can be chained: arr[0][1][2] or obj.method1().method2()
     fn parse_postfix(&mut self, mut expr: AstNode) -> ParseResult<AstNode> {
-        while self.peek_is(TokenType::OpenBracket) {
-            if self.depth >= PARSER_MAX_DEPTH {
-                return Err(ParseError::UnexpectedToken(
-                    "Expression too deeply nested".to_string(),
-                ));
+        loop {
+            if self.peek_is(TokenType::OpenBracket) {
+                if self.depth >= PARSER_MAX_DEPTH {
+                    return Err(ParseError::UnexpectedToken(
+                        "Expression too deeply nested".to_string(),
+                    ));
+                }
+                self.advance(); // consume '['
+                let index = self.parse_expression()?;
+                self.expect(TokenType::CloseBracket)?;
+                expr = AstNode::ElementAccess {
+                    array: Box::new(expr),
+                    index: Box::new(index),
+                };
+            } else if self.peek_is(TokenType::Dot) {
+                if self.depth >= PARSER_MAX_DEPTH {
+                    return Err(ParseError::UnexpectedToken(
+                        "Expression too deeply nested".to_string(),
+                    ));
+                }
+                self.advance(); // consume '.'
+                let method_tok = self.expect(TokenType::Identifier)?;
+                let method_name = method_tok.value.to_string();
+                let method_line = method_tok.line;
+                let method_col = method_tok.col;
+
+                if self.peek_is(TokenType::OpenParen) {
+                    self.advance(); // consume '('
+                    let args = self
+                        .parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
+                    self.expect(TokenType::CloseParen)?;
+                    expr = AstNode::MethodCall {
+                        object: Box::new(expr),
+                        method: method_name,
+                        args,
+                    };
+                } else {
+                    return Err(ParseError::UnexpectedTokenAt {
+                        msg: format!("Expected '(' after method name '{}'", method_name),
+                        line: method_line,
+                        col: method_col,
+                    });
+                }
+            } else {
+                break;
             }
-            self.advance(); // consume '['
-            let index = self.parse_expression()?;
-            self.expect(TokenType::CloseBracket)?;
-            expr = AstNode::ElementAccess {
-                array: Box::new(expr),
-                index: Box::new(index),
-            };
         }
         Ok(expr)
     }
@@ -116,7 +150,10 @@ impl<'a> Parser<'a> {
     /// function calls, arrays, and maps.
     fn parse_primary(&mut self) -> ParseResult<AstNode> {
         if let Some(tok) = self.peek() {
-            match tok.kind {
+            let tok_kind = tok.kind;
+            let tok_line = tok.line;
+            let tok_col = tok.col;
+            match tok_kind {
                 TokenType::Number => {
                     let tok = self.advance().unwrap();
                     match tok.value.parse::<i32>() {
@@ -170,15 +207,22 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::OpenBracket => self.parse_array_literal(),
                 TokenType::OpenBrace => self.parse_map_literal(),
-                TokenType::OpenParen => Err(ParseError::UnexpectedTokenAt {
-                    msg: "Parentheses are not allowed in expressions in mtlang".to_string(),
-                    line: tok.line,
-                    col: tok.col,
-                }),
+                TokenType::OpenParen => {
+                    // Check if this is an arrow function () => or (x) =>
+                    if self.is_arrow_function() {
+                        self.parse_arrow_closure()
+                    } else {
+                        Err(ParseError::UnexpectedTokenAt {
+                            msg: "Parentheses are not allowed in expressions unless used for arrow functions (x) =>".to_string(),
+                            line: tok_line,
+                            col: tok_col,
+                        })
+                    }
+                }
                 _ => Err(ParseError::UnexpectedTokenAt {
-                    msg: format!("Expected primary expression, got {:?}", tok.kind),
-                    line: tok.line,
-                    col: tok.col,
+                    msg: format!("Expected primary expression, got {:?}", tok_kind),
+                    line: tok_line,
+                    col: tok_col,
                 }),
             }
         } else {
@@ -256,5 +300,98 @@ impl<'a> Parser<'a> {
             TokenType::RangeExc | TokenType::RangeInc => 7, // Add range operators with lowest precedence
             _ => 0,
         }
+    }
+
+    /// Check if current position is an arrow function: () => or (x) => or (x, y) =>
+    fn is_arrow_function(&mut self) -> bool {
+        let saved_pos = self.current;
+
+        // Must start with (
+        if !self.peek_is(TokenType::OpenParen) {
+            self.current = saved_pos;
+            return false;
+        }
+        self.advance(); // consume (
+
+        // Skip parameters until we find )
+        let mut depth = 1;
+        while depth > 0 && self.current < self.tokens.len() {
+            if self.peek_is(TokenType::OpenParen) {
+                depth += 1;
+            } else if self.peek_is(TokenType::CloseParen) {
+                depth -= 1;
+            }
+            if depth > 0 {
+                self.advance();
+            }
+        }
+
+        if self.current >= self.tokens.len() {
+            self.current = saved_pos;
+            return false;
+        }
+
+        self.advance(); // consume )
+
+        // Check for =>
+        let result = self.peek_is(TokenType::FatArrow);
+        self.current = saved_pos;
+        result
+    }
+
+    /// Parse arrow function: () => expr or (x) => expr or (x, y) => expr
+    fn parse_arrow_closure(&mut self) -> ParseResult<AstNode> {
+        self.expect(TokenType::OpenParen)?;
+
+        let mut params = Vec::new();
+
+        // Parse parameters
+        if !self.peek_is(TokenType::CloseParen) {
+            loop {
+                let param_tok = self.expect(TokenType::Identifier)?;
+                let param_name = param_tok.value.to_string();
+
+                // Check for optional type annotation
+                let param_type = if self.peek_is(TokenType::Colon) {
+                    self.advance(); // consume ':'
+                    Some(self.parse_type_annotation()?)
+                } else {
+                    None
+                };
+
+                params.push((param_name, param_type));
+
+                if self.peek_is(TokenType::Comma) {
+                    self.advance(); // consume ','
+                } else {
+                    break;
+                }
+            }
+        }
+
+        self.expect(TokenType::CloseParen)?;
+        self.expect(TokenType::FatArrow)?;
+
+        // Parse optional return type annotation
+        let return_type = if self.peek_is(TokenType::Arrow) {
+            self.advance(); // consume '->'
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+
+        // Parse body - either a single expression or a block
+        let body = if self.peek_is(TokenType::OpenBrace) {
+            let statements = self.parse_braced_block()?;
+            Box::new(AstNode::Block(statements))
+        } else {
+            Box::new(self.parse_expression()?)
+        };
+
+        Ok(AstNode::Closure {
+            params,
+            body,
+            return_type,
+        })
     }
 }

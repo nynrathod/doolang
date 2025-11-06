@@ -17,6 +17,7 @@ pub enum TypeNode {
     Enum(String, HashMap<String, Option<TypeNode>>),
     Range(Box<TypeNode>, Box<TypeNode>, bool),
     TypeRef(String),
+    Function(Vec<TypeNode>, Box<TypeNode>), // (params, return_type)
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +104,11 @@ pub enum AstNode {
         func: Box<AstNode>, // usually an Identifier node
         args: Vec<AstNode>,
     },
+    MethodCall {
+        object: Box<AstNode>,
+        method: String,
+        args: Vec<AstNode>,
+    },
 
     ForLoopStmt {
         pattern: Pattern,
@@ -128,5 +134,12 @@ pub enum AstNode {
     Import {
         path: Vec<String>,      // e.g. ["models", "user"]
         symbol: Option<String>, // e.g. Some("User") or None for wildcard
+    },
+
+    // --- Closure ---
+    Closure {
+        params: Vec<(String, Option<TypeNode>)>, // parameter name and optional type
+        body: Box<AstNode>,                      // closure body (expression or block)
+        return_type: Option<TypeNode>,           // optional explicit return type
     },
 }

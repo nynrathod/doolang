@@ -9,22 +9,29 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         name: &str,
         entries: &[(String, String)],
+        key_type_hint: Option<&str>,
+        value_type_hint: Option<&str>,
     ) -> Option<BasicValueEnum<'ctx>> {
         if entries.is_empty() {
-            // Allow empty maps: use i32 as default key/value type
+            // Use type hints if available, otherwise default to Int
+            let key_type_str = key_type_hint.unwrap_or("Int");
+            let value_type_str = value_type_hint.unwrap_or("Int");
+            let key_is_string = key_type_str == "Str";
+            let value_is_string = value_type_str == "Str";
+
             let ptr = self.context.ptr_type(AddressSpace::default()).const_null();
             self.temp_values
                 .insert(name.to_string(), ptr.as_basic_value_enum());
 
-            // Insert metadata for empty map so print_map knows to print {}
+            // Insert metadata for empty map with correct types
             self.map_metadata.insert(
                 name.to_string(),
                 crate::codegen::MapMetadata {
                     length: 0,
-                    key_type: "Int".to_string(),
-                    value_type: "Int".to_string(),
-                    key_is_string: false,
-                    value_is_string: false,
+                    key_type: key_type_str.to_string(),
+                    value_type: value_type_str.to_string(),
+                    key_is_string,
+                    value_is_string,
                 },
             );
 
@@ -33,28 +40,30 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Track string keys and values
         let mut str_temps = Vec::new();
-        let mut key_is_string = false;
-        let mut value_is_string = false;
 
+        // Resolve first key/value to determine types
+        let first_key = self.resolve_value(&entries[0].0);
+        let first_val = self.resolve_value(&entries[0].1);
+        let key_type = first_key.get_type();
+        let val_type = first_val.get_type();
+
+        // Determine if keys/values are strings based on actual type
+        let key_is_string = key_type.is_pointer_type();
+        let value_is_string = val_type.is_pointer_type();
+
+        // Track string temps for cleanup
         for (k, v) in entries {
-            if self.heap_strings.contains(k) {
+            if self.heap_strings.contains(k) || key_is_string {
                 str_temps.push(k.clone());
-                key_is_string = true;
             }
-            if self.heap_strings.contains(v) {
+            if self.heap_strings.contains(v) || value_is_string {
                 str_temps.push(v.clone());
-                value_is_string = true;
             }
         }
 
         if !str_temps.is_empty() {
             self.composite_strings.insert(name.to_string(), str_temps);
         }
-
-        let first_key = self.resolve_value(&entries[0].0);
-        let first_val = self.resolve_value(&entries[0].1);
-        let key_type = first_key.get_type();
-        let val_type = first_val.get_type();
 
         let key_type_name = if key_type.is_int_type() {
             "Int"
@@ -86,13 +95,13 @@ impl<'ctx> CodeGen<'ctx> {
         let pair_type = self.context.struct_type(&[key_type, val_type], false);
         let map_type = pair_type.array_type(entries.len() as u32);
 
-        // HEAP ALLOCATE with RC header
+        // HEAP ALLOCATE with RC header (4 bytes) + length field (4 bytes) = 8 bytes header
         let malloc_fn = self.get_or_declare_malloc();
         let map_size = map_type.size_of().unwrap();
-        let total_size = self.context.i64_type().const_int(8, false); // Use i64 for header size
+        let header_size = self.context.i64_type().const_int(8, false); // RC (4) + Length (4)
         let total_size = self
             .builder
-            .build_int_add(total_size, map_size, "total_size")
+            .build_int_add(header_size, map_size, "total_size")
             .unwrap();
 
         let heap_ptr = self
@@ -104,7 +113,7 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap()
             .into_pointer_value();
 
-        // Store RC = 1
+        // Store RC = 1 at offset 0
         let rc_ptr = self
             .builder
             .build_pointer_cast(
@@ -115,6 +124,34 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap();
         self.builder
             .build_store(rc_ptr, self.context.i32_type().const_int(1, false))
+            .unwrap();
+
+        // Store length at offset 4
+        let len_field_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    heap_ptr,
+                    &[self.context.i32_type().const_int(4, false)],
+                    "len_field_ptr",
+                )
+                .unwrap()
+        };
+        let len_ptr = self
+            .builder
+            .build_pointer_cast(
+                len_field_ptr,
+                self.context.ptr_type(AddressSpace::default()),
+                "len_ptr",
+            )
+            .unwrap();
+        self.builder
+            .build_store(
+                len_ptr,
+                self.context
+                    .i32_type()
+                    .const_int(entries.len() as u64, false),
+            )
             .unwrap();
 
         // Get data pointer

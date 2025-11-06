@@ -238,7 +238,7 @@ impl<'a> Parser<'a> {
     /// Supports arrays, maps, primitive types
     /// Examples: `Int`, `[Int]`, `{Str: Int}`, `Bool`
     /// Note: User defined types are not supported yet.
-    fn parse_type_annotation(&mut self) -> ParseResult<TypeNode> {
+    pub fn parse_type_annotation(&mut self) -> ParseResult<TypeNode> {
         self.depth += 1;
         if self.depth > super::parser::MAX_DEPTH {
             self.depth -= 1;

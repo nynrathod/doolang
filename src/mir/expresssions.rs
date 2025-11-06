@@ -391,6 +391,74 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             dest_tmp
         }
 
+        AstNode::MethodCall {
+            object,
+            method,
+            args,
+        } => {
+            let object_tmp = build_expression(builder, object, block);
+            let mut arg_tmps = vec![];
+            for arg in args {
+                let arg_tmp = build_expression(builder, arg, block);
+                arg_tmps.push(arg_tmp);
+            }
+
+            let dest_tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::MethodCall {
+                dest: dest_tmp.clone(),
+                object: object_tmp,
+                method: method.clone(),
+                args: arg_tmps,
+            });
+
+            dest_tmp
+        }
+
+        AstNode::Closure {
+            params,
+            body,
+            return_type,
+        } => {
+            let closure_name = builder.next_tmp();
+
+            // Extract parameter names and types
+            let param_names: Vec<String> = params.iter().map(|(name, _)| name.clone()).collect();
+            let param_types: Vec<Option<String>> = params
+                .iter()
+                .map(|(_, ty)| ty.as_ref().map(|t| format!("{:?}", t)))
+                .collect();
+
+            // DON'T evaluate closure body yet - store the AST for later codegen
+            // This allows proper parameter binding when the closure is executed
+            let body_expr = format!("closure_body_{}", closure_name);
+
+            let return_type_str = return_type.as_ref().map(|t| format!("{:?}", t));
+
+            // Create the closure instruction - store the AST body
+            block.instrs.push(MirInstr::Closure {
+                name: closure_name.clone(),
+                params: param_names,
+                param_types,
+                body_expr,
+                body_ast: Some(body.clone()), // Store the AST node
+                return_type: return_type_str,
+                captures: vec![],
+            });
+
+            // Track closure type in symbol table
+            let param_type_nodes: Vec<TypeNode> = params
+                .iter()
+                .map(|(_, ty)| ty.clone().unwrap_or(TypeNode::Int))
+                .collect();
+            let return_type_node = return_type.clone().unwrap_or(TypeNode::Void);
+            builder.mir_symbol_table.insert(
+                closure_name.clone(),
+                TypeNode::Function(param_type_nodes, Box::new(return_type_node)),
+            );
+
+            closure_name
+        }
+
         AstNode::ArrayLiteral(elements) => {
             let mut tmp_elements = vec![];
             let mut element_type = TypeNode::Int; // Default element type
@@ -439,9 +507,29 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             }
 
             let tmp = builder.next_tmp();
+
+            // Get string representation of types
+            let key_type_str = match &key_type {
+                TypeNode::Int => Some("Int".to_string()),
+                TypeNode::Float => Some("Float".to_string()),
+                TypeNode::Bool => Some("Bool".to_string()),
+                TypeNode::String => Some("Str".to_string()),
+                _ => None,
+            };
+
+            let value_type_str = match &value_type {
+                TypeNode::Int => Some("Int".to_string()),
+                TypeNode::Float => Some("Float".to_string()),
+                TypeNode::Bool => Some("Bool".to_string()),
+                TypeNode::String => Some("Str".to_string()),
+                _ => None,
+            };
+
             block.instrs.push(MirInstr::Map {
                 name: tmp.clone(),
                 entries: map_entries,
+                key_type: key_type_str,
+                value_type: value_type_str,
             });
             // Track type in symbol table with actual key and value types
             let map_type = TypeNode::Map(Box::new(key_type), Box::new(value_type));

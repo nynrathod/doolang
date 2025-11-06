@@ -250,6 +250,16 @@ impl SemanticAnalyzer {
                 }
             }
 
+            // Method call: infer return type based on object type and method name
+            AstNode::MethodCall {
+                object,
+                method,
+                args,
+            } => {
+                let object_type = self.infer_type(object)?;
+                self.infer_method_return_type(&object_type, method, args)
+            }
+
             // Array literal: infer type of elements
             AstNode::ArrayLiteral(elements) => {
                 // Error if array is empty: cannot infer type
@@ -421,5 +431,413 @@ impl SemanticAnalyzer {
         }
 
         result
+    }
+
+    pub fn infer_method_return_type(
+        &self,
+        object_type: &TypeNode,
+        method: &str,
+        args: &[AstNode],
+    ) -> Result<TypeNode, SemanticError> {
+        match object_type {
+            TypeNode::String => match method {
+                "len" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Int)
+                }
+                "charAt" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                "substring" => {
+                    if args.len() != 2 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 2,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                "concat" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                "toUpper" | "toLower" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                "indexOf" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Int)
+                }
+                "contains" | "startsWith" | "endsWith" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "trim" | "reverse" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                "split" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                }
+                "replace" => {
+                    if args.len() != 2 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 2,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                _ => Err(SemanticError::UndeclaredFunction(NamedError {
+                    name: format!("String.{}", method),
+                })),
+            },
+            TypeNode::Array(elem_type) => match method {
+                "len" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Int)
+                }
+                "get" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(*elem_type.clone())
+                }
+                "push" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Void)
+                }
+                "pop" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(*elem_type.clone())
+                }
+                "contains" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "reverse" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Array(elem_type.clone()))
+                }
+                "first" | "last" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(*elem_type.clone())
+                }
+                "isEmpty" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "set" => {
+                    if args.len() != 2 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 2,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Void)
+                }
+                "clear" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Void)
+                }
+                "sort" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Void)
+                }
+                "slice" => {
+                    if args.len() != 2 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 2,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Array(elem_type.clone()))
+                }
+                "indexOf" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Int)
+                }
+                "filter" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Array(elem_type.clone()))
+                }
+                "map" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Array(elem_type.clone()))
+                }
+                "reduce" => {
+                    if args.len() != 2 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 2,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Int)
+                }
+                "join" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Array.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                _ => Err(SemanticError::UndeclaredFunction(NamedError {
+                    name: format!("Array.{}", method),
+                })),
+            },
+            TypeNode::Map(_key_type, value_type) => match method {
+                "get" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(*value_type.clone())
+                }
+                "set" => {
+                    if args.len() != 2 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 2,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Void)
+                }
+                "has" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "remove" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "isEmpty" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "size" | "len" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Int)
+                }
+                "clear" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "keys" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                }
+                "values" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Array(value_type.clone()))
+                }
+                "containsKey" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "containsValue" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Map.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                _ => Err(SemanticError::UndeclaredFunction(NamedError {
+                    name: format!("Map.{}", method),
+                })),
+            },
+            _ => Err(SemanticError::UndeclaredFunction(NamedError {
+                name: format!("{:?}.{}", object_type, method),
+            })),
+        }
     }
 }

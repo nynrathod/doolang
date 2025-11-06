@@ -8,6 +8,10 @@ pub mod instructions;
 pub mod types;
 // Memory management
 pub mod memory;
+// Built-in methods
+pub mod builtins;
+// Closures
+pub mod closures;
 // Main modules
 pub mod builder;
 pub mod functions;

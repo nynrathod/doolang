@@ -195,6 +195,39 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         // Build MIR for each statement in the function body.
         for stmt in body {
             let old_label = block.label.clone();
+
+            // Add the current block BEFORE processing the statement
+            // This ensures proper block ordering when statements (like loops with if inside)
+            // add their own blocks to the function
+            let should_add_block_before = !block.instrs.is_empty() || block.terminator.is_some();
+            if should_add_block_before {
+                if let Some(current_func) = builder.program.functions.last_mut() {
+                    current_func.blocks.push(block.clone());
+                }
+
+                // Create a new block for the next statement
+                let next_label = builder.next_block();
+                let old_block = block.clone();
+                block = MirBlock {
+                    label: next_label.clone(),
+                    instrs: vec![],
+                    terminator: None,
+                };
+
+                // Connect previous block to this new block if it doesn't have a terminator
+                if old_block.terminator.is_none() {
+                    if let Some(current_func) = builder.program.functions.last_mut() {
+                        if let Some(prev_block) = current_func.blocks.last_mut() {
+                            if prev_block.label == old_block.label {
+                                prev_block.terminator = Some(MirInstr::Jump {
+                                    target: next_label.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             build_statement(builder, stmt, &mut block);
 
             // If the statement set a terminator (like a for-loop), subsequent statements

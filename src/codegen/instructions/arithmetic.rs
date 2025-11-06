@@ -39,6 +39,68 @@ impl<'ctx> CodeGen<'ctx> {
             });
         }
 
+        // Handle string comparisons using strcmp
+        if (op_name == "eq" || op_name == "ne")
+            && lhs_val.is_pointer_value()
+            && rhs_val.is_pointer_value()
+            && op_type != "array"
+            && op_type != "map"
+        {
+            let lhs_ptr = lhs_val.into_pointer_value();
+            let rhs_ptr = rhs_val.into_pointer_value();
+
+            // Declare/get strcmp function
+            let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
+                let i8_ptr_type = self
+                    .context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default());
+                let fn_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
+                self.module.add_function("strcmp", fn_type, None)
+            });
+
+            // Call strcmp
+            let cmp_result = self
+                .builder
+                .build_call(
+                    strcmp_fn,
+                    &[lhs_ptr.into(), rhs_ptr.into()],
+                    "strcmp_result",
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .left()
+                .unwrap()
+                .into_int_value();
+
+            // Compare result with 0
+            let zero = self.context.i32_type().const_int(0, false);
+            let cmp_i1 = if op_name == "eq" {
+                self.builder
+                    .build_int_compare(IntPredicate::EQ, cmp_result, zero, "streq_tmp")
+                    .unwrap()
+            } else {
+                self.builder
+                    .build_int_compare(IntPredicate::NE, cmp_result, zero, "strne_tmp")
+                    .unwrap()
+            };
+
+            // Extend i1 to i32 for consistency
+            let result = self
+                .builder
+                .build_int_z_extend(cmp_i1, self.context.i32_type(), "str_cmp_ext")
+                .unwrap();
+
+            self.temp_values.insert(dst.to_string(), result.into());
+            if let Some(sym) = self.symbols.get(dst) {
+                self.builder.build_store(sym.ptr, result).unwrap();
+            }
+            return Some(result.into());
+        }
+
         // Handle array and map comparisons (only eq and ne are supported)
         if (op_type == "array" || op_type == "map")
             && lhs_val.is_pointer_value()

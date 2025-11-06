@@ -94,6 +94,8 @@ pub struct CodeGen<'ctx> {
     pub function_return_types: HashMap<String, String>, // Track function return types for proper RC handling on call results
     pub functions_returning_heap: std::collections::HashSet<String>, // Track functions that return heap-allocated values
 
+    pub boolean_temps: std::collections::HashSet<String>, // Track temporary variables from boolean-returning methods
+
     pub declared_functions: std::collections::HashSet<String>,
     pub external_modules: HashMap<String, Vec<String>>,
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
@@ -142,6 +144,8 @@ impl<'ctx> CodeGen<'ctx> {
             current_function_params: Vec::new(),
             function_return_types: HashMap::new(),
             functions_returning_heap: std::collections::HashSet::new(),
+
+            boolean_temps: std::collections::HashSet::new(),
 
             declared_functions: std::collections::HashSet::new(),
             external_modules: HashMap::new(),

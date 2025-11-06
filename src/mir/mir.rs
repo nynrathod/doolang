@@ -1,6 +1,7 @@
 /// Mid-level Intermediate Representation for the language
 /// Contains the core data structures used after AST parsing
 /// and before LLVM IR generation
+use crate::parser::ast::AstNode;
 
 /// Represents a complete MIR program with functions and globals
 #[derive(Debug, Clone)]
@@ -71,6 +72,8 @@ pub enum MirInstr {
     Map {
         name: String,
         entries: Vec<(String, String)>,
+        key_type: Option<String>,
+        value_type: Option<String>,
     },
 
     // Range operations
@@ -162,6 +165,21 @@ pub enum MirInstr {
         dest: Vec<String>, // multiple temps for tuple destructuring
         func: String,      // function name
         args: Vec<String>, // arguments (as temp names)
+    },
+    MethodCall {
+        dest: String,
+        object: String,
+        method: String,
+        args: Vec<String>,
+    },
+    Closure {
+        name: String,
+        params: Vec<String>,
+        param_types: Vec<Option<String>>,
+        body_expr: String, // result temp name from evaluating closure body
+        body_ast: Option<Box<AstNode>>, // Store AST for proper codegen
+        return_type: Option<String>,
+        captures: Vec<String>, // captured variables from outer scope
     },
     Return {
         values: Vec<String>,
