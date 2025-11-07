@@ -270,6 +270,7 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(metadata) = self.map_metadata.get(map_name) {
             let key_type = match metadata.key_type.as_str() {
                 "Int" => self.context.i32_type().into(),
+                "Float" => self.context.f64_type().into(),
                 "Bool" => self.context.bool_type().into(),
                 "Str" => self.context.ptr_type(AddressSpace::default()).into(),
                 _ => {
@@ -283,6 +284,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             let val_type = match metadata.value_type.as_str() {
                 "Int" => self.context.i32_type().into(),
+                "Float" => self.context.f64_type().into(),
                 "Bool" => self.context.bool_type().into(),
                 "Str" => self.context.ptr_type(AddressSpace::default()).into(),
                 _ => {

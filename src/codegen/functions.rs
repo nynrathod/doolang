@@ -82,6 +82,8 @@ impl<'ctx> CodeGen<'ctx> {
                 self.context
                     .ptr_type(AddressSpace::default())
                     .fn_type(&param_types, false)
+            } else if ret_type_str.contains("Float") {
+                self.context.f64_type().fn_type(&param_types, false)
             } else {
                 self.context.i32_type().fn_type(&param_types, false)
             }
@@ -100,6 +102,8 @@ impl<'ctx> CodeGen<'ctx> {
                 self.context.ptr_type(AddressSpace::default()).into()
             } else if type_str.contains("Array") || type_str.contains("Map") {
                 self.context.ptr_type(AddressSpace::default()).into()
+            } else if type_str.contains("Float") {
+                self.context.f64_type().into()
             } else {
                 self.context.i32_type().into()
             }
@@ -199,6 +203,8 @@ impl<'ctx> CodeGen<'ctx> {
                         self.context.ptr_type(AddressSpace::default()).into()
                     } else if type_str.contains("Map") {
                         self.context.ptr_type(AddressSpace::default()).into()
+                    } else if type_str.contains("Float") {
+                        self.context.f64_type().into()
                     } else {
                         self.context.i32_type().into()
                     }
@@ -228,6 +234,8 @@ impl<'ctx> CodeGen<'ctx> {
                 self.context
                     .ptr_type(AddressSpace::default())
                     .fn_type(&param_types, false)
+            } else if ret_type_str.contains("Float") {
+                self.context.f64_type().fn_type(&param_types, false)
             } else {
                 self.context.i32_type().fn_type(&param_types, false)
             }
@@ -293,6 +301,8 @@ impl<'ctx> CodeGen<'ctx> {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Map") {
                     self.context.ptr_type(AddressSpace::default()).into()
+                } else if type_str.contains("Float") {
+                    self.context.f64_type().into()
                 } else {
                     self.context.i32_type().into()
                 }

@@ -51,6 +51,9 @@ impl<'ctx> CodeGen<'ctx> {
         if let Ok(val) = name.parse::<i32>() {
             return self.context.i32_type().const_int(val as u64, true).into();
         }
+        if let Ok(val) = name.parse::<f64>() {
+            return self.context.f64_type().const_float(val).into();
+        }
         if name == "true" {
             return self.context.i32_type().const_int(1, false).into();
         }
@@ -72,6 +75,7 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn get_llvm_type(&self, type_name: &str) -> BasicTypeEnum<'ctx> {
         match type_name {
             "Int" => self.context.i32_type().into(), // Only i32 for integers
+            "Float" => self.context.f64_type().into(), // f64 for floating point
             "Bool" => self.context.bool_type().into(),
             "Str" => self.context.ptr_type(AddressSpace::default()).into(),
             _ => self.context.i32_type().into(),

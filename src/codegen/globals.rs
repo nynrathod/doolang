@@ -49,6 +49,11 @@ impl<'ctx> CodeGen<'ctx> {
                 let val = self.context.i32_type().const_int(*value as u64, true);
                 self.temp_values.insert(name.clone(), val.into());
             }
+            // Float constant global (f64 for floating point)
+            MirInstr::ConstFloat { name, value } => {
+                let val = self.context.f32_type().const_float(*value);
+                self.temp_values.insert(name.clone(), val.into());
+            }
             // Boolean constant global
             MirInstr::ConstBool { name, value } => {
                 // Use i32 instead of i1 for consistency with rest of codegen

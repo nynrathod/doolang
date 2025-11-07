@@ -296,6 +296,7 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(metadata) = self.array_metadata.get(array_name) {
             match metadata.element_type.as_str() {
                 "Int" => self.context.i32_type().into(), // Only i32 for integers
+                "Float" => self.context.f64_type().into(), // f64 for floating point
                 "Bool" => self.context.bool_type().into(),
                 "Str" => self.context.ptr_type(AddressSpace::default()).into(),
                 _ => self.context.i32_type().into(),

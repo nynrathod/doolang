@@ -268,6 +268,7 @@ impl<'a> Parser<'a> {
             let tok = self.advance().unwrap();
             match tok.value {
                 "Int" => Ok(TypeNode::Int),
+                "Float" => Ok(TypeNode::Float),
                 "Str" => Ok(TypeNode::String),
                 "Bool" => Ok(TypeNode::Bool),
                 "Void" => Ok(TypeNode::Void),
