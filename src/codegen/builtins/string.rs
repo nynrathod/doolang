@@ -2195,6 +2195,257 @@ impl<'ctx> CodeGen<'ctx> {
                 Some(result_ptr.into())
             }
             "concat" => self.generate_string_concat(dest, _object, &args[0]),
+            "countSubstr" => {
+                let str_ptr = object_val.into_pointer_value();
+                let substr_ptr = self.resolve_value(&args[0]).into_pointer_value();
+
+                let strlen_fn = self.module.get_function("strlen").unwrap_or_else(|| {
+                    let fn_type = self.context.i64_type().fn_type(
+                        &[self
+                            .context
+                            .i8_type()
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into()],
+                        false,
+                    );
+                    self.module.add_function("strlen", fn_type, None)
+                });
+
+                let str_len = self
+                    .builder
+                    .build_call(strlen_fn, &[str_ptr.into()], "str_len")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+
+                let substr_len = self
+                    .builder
+                    .build_call(strlen_fn, &[substr_ptr.into()], "substr_len")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+
+                // If substr is empty, return 0
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+
+                let empty_block = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_empty");
+                let count_block = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_count");
+                let after_block = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_after");
+
+                let is_empty = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        substr_len,
+                        self.context.i64_type().const_zero(),
+                        "is_empty",
+                    )
+                    .unwrap();
+
+                self.builder
+                    .build_conditional_branch(is_empty, empty_block, count_block)
+                    .unwrap();
+
+                // Empty substr
+                self.builder.position_at_end(empty_block);
+                let zero_count = self.context.i32_type().const_zero();
+                self.builder
+                    .build_unconditional_branch(after_block)
+                    .unwrap();
+
+                // Count occurrences
+                self.builder.position_at_end(count_block);
+
+                let count_ptr = self
+                    .builder
+                    .build_alloca(self.context.i32_type(), "count")
+                    .unwrap();
+                self.builder
+                    .build_store(count_ptr, self.context.i32_type().const_zero())
+                    .unwrap();
+
+                let i_ptr = self
+                    .builder
+                    .build_alloca(self.context.i64_type(), "i")
+                    .unwrap();
+                self.builder
+                    .build_store(i_ptr, self.context.i64_type().const_zero())
+                    .unwrap();
+
+                let loop_start = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_loop_start");
+                let loop_body = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_loop_body");
+                let check_match = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_check_match");
+                let match_found = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_match_found");
+                let no_match = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_no_match");
+                let loop_end = self
+                    .context
+                    .append_basic_block(current_fn, "countsubstr_loop_end");
+
+                self.builder.build_unconditional_branch(loop_start).unwrap();
+
+                self.builder.position_at_end(loop_start);
+                let i = self
+                    .builder
+                    .build_load(self.context.i64_type(), i_ptr, "i")
+                    .unwrap()
+                    .into_int_value();
+                let cmp = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::ULT, i, str_len, "cmp")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(cmp, loop_body, loop_end)
+                    .unwrap();
+
+                self.builder.position_at_end(loop_body);
+                let remaining = self.builder.build_int_sub(str_len, i, "remaining").unwrap();
+                let has_enough = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::UGE,
+                        remaining,
+                        substr_len,
+                        "has_enough",
+                    )
+                    .unwrap();
+
+                self.builder
+                    .build_conditional_branch(has_enough, check_match, no_match)
+                    .unwrap();
+
+                self.builder.position_at_end(check_match);
+                let current_pos = unsafe {
+                    self.builder
+                        .build_gep(self.context.i8_type(), str_ptr, &[i], "current_pos")
+                        .unwrap()
+                };
+
+                let strncmp_fn = self.module.get_function("strncmp").unwrap_or_else(|| {
+                    let fn_type = self.context.i32_type().fn_type(
+                        &[
+                            self.context
+                                .i8_type()
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into(),
+                            self.context
+                                .i8_type()
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into(),
+                            self.context.i64_type().into(),
+                        ],
+                        false,
+                    );
+                    self.module.add_function("strncmp", fn_type, None)
+                });
+
+                let cmp_result = self
+                    .builder
+                    .build_call(
+                        strncmp_fn,
+                        &[current_pos.into(), substr_ptr.into(), substr_len.into()],
+                        "cmp_result",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+
+                let is_match = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        cmp_result,
+                        self.context.i32_type().const_zero(),
+                        "is_match",
+                    )
+                    .unwrap();
+
+                self.builder
+                    .build_conditional_branch(is_match, match_found, no_match)
+                    .unwrap();
+
+                self.builder.position_at_end(match_found);
+                let count = self
+                    .builder
+                    .build_load(self.context.i32_type(), count_ptr, "count")
+                    .unwrap()
+                    .into_int_value();
+                let new_count = self
+                    .builder
+                    .build_int_add(
+                        count,
+                        self.context.i32_type().const_int(1, false),
+                        "new_count",
+                    )
+                    .unwrap();
+                self.builder.build_store(count_ptr, new_count).unwrap();
+
+                let substr_len_i64 = substr_len;
+                let new_i_match = self
+                    .builder
+                    .build_int_add(i, substr_len_i64, "new_i_match")
+                    .unwrap();
+                self.builder.build_store(i_ptr, new_i_match).unwrap();
+                self.builder.build_unconditional_branch(loop_start).unwrap();
+
+                self.builder.position_at_end(no_match);
+                let new_i_no = self
+                    .builder
+                    .build_int_add(i, self.context.i64_type().const_int(1, false), "new_i_no")
+                    .unwrap();
+                self.builder.build_store(i_ptr, new_i_no).unwrap();
+                self.builder.build_unconditional_branch(loop_start).unwrap();
+
+                self.builder.position_at_end(loop_end);
+                let final_count = self
+                    .builder
+                    .build_load(self.context.i32_type(), count_ptr, "final_count")
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_unconditional_branch(after_block)
+                    .unwrap();
+
+                // After block
+                self.builder.position_at_end(after_block);
+                let result_phi = self
+                    .builder
+                    .build_phi(self.context.i32_type(), "result_phi")
+                    .unwrap();
+
+                result_phi.add_incoming(&[(&zero_count, empty_block), (&final_count, loop_end)]);
+
+                let result = result_phi.as_basic_value().into_int_value();
+                self.temp_values.insert(dest.to_string(), result.into());
+                Some(result.into())
+            }
+
             // "trimLeft" => {
             //     let str_ptr = object_val.into_pointer_value();
             //     let pad_char_ptr = self.resolve_value(&args[0]).into_pointer_value();
@@ -3160,256 +3411,6 @@ impl<'ctx> CodeGen<'ctx> {
             //         .insert(dest.to_string(), final_result.into());
             //     self.heap_strings.insert(dest.to_string());
             //     Some(final_result.into())
-            // }
-            // "countSubstr" => {
-            //     let str_ptr = object_val.into_pointer_value();
-            //     let substr_ptr = self.resolve_value(&args[0]).into_pointer_value();
-
-            //     let strlen_fn = self.module.get_function("strlen").unwrap_or_else(|| {
-            //         let fn_type = self.context.i64_type().fn_type(
-            //             &[self
-            //                 .context
-            //                 .i8_type()
-            //                 .ptr_type(inkwell::AddressSpace::default())
-            //                 .into()],
-            //             false,
-            //         );
-            //         self.module.add_function("strlen", fn_type, None)
-            //     });
-
-            //     let str_len = self
-            //         .builder
-            //         .build_call(strlen_fn, &[str_ptr.into()], "str_len")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     let substr_len = self
-            //         .builder
-            //         .build_call(strlen_fn, &[substr_ptr.into()], "substr_len")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     // If substr is empty, return 0
-            //     let current_fn = self
-            //         .builder
-            //         .get_insert_block()
-            //         .unwrap()
-            //         .get_parent()
-            //         .unwrap();
-
-            //     let empty_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_empty");
-            //     let count_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_count");
-            //     let after_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_after");
-
-            //     let is_empty = self
-            //         .builder
-            //         .build_int_compare(
-            //             inkwell::IntPredicate::EQ,
-            //             substr_len,
-            //             self.context.i64_type().const_zero(),
-            //             "is_empty",
-            //         )
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_conditional_branch(is_empty, empty_block, count_block)
-            //         .unwrap();
-
-            //     // Empty substr
-            //     self.builder.position_at_end(empty_block);
-            //     let zero_count = self.context.i32_type().const_zero();
-            //     self.builder
-            //         .build_unconditional_branch(after_block)
-            //         .unwrap();
-
-            //     // Count occurrences
-            //     self.builder.position_at_end(count_block);
-
-            //     let count_ptr = self
-            //         .builder
-            //         .build_alloca(self.context.i32_type(), "count")
-            //         .unwrap();
-            //     self.builder
-            //         .build_store(count_ptr, self.context.i32_type().const_zero())
-            //         .unwrap();
-
-            //     let i_ptr = self
-            //         .builder
-            //         .build_alloca(self.context.i64_type(), "i")
-            //         .unwrap();
-            //     self.builder
-            //         .build_store(i_ptr, self.context.i64_type().const_zero())
-            //         .unwrap();
-
-            //     let loop_start = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_loop_start");
-            //     let loop_body = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_loop_body");
-            //     let check_match = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_check_match");
-            //     let match_found = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_match_found");
-            //     let no_match = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_no_match");
-            //     let loop_end = self
-            //         .context
-            //         .append_basic_block(current_fn, "countsubstr_loop_end");
-
-            //     self.builder.build_unconditional_branch(loop_start).unwrap();
-
-            //     self.builder.position_at_end(loop_start);
-            //     let i = self
-            //         .builder
-            //         .build_load(self.context.i64_type(), i_ptr, "i")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let cmp = self
-            //         .builder
-            //         .build_int_compare(inkwell::IntPredicate::ULT, i, str_len, "cmp")
-            //         .unwrap();
-            //     self.builder
-            //         .build_conditional_branch(cmp, loop_body, loop_end)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(loop_body);
-            //     let remaining = self.builder.build_int_sub(str_len, i, "remaining").unwrap();
-            //     let has_enough = self
-            //         .builder
-            //         .build_int_compare(
-            //             inkwell::IntPredicate::UGE,
-            //             remaining,
-            //             substr_len,
-            //             "has_enough",
-            //         )
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_conditional_branch(has_enough, check_match, no_match)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(check_match);
-            //     let current_pos = unsafe {
-            //         self.builder
-            //             .build_gep(self.context.i8_type(), str_ptr, &[i], "current_pos")
-            //             .unwrap()
-            //     };
-
-            //     let strncmp_fn = self.module.get_function("strncmp").unwrap_or_else(|| {
-            //         let fn_type = self.context.i32_type().fn_type(
-            //             &[
-            //                 self.context
-            //                     .i8_type()
-            //                     .ptr_type(inkwell::AddressSpace::default())
-            //                     .into(),
-            //                 self.context
-            //                     .i8_type()
-            //                     .ptr_type(inkwell::AddressSpace::default())
-            //                     .into(),
-            //                 self.context.i64_type().into(),
-            //             ],
-            //             false,
-            //         );
-            //         self.module.add_function("strncmp", fn_type, None)
-            //     });
-
-            //     let cmp_result = self
-            //         .builder
-            //         .build_call(
-            //             strncmp_fn,
-            //             &[current_pos.into(), substr_ptr.into(), substr_len.into()],
-            //             "cmp_result",
-            //         )
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     let is_match = self
-            //         .builder
-            //         .build_int_compare(
-            //             inkwell::IntPredicate::EQ,
-            //             cmp_result,
-            //             self.context.i32_type().const_zero(),
-            //             "is_match",
-            //         )
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_conditional_branch(is_match, match_found, no_match)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(match_found);
-            //     let count = self
-            //         .builder
-            //         .build_load(self.context.i32_type(), count_ptr, "count")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let new_count = self
-            //         .builder
-            //         .build_int_add(
-            //             count,
-            //             self.context.i32_type().const_int(1, false),
-            //             "new_count",
-            //         )
-            //         .unwrap();
-            //     self.builder.build_store(count_ptr, new_count).unwrap();
-
-            //     let substr_len_i64 = substr_len;
-            //     let new_i_match = self
-            //         .builder
-            //         .build_int_add(i, substr_len_i64, "new_i_match")
-            //         .unwrap();
-            //     self.builder.build_store(i_ptr, new_i_match).unwrap();
-            //     self.builder.build_unconditional_branch(loop_start).unwrap();
-
-            //     self.builder.position_at_end(no_match);
-            //     let new_i_no = self
-            //         .builder
-            //         .build_int_add(i, self.context.i64_type().const_int(1, false), "new_i_no")
-            //         .unwrap();
-            //     self.builder.build_store(i_ptr, new_i_no).unwrap();
-            //     self.builder.build_unconditional_branch(loop_start).unwrap();
-
-            //     self.builder.position_at_end(loop_end);
-            //     let final_count = self
-            //         .builder
-            //         .build_load(self.context.i32_type(), count_ptr, "final_count")
-            //         .unwrap()
-            //         .into_int_value();
-            //     self.builder
-            //         .build_unconditional_branch(after_block)
-            //         .unwrap();
-
-            //     // After block
-            //     self.builder.position_at_end(after_block);
-            //     let result_phi = self
-            //         .builder
-            //         .build_phi(self.context.i32_type(), "result_phi")
-            //         .unwrap();
-
-            //     result_phi.add_incoming(&[(&zero_count, empty_block), (&final_count, loop_end)]);
-
-            //     let result = result_phi.as_basic_value().into_int_value();
-            //     self.temp_values.insert(dest.to_string(), result.into());
-            //     Some(result.into())
             // }
             _ => None,
         }
