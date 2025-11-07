@@ -28,6 +28,7 @@ pub struct SemanticAnalyzer {
     pub(crate) project_root: PathBuf, // Root directory for module resolution
     pub(crate) imported_modules: HashMap<String, bool>, // Track imported modules to prevent circular imports
     pub imported_functions: Vec<AstNode>, // Store imported function AST nodes for MIR generation
+    pub function_aliases: HashMap<String, String>, // Maps alias names to original function names
     pub loop_depth: usize,                // Track loop nesting for break/continue error handling
     pub scope_stack: Vec<HashMap<String, SymbolInfo>>, // Scope stack for block scoping
     pub function_depth: usize,            // Track function nesting for return statement validation
@@ -76,6 +77,7 @@ impl SemanticAnalyzer {
             project_root,
             imported_modules: HashMap::new(),
             imported_functions: Vec::new(),
+            function_aliases: HashMap::new(),
             loop_depth: 0,
             scope_stack: Vec::new(),
             function_depth: 0,
@@ -139,8 +141,8 @@ impl SemanticAnalyzer {
         for node in nodes.iter_mut() {
             match node {
                 // Process imports first to load external functions
-                AstNode::Import { path, symbol } => {
-                    if let Err(e) = self.import_module(path, symbol, import_stack) {
+                AstNode::Import { path, items } => {
+                    if let Err(e) = self.import_module(path, items, import_stack) {
                         // Collect error but don't return immediately - continue processing
                         self.collected_errors.push(e);
                     }
@@ -338,6 +340,13 @@ impl SemanticAnalyzer {
                         });
                     };
 
+                    // If this is an alias, resolve it to the original function name
+                    let resolved_name = self
+                        .function_aliases
+                        .get(func_name)
+                        .cloned()
+                        .unwrap_or_else(|| func_name.clone());
+
                     let (param_types, _return_type) =
                         self.function_table.get(func_name).ok_or_else(|| {
                             SemanticError::UndeclaredFunction(NamedError {
@@ -430,7 +439,7 @@ impl SemanticAnalyzer {
     fn import_module(
         &mut self,
         path: &[String],
-        symbol: &Option<String>,
+        items: &[crate::parser::ast::ImportItem],
         import_stack: &mut Vec<String>,
     ) -> Result<(), SemanticError> {
         // Create module key for circular import detection
@@ -458,23 +467,32 @@ impl SemanticAnalyzer {
             println!("[DEBUG] Import stack updated: {:?}", import_stack);
         }
 
-        // If importing a specific symbol, check if that symbol is already imported
-        if let Some(sym) = symbol {
-            if self.function_table.contains_key(sym) {
+        // For non-wildcard imports, check if symbols are already imported
+        let has_wildcard = items
+            .iter()
+            .any(|item| matches!(item, crate::parser::ast::ImportItem::Wildcard));
+        if !has_wildcard && !items.is_empty() {
+            // Check if all specific symbols are already imported
+            let all_imported = items.iter().all(|item| match item {
+                crate::parser::ast::ImportItem::Symbol(name) => {
+                    self.function_table.contains_key(name)
+                }
+                crate::parser::ast::ImportItem::SymbolWithAlias(name, _) => {
+                    self.function_table.contains_key(name)
+                }
+                crate::parser::ast::ImportItem::Wildcard => false,
+            });
+            if all_imported {
                 import_stack.pop();
-                return Ok(()); // Symbol already imported, skip
+                return Ok(());
             }
         }
 
         // Check if we've already fully analyzed this module (for wildcard imports)
         let already_analyzed = self.imported_modules.contains_key(&module_key);
 
-        let file_path = self.resolve_module_path(path, symbol).ok_or_else(|| {
-            let full_path = if let Some(sym) = symbol {
-                format!("{}::{}", path.join("::"), sym)
-            } else {
-                path.join("::")
-            };
+        let file_path = self.resolve_module_path(path, &None).ok_or_else(|| {
+            let full_path = path.join("::");
             import_stack.pop();
             SemanticError::ModuleNotFound(full_path)
         })?;
@@ -563,29 +581,69 @@ impl SemanticAnalyzer {
 
         // Merge public functions from imported module into current function table
         // AND store the function AST nodes for MIR generation
-        // IMPORTANT: ALWAYS import ALL public functions from the module, regardless of specific symbol
-        // This is because functions may depend on each other within the same module.
-        // For example, if we import ConvertWithLogic, we also need BoolToInt which it calls.
+
+        // Determine which symbols to import
+        let should_import_wildcard = items
+            .iter()
+            .any(|item| matches!(item, crate::parser::ast::ImportItem::Wildcard));
+        let specific_imports: Vec<&crate::parser::ast::ImportItem> = items
+            .iter()
+            .filter(|item| !matches!(item, crate::parser::ast::ImportItem::Wildcard))
+            .collect();
 
         for node in nodes {
             if let AstNode::FunctionDecl { name, .. } = &node {
                 // Only import functions that start with uppercase (public convention)
                 if name.chars().next().unwrap_or('a').is_uppercase() {
-                    // Always import all public functions from this module
-                    // This ensures internal module dependencies are available
-                    if !self.imported_functions.iter().any(|n| {
-                        if let AstNode::FunctionDecl { name: fn_name, .. } = n {
-                            fn_name == name
-                        } else {
-                            false
+                    let should_import = if should_import_wildcard {
+                        // Wildcard: import all public functions
+                        true
+                    } else if specific_imports.is_empty() {
+                        // No specific imports and no wildcard - shouldn't happen but handle it
+                        false
+                    } else {
+                        // Check if this function is in the specific imports list
+                        specific_imports.iter().any(|item| match item {
+                            crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
+                            crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => sym == name,
+                            crate::parser::ast::ImportItem::Wildcard => false,
+                        })
+                    };
+
+                    if should_import {
+                        // Check if already imported
+                        if !self.imported_functions.iter().any(|n| {
+                            if let AstNode::FunctionDecl { name: fn_name, .. } = n {
+                                fn_name == name
+                            } else {
+                                false
+                            }
+                        }) {
+                            self.imported_functions.push(node.clone());
                         }
-                    }) {
-                        self.imported_functions.push(node.clone());
-                    }
-                    // Copy function signature to current function table
-                    if let Some((params, ret)) = imported_analyzer.function_table.get(name) {
-                        self.function_table
-                            .insert(name.clone(), (params.clone(), ret.clone()));
+
+                        // Get the alias name for this import if one exists
+                        let registered_name = specific_imports.iter().find_map(|item| match item {
+                            crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias)
+                                if sym == name =>
+                            {
+                                Some(alias.clone())
+                            }
+                            _ => None,
+                        });
+
+                        // Copy function signature to current function table
+                        if let Some((params, ret)) = imported_analyzer.function_table.get(name) {
+                            let fn_table_key =
+                                registered_name.clone().unwrap_or_else(|| name.clone());
+                            self.function_table
+                                .insert(fn_table_key.clone(), (params.clone(), ret.clone()));
+
+                            // If we have an alias, store the mapping
+                            if let Some(alias) = registered_name {
+                                self.function_aliases.insert(alias, name.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -619,13 +677,31 @@ impl SemanticAnalyzer {
             }
         }
 
-        // If a specific symbol was requested, verify it exists
-        if let Some(sym) = symbol {
-            // Check if the symbol exists in function_table or symbol_table
-            if !self.function_table.contains_key(sym) && !self.symbol_table.contains_key(sym) {
-                return Err(SemanticError::UndeclaredFunction(NamedError {
-                    name: sym.clone(),
-                }));
+        // Verify that all requested specific symbols exist
+        if !should_import_wildcard && !specific_imports.is_empty() {
+            for item in specific_imports {
+                match item {
+                    crate::parser::ast::ImportItem::Symbol(sym) => {
+                        if !self.function_table.contains_key(sym)
+                            && !self.symbol_table.contains_key(sym)
+                        {
+                            return Err(SemanticError::UndeclaredFunction(NamedError {
+                                name: sym.clone(),
+                            }));
+                        }
+                    }
+                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias) => {
+                        // Check using the alias name since that's what we registered
+                        if !self.function_table.contains_key(alias)
+                            && !self.symbol_table.contains_key(alias)
+                        {
+                            return Err(SemanticError::UndeclaredFunction(NamedError {
+                                name: alias.clone(),
+                            }));
+                        }
+                    }
+                    crate::parser::ast::ImportItem::Wildcard => {}
+                }
             }
         }
         Ok(())

@@ -98,6 +98,7 @@ pub struct CodeGen<'ctx> {
 
     pub declared_functions: std::collections::HashSet<String>,
     pub external_modules: HashMap<String, Vec<String>>,
+    pub function_aliases: HashMap<String, String>, // Maps alias names to original function names
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
 }
 
@@ -149,6 +150,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             declared_functions: std::collections::HashSet::new(),
             external_modules: HashMap::new(),
+            function_aliases: HashMap::new(),
             recursion_depth: 0,
         }
     }

@@ -21,6 +21,16 @@ pub enum TypeNode {
 }
 
 #[derive(Debug, Clone)]
+pub enum ImportItem {
+    /// Single import: `Add`
+    Symbol(String),
+    /// Aliased import: `Add as mathAdd`
+    SymbolWithAlias(String, String), // (name, alias)
+    /// Wildcard import: `*`
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
 pub enum Pattern {
     Identifier(String),
     Tuple(Vec<Pattern>),
@@ -132,8 +142,8 @@ pub enum AstNode {
 
     // --- Module Import ---
     Import {
-        path: Vec<String>,      // e.g. ["models", "user"]
-        symbol: Option<String>, // e.g. Some("User") or None for wildcard
+        path: Vec<String>,      // e.g. ["core", "math"]
+        items: Vec<ImportItem>, // Multiple imports with optional aliases, or wildcard
     },
 
     // --- Closure ---

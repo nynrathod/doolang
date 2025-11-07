@@ -29,6 +29,7 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
     keywords.insert("mut", TokenType::Mut);
     keywords.insert("fn", TokenType::Function);
     keywords.insert("import", TokenType::Import);
+    keywords.insert("as", TokenType::As);
     keywords.insert("struct", TokenType::Struct);
     keywords.insert("enum", TokenType::Enum);
 

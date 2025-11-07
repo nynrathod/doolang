@@ -24,9 +24,16 @@ impl<'ctx> CodeGen<'ctx> {
             _ => {}
         }
 
-        let callee = self.module.get_function(func).expect(&format!(
+        // Resolve alias to actual function name if this is an aliased import
+        let actual_func_name = self
+            .function_aliases
+            .get(func)
+            .cloned()
+            .unwrap_or_else(|| func.to_string());
+
+        let callee = self.module.get_function(&actual_func_name).expect(&format!(
             "Function '{}' not found. Make sure it's declared before calling.",
-            func
+            actual_func_name
         ));
 
         let arg_values: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = args

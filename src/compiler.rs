@@ -293,6 +293,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     let context = inkwell::context::Context::create();
     let mut codegen = CodeGen::new("main_module", &context);
+    codegen.function_aliases = analyzer.function_aliases.clone();
     codegen.generate_program(&mir_builder.program);
 
     if opts.dev_mode {

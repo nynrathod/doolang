@@ -7,6 +7,7 @@ pub enum TokenType {
     Mut,      // mutable keyword for let
     Function, // function
     Import,   // import
+    As,       // as (for aliasing imports)
     Struct,   // struct
     Enum,     // enum
     If,       // if
