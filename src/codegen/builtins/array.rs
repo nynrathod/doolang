@@ -701,7 +701,6 @@ impl<'ctx> CodeGen<'ctx> {
                     None
                 }
             }
-
             "isEmpty" => {
                 if let Some(metadata) = self.array_metadata.get(object) {
                     let is_empty = if metadata.length == 0 { 1 } else { 0 };
