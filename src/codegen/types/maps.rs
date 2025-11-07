@@ -482,7 +482,6 @@ impl<'ctx> CodeGen<'ctx> {
             };
 
             let pair_type = self.context.struct_type(&[key_type, val_type], false);
-            let map_array_type = pair_type.array_type(metadata.length as u32);
 
             let typed_map_ptr = self
                 .builder
@@ -493,97 +492,219 @@ impl<'ctx> CodeGen<'ctx> {
                 )
                 .unwrap();
 
-            // Print each key-value pair
-            for i in 0..metadata.length {
-                let index = self.context.i32_type().const_int(i as u64, false);
-                let pair_ptr = unsafe {
-                    self.builder.build_gep(
-                        map_array_type,
+            // Read runtime length from map header (at offset -4 from data pointer)
+            let heap_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        self.context.i8_type(),
                         typed_map_ptr,
-                        &[self.context.i32_type().const_zero(), index],
-                        "pair_ptr",
+                        &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                        "heap_ptr_print",
                     )
-                }
+                    .unwrap()
+            };
+            
+            let len_field_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        self.context.i8_type(),
+                        heap_ptr,
+                        &[self.context.i32_type().const_int(4, false)],
+                        "len_field_ptr_print",
+                    )
+                    .unwrap()
+            };
+            
+            let len_ptr_cast = self
+                .builder
+                .build_pointer_cast(
+                    len_field_ptr,
+                    self.context.ptr_type(AddressSpace::default()),
+                    "len_ptr_cast_print",
+                )
+                .unwrap();
+            
+            let runtime_len = self
+                .builder
+                .build_load(self.context.i32_type(), len_ptr_cast, "runtime_len_print")
+                .unwrap()
+                .into_int_value();
+
+            // Create blocks for dynamic loop
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+            let loop_block = self.context.append_basic_block(current_fn, "print_map_loop");
+            let loop_body = self.context.append_basic_block(current_fn, "print_map_body");
+            let loop_done = self.context.append_basic_block(current_fn, "print_map_done");
+
+            // Counter for loop
+            let counter_ptr = self
+                .builder
+                .build_alloca(self.context.i32_type(), "print_counter")
+                .unwrap();
+            self.builder
+                .build_store(counter_ptr, self.context.i32_type().const_zero())
+                .unwrap();
+            
+            self.builder.build_unconditional_branch(loop_block).unwrap();
+
+            // Loop check
+            self.builder.position_at_end(loop_block);
+            let counter = self
+                .builder
+                .build_load(self.context.i32_type(), counter_ptr, "counter")
+                .unwrap()
+                .into_int_value();
+            let cmp = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::ULT, counter, runtime_len, "cmp")
+                .unwrap();
+            self.builder
+                .build_conditional_branch(cmp, loop_body, loop_done)
                 .unwrap();
 
-                // Extract key
-                let key_ptr = self
+            // Loop body: print each key-value pair
+            self.builder.position_at_end(loop_body);
+            
+            // Use byte-level GEP to avoid array type size issues
+            let pair_size = pair_type.size_of().unwrap();
+            let counter_64 = self
+                .builder
+                .build_int_z_extend(counter, self.context.i64_type(), "counter_64")
+                .unwrap();
+            let byte_offset = self
+                .builder
+                .build_int_mul(counter_64, pair_size, "byte_offset")
+                .unwrap();
+            
+            let pair_ptr_bytes = unsafe {
+                self.builder
+                    .build_gep(
+                        self.context.i8_type(),
+                        typed_map_ptr,
+                        &[byte_offset],
+                        "pair_ptr_bytes",
+                    )
+                    .unwrap()
+            };
+            
+            let pair_ptr = self
+                .builder
+                .build_pointer_cast(
+                    pair_ptr_bytes,
+                    self.context.ptr_type(AddressSpace::default()),
+                    "pair_ptr",
+                )
+                .unwrap();
+
+            // Extract key
+            let key_ptr = self
+                .builder
+                .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
+                .unwrap();
+            let key_val = self.builder.build_load(key_type, key_ptr, "key").unwrap();
+
+            // Extract value
+            let val_ptr = self
+                .builder
+                .build_struct_gep(pair_type, pair_ptr, 1, "val_ptr")
+                .unwrap();
+            let val_val = self.builder.build_load(val_type, val_ptr, "val").unwrap();
+
+            // Print key
+            if metadata.key_type == "Str" {
+                let key_fmt = self
                     .builder
-                    .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
+                    .build_global_string_ptr("\"%s\": ", "key_fmt")
                     .unwrap();
-                let key_val = self.builder.build_load(key_type, key_ptr, "key").unwrap();
-
-                // Extract value
-                let val_ptr = self
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[key_fmt.as_pointer_value().into(), key_val.into()],
+                        "",
+                    )
+                    .unwrap();
+            } else {
+                let key_fmt = self
                     .builder
-                    .build_struct_gep(pair_type, pair_ptr, 1, "val_ptr")
+                    .build_global_string_ptr("%d: ", "key_fmt")
                     .unwrap();
-                let val_val = self.builder.build_load(val_type, val_ptr, "val").unwrap();
-
-                // Print key
-                if metadata.key_type == "Str" {
-                    let key_fmt = self
-                        .builder
-                        .build_global_string_ptr("\"%s\": ", "key_fmt")
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[key_fmt.as_pointer_value().into(), key_val.into()],
-                            "",
-                        )
-                        .unwrap();
-                } else {
-                    let key_fmt = self
-                        .builder
-                        .build_global_string_ptr("%d: ", "key_fmt")
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[key_fmt.as_pointer_value().into(), key_val.into()],
-                            "",
-                        )
-                        .unwrap();
-                }
-
-                // Print value
-                if metadata.value_type == "Str" {
-                    let val_fmt = if i < metadata.length - 1 {
-                        "\"%s\", "
-                    } else {
-                        "\"%s\""
-                    };
-                    let val_fmt_global = self
-                        .builder
-                        .build_global_string_ptr(val_fmt, "val_fmt")
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[val_fmt_global.as_pointer_value().into(), val_val.into()],
-                            "",
-                        )
-                        .unwrap();
-                } else {
-                    let val_fmt = if i < metadata.length - 1 {
-                        "%d, "
-                    } else {
-                        "%d"
-                    };
-                    let val_fmt_global = self
-                        .builder
-                        .build_global_string_ptr(val_fmt, "val_fmt")
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[val_fmt_global.as_pointer_value().into(), val_val.into()],
-                            "",
-                        )
-                        .unwrap();
-                }
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[key_fmt.as_pointer_value().into(), key_val.into()],
+                        "",
+                    )
+                    .unwrap();
             }
+
+            // Check if this is the last element for comma formatting
+            let next_counter = self
+                .builder
+                .build_int_add(counter, self.context.i32_type().const_int(1, false), "next_counter")
+                .unwrap();
+            let is_last = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, next_counter, runtime_len, "is_last")
+                .unwrap();
+
+            // Print value with conditional comma
+            if metadata.value_type == "Str" {
+                let val_fmt_with_comma = self
+                    .builder
+                    .build_global_string_ptr("\"%s\", ", "val_fmt_comma")
+                    .unwrap();
+                let val_fmt_no_comma = self
+                    .builder
+                    .build_global_string_ptr("\"%s\"", "val_fmt_no_comma")
+                    .unwrap();
+                
+                let val_fmt = self
+                    .builder
+                    .build_select(is_last, val_fmt_no_comma, val_fmt_with_comma, "val_fmt")
+                    .unwrap();
+                
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[val_fmt.into(), val_val.into()],
+                        "",
+                    )
+                    .unwrap();
+            } else {
+                let val_fmt_with_comma = self
+                    .builder
+                    .build_global_string_ptr("%d, ", "val_fmt_comma")
+                    .unwrap();
+                let val_fmt_no_comma = self
+                    .builder
+                    .build_global_string_ptr("%d", "val_fmt_no_comma")
+                    .unwrap();
+                
+                let val_fmt = self
+                    .builder
+                    .build_select(is_last, val_fmt_no_comma, val_fmt_with_comma, "val_fmt")
+                    .unwrap();
+                
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[val_fmt.into(), val_val.into()],
+                        "",
+                    )
+                    .unwrap();
+            }
+
+            // Increment counter and loop back
+            self.builder.build_store(counter_ptr, next_counter).unwrap();
+            self.builder.build_unconditional_branch(loop_block).unwrap();
+
+            // Loop done
+            self.builder.position_at_end(loop_done);
         }
 
         // Print closing brace

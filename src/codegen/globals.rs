@@ -219,8 +219,14 @@ impl<'ctx> CodeGen<'ctx> {
                     unsafe { Self::build_const_array(elem_type, element_values) }
                 };
 
-                // Store the final constant array value.
-                self.temp_values.insert(name.clone(), const_array);
+                // Create a global variable to hold the array, so it has a proper address
+                let global = self.module.add_global(const_array.get_type(), None, name);
+                global.set_initializer(&const_array);
+                global.set_constant(true);
+
+                // Store the pointer to the global array
+                self.temp_values
+                    .insert(name.clone(), global.as_pointer_value().into());
 
                 // Create and store metadata for the array
                 let metadata = crate::codegen::ArrayMetadata {
@@ -278,8 +284,14 @@ impl<'ctx> CodeGen<'ctx> {
                 let const_array =
                     unsafe { Self::build_const_array(pair_type.into(), struct_values) };
 
-                // Store the final constant map value.
-                self.temp_values.insert(name.clone(), const_array);
+                // Create a global variable to hold the map, so it has a proper address
+                let global = self.module.add_global(const_array.get_type(), None, name);
+                global.set_initializer(&const_array);
+                global.set_constant(true);
+
+                // Store the pointer to the global map
+                self.temp_values
+                    .insert(name.clone(), global.as_pointer_value().into());
 
                 // Create and store metadata for the map
                 let metadata = crate::codegen::MapMetadata {
