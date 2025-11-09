@@ -18,27 +18,50 @@ impl<'ctx> CodeGen<'ctx> {
 
         let result = match instr {
             // Constants
-            MirInstr::ConstInt { name, value } => self.generate_const_int(name, *value),
-            MirInstr::ConstFloat { name, value } => self.generate_const_float(name, *value),
-            MirInstr::ConstBool { name, value } => self.generate_const_bool(name, *value),
-            MirInstr::ConstString { name, value } => self.generate_const_string(name, value),
+            MirInstr::ConstInt { name, value } => {
+                self.variable_types.insert(name.clone(), "Int".to_string());
+                self.generate_const_int(name, *value)
+            }
+            MirInstr::ConstFloat { name, value } => {
+                self.variable_types
+                    .insert(name.clone(), "Float".to_string());
+                self.generate_const_float(name, *value)
+            }
+            MirInstr::ConstBool { name, value } => {
+                self.variable_types.insert(name.clone(), "Bool".to_string());
+                self.generate_const_bool(name, *value)
+            }
+            MirInstr::ConstString { name, value } => {
+                self.variable_types
+                    .insert(name.clone(), "String".to_string());
+                self.generate_const_string(name, value)
+            }
 
             // Collections
-            MirInstr::Array { name, elements } => self.generate_array_with_metadata(name, elements),
+            MirInstr::Array { name, elements } => {
+                self.variable_types
+                    .insert(name.clone(), "Array".to_string());
+                self.generate_array_with_metadata(name, elements)
+            }
             MirInstr::Map {
                 name,
                 entries,
                 key_type,
                 value_type,
-            } => self.generate_map_with_metadata(
-                name,
-                entries,
-                key_type.as_deref(),
-                value_type.as_deref(),
-            ),
+            } => {
+                self.variable_types.insert(name.clone(), "Map".to_string());
+                self.generate_map_with_metadata(
+                    name,
+                    entries,
+                    key_type.as_deref(),
+                    value_type.as_deref(),
+                )
+            }
 
             // String operations
             MirInstr::StringConcat { name, left, right } => {
+                self.variable_types
+                    .insert(name.clone(), "String".to_string());
                 self.generate_string_concat(name, left, right)
             }
 
@@ -61,6 +84,12 @@ impl<'ctx> CodeGen<'ctx> {
                 self.generate_print(values);
                 None
             }
+
+            MirInstr::Cast {
+                name,
+                value,
+                target_type,
+            } => self.generate_cast(name, value, target_type),
 
             MirInstr::Call { dest, func, args } => self.generate_call(dest, func, args),
             MirInstr::MethodCall {
@@ -112,6 +141,10 @@ impl<'ctx> CodeGen<'ctx> {
                 value,
                 mutable: _,
             } => {
+                // Propagate type information from source to destination
+                if let Some(source_type) = self.variable_types.get(value).cloned() {
+                    self.variable_types.insert(name.clone(), source_type);
+                }
                 let val = self.resolve_value(value);
 
                 // Check if this value came from ArrayGet - if so, it's a loop iteration variable
@@ -1241,3 +1274,4 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 }
+

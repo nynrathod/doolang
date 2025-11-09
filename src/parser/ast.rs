@@ -146,6 +146,12 @@ pub enum AstNode {
         items: Vec<ImportItem>, // Multiple imports with optional aliases, or wildcard
     },
 
+    // --- Type Casting ---
+    Cast {
+        expr: Box<AstNode>,
+        target_type: TypeNode,
+    },
+
     // --- Closure ---
     Closure {
         params: Vec<(String, Option<TypeNode>)>, // parameter name and optional type

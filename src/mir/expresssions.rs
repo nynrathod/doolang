@@ -5,8 +5,32 @@ use crate::{
 };
 
 /// Helper function to determine the type of an operand by looking it up in the symbol table
+/// If not found, tries to infer the type from the operand value (e.g., literals)
 fn get_operand_type(builder: &MirBuilder, operand: &str) -> Option<TypeNode> {
-    builder.mir_symbol_table.get(operand).cloned()
+    // First try to look up in symbol table
+    if let Some(ty) = builder.mir_symbol_table.get(operand).cloned() {
+        return Some(ty);
+    }
+
+    // Try to infer type from the operand itself
+    // Check if it's a float literal (contains a dot)
+    if operand.contains('.') {
+        if let Ok(_) = operand.parse::<f64>() {
+            return Some(TypeNode::Float);
+        }
+    }
+
+    // Check if it's an integer literal
+    if let Ok(_) = operand.parse::<i32>() {
+        return Some(TypeNode::Int);
+    }
+
+    // Check if it's a boolean literal
+    if operand == "true" || operand == "false" {
+        return Some(TypeNode::Bool);
+    }
+
+    None
 }
 
 /// Helper function to determine the operation type for binary operations
@@ -15,7 +39,7 @@ pub fn determine_op_type(builder: &MirBuilder, lhs: &str, rhs: &str) -> Result<S
     let lhs_type = get_operand_type(builder, lhs);
     let rhs_type = get_operand_type(builder, rhs);
 
-    match (lhs_type, rhs_type) {
+    match (&lhs_type, &rhs_type) {
         (Some(TypeNode::Float), Some(TypeNode::Float)) => Ok("float".to_string()),
         (Some(TypeNode::Float), Some(TypeNode::Int)) => Ok("float".to_string()),
         (Some(TypeNode::Int), Some(TypeNode::Float)) => Ok("float".to_string()),
@@ -50,9 +74,13 @@ pub fn determine_op_type(builder: &MirBuilder, lhs: &str, rhs: &str) -> Result<S
             "Type mismatch: cannot operate on {:?} and {:?}",
             lhs_t, rhs_t
         )),
+        (None, None) => {
+            // If we don't know both types, assume float (safer for mixed int/float operations)
+            Ok("float".to_string())
+        }
         _ => {
-            // If we don't know the type, assume int (for backward compatibility with untracked variables)
-            Ok("int".to_string())
+            // One type is unknown - assume float to handle mixed int/float cases
+            Ok("float".to_string())
         }
     }
 }
@@ -130,13 +158,6 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     // Negation: negate the operand
                     // Create a negate operation (0 - expr)
                     let zero_tmp = builder.next_tmp();
-                    block.instrs.push(MirInstr::ConstInt {
-                        name: zero_tmp.clone(),
-                        value: 0,
-                    });
-                    builder
-                        .mir_symbol_table
-                        .insert(zero_tmp.clone(), TypeNode::Int);
 
                     // Determine operation type based on operand
                     let op_type =
@@ -145,6 +166,25 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                         } else {
                             "int".to_string()
                         };
+
+                    // Create zero constant with the right type
+                    if op_type == "float" {
+                        block.instrs.push(MirInstr::ConstFloat {
+                            name: zero_tmp.clone(),
+                            value: 0.0,
+                        });
+                        builder
+                            .mir_symbol_table
+                            .insert(zero_tmp.clone(), TypeNode::Float);
+                    } else {
+                        block.instrs.push(MirInstr::ConstInt {
+                            name: zero_tmp.clone(),
+                            value: 0,
+                        });
+                        builder
+                            .mir_symbol_table
+                            .insert(zero_tmp.clone(), TypeNode::Int);
+                    }
 
                     block.instrs.push(MirInstr::BinaryOp(
                         format!("sub:{}", op_type),
@@ -228,10 +268,43 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                         if matches!(lhs_type, Some(TypeNode::String))
                             || matches!(rhs_type, Some(TypeNode::String))
                         {
+                            // Convert non-string operands to strings for concatenation
+                            let lhs_for_concat = if matches!(lhs_type, Some(TypeNode::String)) {
+                                lhs_tmp.clone()
+                            } else {
+                                // Cast non-string to string
+                                let cast_tmp = builder.next_tmp();
+                                block.instrs.push(MirInstr::Cast {
+                                    name: cast_tmp.clone(),
+                                    value: lhs_tmp.clone(),
+                                    target_type: "String".to_string(),
+                                });
+                                builder
+                                    .mir_symbol_table
+                                    .insert(cast_tmp.clone(), TypeNode::String);
+                                cast_tmp
+                            };
+
+                            let rhs_for_concat = if matches!(rhs_type, Some(TypeNode::String)) {
+                                rhs_tmp.clone()
+                            } else {
+                                // Cast non-string to string
+                                let cast_tmp = builder.next_tmp();
+                                block.instrs.push(MirInstr::Cast {
+                                    name: cast_tmp.clone(),
+                                    value: rhs_tmp.clone(),
+                                    target_type: "String".to_string(),
+                                });
+                                builder
+                                    .mir_symbol_table
+                                    .insert(cast_tmp.clone(), TypeNode::String);
+                                cast_tmp
+                            };
+
                             block.instrs.push(MirInstr::StringConcat {
                                 name: dest_tmp.clone(),
-                                left: lhs_tmp,
-                                right: rhs_tmp,
+                                left: lhs_for_concat,
+                                right: rhs_for_concat,
                             });
                             builder
                                 .mir_symbol_table
@@ -240,10 +313,49 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             // Numeric addition - determine operation type
                             match determine_op_type(builder, &lhs_tmp, &rhs_tmp) {
                                 Ok(op_type) if op_type == "string" => {
+                                    // Convert non-string operands to strings for concatenation
+                                    let lhs_for_concat = if matches!(
+                                        get_operand_type(builder, &lhs_tmp),
+                                        Some(TypeNode::String)
+                                    ) {
+                                        lhs_tmp.clone()
+                                    } else {
+                                        // Cast non-string to string
+                                        let cast_tmp = builder.next_tmp();
+                                        block.instrs.push(MirInstr::Cast {
+                                            name: cast_tmp.clone(),
+                                            value: lhs_tmp.clone(),
+                                            target_type: "String".to_string(),
+                                        });
+                                        builder
+                                            .mir_symbol_table
+                                            .insert(cast_tmp.clone(), TypeNode::String);
+                                        cast_tmp
+                                    };
+
+                                    let rhs_for_concat = if matches!(
+                                        get_operand_type(builder, &rhs_tmp),
+                                        Some(TypeNode::String)
+                                    ) {
+                                        rhs_tmp.clone()
+                                    } else {
+                                        // Cast non-string to string
+                                        let cast_tmp = builder.next_tmp();
+                                        block.instrs.push(MirInstr::Cast {
+                                            name: cast_tmp.clone(),
+                                            value: rhs_tmp.clone(),
+                                            target_type: "String".to_string(),
+                                        });
+                                        builder
+                                            .mir_symbol_table
+                                            .insert(cast_tmp.clone(), TypeNode::String);
+                                        cast_tmp
+                                    };
+
                                     block.instrs.push(MirInstr::StringConcat {
                                         name: dest_tmp.clone(),
-                                        left: lhs_tmp,
-                                        right: rhs_tmp,
+                                        left: lhs_for_concat,
+                                        right: rhs_for_concat,
                                     });
                                     builder
                                         .mir_symbol_table
@@ -581,6 +693,28 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     result_tmp
                 }
             }
+        }
+
+        // Type casting: expr as TargetType
+        AstNode::Cast { expr, target_type } => {
+            let value_tmp = build_expression(builder, expr, block);
+            let result_tmp = builder.next_tmp();
+
+            let target_type_str = match target_type {
+                crate::parser::ast::TypeNode::Int => "Int".to_string(),
+                crate::parser::ast::TypeNode::Float => "Float".to_string(),
+                crate::parser::ast::TypeNode::String => "String".to_string(),
+                crate::parser::ast::TypeNode::Bool => "Bool".to_string(),
+                _ => "Int".to_string(),
+            };
+
+            block.instrs.push(MirInstr::Cast {
+                name: result_tmp.clone(),
+                value: value_tmp,
+                target_type: target_type_str,
+            });
+
+            result_tmp
         }
 
         _ => {

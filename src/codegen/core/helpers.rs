@@ -92,4 +92,109 @@ impl<'ctx> CodeGen<'ctx> {
         let printf_type = self.context.i32_type().fn_type(&[i8_ptr_type.into()], true);
         self.module.add_function("printf", printf_type, None)
     }
+
+    /// Convert an integer to a string using sprintf
+    pub fn convert_int_to_string_via_sprintf(
+        &mut self,
+        int_val: inkwell::values::IntValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let sprintf_fn = self.get_or_declare_sprintf();
+        let format_str = self
+            .builder
+            .build_global_string_ptr("%d", "int_fmt")
+            .unwrap();
+
+        // Allocate buffer for the result (max 12 chars for i32: "-2147483648")
+        let malloc_fn = self.get_or_declare_malloc_libc();
+        let buffer_size = self.context.i32_type().const_int(32, false);
+        let buffer_ptr = self
+            .builder
+            .build_call(malloc_fn, &[buffer_size.into()], "int_buf")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Call sprintf
+        let _sprintf_result = self
+            .builder
+            .build_call(
+                sprintf_fn,
+                &[
+                    buffer_ptr.into(),
+                    format_str.as_pointer_value().into(),
+                    int_val.into(),
+                ],
+                "sprintf_int",
+            )
+            .unwrap();
+
+        buffer_ptr.into()
+    }
+
+    /// Convert a float to a string using sprintf
+    pub fn convert_float_to_string_via_sprintf(
+        &mut self,
+        float_val: inkwell::values::FloatValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let sprintf_fn = self.get_or_declare_sprintf();
+        let format_str = self
+            .builder
+            .build_global_string_ptr("%.2f", "float_fmt")
+            .unwrap();
+
+        // Allocate buffer for the result
+        let malloc_fn = self.get_or_declare_malloc_libc();
+        let buffer_size = self.context.i32_type().const_int(32, false);
+        let buffer_ptr = self
+            .builder
+            .build_call(malloc_fn, &[buffer_size.into()], "float_buf")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Call sprintf
+        let _sprintf_result = self
+            .builder
+            .build_call(
+                sprintf_fn,
+                &[
+                    buffer_ptr.into(),
+                    format_str.as_pointer_value().into(),
+                    float_val.into(),
+                ],
+                "sprintf_float",
+            )
+            .unwrap();
+
+        buffer_ptr.into()
+    }
+
+    /// Get or declare sprintf function
+    pub fn get_or_declare_sprintf(&self) -> FunctionValue<'ctx> {
+        if let Some(func) = self.module.get_function("sprintf") {
+            return func;
+        }
+
+        let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
+        let sprintf_type = self
+            .context
+            .i32_type()
+            .fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], true);
+        self.module.add_function("sprintf", sprintf_type, None)
+    }
+
+    /// Get or declare malloc function (internal for string conversion)
+    pub fn get_or_declare_malloc_libc(&self) -> FunctionValue<'ctx> {
+        if let Some(func) = self.module.get_function("malloc") {
+            return func;
+        }
+
+        let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
+        let malloc_type = i8_ptr_type.fn_type(&[self.context.i32_type().into()], false);
+        self.module.add_function("malloc", malloc_type, None)
+    }
 }

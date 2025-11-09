@@ -156,30 +156,68 @@ impl SemanticAnalyzer {
                     // Arithmetic operators (+, -, *, /, %)
                     // Ex., let a = "hello" + "world";
                     // Ex., let b = 1 + 2;
-                    // TODO: check llvm handled for this or not
                     TokenType::Plus
                     | TokenType::Minus
                     | TokenType::Star
                     | TokenType::Slash
-                    | TokenType::Percent => match (left_type.clone(), right_type.clone()) {
-                        // both lhs and rhs should match type
-                        (TypeNode::Int, TypeNode::Int) => Ok(TypeNode::Int),
-                        // String concatenation
-                        (TypeNode::String, TypeNode::String) => Ok(TypeNode::String),
-                        // Float arithmetic (if supported)
-                        (TypeNode::Float, TypeNode::Float) => Ok(TypeNode::Float),
-                        // Any other type combination is invalid
-                        _ => {
-                            let (line, col) = get_node_location(node);
-                            Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
-                                expected: left_type,
-                                found: right_type,
-                                value: None,
-                                line,
-                                col,
-                            }))
+                    | TokenType::Percent => {
+                        // Only Plus allows string concatenation with mixed types
+                        if op == &TokenType::Plus {
+                            match (left_type.clone(), right_type.clone()) {
+                                // Int + Int -> Int
+                                (TypeNode::Int, TypeNode::Int) => Ok(TypeNode::Int),
+                                // Float + Float -> Float
+                                (TypeNode::Float, TypeNode::Float) => Ok(TypeNode::Float),
+                                // Int + Float -> Float (arithmetic coercion)
+                                (TypeNode::Int, TypeNode::Float) => Ok(TypeNode::Float),
+                                // Float + Int -> Float (arithmetic coercion)
+                                (TypeNode::Float, TypeNode::Int) => Ok(TypeNode::Float),
+                                // String + String -> String (concatenation)
+                                (TypeNode::String, TypeNode::String) => Ok(TypeNode::String),
+                                // String + Int -> String (concatenation)
+                                (TypeNode::String, TypeNode::Int) => Ok(TypeNode::String),
+                                // Int + String -> String (concatenation)
+                                (TypeNode::Int, TypeNode::String) => Ok(TypeNode::String),
+                                // String + Float -> String (concatenation)
+                                (TypeNode::String, TypeNode::Float) => Ok(TypeNode::String),
+                                // Float + String -> String (concatenation)
+                                (TypeNode::Float, TypeNode::String) => Ok(TypeNode::String),
+                                // Any other type combination is invalid
+                                _ => {
+                                    let (line, col) = get_node_location(node);
+                                    Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                                        expected: left_type,
+                                        found: right_type,
+                                        value: None,
+                                        line,
+                                        col,
+                                    }))
+                                }
+                            }
+                        } else {
+                            // For other arithmetic operators (-, *, /, %), no concatenation allowed
+                            match (left_type.clone(), right_type.clone()) {
+                                // Int with Int
+                                (TypeNode::Int, TypeNode::Int) => Ok(TypeNode::Int),
+                                // Float with Float
+                                (TypeNode::Float, TypeNode::Float) => Ok(TypeNode::Float),
+                                // Int with Float or Float with Int -> Float
+                                (TypeNode::Int, TypeNode::Float) => Ok(TypeNode::Float),
+                                (TypeNode::Float, TypeNode::Int) => Ok(TypeNode::Float),
+                                // Any other type combination is invalid
+                                _ => {
+                                    let (line, col) = get_node_location(node);
+                                    Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                                        expected: left_type,
+                                        found: right_type,
+                                        value: None,
+                                        line,
+                                        col,
+                                    }))
+                                }
+                            }
                         }
-                    },
+                    }
 
                     // Any other operator is not implemented
                     _ => unimplemented!("Operator {:?} not handled", op),
@@ -417,6 +455,23 @@ impl SemanticAnalyzer {
                 }
             }
 
+            // Type casting: expr as TargetType
+            AstNode::Cast { expr, target_type } => {
+                // Validate that the source expression can be cast
+                let _source_type = self.infer_type(expr)?;
+
+                // For now, allow casting between Int, Float, and String
+                // More complex validation can be added later
+                match target_type {
+                    TypeNode::Int | TypeNode::Float | TypeNode::String | TypeNode::Bool => {
+                        Ok(target_type.clone())
+                    }
+                    _ => Err(SemanticError::UnexpectedNode {
+                        expected: "Cast target must be Int, Float, String, or Bool".to_string(),
+                    }),
+                }
+            }
+
             // Any other AST node (usually statements): return Void type.
             // Actual semantic checking for statements happens elsewhere.
             _ => Ok(TypeNode::Void),
@@ -540,6 +595,16 @@ impl SemanticAnalyzer {
                         });
                     }
                     Ok(TypeNode::String)
+                }
+                "charCode" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Int)
                 }
                 _ => Err(SemanticError::UndeclaredFunction(NamedError {
                     name: format!("String.{}", method),
@@ -833,6 +898,26 @@ impl SemanticAnalyzer {
                 }
                 _ => Err(SemanticError::UndeclaredFunction(NamedError {
                     name: format!("Map.{}", method),
+                })),
+            },
+            TypeNode::Int => match method {
+                "toChar" => {
+                    if !args.is_empty() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("Int.{}", method),
+                            expected: 0,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                _ => Err(SemanticError::UndeclaredFunction(NamedError {
+                    name: format!("Int.{}", method),
+                })),
+            },
+            TypeNode::Float => match method {
+                _ => Err(SemanticError::UndeclaredFunction(NamedError {
+                    name: format!("Float.{}", method),
                 })),
             },
             _ => Err(SemanticError::UndeclaredFunction(NamedError {

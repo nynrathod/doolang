@@ -2195,6 +2195,26 @@ impl<'ctx> CodeGen<'ctx> {
                 Some(result_ptr.into())
             }
             "concat" => self.generate_string_concat(dest, _object, &args[0]),
+            "charCode" => {
+                // Get the ASCII/Unicode code of the first character in the string
+                let str_ptr = object_val.into_pointer_value();
+
+                // Load first byte (character)
+                let first_char = self
+                    .builder
+                    .build_load(self.context.i8_type(), str_ptr, "first_char")
+                    .unwrap()
+                    .into_int_value();
+
+                // Convert i8 to i32 (sign extend to preserve ASCII values)
+                let char_code = self
+                    .builder
+                    .build_int_cast(first_char, self.context.i32_type(), "char_code")
+                    .unwrap();
+
+                self.temp_values.insert(dest.to_string(), char_code.into());
+                Some(char_code.into())
+            }
             "countSubstr" => {
                 let str_ptr = object_val.into_pointer_value();
                 let substr_ptr = self.resolve_value(&args[0]).into_pointer_value();

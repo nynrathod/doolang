@@ -139,6 +139,30 @@ impl<'a> Parser<'a> {
                         col: method_col,
                     });
                 }
+            } else if self.peek_is(TokenType::As) {
+                // Handle type casting: expr as Int, expr as Float, expr as String
+                self.advance(); // consume 'as'
+                let type_tok = self.expect(TokenType::Identifier)?;
+                let type_str = type_tok.value.to_string();
+
+                let target_type = match type_str.as_str() {
+                    "Int" => crate::parser::ast::TypeNode::Int,
+                    "Float" => crate::parser::ast::TypeNode::Float,
+                    "String" => crate::parser::ast::TypeNode::String,
+                    "Bool" => crate::parser::ast::TypeNode::Bool,
+                    _ => {
+                        return Err(ParseError::UnexpectedTokenAt {
+                            msg: format!("Unsupported cast target type: {}", type_str),
+                            line: type_tok.line,
+                            col: type_tok.col,
+                        });
+                    }
+                };
+
+                expr = AstNode::Cast {
+                    expr: Box::new(expr),
+                    target_type,
+                };
             } else {
                 break;
             }

@@ -76,6 +76,13 @@ pub enum MirInstr {
         value_type: Option<String>,
     },
 
+    // Type casting
+    Cast {
+        name: String,
+        value: String,
+        target_type: String, // "Int", "Float", "String", "Bool"
+    },
+
     // Range operations
     RangeCreate {
         name: String,

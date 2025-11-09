@@ -613,6 +613,33 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         let value_name = &args[0];
+
+        // First, check the variable_types map if it has been populated
+        if let Some(stored_type) = self.variable_types.get(value_name) {
+            let type_str_ptr = self
+                .builder
+                .build_global_string_ptr(stored_type, &format!("typeof_{}", dest))
+                .unwrap();
+
+            self.temp_values
+                .insert(dest.to_string(), type_str_ptr.as_pointer_value().into());
+            return Some(type_str_ptr.as_pointer_value().into());
+        }
+
+        // Check if it's a boolean temp
+        if self.boolean_temps.contains(value_name) {
+            let type_str = "Bool";
+            let type_str_ptr = self
+                .builder
+                .build_global_string_ptr(type_str, &format!("typeof_{}", dest))
+                .unwrap();
+
+            self.temp_values
+                .insert(dest.to_string(), type_str_ptr.as_pointer_value().into());
+            return Some(type_str_ptr.as_pointer_value().into());
+        }
+
+        // Check heap allocations
         let type_str = if self.heap_strings.contains(value_name)
             || self.temp_strings.contains_key(value_name)
         {
@@ -624,9 +651,41 @@ impl<'ctx> CodeGen<'ctx> {
         } else if self.heap_maps.contains(value_name) || self.map_metadata.contains_key(value_name)
         {
             "Map"
+        } else if let Some(sym) = self.symbols.get(value_name) {
+            // Check if it's a user variable in the symbol table
+            let loaded_val = self
+                .builder
+                .build_load(sym.ty, sym.ptr, &format!("load_for_typeof_{}", value_name))
+                .ok();
+
+            if let Some(val) = loaded_val {
+                if val.is_int_value() {
+                    // Check the bit width to differentiate Bool from Int
+                    let int_val = val.into_int_value();
+                    if int_val.get_type().get_bit_width() == 1 {
+                        "Bool"
+                    } else {
+                        "Int"
+                    }
+                } else if val.is_float_value() {
+                    "Float"
+                } else if val.is_pointer_value() {
+                    "String"
+                } else {
+                    "Unknown"
+                }
+            } else {
+                "Unknown"
+            }
         } else if let Some(val) = self.temp_values.get(value_name) {
             if val.is_int_value() {
-                "Int"
+                // Check the bit width to differentiate Bool from Int
+                let int_val = val.into_int_value();
+                if int_val.get_type().get_bit_width() == 1 {
+                    "Bool"
+                } else {
+                    "Int"
+                }
             } else if val.is_float_value() {
                 "Float"
             } else if val.is_pointer_value() {

@@ -529,13 +529,11 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.context.ptr_type(AddressSpace::default()).into(),
                             );
                         }
-                        // If assigned from a known pointer type, it's also a pointer
+                        // If assigned from a known type, preserve that type
                         // BUT: not if this is an index variable
                         else if !name.ends_with("__index") && !name.ends_with("_end") {
                             if let Some(val_type) = var_types.get(value) {
-                                if val_type.is_pointer_type() {
-                                    var_types.insert(name.clone(), *val_type);
-                                }
+                                var_types.insert(name.clone(), *val_type);
                             }
                         }
                     }
@@ -551,13 +549,38 @@ impl<'ctx> CodeGen<'ctx> {
                     crate::mir::MirInstr::ConstInt { name, .. } => {
                         var_types.insert(name.clone(), self.context.i32_type().into());
                     }
+                    // Float constants are f64
+                    crate::mir::MirInstr::ConstFloat { name, .. } => {
+                        var_types.insert(name.clone(), self.context.f64_type().into());
+                    }
                     // Boolean constants are i32
                     crate::mir::MirInstr::ConstBool { name, .. } => {
                         var_types.insert(name.clone(), self.context.i32_type().into());
                     }
-                    // Binary operations produce i32
-                    crate::mir::MirInstr::BinaryOp(_, name, ..) => {
-                        var_types.insert(name.clone(), self.context.i32_type().into());
+                    // Binary operations - determine type from op string
+                    crate::mir::MirInstr::BinaryOp(op, name, ..) => {
+                        // Op format is "operator:type" e.g. "add:float", "mul:int"
+                        let op_type = if op.contains(":float") {
+                            self.context.f64_type().into()
+                        } else if op.contains(":bool") {
+                            self.context.i32_type().into()
+                        } else {
+                            // Default to i32 for int operations
+                            self.context.i32_type().into()
+                        };
+                        var_types.insert(name.clone(), op_type);
+                    }
+                    // Cast operations - determine type from target_type
+                    crate::mir::MirInstr::Cast {
+                        name, target_type, ..
+                    } => {
+                        let cast_type = match target_type.as_str() {
+                            "Float" => self.context.f64_type().into(),
+                            "String" => self.context.ptr_type(AddressSpace::default()).into(),
+                            "Bool" => self.context.i32_type().into(),
+                            _ => self.context.i32_type().into(),
+                        };
+                        var_types.insert(name.clone(), cast_type);
                     }
                     _ => {}
                 }

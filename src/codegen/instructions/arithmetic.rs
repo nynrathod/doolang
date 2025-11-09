@@ -207,12 +207,92 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
             } else {
-                debug_assert!(
-                    false,
-                    "Float arithmetic expects both operands to be float values, got {:?} and {:?}",
-                    lhs_val, rhs_val
-                );
-                self.context.f64_type().const_float(0.0).into()
+                // Handle mixed int/float arithmetic - convert int to float
+                let lhs_float = if lhs_val.is_int_value() {
+                    let int_val = lhs_val.into_int_value();
+                    self.builder
+                        .build_signed_int_to_float(
+                            int_val,
+                            self.context.f64_type(),
+                            "cast_lhs_i_to_f",
+                        )
+                        .unwrap()
+                } else {
+                    lhs_val.into_float_value()
+                };
+
+                let rhs_float = if rhs_val.is_int_value() {
+                    let int_val = rhs_val.into_int_value();
+                    self.builder
+                        .build_signed_int_to_float(
+                            int_val,
+                            self.context.f64_type(),
+                            "cast_rhs_i_to_f",
+                        )
+                        .unwrap()
+                } else {
+                    rhs_val.into_float_value()
+                };
+
+                match op_name {
+                    "add" => self
+                        .builder
+                        .build_float_add(lhs_float, rhs_float, "fadd_tmp")
+                        .unwrap()
+                        .into(),
+                    "sub" => self
+                        .builder
+                        .build_float_sub(lhs_float, rhs_float, "fsub_tmp")
+                        .unwrap()
+                        .into(),
+                    "mul" => self
+                        .builder
+                        .build_float_mul(lhs_float, rhs_float, "fmul_tmp")
+                        .unwrap()
+                        .into(),
+                    "div" => self
+                        .builder
+                        .build_float_div(lhs_float, rhs_float, "fdiv_tmp")
+                        .unwrap()
+                        .into(),
+                    "eq" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq_tmp")
+                        .unwrap()
+                        .into(),
+                    "ne" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne_tmp")
+                        .unwrap()
+                        .into(),
+                    "lt" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt_tmp")
+                        .unwrap()
+                        .into(),
+                    "le" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle_tmp")
+                        .unwrap()
+                        .into(),
+                    "gt" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt_tmp")
+                        .unwrap()
+                        .into(),
+                    "ge" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge_tmp")
+                        .unwrap()
+                        .into(),
+                    _ => {
+                        debug_assert!(false, "Unsupported mixed float binary op: {}", op);
+                        self.builder
+                            .build_float_add(lhs_float, rhs_float, "fallback_add")
+                            .unwrap()
+                            .into()
+                    }
+                }
             }
         } else {
             if lhs_val.is_int_value() && rhs_val.is_int_value() {
@@ -292,10 +372,99 @@ impl<'ctx> CodeGen<'ctx> {
                             .into()
                     }
                 }
+            } else if (lhs_val.is_int_value() || lhs_val.is_float_value())
+                && (rhs_val.is_int_value() || rhs_val.is_float_value())
+            {
+                // Handle mixed int/float arithmetic - convert to float and return as int
+                let lhs_float = if lhs_val.is_int_value() {
+                    let int_val = lhs_val.into_int_value();
+                    self.builder
+                        .build_signed_int_to_float(
+                            int_val,
+                            self.context.f64_type(),
+                            "cast_lhs_i_to_f",
+                        )
+                        .unwrap()
+                } else {
+                    lhs_val.into_float_value()
+                };
+
+                let rhs_float = if rhs_val.is_int_value() {
+                    let int_val = rhs_val.into_int_value();
+                    self.builder
+                        .build_signed_int_to_float(
+                            int_val,
+                            self.context.f64_type(),
+                            "cast_rhs_i_to_f",
+                        )
+                        .unwrap()
+                } else {
+                    rhs_val.into_float_value()
+                };
+
+                match op_name {
+                    "add" => self
+                        .builder
+                        .build_float_add(lhs_float, rhs_float, "fadd_tmp")
+                        .unwrap()
+                        .into(),
+                    "sub" => self
+                        .builder
+                        .build_float_sub(lhs_float, rhs_float, "fsub_tmp")
+                        .unwrap()
+                        .into(),
+                    "mul" => self
+                        .builder
+                        .build_float_mul(lhs_float, rhs_float, "fmul_tmp")
+                        .unwrap()
+                        .into(),
+                    "div" => self
+                        .builder
+                        .build_float_div(lhs_float, rhs_float, "fdiv_tmp")
+                        .unwrap()
+                        .into(),
+                    "eq" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq_tmp")
+                        .unwrap()
+                        .into(),
+                    "ne" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne_tmp")
+                        .unwrap()
+                        .into(),
+                    "lt" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt_tmp")
+                        .unwrap()
+                        .into(),
+                    "le" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle_tmp")
+                        .unwrap()
+                        .into(),
+                    "gt" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt_tmp")
+                        .unwrap()
+                        .into(),
+                    "ge" => self
+                        .builder
+                        .build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge_tmp")
+                        .unwrap()
+                        .into(),
+                    _ => {
+                        debug_assert!(false, "Unsupported mixed int/float binary op: {}", op);
+                        self.builder
+                            .build_float_add(lhs_float, rhs_float, "fallback_add")
+                            .unwrap()
+                            .into()
+                    }
+                }
             } else {
                 debug_assert!(
                     false,
-                    "Int arithmetic expects both operands to be int values, got {:?} and {:?}",
+                    "Int arithmetic expects both operands to be int or float values, got {:?} and {:?}",
                     lhs_val, rhs_val
                 );
                 self.context.i32_type().const_int(0, false).into()
