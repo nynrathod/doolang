@@ -30,6 +30,11 @@ impl<'ctx> CodeGen<'ctx> {
         let op_name = parts[0];
         let op_type = parts.get(1).copied().unwrap_or("int");
 
+        // Track that this destination is a boolean if the operation type is "bool"
+        if op_type == "bool" {
+            self.boolean_temps.insert(dst.to_string());
+        }
+
         // String concatenation for pointers
         if op_name == "add" && lhs_val.is_pointer_value() && rhs_val.is_pointer_value() {
             return self.generate_instr(&crate::mir::MirInstr::StringConcat {
@@ -94,6 +99,8 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_int_z_extend(cmp_i1, self.context.i32_type(), "str_cmp_ext")
                 .unwrap();
 
+            // Track as boolean for print formatting
+            self.boolean_temps.insert(dst.to_string());
             self.temp_values.insert(dst.to_string(), result.into());
             if let Some(sym) = self.symbols.get(dst) {
                 self.builder.build_store(sym.ptr, result).unwrap();
