@@ -371,6 +371,44 @@ impl<'ctx> CodeGen<'ctx> {
                 }
                 None
             }
+            "get" => self.generate_array_get_internal(dest, object, &args[0]),
+            "set" => {
+                // Implement array.set(index, value)
+                if let Some(metadata) = self.array_metadata.get(object) {
+                    let index_val = self.resolve_value(&args[0]).into_int_value();
+                    let value_val = self.resolve_value(&args[1]);
+                    let array_ptr = self.resolve_value(object).into_pointer_value();
+
+                    if metadata.contains_strings {
+                        let element_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    array_ptr,
+                                    &[index_val],
+                                    "set_ptr",
+                                )
+                                .unwrap()
+                        };
+                        self.builder.build_store(element_ptr, value_val).unwrap();
+                    } else {
+                        let element_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[index_val],
+                                    "set_ptr",
+                                )
+                                .unwrap()
+                        };
+                        self.builder.build_store(element_ptr, value_val).unwrap();
+                    }
+                    None
+                } else {
+                    None
+                }
+            }
             "contains" => {
                 // Implement array contains by iterating through elements
                 if let Some(metadata) = self.array_metadata.get(object) {
@@ -712,44 +750,7 @@ impl<'ctx> CodeGen<'ctx> {
                     None
                 }
             }
-            "get" => self.generate_array_get_internal(dest, object, &args[0]),
-            "set" => {
-                // Implement array.set(index, value)
-                if let Some(metadata) = self.array_metadata.get(object) {
-                    let index_val = self.resolve_value(&args[0]).into_int_value();
-                    let value_val = self.resolve_value(&args[1]);
-                    let array_ptr = self.resolve_value(object).into_pointer_value();
 
-                    if metadata.contains_strings {
-                        let element_ptr = unsafe {
-                            self.builder
-                                .build_in_bounds_gep(
-                                    self.context.ptr_type(inkwell::AddressSpace::default()),
-                                    array_ptr,
-                                    &[index_val],
-                                    "set_ptr",
-                                )
-                                .unwrap()
-                        };
-                        self.builder.build_store(element_ptr, value_val).unwrap();
-                    } else {
-                        let element_ptr = unsafe {
-                            self.builder
-                                .build_in_bounds_gep(
-                                    self.context.i32_type(),
-                                    array_ptr,
-                                    &[index_val],
-                                    "set_ptr",
-                                )
-                                .unwrap()
-                        };
-                        self.builder.build_store(element_ptr, value_val).unwrap();
-                    }
-                    None
-                } else {
-                    None
-                }
-            }
             "clear" => {
                 // Implement array.clear() - set length to 0
                 if let Some(mut metadata) = self.array_metadata.get(object).cloned() {
