@@ -1,8 +1,10 @@
-use super::analyzer::SemanticAnalyzer;
+use super::analyzer::{SemanticAnalyzer, SymbolInfo};
 use super::types::{NamedError, SemanticError, TypeMismatch};
-use crate::lexar::token::TokenType;
+use crate::lexer::token::TokenType;
 use crate::limits::ANALYZER_MAX_DEPTH;
-use crate::parser::ast::{AstNode, TypeNode};
+use crate::parser::ast::{AstNode, Pattern, TypeNode};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// Helper to extract line/col from an AstNode
 /// For now, returns None since parser hasn't been updated yet
@@ -295,6 +297,10 @@ impl SemanticAnalyzer {
                 args,
             } => {
                 let object_type = self.infer_type(object)?;
+
+                // Check mutability for methods that modify the array
+                self.check_method_mutability(object, method)?;
+
                 self.infer_method_return_type(&object_type, method, args)
             }
 
@@ -472,6 +478,30 @@ impl SemanticAnalyzer {
                 }
             }
 
+            // Block: infer type from the last statement/expression
+            AstNode::Block(statements) => {
+                if statements.is_empty() {
+                    return Ok(TypeNode::Void);
+                }
+
+                // For blocks, infer the type from the last statement
+                // This is especially important for lambda bodies
+                let last_stmt = &statements[statements.len() - 1];
+                match last_stmt {
+                    AstNode::Return { values } => {
+                        if values.is_empty() {
+                            Ok(TypeNode::Void)
+                        } else {
+                            self.infer_type(&values[0])
+                        }
+                    }
+                    _ => {
+                        // For other statements, just infer their type
+                        self.infer_type(last_stmt)
+                    }
+                }
+            }
+
             // Any other AST node (usually statements): return Void type.
             // Actual semantic checking for statements happens elsewhere.
             _ => Ok(TypeNode::Void),
@@ -486,6 +516,250 @@ impl SemanticAnalyzer {
         }
 
         result
+    }
+
+    /// Check if a method that requires mutability is being called on a mutable object
+    fn check_method_mutability(&self, object: &AstNode, method: &str) -> Result<(), SemanticError> {
+        // Methods that require the array to be mutable
+        let mutating_methods = ["push", "pop", "set", "clear", "sort"];
+
+        if !mutating_methods.contains(&method) {
+            return Ok(());
+        }
+
+        // Check if the object is a mutable variable
+        match object {
+            AstNode::Identifier(name) => {
+                if let Some(info) = self.lookup_variable(name) {
+                    if !info.mutable {
+                        return Err(SemanticError::InvalidAssignmentTarget {
+                            target: format!("Cannot call mutating method '{}' on immutable array", method),
+                        });
+                    }
+                }
+                Ok(())
+            }
+            // For method chains like x.map().push(), reject because map returns immutable
+            AstNode::MethodCall { .. } => {
+                Err(SemanticError::InvalidAssignmentTarget {
+                    target: format!("Cannot call mutating method '{}' on method result (returned arrays are immutable)", method),
+                })
+            }
+            // For array literals and other expressions, they're immutable
+            AstNode::ArrayLiteral(_) => {
+                Err(SemanticError::InvalidAssignmentTarget {
+                    target: format!("Cannot call mutating method '{}' on array literal (immutable)", method),
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Helper function to infer the return type of a lambda/closure
+    /// elem_type is the element type from the array (for type inference of lambda parameters)
+    fn infer_lambda_return_type(
+        &self,
+        closure: &AstNode,
+        elem_type: &TypeNode,
+    ) -> Result<TypeNode, SemanticError> {
+        match closure {
+            AstNode::Closure {
+                params,
+                body,
+                return_type,
+            } => {
+                // If explicit return type is provided, use it
+                if let Some(ret_type) = return_type {
+                    return Ok(ret_type.clone());
+                }
+
+                // Create a temporary analyzer with the lambda's scope
+                let mut temp_analyzer = self.clone_for_lambda_analysis();
+
+                // Add parameters to the temporary analyzer's scope
+                for (param_name, param_type) in params {
+                    let inferred_type = if let Some(ty) = param_type {
+                        ty.clone()
+                    } else {
+                        // Infer from array element type
+                        elem_type.clone()
+                    };
+                    temp_analyzer.symbol_table.insert(
+                        param_name.clone(),
+                        SymbolInfo {
+                            ty: inferred_type,
+                            mutable: false,
+                            is_ref_counted: false,
+                            is_parameter: true,
+                        },
+                    );
+                }
+
+                // If body is a block, analyze statements sequentially to build symbol table
+                if let AstNode::Block(statements) = body.as_ref() {
+                    for stmt in statements {
+                        match stmt {
+                            AstNode::Return { values } => {
+                                if !values.is_empty() {
+                                    return temp_analyzer.infer_type(&values[0]);
+                                } else {
+                                    return Ok(TypeNode::Void);
+                                }
+                            }
+                            AstNode::LetDecl {
+                                mutable,
+                                type_annotation: _,
+                                pattern,
+                                value,
+                                is_ref_counted: _,
+                            } => {
+                                // Infer type and add to symbol table
+                                if let Ok(ty) = temp_analyzer.infer_type(value) {
+                                    if let Pattern::Identifier(name) = pattern {
+                                        temp_analyzer.symbol_table.insert(
+                                            name.clone(),
+                                            SymbolInfo {
+                                                ty,
+                                                mutable: *mutable,
+                                                is_ref_counted: false,
+                                                is_parameter: false,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Other statements, just infer type
+                                let _ = temp_analyzer.infer_type(stmt);
+                            }
+                        }
+                    }
+                    Ok(TypeNode::Void)
+                } else {
+                    // Not a block, infer type directly
+                    temp_analyzer.infer_type(body)
+                }
+            }
+            _ => Err(SemanticError::UnexpectedNode {
+                expected: "Expected a closure/lambda function".to_string(),
+            }),
+        }
+    }
+
+    /// Helper function to infer the return type of a reduce lambda
+    /// For reduce, the lambda takes (accumulator, element) and returns a value
+    /// We only validate that it's a closure and return its inferred type
+    fn infer_lambda_return_type_for_reduce(
+        &self,
+        closure: &AstNode,
+        elem_type: &TypeNode,
+    ) -> Result<TypeNode, SemanticError> {
+        match closure {
+            AstNode::Closure {
+                params,
+                body,
+                return_type,
+            } => {
+                // If explicit return type is provided, use it
+                if let Some(ret_type) = return_type {
+                    return Ok(ret_type.clone());
+                }
+
+                // Create a temporary analyzer with the lambda's scope
+                let mut temp_analyzer = self.clone_for_lambda_analysis();
+
+                // Add parameters to the temporary analyzer's scope
+                // For reduce, first param is accumulator, second is element
+                for (i, (param_name, param_type)) in params.iter().enumerate() {
+                    let inferred_type = if let Some(ty) = param_type {
+                        ty.clone()
+                    } else if i == 0 {
+                        // First parameter (accumulator) - we'll use Int as default
+                        TypeNode::Int
+                    } else {
+                        // Second parameter (element) - infer from array element type
+                        elem_type.clone()
+                    };
+                    temp_analyzer.symbol_table.insert(
+                        param_name.clone(),
+                        SymbolInfo {
+                            ty: inferred_type,
+                            mutable: false,
+                            is_ref_counted: false,
+                            is_parameter: true,
+                        },
+                    );
+                }
+
+                // If body is a block, analyze statements sequentially to build symbol table
+                if let AstNode::Block(statements) = body.as_ref() {
+                    for stmt in statements {
+                        match stmt {
+                            AstNode::Return { values } => {
+                                if !values.is_empty() {
+                                    return temp_analyzer.infer_type(&values[0]);
+                                } else {
+                                    return Ok(TypeNode::Void);
+                                }
+                            }
+                            AstNode::LetDecl {
+                                mutable,
+                                type_annotation: _,
+                                pattern,
+                                value,
+                                is_ref_counted: _,
+                            } => {
+                                // Infer type and add to symbol table
+                                if let Ok(ty) = temp_analyzer.infer_type(value) {
+                                    if let Pattern::Identifier(name) = pattern {
+                                        temp_analyzer.symbol_table.insert(
+                                            name.clone(),
+                                            SymbolInfo {
+                                                ty,
+                                                mutable: *mutable,
+                                                is_ref_counted: false,
+                                                is_parameter: false,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Other statements, just infer type
+                                let _ = temp_analyzer.infer_type(stmt);
+                            }
+                        }
+                    }
+                    Ok(TypeNode::Void)
+                } else {
+                    // Not a block, infer type directly
+                    temp_analyzer.infer_type(body)
+                }
+            }
+            _ => Err(SemanticError::UnexpectedNode {
+                expected: "Expected a closure/lambda function".to_string(),
+            }),
+        }
+    }
+
+    /// Create a temporary analyzer for lambda analysis with shared state
+    fn clone_for_lambda_analysis(&self) -> SemanticAnalyzer {
+        SemanticAnalyzer {
+            symbol_table: self.symbol_table.clone(),
+            function_table: self.function_table.clone(),
+            outer_symbol_table: self.outer_symbol_table.clone(),
+            project_root: self.project_root.clone(),
+            imported_modules: self.imported_modules.clone(),
+            imported_functions: self.imported_functions.clone(),
+            function_aliases: self.function_aliases.clone(),
+            loop_depth: self.loop_depth,
+            scope_stack: self.scope_stack.clone(),
+            function_depth: self.function_depth,
+            scope_sizes_stack: self.scope_sizes_stack.clone(),
+            collected_errors: Vec::new(),
+            is_main_module: self.is_main_module,
+            type_inference_depth: RefCell::new(*self.type_inference_depth.borrow()),
+        }
     }
 
     pub fn infer_method_return_type(
@@ -749,6 +1023,18 @@ impl SemanticAnalyzer {
                             found: args.len(),
                         });
                     }
+                    // Validate that the lambda returns Bool
+                    let lambda_return_type = self.infer_lambda_return_type(&args[0], elem_type)?;
+                    if lambda_return_type != TypeNode::Bool {
+                        let (line, col) = get_node_location(&args[0]);
+                        return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                            expected: TypeNode::Bool,
+                            found: lambda_return_type,
+                            value: None,
+                            line,
+                            col,
+                        }));
+                    }
                     Ok(TypeNode::Array(elem_type.clone()))
                 }
                 "map" => {
@@ -759,7 +1045,9 @@ impl SemanticAnalyzer {
                             found: args.len(),
                         });
                     }
-                    Ok(TypeNode::Array(elem_type.clone()))
+                    // Infer the return type of the lambda and return Array of that type
+                    let lambda_return_type = self.infer_lambda_return_type(&args[0], elem_type)?;
+                    Ok(TypeNode::Array(Box::new(lambda_return_type)))
                 }
                 "reduce" => {
                     if args.len() != 2 {
@@ -769,7 +1057,12 @@ impl SemanticAnalyzer {
                             found: args.len(),
                         });
                     }
-                    Ok(TypeNode::Int)
+                    // Infer the return type of the lambda (second argument)
+                    // For reduce, the lambda takes (accumulator, element) and returns a value
+                    // We don't validate the accumulator type here, just validate the lambda
+                    let lambda_return_type =
+                        self.infer_lambda_return_type_for_reduce(&args[1], elem_type)?;
+                    Ok(lambda_return_type)
                 }
                 "join" => {
                     if args.len() != 1 {

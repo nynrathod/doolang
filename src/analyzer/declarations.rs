@@ -25,6 +25,26 @@ impl SemanticAnalyzer {
                 value,
                 is_ref_counted,
             } => {
+                // Check if immutable variable is initialized with empty collection
+                if !*mutable {
+                    match &**value {
+                        AstNode::ArrayLiteral(elements) if elements.is_empty() => {
+                            return Err(SemanticError::ImmutableEmptyCollection {
+                                found: TypeNode::Array(Box::new(TypeNode::Int)),
+                            });
+                        }
+                        AstNode::MapLiteral(pairs) if pairs.is_empty() => {
+                            return Err(SemanticError::ImmutableEmptyCollection {
+                                found: TypeNode::Map(
+                                    Box::new(TypeNode::String),
+                                    Box::new(TypeNode::Int),
+                                ),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Use infer_rhs_types to ensure function call argument checks are performed
                 let rhs_types_vec = self.infer_rhs_types(value, 1)?;
                 let rhs_type = rhs_types_vec.get(0).cloned().ok_or_else(|| {
@@ -248,7 +268,7 @@ impl SemanticAnalyzer {
 
         // Restore outer scope after function analysis.
         if let Some(outer) = self.outer_symbol_table.take() {
-        self.function_depth -= 1;
+            self.function_depth -= 1;
             self.symbol_table = outer;
         }
 

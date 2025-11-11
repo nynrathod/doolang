@@ -69,6 +69,9 @@ pub enum SemanticError {
     // Type/Operator Errors
     OperatorTypeMismatch(TypeMismatch),
     EmptyCollectionTypeInferenceError(TypeMismatch),
+    ImmutableEmptyCollection {
+        found: TypeNode,
+    },
     InvalidConditionType(TypeMismatch),
 
     // Print
@@ -199,6 +202,7 @@ impl SemanticError {
             // Type/Operator Errors
             SemanticError::OperatorTypeMismatch(_) => "E0201",
             SemanticError::EmptyCollectionTypeInferenceError(_) => "E0202",
+            SemanticError::ImmutableEmptyCollection { .. } => "E0204",
             SemanticError::InvalidConditionType(_) => "E0203",
 
             // Print
@@ -281,6 +285,12 @@ impl fmt::Display for SemanticError {
                 "error[{}]: invalid map key type: expected {}, found {}",
                 self.code(),
                 expected,
+                found
+            ),
+            E::ImmutableEmptyCollection { found } => write!(
+                f,
+                "error[{}]: immutable variables cannot be initialized with empty collections; only mutable variables (with 'mut' keyword) are allowed to be empty. Found: {}",
+                self.code(),
                 found
             ),
 
