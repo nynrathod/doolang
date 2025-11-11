@@ -98,7 +98,22 @@ impl<'ctx> CodeGen<'ctx> {
         map: &str,
         index: &str,
     ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
-        let map_ptr = self.resolve_value(map).into_pointer_value();
+        let map_resolved = self.resolve_value(map);
+
+        // Check if we got a valid pointer
+        if !map_resolved.is_pointer_value() {
+            eprintln!("ERROR: Map '{}' did not resolve to a pointer value", map);
+            eprintln!("Resolved value type: {:?}", map_resolved.get_type());
+            eprintln!(
+                "Available in temp_values: {}",
+                self.temp_values.contains_key(map)
+            );
+            eprintln!("Available in symbols: {}", self.symbols.contains_key(map));
+            // Return None to avoid crash
+            return None;
+        }
+
+        let map_ptr = map_resolved.into_pointer_value();
         let index_val = self.resolve_value(index).into_int_value();
 
         let (key_is_string, val_is_string) = self.map_contains_strings(map);

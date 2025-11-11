@@ -32,6 +32,8 @@ impl<'ctx> CodeGen<'ctx> {
                     value_type: value_type_str.to_string(),
                     key_is_string,
                     value_is_string,
+                    key_needs_rc: false,
+                    value_needs_rc: false,
                 },
             );
 
@@ -48,8 +50,15 @@ impl<'ctx> CodeGen<'ctx> {
         let val_type = first_val.get_type();
 
         // Determine if keys/values are strings based on actual type
+        // BUT: exclude string constants (which are globals, not heap-allocated)
+        // String constants don't have RC headers, so we should NOT incref them
         let key_is_string = key_type.is_pointer_type();
         let value_is_string = val_type.is_pointer_type();
+
+        // Check if these are heap-allocated strings (not constants)
+        // String constants are named like "str_const_%" in entries
+        let key_is_heap_string = key_is_string && self.heap_strings.contains(&entries[0].0);
+        let value_is_heap_string = value_is_string && self.heap_strings.contains(&entries[0].1);
 
         // Track string temps for cleanup
         for (k, v) in entries {
@@ -89,6 +98,8 @@ impl<'ctx> CodeGen<'ctx> {
                 value_type: val_type_name.to_string(),
                 key_is_string,
                 value_is_string,
+                key_needs_rc: key_is_heap_string,
+                value_needs_rc: value_is_heap_string,
             },
         );
 
@@ -505,7 +516,7 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .unwrap()
             };
-            
+
             let len_field_ptr = unsafe {
                 self.builder
                     .build_gep(
@@ -516,7 +527,7 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .unwrap()
             };
-            
+
             let len_ptr_cast = self
                 .builder
                 .build_pointer_cast(
@@ -525,7 +536,7 @@ impl<'ctx> CodeGen<'ctx> {
                     "len_ptr_cast_print",
                 )
                 .unwrap();
-            
+
             let runtime_len = self
                 .builder
                 .build_load(self.context.i32_type(), len_ptr_cast, "runtime_len_print")
@@ -539,9 +550,15 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap()
                 .get_parent()
                 .unwrap();
-            let loop_block = self.context.append_basic_block(current_fn, "print_map_loop");
-            let loop_body = self.context.append_basic_block(current_fn, "print_map_body");
-            let loop_done = self.context.append_basic_block(current_fn, "print_map_done");
+            let loop_block = self
+                .context
+                .append_basic_block(current_fn, "print_map_loop");
+            let loop_body = self
+                .context
+                .append_basic_block(current_fn, "print_map_body");
+            let loop_done = self
+                .context
+                .append_basic_block(current_fn, "print_map_done");
 
             // Counter for loop
             let counter_ptr = self
@@ -551,7 +568,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder
                 .build_store(counter_ptr, self.context.i32_type().const_zero())
                 .unwrap();
-            
+
             self.builder.build_unconditional_branch(loop_block).unwrap();
 
             // Loop check
@@ -571,7 +588,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Loop body: print each key-value pair
             self.builder.position_at_end(loop_body);
-            
+
             // Use byte-level GEP to avoid array type size issues
             let pair_size = pair_type.size_of().unwrap();
             let counter_64 = self
@@ -582,7 +599,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .builder
                 .build_int_mul(counter_64, pair_size, "byte_offset")
                 .unwrap();
-            
+
             let pair_ptr_bytes = unsafe {
                 self.builder
                     .build_gep(
@@ -593,7 +610,7 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .unwrap()
             };
-            
+
             let pair_ptr = self
                 .builder
                 .build_pointer_cast(
@@ -647,11 +664,20 @@ impl<'ctx> CodeGen<'ctx> {
             // Check if this is the last element for comma formatting
             let next_counter = self
                 .builder
-                .build_int_add(counter, self.context.i32_type().const_int(1, false), "next_counter")
+                .build_int_add(
+                    counter,
+                    self.context.i32_type().const_int(1, false),
+                    "next_counter",
+                )
                 .unwrap();
             let is_last = self
                 .builder
-                .build_int_compare(inkwell::IntPredicate::EQ, next_counter, runtime_len, "is_last")
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    next_counter,
+                    runtime_len,
+                    "is_last",
+                )
                 .unwrap();
 
             // Print value with conditional comma
@@ -664,18 +690,14 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_global_string_ptr("\"%s\"", "val_fmt_no_comma")
                     .unwrap();
-                
+
                 let val_fmt = self
                     .builder
                     .build_select(is_last, val_fmt_no_comma, val_fmt_with_comma, "val_fmt")
                     .unwrap();
-                
+
                 self.builder
-                    .build_call(
-                        printf_fn,
-                        &[val_fmt.into(), val_val.into()],
-                        "",
-                    )
+                    .build_call(printf_fn, &[val_fmt.into(), val_val.into()], "")
                     .unwrap();
             } else {
                 let val_fmt_with_comma = self
@@ -686,18 +708,14 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_global_string_ptr("%d", "val_fmt_no_comma")
                     .unwrap();
-                
+
                 let val_fmt = self
                     .builder
                     .build_select(is_last, val_fmt_no_comma, val_fmt_with_comma, "val_fmt")
                     .unwrap();
-                
+
                 self.builder
-                    .build_call(
-                        printf_fn,
-                        &[val_fmt.into(), val_val.into()],
-                        "",
-                    )
+                    .build_call(printf_fn, &[val_fmt.into(), val_val.into()], "")
                     .unwrap();
             }
 

@@ -33,6 +33,8 @@ pub struct MapMetadata {
     pub value_type: String,
     pub key_is_string: bool,
     pub value_is_string: bool,
+    pub key_needs_rc: bool,
+    pub value_needs_rc: bool,
 }
 
 /// Loop type enumeration

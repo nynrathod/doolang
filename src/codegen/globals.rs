@@ -305,6 +305,8 @@ impl<'ctx> CodeGen<'ctx> {
                     value_type: value_type_name.to_string(),
                     key_is_string: key_type.is_pointer_type(),
                     value_is_string: val_type.is_pointer_type(),
+                    key_needs_rc: false,
+                    value_needs_rc: false,
                 };
                 self.map_metadata.insert(name.clone(), metadata);
             }

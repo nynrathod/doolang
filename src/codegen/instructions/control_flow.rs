@@ -116,6 +116,8 @@ impl<'ctx> CodeGen<'ctx> {
                                         value_type: value_type.to_string(),
                                         key_is_string,
                                         value_is_string,
+                                        key_needs_rc: key_is_string,
+                                        value_needs_rc: value_is_string,
                                     },
                                 );
                             }
@@ -497,6 +499,13 @@ impl<'ctx> CodeGen<'ctx> {
         // Check if this is in the boolean_temps set (marked from method calls)
         if self.boolean_temps.contains(var_name) {
             return true;
+        }
+
+        // Check variable_types map which tracks types from MIR declarations
+        if let Some(var_type) = self.variable_types.get(var_name) {
+            if var_type == "Bool" {
+                return true;
+            }
         }
 
         // Check if this is a comparison operation result (contains comparison keywords)

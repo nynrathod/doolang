@@ -29,6 +29,7 @@ impl<'ctx> CodeGen<'ctx> {
             }
             MirInstr::ConstBool { name, value } => {
                 self.variable_types.insert(name.clone(), "Bool".to_string());
+                self.boolean_temps.insert(name.clone());
                 self.generate_const_bool(name, *value)
             }
             MirInstr::ConstString { name, value } => {
@@ -79,6 +80,17 @@ impl<'ctx> CodeGen<'ctx> {
                 index,
             } => self.generate_load_map_pair(key_dest, val_dest, map, index),
 
+            MirInstr::MapGetPair { name, map, index } => {
+                // MapGetPair: extract both key and value from a map at given index
+                // This is used in map iteration with tuple destructuring
+                // We use temporary variables to hold the key and value
+                let key_tmp = format!("{}_k", name);
+                let val_tmp = format!("{}_v", name);
+                self.generate_load_map_pair(&key_tmp, &val_tmp, map, index);
+                // Return None - the actual extraction happens via TupleGet operations
+                None
+            }
+
             // Control flow
             MirInstr::Print { values } => {
                 self.generate_print(values);
@@ -116,6 +128,7 @@ impl<'ctx> CodeGen<'ctx> {
                 captures,
             ),
             MirInstr::ArrayLen { name, array } => self.generate_array_len(name, array),
+            MirInstr::MapLen { name, map } => self.generate_array_len(name, map),
 
             // ===== LOOP INSTRUCTIONS =====
             MirInstr::ForRange { .. }
@@ -144,6 +157,10 @@ impl<'ctx> CodeGen<'ctx> {
                 // Propagate type information from source to destination
                 if let Some(source_type) = self.variable_types.get(value).cloned() {
                     self.variable_types.insert(name.clone(), source_type);
+                }
+                // Propagate boolean tracking
+                if self.boolean_temps.contains(value) {
+                    self.boolean_temps.insert(name.clone());
                 }
                 let val = self.resolve_value(value);
 
@@ -737,38 +754,46 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
-                let (key_type, val_type, key_is_string, val_is_string) =
-                    if let Some(metadata) = found_metadata {
-                        let k_type = match metadata.key_type.as_str() {
-                            "Str" => self
-                                .context
-                                .ptr_type(inkwell::AddressSpace::default())
-                                .into(),
-                            "Int" => self.context.i32_type().into(),
-                            "Bool" => self.context.bool_type().into(),
-                            _ => self.context.i32_type().into(),
-                        };
-                        let v_type = match metadata.value_type.as_str() {
-                            "Str" => self
-                                .context
-                                .ptr_type(inkwell::AddressSpace::default())
-                                .into(),
-                            "Int" => self.context.i32_type().into(),
-                            "Bool" => self.context.bool_type().into(),
-                            _ => self.context.i32_type().into(),
-                        };
-                        (
-                            k_type,
-                            v_type,
-                            metadata.key_is_string,
-                            metadata.value_is_string,
-                        )
-                    } else {
-                        // Return dummy values to avoid crash, but this will produce incorrect IR
-                        let dummy = self.context.i32_type().const_int(0, false);
-                        self.temp_values.insert(name.clone(), dummy.into());
-                        return Some(dummy.into());
+                let (
+                    key_type,
+                    val_type,
+                    key_is_string,
+                    val_is_string,
+                    key_needs_rc,
+                    value_needs_rc,
+                ) = if let Some(metadata) = found_metadata {
+                    let k_type = match metadata.key_type.as_str() {
+                        "Str" => self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into(),
+                        "Int" => self.context.i32_type().into(),
+                        "Bool" => self.context.bool_type().into(),
+                        _ => self.context.i32_type().into(),
                     };
+                    let v_type = match metadata.value_type.as_str() {
+                        "Str" => self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into(),
+                        "Int" => self.context.i32_type().into(),
+                        "Bool" => self.context.bool_type().into(),
+                        _ => self.context.i32_type().into(),
+                    };
+                    (
+                        k_type,
+                        v_type,
+                        metadata.key_is_string,
+                        metadata.value_is_string,
+                        metadata.key_needs_rc,
+                        metadata.value_needs_rc,
+                    )
+                } else {
+                    // Return dummy values to avoid crash, but this will produce incorrect IR
+                    let dummy = self.context.i32_type().const_int(0, false);
+                    self.temp_values.insert(name.clone(), dummy.into());
+                    return Some(dummy.into());
+                };
 
                 // Reconstruct the pair struct type
                 let pair_type = self.context.struct_type(&[key_type, val_type], false);
@@ -785,6 +810,11 @@ impl<'ctx> CodeGen<'ctx> {
                     key_is_string
                 } else {
                     val_is_string
+                };
+                let needs_rc = if *index == 0 {
+                    key_needs_rc
+                } else {
+                    value_needs_rc
                 };
 
                 let field_val = self
@@ -913,7 +943,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
 
                 // Track if this is a string that needs RC and apply RC increment
-                if is_string_field && field_val.is_pointer_value() {
+                if needs_rc && field_val.is_pointer_value() {
                     self.heap_strings.insert(name.clone());
 
                     // Apply RC increment for string keys/values
@@ -1274,4 +1304,3 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 }
-

@@ -383,6 +383,8 @@ impl<'ctx> CodeGen<'ctx> {
                             value_type: value_type.to_string(),
                             key_is_string,
                             value_is_string,
+                            key_needs_rc: key_is_string,
+                            value_needs_rc: value_is_string,
                         },
                     );
 
