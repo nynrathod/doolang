@@ -241,7 +241,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let left_int = left_val.into_int_value();
                 let right_int = right_val.into_int_value();
 
-                use crate::lexar::token::TokenType;
+                use crate::lexer::token::TokenType;
                 match op {
                     TokenType::Plus => Some(
                         self.builder
