@@ -1,4 +1,4 @@
-use crate::lexar::token::TokenType;
+use crate::lexer::token::TokenType;
 use crate::limits::{PARSER_MAX_ARRAY_SIZE, PARSER_MAX_DEPTH, PARSER_MAX_MAP_SIZE};
 use crate::parser::ast::AstNode;
 use crate::parser::{ParseError, ParseResult, Parser};
@@ -28,17 +28,8 @@ impl<'a> Parser<'a> {
     fn parse_expression_prec(&mut self, min_prec: u8) -> ParseResult<AstNode> {
         let mut left = if let Some(tok) = self.peek() {
             match tok.kind {
-                // Disallow unary '!' operator
-                TokenType::Bang => {
-                    let tok = self.advance().unwrap();
-                    return Err(ParseError::UnexpectedTokenAt {
-                        msg: "Unary '!' operator is not allowed in doolang".to_string(),
-                        line: tok.line,
-                        col: tok.col,
-                    });
-                }
-                // Allow unary minus and plus if desired
-                TokenType::Minus | TokenType::Plus => {
+                // Allow unary operators: !, -, +
+                TokenType::Bang | TokenType::Minus | TokenType::Plus => {
                     let op = tok.kind;
                     self.advance(); // consume operator
                     let expr = self.parse_expression_prec(7)?; // unary has high precedence

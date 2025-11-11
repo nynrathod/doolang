@@ -1,4 +1,4 @@
-use crate::lexar::token::TokenType;
+use crate::lexer::token::TokenType;
 use crate::parser::ast::{AstNode, Pattern, TypeNode};
 use crate::parser::{ParseError, ParseResult, Parser};
 

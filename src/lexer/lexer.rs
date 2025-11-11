@@ -1,4 +1,4 @@
-use crate::lexar::token::{Token, TokenType};
+use crate::lexer::token::{Token, TokenType};
 use crate::limits::{
     LEXER_MAX_COMMENT_LENGTH, LEXER_MAX_IDENTIFIER_LENGTH, LEXER_MAX_INPUT_SIZE,
     LEXER_MAX_STRING_LENGTH, LEXER_MAX_TOKEN_COUNT,
@@ -498,27 +498,39 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
             if !too_long {
                 // Use char indices for slicing to support unicode
                 let word: String = chars[start..i].iter().collect();
-                let kind = keywords
-                    .get(word.as_str())
-                    .unwrap_or(&TokenType::Identifier);
 
-                // Disallow identifiers with underscore anywhere
-                if word.contains('_') {
+                // Handle standalone wildcard pattern
+                if word == "_" {
                     let word_str = arena.alloc_str(&word);
                     tokens.push(Token {
-                        kind: TokenType::Unknown,
+                        kind: TokenType::Underscore,
                         value: word_str,
                         line: token_line,
                         col: token_col,
                     });
                 } else {
-                    let word_str = arena.alloc_str(&word);
-                    tokens.push(Token {
-                        kind: *kind,
-                        value: word_str,
-                        line: token_line,
-                        col: token_col,
-                    });
+                    let kind = keywords
+                        .get(word.as_str())
+                        .unwrap_or(&TokenType::Identifier);
+
+                    // Disallow identifiers starting with underscore (except lone _)
+                    if word.starts_with('_') || word.contains('_') {
+                        let word_str = arena.alloc_str(&word);
+                        tokens.push(Token {
+                            kind: TokenType::Unknown,
+                            value: word_str,
+                            line: token_line,
+                            col: token_col,
+                        });
+                    } else {
+                        let word_str = arena.alloc_str(&word);
+                        tokens.push(Token {
+                            kind: *kind,
+                            value: word_str,
+                            line: token_line,
+                            col: token_col,
+                        });
+                    }
                 }
             }
             continue;

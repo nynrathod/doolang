@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::lexar::token::TokenType;
+use crate::lexer::token::TokenType;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]

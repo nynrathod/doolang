@@ -507,7 +507,7 @@ impl SemanticAnalyzer {
             let code = fs::read_to_string(&file_path)
                 .map_err(|_| SemanticError::ModuleNotFound(file_path.display().to_string()))?;
             let arena = Bump::new();
-            let tokens = crate::lexar::lexer::lex(&code, &arena);
+            let tokens = crate::lexer::lexer::lex(&code, &arena);
 
             let mut parser = crate::parser::Parser::new(&tokens);
 
@@ -543,7 +543,7 @@ impl SemanticAnalyzer {
             self.imported_modules.insert(module_key, true);
 
             let arena = Bump::new();
-            let tokens = crate::lexar::lexer::lex(&code, &arena);
+            let tokens = crate::lexer::lexer::lex(&code, &arena);
 
             let mut parser = crate::parser::Parser::new(&tokens);
 

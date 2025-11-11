@@ -1,4 +1,4 @@
-use crate::lexar::token::TokenType;
+use crate::lexer::token::TokenType;
 use crate::limits::MIR_MAX_DEPTH;
 use crate::mir::builder::MirBuilder;
 use crate::mir::expresssions::build_expression;

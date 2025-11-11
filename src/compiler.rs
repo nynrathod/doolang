@@ -4,7 +4,7 @@ use crate::analyzer::types::SemanticError;
 use crate::analyzer::SemanticAnalyzer;
 use crate::codegen::core::CodeGen;
 use crate::diagnostics::{print_grouped, DiagnosticRecord};
-use crate::lexar::lexer::lex;
+use crate::lexer::lexer::lex;
 use crate::mir::builder::MirBuilder;
 use crate::parser::{ParseError, Parser};
 use bumpalo::Bump;
@@ -517,7 +517,7 @@ fn find_msvc_lib_path(base: &str) -> Option<String> {
 fn skip_to_next_statement(parser: &mut Parser) {
     while parser.current < parser.tokens.len() {
         if let Some(tok) = parser.peek() {
-            if matches!(tok.kind, crate::lexar::token::TokenType::Semi) {
+            if matches!(tok.kind, crate::lexer::token::TokenType::Semi) {
                 parser.advance();
                 break;
             }

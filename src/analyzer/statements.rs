@@ -1,7 +1,7 @@
 use super::analyzer::SemanticAnalyzer;
 use super::types::{NamedError, SemanticError, TypeMismatch};
 use crate::analyzer::analyzer::SymbolInfo;
-use crate::lexar::token::TokenType;
+use crate::lexer::token::TokenType;
 use crate::parser::ast::{AstNode, Pattern, TypeNode};
 use std::collections::HashMap;
 

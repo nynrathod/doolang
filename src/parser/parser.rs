@@ -1,4 +1,4 @@
-use crate::lexar::token::{Token, TokenType};
+use crate::lexer::token::{Token, TokenType};
 use crate::limits::PARSER_MAX_DEPTH;
 use crate::parser::ast::AstNode;
 use std::fmt;
@@ -36,11 +36,11 @@ impl fmt::Display for ParseError {
     }
 }
 
-/// The Parser struct is the stateful engine. It consumes tokens (from lexar)
+/// The Parser struct is the stateful engine. It consumes tokens (from lexer)
 /// and builds AST nodes (for analyzer, codegen, etc).
 #[derive(Debug)]
 pub struct Parser<'a> {
-    pub tokens: &'a [Token<'a>], // Reference to a slice of tokens from lexar.
+    pub tokens: &'a [Token<'a>], // Reference to a slice of tokens from lexer.
     pub current: usize,          // Current index; tracks progress through tokens.
     pub depth: usize,            // Current recursion depth to prevent stack overflow.
 }

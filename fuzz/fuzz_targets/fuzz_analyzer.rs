@@ -1,7 +1,7 @@
 #![no_main]
 use bumpalo::Bump;
 use doo::analyzer::SemanticAnalyzer;
-use doo::lexar::lexer::lex;
+use doo::lexer::lexer::lex;
 use doo::parser::ast::AstNode;
 use doo::parser::Parser;
 use libfuzzer_sys::fuzz_target;

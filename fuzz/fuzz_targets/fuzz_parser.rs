@@ -1,6 +1,6 @@
 #![no_main]
 use bumpalo::Bump;
-use doo::lexar::lexer::lex;
+use doo::lexer::lexer::lex;
 use doo::parser::Parser;
 use libfuzzer_sys::fuzz_target;
 

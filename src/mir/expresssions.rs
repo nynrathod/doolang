@@ -1,5 +1,5 @@
 use crate::{
-    lexar::token::TokenType,
+    lexer::token::TokenType,
     mir::{builder::MirBuilder, MirBlock, MirInstr},
     parser::ast::{AstNode, TypeNode},
 };
