@@ -36,7 +36,7 @@ impl<'ctx> CodeGen<'ctx> {
         let rc_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
 
         // Cast the RC header pointer to i32* (reference count is stored as i32)
-        let i32_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let i32_ptr_type = self.context.ptr_type(AddressSpace::default());
         let rc_ptr_typed = self
             .builder
             .build_pointer_cast(rc_ptr, i32_ptr_type, "rc_ptr")
@@ -98,7 +98,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(check_validity);
 
         // Cast the RC header pointer to i32* (reference count is stored as i32)
-        let i32_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let i32_ptr_type = self.context.ptr_type(AddressSpace::default());
         let rc_ptr_typed = self
             .builder
             .build_pointer_cast(rc_ptr, i32_ptr_type, "rc_ptr")
