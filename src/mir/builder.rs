@@ -230,6 +230,32 @@ impl MirBuilder {
                     }
                 }
 
+                // Handle global element assignments (e.g., arr[0] = 5).
+                AstNode::ElementAssignment {
+                    array,
+                    index,
+                    value,
+                } => {
+                    let mut temp_block = MirBlock {
+                        label: "temp".to_string(),
+                        instrs: vec![],
+                        terminator: None,
+                    };
+
+                    let _array_tmp = build_expression(self, array, &mut temp_block);
+                    let index_tmp = build_expression(self, index, &mut temp_block);
+                    let value_tmp = build_expression(self, value, &mut temp_block);
+                    self.program.globals.extend(temp_block.instrs);
+
+                    if let AstNode::Identifier(array_name) = &**array {
+                        self.program.globals.push(MirInstr::ArraySet {
+                            array: array_name.clone(),
+                            index: index_tmp,
+                            value: value_tmp,
+                        });
+                    }
+                }
+
                 AstNode::Print { exprs } => {
                     let mut temp_block = MirBlock {
                         label: "temp".to_string(),

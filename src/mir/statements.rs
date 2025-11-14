@@ -25,7 +25,6 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             pattern,
             value,
             mutable,
-            is_ref_counted,
             ..
         } => {
             // Build MIR for the right-hand side expression.
@@ -157,6 +156,50 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 if let Some(value_type) = builder.mir_symbol_table.get(&result_tmp).cloned() {
                     builder.mir_symbol_table.insert(name.clone(), value_type);
                 }
+            }
+        }
+
+        // Handle increment/decrement statements (e.g., i++, i--)
+        AstNode::IncrementDecrement { variable, op } => {
+            let op_str = match op {
+                crate::lexer::token::TokenType::PlusPlus => "++",
+                crate::lexer::token::TokenType::MinusMinus => "--",
+                _ => return,
+            };
+
+            block.instrs.push(MirInstr::IncrementDecrement {
+                variable: variable.clone(),
+                op: op_str.to_string(),
+            });
+        }
+
+        // Handle element assignment statements (e.g., arr[0] = 5, map["key"] = value).
+        AstNode::ElementAssignment {
+            array,
+            index,
+            value,
+        } => {
+            // Build MIR for array/map expression
+            let _array_tmp = build_expression(builder, array, block);
+
+            // Build MIR for index expression
+            let index_tmp = build_expression(builder, index, block);
+
+            // Build MIR for value expression
+            let value_tmp = build_expression(builder, value, block);
+
+            // Get the array/map variable name
+            if let AstNode::Identifier(array_name) = &**array {
+                // Check if it's an array or map based on the MIR symbol table type
+                // For now, we'll emit both ArraySet and MapSet and let codegen handle it
+                // We can determine the type from builder.mir_symbol_table if available
+
+                // Emit ArraySet instruction (works for both arrays and maps at MIR level)
+                block.instrs.push(MirInstr::ArraySet {
+                    array: array_name.clone(),
+                    index: index_tmp,
+                    value: value_tmp,
+                });
             }
         }
 
@@ -391,7 +434,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 }
 
                 // Header block jumps directly to body.
-                let mut header_block = MirBlock {
+                let header_block = MirBlock {
                     label: loop_header.clone(),
                     instrs: vec![],
                     terminator: Some(MirInstr::Jump {
@@ -459,7 +502,6 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                         Some(builder.next_tmp())
                     }
                 }
-                _ => Some(builder.next_tmp()),
             };
 
             let loop_header = builder.next_block();

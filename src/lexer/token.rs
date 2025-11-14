@@ -44,15 +44,17 @@ pub enum TokenType {
     SlashEq,   // /=
     PercentEq, // %=
 
+    // Increment/Decrement
+    PlusPlus,   // ++
+    MinusMinus, // --
+
     // Comparison
-    EqEq,    // ==
-    EqEqEq,  // ===
-    NotEq,   // !=
-    NotEqEq, // !==
-    Gt,      // >
-    Lt,      // <
-    GtEq,    // >=
-    LtEq,    // <=
+    EqEq,  // ==
+    NotEq, // !=
+    Gt,    // >
+    Lt,    // <
+    GtEq,  // >=
+    LtEq,  // <=
 
     // Logical
     Bang,   // !

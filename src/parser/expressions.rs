@@ -48,11 +48,11 @@ impl<'a> Parser<'a> {
 
         // Postfix operations: array/map element access
         // Handles: arr[0], map["key"], nested[i][j], etc.
+        // 🟡 TODO: nested[i][j] not supported yet
         left = self.parse_postfix(left)?;
 
         // Binary operator expressions:
         // Handles: a + b, x * y - z, a < b, a <= b, a > b, a >= b
-        // 🟡 TODO: Operators && , || not supported yet
         // Groups operators according to precedence and left-to-right associativity.
         while let Some(tok) = self.peek() {
             // Get the precedence of the current operator token
@@ -69,7 +69,7 @@ impl<'a> Parser<'a> {
 
             // Recursively parse the right-hand side of the expression,
             // using higher precedence to ensure correct grouping
-            let mut right = self.parse_expression_prec(prec + 1)?;
+            let right = self.parse_expression_prec(prec + 1)?;
 
             // Build a BinaryExpr AST node with the current left and right expressions
             left = AstNode::BinaryExpr {
@@ -139,7 +139,7 @@ impl<'a> Parser<'a> {
                 let target_type = match type_str.as_str() {
                     "Int" => crate::parser::ast::TypeNode::Int,
                     "Float" => crate::parser::ast::TypeNode::Float,
-                    "String" => crate::parser::ast::TypeNode::String,
+                    "Str" => crate::parser::ast::TypeNode::String,
                     "Bool" => crate::parser::ast::TypeNode::Bool,
                     _ => {
                         return Err(ParseError::UnexpectedTokenAt {
@@ -154,6 +154,19 @@ impl<'a> Parser<'a> {
                     expr: Box::new(expr),
                     target_type,
                 };
+            } else if self.peek_is(TokenType::PlusPlus) || self.peek_is(TokenType::MinusMinus) {
+                // Handle postfix increment/decrement: x++, x--
+                let op = self.peek().unwrap().kind;
+                self.advance(); // consume ++ or --
+
+                // Extract identifier from expr for increment/decrement
+                if let AstNode::Identifier(name) = expr {
+                    expr = AstNode::IncrementDecrement { variable: name, op };
+                } else {
+                    return Err(ParseError::UnexpectedToken(
+                        "Only single-variable increment/decrement is allowed".into(),
+                    ));
+                }
             } else {
                 break;
             }

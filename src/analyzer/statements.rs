@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 impl SemanticAnalyzer {
     /// Analyze an assignment statement
+    /// 🟡 TODO: Tuple assignment not supported yet.
     /// (e.g., `(x, y) = foo()` if lhs x,y types match with right foo return types).
     /// Checks that the left and right sides match in number and type,
     /// and binds variables to the symbol table.
@@ -139,6 +140,41 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
+    /// Analyze an increment/decrement statement (e.g., `i++`, `i--`)
+    /// Checks that:
+    /// 1. The variable exists and is mutable
+    /// 2. The variable is of numeric type (Int or Float)
+    pub fn analyze_increment_decrement(&mut self, variable: &str) -> Result<(), SemanticError> {
+        // Check if variable exists
+        let var_info = match self.symbol_table.get(variable) {
+            Some(info) => info.clone(),
+            None => {
+                return Err(SemanticError::UndeclaredVariable(NamedError {
+                    name: variable.to_string(),
+                }));
+            }
+        };
+
+        // Check if variable is mutable
+        if !var_info.mutable {
+            return Err(SemanticError::InvalidAssignmentTarget {
+                target: format!("Cannot modify immutable variable '{}'", variable),
+            });
+        }
+
+        // Check if the variable is of numeric type (Int or Float)
+        match var_info.ty {
+            TypeNode::Int | TypeNode::Float => Ok(()),
+            _ => Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                expected: TypeNode::Int,
+                found: var_info.ty.clone(),
+                value: None,
+                line: None,
+                col: None,
+            })),
+        }
+    }
+
     /// Flattens a pattern (e.g., `(x, y, _)`) into a flat list of variables.
     /// Ensures each identifier is valid (not reserved, not empty, etc.).
     pub fn collect_and_validate_targets(
@@ -168,11 +204,6 @@ impl SemanticAnalyzer {
                         }
                     }
                 }
-            }
-            _ => {
-                return Err(SemanticError::InvalidAssignmentTarget {
-                    target: format!("{:?}", pattern),
-                });
             }
         }
         Ok(targets)
@@ -555,13 +586,110 @@ impl SemanticAnalyzer {
                     });
                 }
             },
+        }
+        Ok(())
+    }
+
+    /// Analyze an element assignment statement (e.g., `arr[0] = 5` or `map["key"] = value`)
+    /// Checks that:
+    /// 1. The array/map exists and is mutable
+    /// 2. The index type is valid for the array/map
+    /// 3. The value type matches the element type
+    pub fn analyze_element_assignment(
+        &mut self,
+        array: &AstNode,
+        index: &AstNode,
+        value: &AstNode,
+    ) -> Result<(), SemanticError> {
+        // Get the array/map variable name
+        let array_name = match array {
+            AstNode::Identifier(name) => name.clone(),
             _ => {
-                // Any other pattern is invalid.
                 return Err(SemanticError::InvalidAssignmentTarget {
-                    target: format!("{:?}", pattern),
+                    target: "Element assignment target must be a variable".to_string(),
+                });
+            }
+        };
+
+        // Check if the array/map variable exists and is mutable
+        let array_info = match self.symbol_table.get(&array_name) {
+            Some(info) => {
+                if !info.mutable {
+                    return Err(SemanticError::InvalidAssignmentTarget {
+                        target: format!(
+                            "Cannot assign to element of immutable variable '{}'",
+                            array_name
+                        ),
+                    });
+                }
+                info.clone()
+            }
+            None => {
+                return Err(SemanticError::UndeclaredVariable(NamedError {
+                    name: array_name,
+                }));
+            }
+        };
+
+        // Get the index type
+        let index_type = self.infer_type(index)?;
+
+        // Get the value type
+        let value_type = self.infer_type(value)?;
+
+        // Verify the array/map type and element assignment
+        match &array_info.ty {
+            TypeNode::Array(elem_type) => {
+                // For arrays, index must be Int
+                if index_type != TypeNode::Int {
+                    return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                        expected: TypeNode::Int,
+                        found: index_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+                // Value type must match element type
+                if value_type != **elem_type {
+                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                        expected: (**elem_type).clone(),
+                        found: value_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+            }
+            TypeNode::Map(key_type, value_type_in_map) => {
+                // For maps, index type must match key type
+                if index_type != **key_type {
+                    return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                        expected: (**key_type).clone(),
+                        found: index_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+                // Value type must match the map's value type
+                if value_type != **value_type_in_map {
+                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                        expected: (**value_type_in_map).clone(),
+                        found: value_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+            }
+            _ => {
+                return Err(SemanticError::InvalidAssignmentTarget {
+                    target: format!("Cannot assign to element of unsupported type"),
                 });
             }
         }
+
         Ok(())
     }
 }

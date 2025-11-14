@@ -24,7 +24,6 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
     let mut keywords: HashMap<&str, TokenType> = HashMap::new();
 
     // Declarations
-
     keywords.insert("let", TokenType::Let);
     keywords.insert("mut", TokenType::Mut);
     keywords.insert("fn", TokenType::Function);
@@ -68,13 +67,15 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
     operators.insert("|", TokenType::Or);
 
     operators.insert("==", TokenType::EqEq);
-    operators.insert("===", TokenType::EqEqEq);
     operators.insert("!=", TokenType::NotEq);
-    operators.insert("!==", TokenType::NotEqEq);
     operators.insert(">=", TokenType::GtEq);
     operators.insert("<=", TokenType::LtEq);
     operators.insert("&&", TokenType::AndAnd);
     operators.insert("||", TokenType::OrOr);
+
+    // Increment/Decrement operators
+    operators.insert("++", TokenType::PlusPlus);
+    operators.insert("--", TokenType::MinusMinus);
 
     // Compound assignment operators
     operators.insert("+=", TokenType::PlusEq);

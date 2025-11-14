@@ -80,6 +80,7 @@ pub enum MirInstr {
     Cast {
         name: String,
         value: String,
+        source_type: String, // "Int", "Float", "String", "Bool"
         target_type: String, // "Int", "Float", "String", "Bool"
     },
 
@@ -146,6 +147,10 @@ pub enum MirInstr {
         name: String,
         value: String,
         mutable: bool,
+    },
+    IncrementDecrement {
+        variable: String,
+        op: String, // "++", "--"
     },
 
     // Tuple operations
@@ -242,6 +247,7 @@ pub enum MirInstr {
         start: String,      // Start value (temp or literal)
         end: String,        // End value (temp or literal)
         inclusive: bool,    // true for ..=, false for ..
+        cond_block: String, // Label of condition check block
         body_block: String, // Label of loop body block
         exit_block: String, // Label of block after loop
     },
@@ -251,6 +257,7 @@ pub enum MirInstr {
         var: String,        // Item variable name
         array: String,      // Array variable name
         index_var: String,  // Internal index counter variable
+        cond_block: String, // Label of condition check block
         body_block: String, // Label of loop body block
         exit_block: String, // Label of block after loop
     },
@@ -261,6 +268,7 @@ pub enum MirInstr {
         value_var: String,  // Value variable name
         map: String,        // Map variable name
         index_var: String,  // Internal index counter
+        cond_block: String, // Label of condition check block
         body_block: String, // Label of loop body block
         exit_block: String, // Label of block after loop
     },
@@ -348,148 +356,3 @@ impl MirInstr {
         }
     }
 }
-
-// Implement Display trait for MirProgram as human readable format
-// No production usecase
-// impl std::fmt::Display for MirProgram {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         // Print global variables
-//         if !self.globals.is_empty() {
-//             writeln!(f, "Globals:")?;
-//             for instr in &self.globals {
-//                 writeln!(f, "  {}", instr)?;
-//             }
-//             writeln!(f)?;
-//         }
-
-//         // Print functions
-//         for func in &self.functions {
-//             writeln!(
-//                 f,
-//                 "Function {}({}) -> {}",
-//                 func.name,
-//                 func.params.join(", "),
-//                 func.return_type.clone().unwrap_or("Void".to_string())
-//             )?;
-//             for block in &func.blocks {
-//                 writeln!(f, "  {}:", block.label)?;
-//                 for instr in &block.instrs {
-//                     writeln!(f, "    {}", instr)?;
-//                 }
-//                 if let Some(term) = &block.terminator {
-//                     writeln!(f, "    {}", term)?;
-//                 }
-//             }
-//             writeln!(f)?;
-//         }
-//         Ok(())
-//     }
-// }
-
-// impl std::fmt::Display for MirInstr {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         match self {
-//             MirInstr::ConstInt { name, value } => write!(f, "Let {} = {}", name, value),
-//             MirInstr::ConstBool { name, value } => write!(f, "Let {} = {}", name, value),
-//             MirInstr::ConstString { name, value } => write!(f, "Let {} = \"{}\"", name, value),
-//             MirInstr::Array { name, elements } => {
-//                 write!(f, "Let {} = [{}]", name, elements.join(", "))
-//             }
-//             MirInstr::Map { name, entries } => {
-//                 let entries_str: Vec<String> = entries
-//                     .iter()
-//                     .map(|(k, v)| format!("\"{}\": {}", k, v))
-//                     .collect();
-//                 write!(f, "Let {} = {{ {} }}", name, entries_str.join(", "))
-//             }
-//             MirInstr::Assign {
-//                 name,
-//                 value,
-//                 mutable,
-//             } => {
-//                 let mut_str = if *mutable { "mut " } else { "" };
-//                 write!(f, "{}{} = {}", mut_str, name, value)
-//             }
-//             MirInstr::Arg { name } => write!(f, "Arg {}", name),
-//             MirInstr::Return { values } => write!(f, "ret ({})", values.join(", ")),
-//             MirInstr::Call { dest, func, args } => {
-//                 if dest.len() == 1 {
-//                     write!(f, "Let {} = {}({})", dest[0], func, args.join(", "))
-//                 } else {
-//                     write!(f, "Let {} = {}({})", dest.join(", "), func, args.join(", "))
-//                 }
-//             }
-//             MirInstr::Add(dest, lhs, rhs) => write!(f, "Let {} = add {}, {}", dest, lhs, rhs),
-//             MirInstr::Sub(dest, lhs, rhs) => write!(f, "Let {} = sub {}, {}", dest, lhs, rhs),
-//             MirInstr::Mul(dest, lhs, rhs) => write!(f, "Let {} = mul {}, {}", dest, lhs, rhs),
-//             MirInstr::Div(dest, lhs, rhs) => write!(f, "Let {} = div {}, {}", dest, lhs, rhs),
-
-//             MirInstr::BinaryOp(op, dest, lhs, rhs) => match op.as_str() {
-//                 "gt" => write!(f, "Let {} = gt {}, {}", dest, lhs, rhs),
-//                 "lt" => write!(f, "Let {} = lt {}, {}", dest, lhs, rhs),
-//                 "%" => write!(f, "Let {} = rem {}, {}", dest, lhs, rhs), // <-- add this
-//                 _ => write!(f, "Let {} = {} {}, {}", dest, op, lhs, rhs),
-//             },
-
-//             MirInstr::Jump { target } => write!(f, "jump {}", target),
-//             MirInstr::CondJump {
-//                 cond,
-//                 then_block,
-//                 else_block,
-//             } => {
-//                 write!(f, "if {} then {} else {}", cond, then_block, else_block)
-//             }
-//             MirInstr::Print { values } => write!(f, "print({})", values.join(", ")),
-
-//             MirInstr::StructInit {
-//                 name,
-//                 struct_name,
-//                 fields,
-//             } => {
-//                 let f_str: Vec<String> = fields
-//                     .iter()
-//                     .map(|(k, v)| format!("{}: {}", k, v))
-//                     .collect();
-//                 write!(f, "{} = {} {{ {} }}", name, struct_name, f_str.join(", "))
-//             }
-//             MirInstr::EnumInit {
-//                 name,
-//                 enum_name,
-//                 variant,
-//                 value,
-//             } => {
-//                 if let Some(v) = value {
-//                     write!(f, "{} = {}::{}({})", name, enum_name, variant, v)
-//                 } else {
-//                     write!(f, "{} = {}::{}", name, enum_name, variant)
-//                 }
-//             }
-
-//             MirInstr::TupleExtract {
-//                 name,
-//                 source,
-//                 index,
-//             } => {
-//                 write!(f, "Let {} = extract({}, {})", name, source, index)
-//             }
-//             MirInstr::ArrayLen { name, array } => {
-//                 write!(f, "Let {} = len({})", name, array)
-//             }
-//             MirInstr::ArrayGet { name, array, index } => {
-//                 write!(f, "Let {} = {}[{}]", name, array, index)
-//             }
-//             MirInstr::RangeCreate {
-//                 name,
-//                 start,
-//                 end,
-//                 inclusive,
-//             } => {
-//                 let op = if *inclusive { "..=" } else { ".." };
-//                 write!(f, "Let {} = {}{}{}", name, start, op, end)
-//             }
-
-//             // Catch-all for any future variants
-//             _ => write!(f, "<unimplemented MIR instruction>"),
-//         }
-//     }
-// }
