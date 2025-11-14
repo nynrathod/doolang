@@ -10,6 +10,7 @@ pub mod limits;
 pub mod mir;
 pub mod parser;
 pub mod path_resolver;
+pub mod runtime;
 
 // Re-export commonly used types
 pub use analyzer::SemanticAnalyzer;
