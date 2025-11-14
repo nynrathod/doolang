@@ -1,7 +1,7 @@
 use crate::codegen::core::{CodeGen, Symbol};
 use crate::limits::CODEGEN_MAX_DEPTH;
 use crate::mir::MirInstr;
-use inkwell::types::BasicTypeEnum;
+use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::BasicValueEnum;
 
 impl<'ctx> CodeGen<'ctx> {
@@ -33,8 +33,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.generate_const_bool(name, *value)
             }
             MirInstr::ConstString { name, value } => {
-                self.variable_types
-                    .insert(name.clone(), "String".to_string());
+                self.variable_types.insert(name.clone(), "Str".to_string());
                 self.generate_const_string(name, value)
             }
 
@@ -100,8 +99,9 @@ impl<'ctx> CodeGen<'ctx> {
             MirInstr::Cast {
                 name,
                 value,
+                source_type,
                 target_type,
-            } => self.generate_cast(name, value, target_type),
+            } => self.generate_cast(name, value, source_type, target_type),
 
             MirInstr::Call { dest, func, args } => self.generate_call(dest, func, args),
             MirInstr::MethodCall {
@@ -163,6 +163,12 @@ impl<'ctx> CodeGen<'ctx> {
                     self.boolean_temps.insert(name.clone());
                 }
                 let val = self.resolve_value(value);
+
+                // For boolean comparison results, remove any existing symbol and force reallocation
+                // This ensures boolean values are always stored as i32, not as their temporary type
+                if self.variable_types.get(name).map_or(false, |t| t == "Bool") {
+                    self.symbols.remove(name);
+                }
 
                 // Check if this value came from ArrayGet - if so, it's a loop iteration variable
                 // and should NEVER have array/map metadata propagated to it
@@ -305,7 +311,7 @@ impl<'ctx> CodeGen<'ctx> {
                                         // For dynamically allocated arrays, try to infer size from usage
                                         // Check if there are any GEP instructions that accessed this array
                                         let mut max_index = 0;
-                                        for (check_name, check_val) in &self.temp_values {
+                                        for (check_name, _) in &self.temp_values {
                                             if check_name.contains(value)
                                                 && check_name.contains("elem")
                                             {
@@ -391,7 +397,17 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder.position_at_end(entry_block);
                     }
 
-                    let alloca = self.builder.build_alloca(val.get_type(), name).unwrap();
+                    // For boolean values, force i32 allocation
+                    // Check both variable_types and if val is i1 (from bool comparison)
+                    let is_bool_type = self.variable_types.get(name).map_or(false, |t| t == "Bool");
+                    let is_i1_value =
+                        val.is_int_value() && val.into_int_value().get_type().get_bit_width() == 1;
+                    let alloc_type = if is_bool_type || is_i1_value {
+                        self.context.i32_type().into()
+                    } else {
+                        val.get_type()
+                    };
+                    let alloca = self.builder.build_alloca(alloc_type, name).unwrap();
 
                     // Restore position to current block
                     self.builder.position_at_end(current_block);
@@ -402,7 +418,7 @@ impl<'ctx> CodeGen<'ctx> {
                         name.clone(),
                         Symbol {
                             ptr: alloca,
-                            ty: val.get_type(),
+                            ty: alloc_type,
                         },
                     );
 
@@ -542,6 +558,11 @@ impl<'ctx> CodeGen<'ctx> {
                 Some(val)
             }
 
+            MirInstr::IncrementDecrement { variable, op } => {
+                self.generate_increment_decrement(variable, op);
+                None
+            }
+
             MirInstr::IncRef { value } => {
                 self.emit_incref(value);
                 None
@@ -560,11 +581,10 @@ impl<'ctx> CodeGen<'ctx> {
                 self.arrayget_sources.insert(name.clone(), array.clone());
 
                 // Check if this is actually a map iteration (map metadata exists for this array)
-                if let Some(map_metadata) = self.map_metadata.get(array) {
+                if let Some(_) = self.map_metadata.get(array) {
                     // This is a map being iterated as an array - extract the key-value pair
                     let (key_type, val_type) = self.get_map_types(array);
                     let pair_type = self.context.struct_type(&[key_type, val_type], false);
-                    let map_len = map_metadata.length as u32;
                     // Use direct pointer arithmetic with single index for runtime maps
                     // This is clearer and more explicit than the two-index array syntax
                     let pair_ptr = unsafe {
@@ -1046,6 +1066,95 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
 
+            // Array element assignment: arr[index] = value
+            MirInstr::ArraySet {
+                array,
+                index,
+                value,
+            } => {
+                let array_ptr = self.resolve_value(array).into_pointer_value();
+                let index_val = self.resolve_value(index).into_int_value();
+                let value_val = self.resolve_value(value);
+
+                // Get array metadata
+                if let Some(metadata) = self.array_metadata.get(array).cloned() {
+                    let elem_type = self.get_array_element_type(array);
+
+                    let array_len = metadata.length as u32;
+                    let array_type = elem_type.array_type(array_len);
+
+                    // Cast data pointer to array pointer
+                    let typed_array_ptr = self
+                        .builder
+                        .build_pointer_cast(
+                            array_ptr,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "array_ptr_typed",
+                        )
+                        .unwrap();
+
+                    // GEP to get element pointer
+                    let elem_ptr = unsafe {
+                        self.builder.build_gep(
+                            array_type,
+                            typed_array_ptr,
+                            &[self.context.i32_type().const_zero(), index_val],
+                            "elem_ptr",
+                        )
+                    }
+                    .unwrap();
+
+                    // Store value at element pointer
+                    self.builder.build_store(elem_ptr, value_val).unwrap();
+
+                    None
+                } else {
+                    None
+                }
+            }
+
+            // Map element assignment: map[key] = value
+            MirInstr::MapSet { map, key, value } => {
+                let map_ptr = self.resolve_value(map).into_pointer_value();
+                let key_val = self.resolve_value(key);
+                let value_val = self.resolve_value(value);
+
+                // Get map metadata
+                if let Some(map_metadata) = self.map_metadata.get(map).cloned() {
+                    let value_type: BasicTypeEnum = match map_metadata.value_type.as_str() {
+                        "Str" => self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into(),
+                        "Int" => self.context.i32_type().into(),
+                        "Bool" => self.context.bool_type().into(),
+                        "Float" => self.context.f64_type().into(),
+                        _ => self.context.i32_type().into(),
+                    };
+
+                    // For now, simplified implementation: use the key_val as an index
+                    let index_val = key_val.into_int_value();
+
+                    // GEP to get element pointer in map values array
+                    let elem_ptr = unsafe {
+                        self.builder.build_in_bounds_gep(
+                            value_type,
+                            map_ptr,
+                            &[index_val],
+                            "elem_ptr",
+                        )
+                    }
+                    .unwrap();
+
+                    // Store value at element pointer
+                    self.builder.build_store(elem_ptr, value_val).unwrap();
+
+                    None
+                } else {
+                    None
+                }
+            }
+
             _ => None,
         };
 
@@ -1104,7 +1213,7 @@ impl<'ctx> CodeGen<'ctx> {
             dest_name.trim_start_matches('%').to_string(),
         ];
 
-        for dest_var in &dest_variations {
+        for _ in &dest_variations {
             for source_var in &source_variations {
                 if let Some(metadata) = self.array_metadata.get(source_var).cloned() {
                     // Register under ALL dest variations
