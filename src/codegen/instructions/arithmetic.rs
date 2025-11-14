@@ -56,10 +56,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Declare/get strcmp function
             let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
-                let i8_ptr_type = self
-                    .context
-                    .i8_type()
-                    .ptr_type(inkwell::AddressSpace::default());
+                let i8_ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
                 let fn_type = self
                     .context
                     .i32_type()
@@ -175,36 +172,96 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_float_div(lhs_float, rhs_float, "fdiv_tmp")
                         .unwrap()
                         .into(),
-                    "eq" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq_tmp")
-                        .unwrap()
-                        .into(),
-                    "ne" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne_tmp")
-                        .unwrap()
-                        .into(),
-                    "lt" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt_tmp")
-                        .unwrap()
-                        .into(),
-                    "le" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle_tmp")
-                        .unwrap()
-                        .into(),
-                    "gt" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt_tmp")
-                        .unwrap()
-                        .into(),
-                    "ge" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge_tmp")
-                        .unwrap()
-                        .into(),
+                    "eq" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OEQ,
+                                lhs_float,
+                                rhs_float,
+                                "feq_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "feq_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "ne" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::ONE,
+                                lhs_float,
+                                rhs_float,
+                                "fne_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fne_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "lt" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OLT,
+                                lhs_float,
+                                rhs_float,
+                                "flt_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "flt_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "le" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OLE,
+                                lhs_float,
+                                rhs_float,
+                                "fle_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fle_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "gt" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OGT,
+                                lhs_float,
+                                rhs_float,
+                                "fgt_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fgt_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "ge" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OGE,
+                                lhs_float,
+                                rhs_float,
+                                "fge_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fge_ext")
+                            .unwrap()
+                            .into()
+                    }
                     _ => {
                         debug_assert!(false, "Unsupported float binary op: {}", op);
                         self.builder
@@ -262,36 +319,97 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_float_div(lhs_float, rhs_float, "fdiv_tmp")
                         .unwrap()
                         .into(),
-                    "eq" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq_tmp")
-                        .unwrap()
-                        .into(),
-                    "ne" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne_tmp")
-                        .unwrap()
-                        .into(),
-                    "lt" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt_tmp")
-                        .unwrap()
-                        .into(),
-                    "le" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle_tmp")
-                        .unwrap()
-                        .into(),
-                    "gt" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt_tmp")
-                        .unwrap()
-                        .into(),
-                    "ge" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge_tmp")
-                        .unwrap()
-                        .into(),
+                    "eq" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OEQ,
+                                lhs_float,
+                                rhs_float,
+                                "feq_tmp",
+                            )
+                            .unwrap();
+                        // Extend i1 to i32 for proper storage and loading
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "feq_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "ne" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::ONE,
+                                lhs_float,
+                                rhs_float,
+                                "fne_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fne_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "lt" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OLT,
+                                lhs_float,
+                                rhs_float,
+                                "flt_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "flt_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "le" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OLE,
+                                lhs_float,
+                                rhs_float,
+                                "fle_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fle_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "gt" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OGT,
+                                lhs_float,
+                                rhs_float,
+                                "fgt_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fgt_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "ge" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OGE,
+                                lhs_float,
+                                rhs_float,
+                                "fge_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fge_ext")
+                            .unwrap()
+                            .into()
+                    }
                     _ => {
                         debug_assert!(false, "Unsupported mixed float binary op: {}", op);
                         self.builder
@@ -331,36 +449,66 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_int_signed_rem(lhs_int, rhs_int, "mod_tmp")
                         .unwrap()
                         .into(),
-                    "eq" => self
-                        .builder
-                        .build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq_tmp")
-                        .unwrap()
-                        .into(),
-                    "ne" => self
-                        .builder
-                        .build_int_compare(IntPredicate::NE, lhs_int, rhs_int, "ne_tmp")
-                        .unwrap()
-                        .into(),
-                    "lt" => self
-                        .builder
-                        .build_int_compare(IntPredicate::SLT, lhs_int, rhs_int, "lt_tmp")
-                        .unwrap()
-                        .into(),
-                    "le" => self
-                        .builder
-                        .build_int_compare(IntPredicate::SLE, lhs_int, rhs_int, "le_tmp")
-                        .unwrap()
-                        .into(),
-                    "gt" => self
-                        .builder
-                        .build_int_compare(IntPredicate::SGT, lhs_int, rhs_int, "gt_tmp")
-                        .unwrap()
-                        .into(),
-                    "ge" => self
-                        .builder
-                        .build_int_compare(IntPredicate::SGE, lhs_int, rhs_int, "ge_tmp")
-                        .unwrap()
-                        .into(),
+                    "eq" => {
+                        let cmp_result = self
+                            .builder
+                            .build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq_tmp")
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "eq_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "ne" => {
+                        let cmp_result = self
+                            .builder
+                            .build_int_compare(IntPredicate::NE, lhs_int, rhs_int, "ne_tmp")
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "ne_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "lt" => {
+                        let cmp_result = self
+                            .builder
+                            .build_int_compare(IntPredicate::SLT, lhs_int, rhs_int, "lt_tmp")
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "lt_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "le" => {
+                        let cmp_result = self
+                            .builder
+                            .build_int_compare(IntPredicate::SLE, lhs_int, rhs_int, "le_tmp")
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "le_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "gt" => {
+                        let cmp_result = self
+                            .builder
+                            .build_int_compare(IntPredicate::SGT, lhs_int, rhs_int, "gt_tmp")
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "gt_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "ge" => {
+                        let cmp_result = self
+                            .builder
+                            .build_int_compare(IntPredicate::SGE, lhs_int, rhs_int, "ge_tmp")
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "ge_ext")
+                            .unwrap()
+                            .into()
+                    }
                     "and" => self
                         .builder
                         .build_and(lhs_int, rhs_int, "and_tmp")
@@ -430,36 +578,96 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_float_div(lhs_float, rhs_float, "fdiv_tmp")
                         .unwrap()
                         .into(),
-                    "eq" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq_tmp")
-                        .unwrap()
-                        .into(),
-                    "ne" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne_tmp")
-                        .unwrap()
-                        .into(),
-                    "lt" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt_tmp")
-                        .unwrap()
-                        .into(),
-                    "le" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle_tmp")
-                        .unwrap()
-                        .into(),
-                    "gt" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt_tmp")
-                        .unwrap()
-                        .into(),
-                    "ge" => self
-                        .builder
-                        .build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge_tmp")
-                        .unwrap()
-                        .into(),
+                    "eq" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OEQ,
+                                lhs_float,
+                                rhs_float,
+                                "feq_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "feq_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "ne" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::ONE,
+                                lhs_float,
+                                rhs_float,
+                                "fne_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fne_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "lt" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OLT,
+                                lhs_float,
+                                rhs_float,
+                                "flt_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "flt_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "le" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OLE,
+                                lhs_float,
+                                rhs_float,
+                                "fle_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fle_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "gt" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OGT,
+                                lhs_float,
+                                rhs_float,
+                                "fgt_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fgt_ext")
+                            .unwrap()
+                            .into()
+                    }
+                    "ge" => {
+                        let cmp_result = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OGE,
+                                lhs_float,
+                                rhs_float,
+                                "fge_tmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_z_extend(cmp_result, self.context.i32_type(), "fge_ext")
+                            .unwrap()
+                            .into()
+                    }
                     _ => {
                         debug_assert!(false, "Unsupported mixed int/float binary op: {}", op);
                         self.builder
@@ -482,6 +690,72 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(sym) = self.symbols.get(dst) {
             self.builder.build_store(sym.ptr, res).unwrap();
         }
+
+        // Track the type of the result for later printing/formatting
+        if matches!(
+            op_name,
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "and" | "or"
+        ) {
+            self.variable_types
+                .insert(dst.to_string(), "Bool".to_string());
+        } else if op_type == "float" {
+            self.variable_types
+                .insert(dst.to_string(), "Float".to_string());
+        } else {
+            self.variable_types
+                .insert(dst.to_string(), "Int".to_string());
+        }
+
         Some(res.into())
+    }
+
+    /// Generate code for increment/decrement statements (i++, i--)
+    /// Converts to equivalent binary operations: i = i + 1 or i = i - 1
+    pub fn generate_increment_decrement(&mut self, variable: &str, op: &str) {
+        // Resolve the variable value
+        let var_val = self.resolve_value(variable);
+
+        // Determine if the variable is int or float and perform the operation
+        let result: BasicValueEnum<'ctx> = if var_val.is_float_value() {
+            let var_float = var_val.into_float_value();
+            let one_float = self.context.f64_type().const_float(1.0);
+            match op {
+                "++" => self
+                    .builder
+                    .build_float_add(var_float, one_float, "inc_float")
+                    .unwrap()
+                    .into(),
+                "--" => self
+                    .builder
+                    .build_float_sub(var_float, one_float, "dec_float")
+                    .unwrap()
+                    .into(),
+                _ => var_val, // Should not happen due to analyzer validation
+            }
+        } else {
+            let var_int = var_val.into_int_value();
+            let one_int = self.context.i32_type().const_int(1, false);
+            match op {
+                "++" => self
+                    .builder
+                    .build_int_add(var_int, one_int, "inc_int")
+                    .unwrap()
+                    .into(),
+                "--" => self
+                    .builder
+                    .build_int_sub(var_int, one_int, "dec_int")
+                    .unwrap()
+                    .into(),
+                _ => var_val, // Should not happen due to analyzer validation
+            }
+        };
+
+        // Store the result back to the variable
+        if let Some(sym) = self.symbols.get(variable) {
+            self.builder.build_store(sym.ptr, result).unwrap();
+        }
+
+        // Update temp_values
+        self.temp_values.insert(variable.to_string(), result);
     }
 }
