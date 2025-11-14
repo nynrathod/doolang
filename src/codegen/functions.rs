@@ -1,6 +1,6 @@
 use crate::codegen::core::CodeGen;
 use crate::mir::mir::{CodegenBlock, MirBlock, MirFunction, MirInstr, MirProgram, MirTerminator};
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, StructType};
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
 use std::collections::HashMap;
@@ -13,6 +13,8 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn generate_program(&mut self, program: &MirProgram) {
         // Initialize RC runtime FIRST to ensure reference counting functions are available.
         self.init_rc_runtime();
+        // Declare builtin string conversion functions.
+        self.declare_builtin_functions();
 
         // Store the global instructions for later use (e.g., initialization).
         self.globals = program.globals.clone();
@@ -21,6 +23,26 @@ impl<'ctx> CodeGen<'ctx> {
         // This allows functions to call each other regardless of definition order
         for func in &program.functions {
             self.predeclare_function(func);
+        }
+
+        // Pre-scan all functions to populate return types and mark those returning heap-allocated types
+        // This ensures both function_return_types and functions_returning_heap are populated
+        // BEFORE we generate function bodies, so that function calls can properly detect
+        // which functions return heap values and what their return types are
+        for func in &program.functions {
+            if let Some(ref ret_type_str) = func.return_type {
+                // Store the return type for all functions
+                self.function_return_types
+                    .insert(func.name.clone(), ret_type_str.clone());
+
+                // Mark functions that return heap-allocated types
+                if ret_type_str.contains("Array")
+                    || ret_type_str.contains("Map")
+                    || ret_type_str.contains("Str")
+                {
+                    self.functions_returning_heap.insert(func.name.clone());
+                }
+            }
         }
 
         // --- PRE-PROCESSING ---
@@ -84,6 +106,8 @@ impl<'ctx> CodeGen<'ctx> {
                     .fn_type(&param_types, false)
             } else if ret_type_str.contains("Float") {
                 self.context.f64_type().fn_type(&param_types, false)
+            } else if ret_type_str.contains("Bool") {
+                self.context.bool_type().fn_type(&param_types, false)
             } else {
                 self.context.i32_type().fn_type(&param_types, false)
             }
@@ -104,11 +128,114 @@ impl<'ctx> CodeGen<'ctx> {
                 self.context.ptr_type(AddressSpace::default()).into()
             } else if type_str.contains("Float") {
                 self.context.f64_type().into()
+            } else if type_str.contains("Bool") {
+                self.context.bool_type().into()
             } else {
                 self.context.i32_type().into()
             }
         } else {
             self.context.i32_type().into()
+        }
+    }
+
+    /// Extract the element type from an Array type string
+    /// Format: "Array(Int)", "Array(Str)", etc.
+    fn extract_array_element_type(type_str: &str) -> &str {
+        if type_str.contains("Array(Str)") {
+            "Str"
+        } else if type_str.contains("Array(Float)") {
+            "Float"
+        } else if type_str.contains("Array(Bool)") {
+            "Bool"
+        } else {
+            "Int" // default
+        }
+    }
+
+    /// Extract key and value types from a Map type string
+    /// Format: "Map(key,value) format
+    fn extract_map_types(type_str: &str) -> (&str, &str) {
+        // Handle Map(key,value) format
+        if type_str.contains("Map(Str,Str)") || type_str.contains("Map(String,String)") {
+            ("Str", "Str")
+        } else if type_str.contains("Map(Str,Int)") || type_str.contains("Map(String,Int)") {
+            ("Str", "Int")
+        } else if type_str.contains("Map(Str,Float)") || type_str.contains("Map(String,Float)") {
+            ("Str", "Float")
+        } else if type_str.contains("Map(Str,Bool)") || type_str.contains("Map(String,Bool)") {
+            ("Str", "Bool")
+        } else if type_str.contains("Map(Int,Str)") || type_str.contains("Map(Int,String)") {
+            ("Int", "Str")
+        } else if type_str.contains("Map(Int,Int)") {
+            ("Int", "Int")
+        } else if type_str.contains("Map(Int,Float)") {
+            ("Int", "Float")
+        } else if type_str.contains("Map(Int,Bool)") {
+            ("Int", "Bool")
+        } else {
+            ("Int", "Int") // default
+        }
+    }
+
+    /// Extract element type from Array return type string
+    /// Format: "Array(Int)", "Array(Str)", etc.
+    pub fn extract_array_element_type_from_return(type_str: &str) -> &str {
+        if type_str.contains("Array(Str)") {
+            "Str"
+        } else if type_str.contains("Array(Float)") {
+            "Float"
+        } else if type_str.contains("Array(Bool)") {
+            "Bool"
+        } else {
+            "Int" // default
+        }
+    }
+
+    /// Extract key and value types from a Map return type string
+    /// Format: "Map(Str,Int)", "Map(Int,Float)", etc.
+    pub fn extract_map_types_from_return(type_str: &str) -> (&str, &str) {
+        // Handle Map(key,value) format
+        // String key types
+        if type_str.contains("Map(Str,Str)") {
+            ("Str", "Str")
+        } else if type_str.contains("Map(Str,Float)") {
+            ("Str", "Float")
+        } else if type_str.contains("Map(Str,Bool)") {
+            ("Str", "Bool")
+        } else if type_str.contains("Map(Str,Int)") {
+            ("Str", "Int")
+        }
+        // Int key types
+        else if type_str.contains("Map(Int,Str)") {
+            ("Int", "Str")
+        } else if type_str.contains("Map(Int,Float)") {
+            ("Int", "Float")
+        } else if type_str.contains("Map(Int,Bool)") {
+            ("Int", "Bool")
+        } else if type_str.contains("Map(Int,Int)") {
+            ("Int", "Int")
+        }
+        // Float key types
+        else if type_str.contains("Map(Float,Str)") {
+            ("Float", "Str")
+        } else if type_str.contains("Map(Float,Float)") {
+            ("Float", "Float")
+        } else if type_str.contains("Map(Float,Bool)") {
+            ("Float", "Bool")
+        } else if type_str.contains("Map(Float,Int)") {
+            ("Float", "Int")
+        }
+        // Bool key types
+        else if type_str.contains("Map(Bool,Str)") {
+            ("Bool", "Str")
+        } else if type_str.contains("Map(Bool,Float)") {
+            ("Bool", "Float")
+        } else if type_str.contains("Map(Bool,Bool)") {
+            ("Bool", "Bool")
+        } else if type_str.contains("Map(Bool,Int)") {
+            ("Bool", "Int")
+        } else {
+            ("Int", "Int") // default
         }
     }
 
@@ -169,18 +296,20 @@ impl<'ctx> CodeGen<'ctx> {
         self.symbols.clear();
         self.temp_values.clear();
         self.heap_strings.clear();
-        self.heap_arrays.clear();
-        self.heap_maps.clear();
-        self.array_metadata.clear();
-        self.map_metadata.clear();
+        // DO NOT clear heap_arrays and heap_maps!
+        // They track return values from function calls within this function's body
+        // and need to persist so print can detect them as arrays/maps
+        // self.heap_arrays.clear();
+        // self.heap_maps.clear();
+        // DO NOT clear array_metadata and map_metadata here!
+        // They need to persist to track results from function calls within this function
+        // self.array_metadata.clear();
+        // self.map_metadata.clear();
         self.composite_string_ptrs.clear();
         self.composite_strings.clear();
 
-        // Store function return type for RC tracking when this function is called
-        if let Some(ref ret_type_str) = func.return_type {
-            self.function_return_types
-                .insert(func.name.clone(), ret_type_str.clone());
-        }
+        // Note: function return types are already stored in the pre-scan phase above
+        // No need to store them again here
 
         // Track function parameters for RC handling on return
         self.current_function_params.clear();
@@ -205,6 +334,8 @@ impl<'ctx> CodeGen<'ctx> {
                         self.context.ptr_type(AddressSpace::default()).into()
                     } else if type_str.contains("Float") {
                         self.context.f64_type().into()
+                    } else if type_str.contains("Bool") {
+                        self.context.bool_type().into()
                     } else {
                         self.context.i32_type().into()
                     }
@@ -236,6 +367,8 @@ impl<'ctx> CodeGen<'ctx> {
                     .fn_type(&param_types, false)
             } else if ret_type_str.contains("Float") {
                 self.context.f64_type().fn_type(&param_types, false)
+            } else if ret_type_str.contains("Bool") {
+                self.context.bool_type().fn_type(&param_types, false)
             } else {
                 self.context.i32_type().fn_type(&param_types, false)
             }
@@ -303,6 +436,8 @@ impl<'ctx> CodeGen<'ctx> {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Float") {
                     self.context.f64_type().into()
+                } else if type_str.contains("Bool") {
+                    self.context.bool_type().into()
                 } else {
                     self.context.i32_type().into()
                 }
@@ -315,7 +450,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_alloca(param_type, param)
                 .expect("Failed to allocate function parameter");
 
-            self.builder.build_store(alloca, param_val);
+            // Store the incoming parameter value into the allocated space
+            self.builder
+                .build_store(alloca, param_val)
+                .expect("Failed to store parameter value");
 
             // Register the parameter in the symbol table for future lookups.
             self.symbols.insert(
@@ -330,15 +468,8 @@ impl<'ctx> CodeGen<'ctx> {
             // This is crucial for imported functions to work with arrays/maps
             if let Some(Some(ref type_str)) = func.param_types.get(i) {
                 if type_str.contains("Array") {
-                    // Extract element type from Array<Type> format
-                    let element_type = if type_str.contains("Array<Int>") {
-                        "Int"
-                    } else if type_str.contains("Array<Str>") || type_str.contains("Array<String>")
-                    {
-                        "Str"
-                    } else {
-                        "Int" // default
-                    };
+                    // Extract element type from Array(Type) format
+                    let element_type = Self::extract_array_element_type(type_str);
 
                     let contains_strings = element_type == "Str";
 
@@ -357,20 +488,8 @@ impl<'ctx> CodeGen<'ctx> {
                     // Also store the parameter value so it can be resolved
                     self.temp_values.insert(param.clone(), param_val);
                 } else if type_str.contains("Map") {
-                    // Extract key and value types from Map<Key, Value> format
-                    let (key_type, value_type) = if type_str.contains("Map<Str")
-                        || type_str.contains("Map<String")
-                    {
-                        if type_str.contains(", Int>") {
-                            ("Str", "Int")
-                        } else if type_str.contains(", Str>") || type_str.contains(", String>") {
-                            ("Str", "Str")
-                        } else {
-                            ("Str", "Int") // default
-                        }
-                    } else {
-                        ("Int", "Int") // default
-                    };
+                    // Extract key and value types from Map(Key,Value) format
+                    let (key_type, value_type) = Self::extract_map_types(type_str);
 
                     let key_is_string = key_type == "Str";
                     let value_is_string = value_type == "Str";
@@ -659,7 +778,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Convert MIR block terminators to a unified structure for easier handling.
         // This simplifies codegen for control flow instructions.
-        let codegen_blocks: Vec<CodegenBlock> = func
+        let _: Vec<CodegenBlock> = func
             .blocks
             .iter()
             // The map operation transforms the block structure to handle terminators uniformly.
@@ -1096,7 +1215,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         term: &MirTerminator,
         func: FunctionValue<'ctx>,
-        bb_map: &HashMap<String, inkwell::basic_block::BasicBlock<'ctx>>,
+        _bb_map: &HashMap<String, inkwell::basic_block::BasicBlock<'ctx>>,
     ) {
         match term {
             // Handles function return.
@@ -1266,48 +1385,59 @@ impl<'ctx> CodeGen<'ctx> {
                         self.functions_returning_heap.insert(fn_name.to_string());
                     }
 
-                    // Check if we're returning a function parameter that needs RC increment
-                    let needs_incref =
-                        self.current_function_params
-                            .iter()
-                            .any(|(param_name, param_type)| {
-                                if param_name == return_value_name {
-                                    // Check if this parameter is RC-typed
-                                    if let Some(type_str) = param_type {
-                                        return type_str.contains("String")
-                                            || type_str.contains("Str")
-                                            || type_str.contains("Array")
-                                            || type_str.contains("Map");
-                                    }
-                                }
-                                false
-                            });
-
                     let val = self.resolve_value(return_value_name);
 
-                    // If returning an RC-typed parameter, mark function as returning heap
-                    // and incref it (caller expects ownership)
-                    if needs_incref {
+                    // Check if we're returning a locally-created heap value (not a parameter)
+                    // Only locally-created heap values have RC headers that we should increment
+                    let is_local_heap_value = self.heap_strings.contains(return_value_name)
+                        || self.heap_arrays.contains(return_value_name)
+                        || self.heap_maps.contains(return_value_name);
+
+                    if is_local_heap_value {
                         let fn_name = func.get_name().to_str().unwrap();
                         self.functions_returning_heap.insert(fn_name.to_string());
-                    }
 
-                    if needs_incref && val.is_pointer_value() {
-                        let ptr = val.into_pointer_value();
-                        let rc_header = unsafe {
-                            self.builder.build_in_bounds_gep(
-                                self.context.i8_type(),
-                                ptr,
-                                &[self.context.i32_type().const_int((-8_i32) as u64, true)],
-                                "return_rc_header",
-                            )
-                        }
-                        .unwrap();
-
-                        let incref_fn = self.incref_fn.unwrap();
-                        self.builder
-                            .build_call(incref_fn, &[rc_header.into()], "")
+                        // Only call incref if this is a locally-created heap value with an RC header
+                        if val.is_pointer_value() {
+                            let ptr = val.into_pointer_value();
+                            let rc_header = unsafe {
+                                self.builder.build_in_bounds_gep(
+                                    self.context.i8_type(),
+                                    ptr,
+                                    &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                                    "return_rc_header",
+                                )
+                            }
                             .unwrap();
+
+                            let incref_fn = self.incref_fn.unwrap();
+                            self.builder
+                                .build_call(incref_fn, &[rc_header.into()], "")
+                                .unwrap();
+                        }
+                    } else {
+                        // If returning an RC-typed parameter (not a locally-created value),
+                        // just mark the function as returning heap but DON'T incref
+                        // (parameters are owned by caller, not this function)
+                        let is_rc_param =
+                            self.current_function_params
+                                .iter()
+                                .any(|(param_name, param_type)| {
+                                    if param_name == return_value_name {
+                                        if let Some(type_str) = param_type {
+                                            return type_str.contains("String")
+                                                || type_str.contains("Str")
+                                                || type_str.contains("Array")
+                                                || type_str.contains("Map");
+                                        }
+                                    }
+                                    false
+                                });
+
+                        if is_rc_param {
+                            let fn_name = func.get_name().to_str().unwrap();
+                            self.functions_returning_heap.insert(fn_name.to_string());
+                        }
                     }
 
                     self.builder.build_return(Some(&val)).unwrap();
@@ -1315,9 +1445,9 @@ impl<'ctx> CodeGen<'ctx> {
             }
             // Handles unconditional jump (goto).
             MirTerminator::Jump { target } => {
-                let target_bb = bb_map.get(target).expect("Target BB not found");
-                // Generates `br label %target`
-                self.builder.build_unconditional_branch(*target_bb);
+                if let Some(target_bb) = _bb_map.get(target) {
+                    self.builder.build_unconditional_branch(*target_bb).unwrap();
+                }
             }
             // Handles conditional jump (if/else).
             MirTerminator::CondJump {
@@ -1351,11 +1481,14 @@ impl<'ctx> CodeGen<'ctx> {
                     self.context.i32_type().const_zero()
                 };
 
-                let then_bb = bb_map.get(then_block).expect("Then BB not found");
-                let else_bb = bb_map.get(else_block).expect("Else BB not found");
-                // Generates `br i1 %cond, label %then, label %else`
-                self.builder
-                    .build_conditional_branch(cond_i1, *then_bb, *else_bb);
+                // Emit conditional branch
+                if let (Some(then_bb), Some(else_bb)) =
+                    (_bb_map.get(then_block), _bb_map.get(else_block))
+                {
+                    self.builder
+                        .build_conditional_branch(cond_i1, *then_bb, *else_bb)
+                        .unwrap();
+                }
             }
         }
     }
@@ -1471,8 +1604,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // If this is a loop body, handle increment and loop back.
         if is_loop_body {
-            if let (Some(var), Some(inc_bb), Some(cond_bb)) =
-                (loop_var, loop_increment_bb, loop_cond_bb)
+            if let (Some(var), Some(_), Some(cond_bb)) = (loop_var, loop_increment_bb, loop_cond_bb)
             {
                 // Generate increment: var = var + 1
                 if let Some(symbol) = self.symbols.get(&var) {

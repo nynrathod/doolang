@@ -38,7 +38,9 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Store metadata
         // Check if this is a bool array by seeing if all elements are 0 or 1
-        let element_type_name = if elem_type.is_int_type() {
+        let element_type_name = if elem_type.is_float_type() {
+            "Float"
+        } else if elem_type.is_int_type() {
             // Heuristic: if all values are 0 or 1, treat as Bool array
             let all_bool_like = element_values.iter().all(|v| {
                 if let Some(int_val) = v.into_int_value().get_zero_extended_constant() {
@@ -423,8 +425,25 @@ impl<'ctx> CodeGen<'ctx> {
             .build_call(printf_fn, &[open_bracket.as_pointer_value().into()], "")
             .unwrap();
 
-        // Get array metadata
-        let metadata = self.array_metadata.get(array_name).cloned();
+        // Get array metadata - try multiple name variations
+        let mut metadata = self.array_metadata.get(array_name).cloned();
+
+        // If not found, try variations
+        if metadata.is_none() {
+            let variations = vec![
+                array_name.trim_start_matches('%').to_string(),
+                array_name.trim_end_matches("_array").to_string(),
+                format!("{}_array", array_name),
+                format!("{}_array", array_name.trim_start_matches('%')),
+            ];
+
+            for var in variations {
+                if let Some(meta) = self.array_metadata.get(&var).cloned() {
+                    metadata = Some(meta);
+                    break;
+                }
+            }
+        }
 
         if let Some(metadata) = metadata {
             // Get pointer to the array data
@@ -448,6 +467,8 @@ impl<'ctx> CodeGen<'ctx> {
                 self.context
                     .ptr_type(AddressSpace::default())
                     .as_basic_type_enum()
+            } else if metadata.element_type == "Float" {
+                self.context.f64_type().as_basic_type_enum()
             } else {
                 self.context.i32_type().as_basic_type_enum()
             };
@@ -462,28 +483,43 @@ impl<'ctx> CodeGen<'ctx> {
                 )
                 .unwrap();
 
-            // Read heap length (for slices and dynamic arrays)
-            let heap_len_ptr = unsafe {
+            // Read heap length from header
+            // Array layout: [RC: 4 bytes][Length: 4 bytes][data...]
+            // Data pointer is at offset +8, so RC header is at -8
+            // Length field is at -8 + 4 = -4
+            let rc_header_ptr = unsafe {
                 self.builder
                     .build_gep(
                         self.context.i8_type(),
                         array_ptr,
-                        &[self.context.i32_type().const_int((-4_i32) as u64, true)],
-                        "heap_len_ptr_print",
+                        &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                        "rc_header_ptr_print",
                     )
                     .unwrap()
             };
-            let heap_len_ptr_cast = self
+
+            let len_field_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        self.context.i8_type(),
+                        rc_header_ptr,
+                        &[self.context.i32_type().const_int(4, false)],
+                        "len_field_ptr_print",
+                    )
+                    .unwrap()
+            };
+
+            let len_ptr_cast = self
                 .builder
                 .build_pointer_cast(
-                    heap_len_ptr,
+                    len_field_ptr,
                     self.context.ptr_type(AddressSpace::default()),
-                    "heap_len_ptr_cast_print",
+                    "len_ptr_cast_print",
                 )
                 .unwrap();
             let heap_len = self
                 .builder
-                .build_load(self.context.i32_type(), heap_len_ptr_cast, "heap_len_print")
+                .build_load(self.context.i32_type(), len_ptr_cast, "heap_len_print")
                 .unwrap()
                 .into_int_value();
 
@@ -655,6 +691,30 @@ impl<'ctx> CodeGen<'ctx> {
 
                 self.builder
                     .build_call(printf_fn, &[final_format.into()], "")
+                    .unwrap();
+            } else if metadata.element_type == "Float" {
+                let with_comma = self
+                    .builder
+                    .build_global_string_ptr("%f, ", "array_elem_fmt_comma_float")
+                    .unwrap();
+                let without_comma = self
+                    .builder
+                    .build_global_string_ptr("%f", "array_elem_fmt_no_comma_float")
+                    .unwrap();
+
+                let format_global = self
+                    .builder
+                    .build_select(
+                        is_last_element,
+                        without_comma.as_pointer_value(),
+                        with_comma.as_pointer_value(),
+                        "select_format_str_float",
+                    )
+                    .unwrap()
+                    .into_pointer_value();
+
+                self.builder
+                    .build_call(printf_fn, &[format_global.into(), elem_val.into()], "")
                     .unwrap();
             } else {
                 let with_comma = self

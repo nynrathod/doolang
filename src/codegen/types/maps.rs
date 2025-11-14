@@ -52,6 +52,7 @@ impl<'ctx> CodeGen<'ctx> {
         // Determine if keys/values are strings based on actual type
         // BUT: exclude string constants (which are globals, not heap-allocated)
         // String constants don't have RC headers, so we should NOT incref them
+        // Note: we'll update these based on type hints if available
         let key_is_string = key_type.is_pointer_type();
         let value_is_string = val_type.is_pointer_type();
 
@@ -74,21 +75,34 @@ impl<'ctx> CodeGen<'ctx> {
             self.composite_strings.insert(name.to_string(), str_temps);
         }
 
-        let key_type_name = if key_type.is_int_type() {
+        // Use type hints if available, otherwise infer from LLVM types
+        let key_type_name = if let Some(hint) = key_type_hint {
+            hint
+        } else if key_type.is_int_type() {
             "Int"
+        } else if key_type.is_float_type() {
+            "Float"
         } else if key_type.is_pointer_type() {
             "Str"
         } else {
             "Unknown"
         };
 
-        let val_type_name = if val_type.is_int_type() {
+        let val_type_name = if let Some(hint) = value_type_hint {
+            hint
+        } else if val_type.is_int_type() {
             "Int"
+        } else if val_type.is_float_type() {
+            "Float"
         } else if val_type.is_pointer_type() {
             "Str"
         } else {
             "Unknown"
         };
+
+        // Update string flags based on actual type names
+        let key_is_string_actual = key_type_name == "Str";
+        let value_is_string_actual = val_type_name == "Str";
 
         self.map_metadata.insert(
             name.to_string(),
@@ -96,8 +110,8 @@ impl<'ctx> CodeGen<'ctx> {
                 length: entries.len(),
                 key_type: key_type_name.to_string(),
                 value_type: val_type_name.to_string(),
-                key_is_string,
-                value_is_string,
+                key_is_string: key_is_string_actual,
+                value_is_string: value_is_string_actual,
                 key_needs_rc: key_is_heap_string,
                 value_needs_rc: value_is_heap_string,
             },
@@ -457,8 +471,25 @@ impl<'ctx> CodeGen<'ctx> {
             .build_call(printf_fn, &[open_brace.as_pointer_value().into()], "")
             .unwrap();
 
-        // Get map metadata
-        let metadata = self.map_metadata.get(map_name).cloned();
+        // Get map metadata - try multiple name variations
+        let mut metadata = self.map_metadata.get(map_name).cloned();
+
+        // If not found, try variations
+        if metadata.is_none() {
+            let variations = vec![
+                map_name.trim_start_matches('%').to_string(),
+                map_name.trim_end_matches("_map").to_string(),
+                format!("{}_map", map_name),
+                format!("{}_map", map_name.trim_start_matches('%')),
+            ];
+
+            for var in variations {
+                if let Some(meta) = self.map_metadata.get(&var).cloned() {
+                    metadata = Some(meta);
+                    break;
+                }
+            }
+        }
 
         if let Some(metadata) = metadata {
             // Get pointer to the map data
@@ -478,20 +509,24 @@ impl<'ctx> CodeGen<'ctx> {
                 self.resolve_value(map_name).into_pointer_value()
             };
 
-            let key_type = if metadata.key_type == "Str" {
-                self.context
+            let key_type = match metadata.key_type.as_str() {
+                "Str" => self
+                    .context
                     .ptr_type(AddressSpace::default())
-                    .as_basic_type_enum()
-            } else {
-                self.context.i32_type().as_basic_type_enum()
+                    .as_basic_type_enum(),
+                "Float" => self.context.f64_type().as_basic_type_enum(),
+                "Bool" => self.context.i32_type().as_basic_type_enum(),
+                _ => self.context.i32_type().as_basic_type_enum(), // Int or default
             };
 
-            let val_type = if metadata.value_type == "Str" {
-                self.context
+            let val_type = match metadata.value_type.as_str() {
+                "Str" => self
+                    .context
                     .ptr_type(AddressSpace::default())
-                    .as_basic_type_enum()
-            } else {
-                self.context.i32_type().as_basic_type_enum()
+                    .as_basic_type_enum(),
+                "Float" => self.context.f64_type().as_basic_type_enum(),
+                "Bool" => self.context.i32_type().as_basic_type_enum(),
+                _ => self.context.i32_type().as_basic_type_enum(), // Int or default
             };
 
             let pair_type = self.context.struct_type(&[key_type, val_type], false);
@@ -647,7 +682,48 @@ impl<'ctx> CodeGen<'ctx> {
                         "",
                     )
                     .unwrap();
+            } else if metadata.key_type == "Float" {
+                let key_fmt = self
+                    .builder
+                    .build_global_string_ptr("%.6g: ", "key_fmt")
+                    .unwrap();
+                let key_float = key_val.into_float_value();
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[key_fmt.as_pointer_value().into(), key_float.into()],
+                        "",
+                    )
+                    .unwrap();
+            } else if metadata.key_type == "Bool" {
+                // Bool: print as "true" or "false"
+                let key_int = key_val.into_int_value();
+                let is_true = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        key_int,
+                        self.context.i32_type().const_zero(),
+                        "is_true_key",
+                    )
+                    .unwrap();
+                let true_str = self
+                    .builder
+                    .build_global_string_ptr("true: ", "true_str_key")
+                    .unwrap();
+                let false_str = self
+                    .builder
+                    .build_global_string_ptr("false: ", "false_str_key")
+                    .unwrap();
+                let key_fmt = self
+                    .builder
+                    .build_select(is_true, true_str, false_str, "key_fmt_bool")
+                    .unwrap();
+                self.builder
+                    .build_call(printf_fn, &[key_fmt.into()], "")
+                    .unwrap();
             } else {
+                // Int
                 let key_fmt = self
                     .builder
                     .build_global_string_ptr("%d: ", "key_fmt")
@@ -699,7 +775,84 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builder
                     .build_call(printf_fn, &[val_fmt.into(), val_val.into()], "")
                     .unwrap();
+            } else if metadata.value_type == "Float" {
+                let val_fmt_with_comma = self
+                    .builder
+                    .build_global_string_ptr("%.6g, ", "val_fmt_comma")
+                    .unwrap();
+                let val_fmt_no_comma = self
+                    .builder
+                    .build_global_string_ptr("%.6g", "val_fmt_no_comma")
+                    .unwrap();
+
+                let val_fmt = self
+                    .builder
+                    .build_select(is_last, val_fmt_no_comma, val_fmt_with_comma, "val_fmt")
+                    .unwrap();
+
+                let val_float = val_val.into_float_value();
+                self.builder
+                    .build_call(printf_fn, &[val_fmt.into(), val_float.into()], "")
+                    .unwrap();
+            } else if metadata.value_type == "Bool" {
+                // Bool: print as "true" or "false" with conditional comma
+                let val_int = val_val.into_int_value();
+                let is_true = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        val_int,
+                        self.context.i32_type().const_zero(),
+                        "is_true_val",
+                    )
+                    .unwrap();
+
+                let true_str_comma = self
+                    .builder
+                    .build_global_string_ptr("true, ", "true_str_val_comma")
+                    .unwrap();
+                let true_str_no_comma = self
+                    .builder
+                    .build_global_string_ptr("true", "true_str_val_no_comma")
+                    .unwrap();
+                let false_str_comma = self
+                    .builder
+                    .build_global_string_ptr("false, ", "false_str_val_comma")
+                    .unwrap();
+                let false_str_no_comma = self
+                    .builder
+                    .build_global_string_ptr("false", "false_str_val_no_comma")
+                    .unwrap();
+
+                let val_fmt_comma = self
+                    .builder
+                    .build_select(
+                        is_true,
+                        true_str_comma,
+                        false_str_comma,
+                        "val_fmt_bool_comma",
+                    )
+                    .unwrap();
+                let val_fmt_no_comma = self
+                    .builder
+                    .build_select(
+                        is_true,
+                        true_str_no_comma,
+                        false_str_no_comma,
+                        "val_fmt_bool_no_comma",
+                    )
+                    .unwrap();
+
+                let val_fmt = self
+                    .builder
+                    .build_select(is_last, val_fmt_no_comma, val_fmt_comma, "val_fmt_bool")
+                    .unwrap();
+
+                self.builder
+                    .build_call(printf_fn, &[val_fmt.into()], "")
+                    .unwrap();
             } else {
+                // Int
                 let val_fmt_with_comma = self
                     .builder
                     .build_global_string_ptr("%d, ", "val_fmt_comma")

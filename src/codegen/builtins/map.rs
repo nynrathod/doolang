@@ -15,14 +15,6 @@ impl<'ctx> CodeGen<'ctx> {
             "get" => {
                 // Implement map.get(key) with linear search through key-value pairs
                 if let Some(metadata) = self.map_metadata.get(object) {
-                    if metadata.length == 0 {
-                        // Empty map, return default
-                        let default_val = self.context.i32_type().const_int(0, false);
-                        self.temp_values
-                            .insert(dest.to_string(), default_val.into());
-                        return Some(default_val.into());
-                    }
-
                     let key_val = self.resolve_value(&args[0]);
                     let map_ptr = self.resolve_value(object).into_pointer_value();
 
@@ -39,21 +31,80 @@ impl<'ctx> CodeGen<'ctx> {
                         self.context
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()
+                    } else if metadata.value_type.contains("Float") {
+                        self.context.f64_type().into()
                     } else {
                         self.context.i32_type().into()
                     };
 
                     // Create struct type for key-value pair
                     let pair_type = self.context.struct_type(&[key_type, val_type], false);
-                    let map_type = pair_type.array_type(metadata.length as u32);
 
-                    // Search through pairs
+                    // Get the runtime length from map header if metadata.length is 0 (parameter case)
+                    let length_val = if metadata.length == 0 {
+                        // Read length from map header at offset 4 bytes from RC header
+                        // RC header is 8 bytes before the data pointer
+                        let rc_header_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    map_ptr,
+                                    &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                                    "rc_header_ptr_get",
+                                )
+                                .unwrap()
+                        };
+
+                        let len_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    rc_header_ptr,
+                                    &[self.context.i32_type().const_int(4, false)],
+                                    "len_ptr_get",
+                                )
+                                .unwrap()
+                        };
+
+                        let len_ptr_cast = self
+                            .builder
+                            .build_pointer_cast(
+                                len_ptr,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "len_ptr_cast_get",
+                            )
+                            .unwrap();
+
+                        self.builder
+                            .build_load(self.context.i32_type(), len_ptr_cast, "runtime_len")
+                            .unwrap()
+                            .into_int_value()
+                    } else {
+                        // Use static metadata length
+                        self.context
+                            .i32_type()
+                            .const_int(metadata.length as u64, false)
+                    };
+
+                    // Check if map is empty
+                    let zero = self.context.i32_type().const_int(0, false);
+                    let is_empty = self
+                        .builder
+                        .build_int_compare(inkwell::IntPredicate::EQ, length_val, zero, "is_empty")
+                        .unwrap();
+
                     let current_fn = self
                         .builder
                         .get_insert_block()
                         .unwrap()
                         .get_parent()
                         .unwrap();
+
+                    // Declare all blocks upfront
+                    let empty_block = self.context.append_basic_block(current_fn, "map_get_empty");
+                    let search_block = self
+                        .context
+                        .append_basic_block(current_fn, "map_get_search");
                     let loop_block = self.context.append_basic_block(current_fn, "map_get_loop");
                     let check_block = self.context.append_basic_block(current_fn, "map_get_check");
                     let found_block = self.context.append_basic_block(current_fn, "map_get_found");
@@ -61,6 +112,30 @@ impl<'ctx> CodeGen<'ctx> {
                         .context
                         .append_basic_block(current_fn, "map_get_not_found");
                     let after_block = self.context.append_basic_block(current_fn, "map_get_after");
+
+                    self.builder
+                        .build_conditional_branch(is_empty, empty_block, search_block)
+                        .unwrap();
+
+                    // Empty map case
+                    self.builder.position_at_end(empty_block);
+                    let empty_default_val: BasicValueEnum = if metadata.value_is_string {
+                        self.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .const_null()
+                            .into()
+                    } else if metadata.value_type.contains("Float") {
+                        self.context.f64_type().const_float(0.0).into()
+                    } else {
+                        self.context.i32_type().const_int(0, false).into()
+                    };
+                    self.builder
+                        .build_unconditional_branch(after_block)
+                        .unwrap();
+                    let empty_bb = self.builder.get_insert_block().unwrap();
+
+                    // Search case
+                    self.builder.position_at_end(search_block);
 
                     // Counter for loop
                     let counter_ptr = self
@@ -80,24 +155,28 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_load(self.context.i32_type(), counter_ptr, "counter")
                         .unwrap()
                         .into_int_value();
-                    let length = self
-                        .context
-                        .i32_type()
-                        .const_int(metadata.length as u64, false);
                     let cmp = self
                         .builder
-                        .build_int_compare(inkwell::IntPredicate::ULT, counter, length, "cmp")
+                        .build_int_compare(inkwell::IntPredicate::ULT, counter, length_val, "cmp")
                         .unwrap();
                     self.builder
                         .build_conditional_branch(cmp, check_block, not_found_block)
                         .unwrap();
+
+                    // Make a copy of map_type for use in search block
+                    let map_type_search = if metadata.length > 0 {
+                        pair_type.array_type(metadata.length as u32)
+                    } else {
+                        // For parameters, use a very large array type
+                        pair_type.array_type(1000)
+                    };
 
                     // Check block: load key and compare
                     self.builder.position_at_end(check_block);
                     let pair_ptr = unsafe {
                         self.builder
                             .build_gep(
-                                map_type,
+                                map_type_search,
                                 map_ptr,
                                 &[self.context.i32_type().const_zero(), counter],
                                 "pair_ptr",
@@ -194,7 +273,7 @@ impl<'ctx> CodeGen<'ctx> {
                     let found_pair_ptr = unsafe {
                         self.builder
                             .build_gep(
-                                map_type,
+                                map_type_search,
                                 map_ptr,
                                 &[self.context.i32_type().const_zero(), counter],
                                 "found_pair_ptr",
@@ -220,6 +299,8 @@ impl<'ctx> CodeGen<'ctx> {
                             .ptr_type(inkwell::AddressSpace::default())
                             .const_null()
                             .into()
+                    } else if metadata.value_type.contains("Float") {
+                        self.context.f64_type().const_float(0.0).into()
                     } else {
                         self.context.i32_type().const_int(0, false).into()
                     };
@@ -230,13 +311,17 @@ impl<'ctx> CodeGen<'ctx> {
                     // After: phi node
                     self.builder.position_at_end(after_block);
                     let phi = self.builder.build_phi(val_type, "map_get_result").unwrap();
-                    phi.add_incoming(&[(&found_val, found_block), (&default_val, not_found_block)]);
+                    phi.add_incoming(&[
+                        (&found_val, found_block),
+                        (&default_val, not_found_block),
+                        (&empty_default_val, empty_bb),
+                    ]);
                     let result = phi.as_basic_value();
 
                     self.temp_values.insert(dest.to_string(), result);
-                    if metadata.value_is_string {
-                        self.heap_strings.insert(dest.to_string());
-                    }
+                    // NOTE: Don't mark map value results as heap strings!
+                    // String values from maps are embedded in the map structure,
+                    // not owned by this function. They should NOT be reference counted or freed.
                     Some(result)
                 } else {
                     None

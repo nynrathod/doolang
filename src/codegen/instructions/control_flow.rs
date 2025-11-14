@@ -52,27 +52,21 @@ impl<'ctx> CodeGen<'ctx> {
                 self.temp_values.insert(dest_name.clone(), result);
 
                 // Check if this function is known to return heap-allocated values
-                if self.functions_returning_heap.contains(func) {
+                // Use actual_func_name in case func was an alias
+                if self.functions_returning_heap.contains(&actual_func_name) {
                     if result.is_pointer_value() {
                         // Mark the result as heap-allocated based on return type
-                        if let Some(return_type_str) = self.function_return_types.get(func) {
-                            if return_type_str.contains("Str") || return_type_str.contains("String")
-                            {
-                                self.heap_strings.insert(dest_name.clone());
-                            } else if return_type_str.contains("Array") {
+                        if let Some(return_type_str) =
+                            self.function_return_types.get(&actual_func_name)
+                        {
+                            if return_type_str.contains("Array") {
                                 self.heap_arrays.insert(dest_name.clone());
 
                                 // Create array metadata for the returned array
-                                // Extract element type from Array<Type> format
-                                let element_type = if return_type_str.contains("Array<Int>") {
-                                    "Int"
-                                } else if return_type_str.contains("Array<Str>")
-                                    || return_type_str.contains("Array<String>")
-                                {
-                                    "Str"
-                                } else {
-                                    "Int" // default
-                                };
+                                // Extract element type from Array(Type) format
+                                let element_type = CodeGen::extract_array_element_type_from_return(
+                                    return_type_str,
+                                );
 
                                 let contains_strings = element_type == "Str";
 
@@ -88,25 +82,14 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.heap_maps.insert(dest_name.clone());
 
                                 // Create map metadata for the returned map
-                                // Extract key and value types from Map<Key, Value> format
-                                let (key_type, value_type) = if return_type_str.contains("Map<Str")
-                                    || return_type_str.contains("Map<String")
-                                {
-                                    if return_type_str.contains(", Int>") {
-                                        ("Str", "Int")
-                                    } else if return_type_str.contains(", Str>")
-                                        || return_type_str.contains(", String>")
-                                    {
-                                        ("Str", "Str")
-                                    } else {
-                                        ("Str", "Int") // default
-                                    }
-                                } else {
-                                    ("Int", "Int") // default
-                                };
+                                // Extract key and value types from Map(Key,Value) format
+                                let (key_type, value_type) =
+                                    CodeGen::extract_map_types_from_return(return_type_str);
 
                                 let key_is_string = key_type == "Str";
                                 let value_is_string = value_type == "Str";
+                                let key_needs_rc = key_is_string;
+                                let value_needs_rc = value_is_string;
 
                                 self.map_metadata.insert(
                                     dest_name.clone(),
@@ -116,10 +99,14 @@ impl<'ctx> CodeGen<'ctx> {
                                         value_type: value_type.to_string(),
                                         key_is_string,
                                         value_is_string,
-                                        key_needs_rc: key_is_string,
-                                        value_needs_rc: value_is_string,
+                                        key_needs_rc,
+                                        value_needs_rc,
                                     },
                                 );
+                            } else if return_type_str.contains("Str")
+                                || return_type_str.contains("String")
+                            {
+                                self.heap_strings.insert(dest_name.clone());
                             }
                         }
                     }
@@ -136,17 +123,36 @@ impl<'ctx> CodeGen<'ctx> {
         let printf_fn = self.get_or_declare_printf();
 
         for (idx, value) in values.iter().enumerate() {
-            let value_base = value.trim_start_matches('%').trim_end_matches("_array");
+            let _ = value.trim_start_matches('%').trim_end_matches("_array");
 
             // Check if this value is a loop iteration variable (should NOT be treated as array/map)
             let is_loop_var = self.is_loop_var(value);
 
             // Check if this value is an array or map by looking at metadata
             // But NEVER treat loop iteration variables as arrays/maps
-            let is_array = !is_loop_var
-                && (self.array_metadata.contains_key(value) || self.heap_arrays.contains(value));
-            let is_map = !is_loop_var
-                && (self.map_metadata.contains_key(value) || self.heap_maps.contains(value));
+            // Also check name variations to handle returned arrays/maps
+            let has_array_metadata = self.array_metadata.contains_key(value)
+                || self
+                    .array_metadata
+                    .contains_key(&format!("{}_array", value))
+                || self
+                    .array_metadata
+                    .contains_key(&value.trim_end_matches("_array").to_string())
+                || self
+                    .array_metadata
+                    .contains_key(&value.trim_start_matches('%').to_string());
+
+            let has_map_metadata = self.map_metadata.contains_key(value)
+                || self.map_metadata.contains_key(&format!("{}_map", value))
+                || self
+                    .map_metadata
+                    .contains_key(&value.trim_end_matches("_map").to_string())
+                || self
+                    .map_metadata
+                    .contains_key(&value.trim_start_matches('%').to_string());
+
+            let is_array = !is_loop_var && (has_array_metadata || self.heap_arrays.contains(value));
+            let is_map = !is_loop_var && (has_map_metadata || self.heap_maps.contains(value));
 
             if is_array {
                 self.print_array(value);
@@ -307,7 +313,7 @@ impl<'ctx> CodeGen<'ctx> {
         ];
 
         for variation in &name_variations {
-            if let Some(metadata) = self.array_metadata.get(variation) {
+            if let Some(_) = self.array_metadata.get(variation) {
                 // Read length from heap at runtime (at offset 4 from data pointer)
                 // This ensures sliced arrays show correct length
                 let array_ptr = self.resolve_value(variation).into_pointer_value();
@@ -652,7 +658,7 @@ impl<'ctx> CodeGen<'ctx> {
         let type_str = if self.heap_strings.contains(value_name)
             || self.temp_strings.contains_key(value_name)
         {
-            "String"
+            "Str"
         } else if self.heap_arrays.contains(value_name)
             || self.array_metadata.contains_key(value_name)
         {
@@ -679,7 +685,7 @@ impl<'ctx> CodeGen<'ctx> {
                 } else if val.is_float_value() {
                     "Float"
                 } else if val.is_pointer_value() {
-                    "String"
+                    "Str"
                 } else {
                     "Unknown"
                 }
@@ -698,7 +704,7 @@ impl<'ctx> CodeGen<'ctx> {
             } else if val.is_float_value() {
                 "Float"
             } else if val.is_pointer_value() {
-                "String"
+                "Str"
             } else {
                 "Unknown"
             }
