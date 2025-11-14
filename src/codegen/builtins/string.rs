@@ -16,7 +16,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -59,7 +58,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)
@@ -171,7 +169,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)
@@ -265,16 +262,13 @@ impl<'ctx> CodeGen<'ctx> {
                 let memcpy_fn = self.module.get_function("memcpy").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(
                             &[
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context.i64_type().into(),
@@ -316,7 +310,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -337,7 +330,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)
@@ -610,16 +602,13 @@ impl<'ctx> CodeGen<'ctx> {
                 let strstr_fn = self.module.get_function("strstr").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(
                             &[
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                             ],
@@ -660,11 +649,9 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i32_type().fn_type(
                         &[
                             self.context
-                                .i8_type()
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into(),
                             self.context
-                                .i8_type()
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into(),
                             self.context.i64_type().into(),
@@ -678,7 +665,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -740,7 +726,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -786,11 +771,9 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i32_type().fn_type(
                         &[
                             self.context
-                                .i8_type()
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into(),
                             self.context
-                                .i8_type()
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into(),
                             self.context.i64_type().into(),
@@ -845,7 +828,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -1140,7 +1122,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)
@@ -1228,16 +1209,13 @@ impl<'ctx> CodeGen<'ctx> {
                 let memcpy_fn = self.module.get_function("memcpy").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(
                             &[
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context.i64_type().into(),
@@ -1293,7 +1271,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -1314,7 +1291,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)
@@ -1459,7 +1435,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -1476,7 +1451,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap()
                     .into_int_value();
 
-                let delim_len = self
+                let _ = self
                     .builder
                     .build_call(strlen_fn, &[delimiter_ptr.into()], "delim_len")
                     .unwrap()
@@ -1489,7 +1464,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)
@@ -1595,16 +1569,13 @@ impl<'ctx> CodeGen<'ctx> {
                 let strstr_fn = self.module.get_function("strstr").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(
                             &[
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                             ],
@@ -1654,7 +1625,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -1693,7 +1663,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)
@@ -1741,10 +1710,10 @@ impl<'ctx> CodeGen<'ctx> {
                 let loop_body = self
                     .context
                     .append_basic_block(current_fn, "replace_loop_body");
-                let loop_copy = self
+                let _ = self
                     .context
                     .append_basic_block(current_fn, "replace_loop_copy");
-                let loop_next = self
+                let _ = self
                     .context
                     .append_basic_block(current_fn, "replace_loop_next");
                 let after_block = self.context.append_basic_block(current_fn, "replace_after");
@@ -1820,11 +1789,9 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i32_type().fn_type(
                         &[
                             self.context
-                                .i8_type()
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into(),
                             self.context
-                                .i8_type()
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into(),
                             self.context.i64_type().into(),
@@ -1886,16 +1853,13 @@ impl<'ctx> CodeGen<'ctx> {
                 let memcpy_fn = self.module.get_function("memcpy").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(
                             &[
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context.i64_type().into(),
@@ -2026,7 +1990,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -2059,7 +2022,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)
@@ -2140,16 +2102,13 @@ impl<'ctx> CodeGen<'ctx> {
                 let memcpy_fn = self.module.get_function("memcpy").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(
                             &[
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context
-                                    .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default())
                                     .into(),
                                 self.context.i64_type().into(),
@@ -2223,7 +2182,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i64_type().fn_type(
                         &[self
                             .context
-                            .i8_type()
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()],
                         false,
@@ -2369,11 +2327,9 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_type = self.context.i32_type().fn_type(
                         &[
                             self.context
-                                .i8_type()
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into(),
                             self.context
-                                .i8_type()
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into(),
                             self.context.i64_type().into(),
@@ -2465,973 +2421,6 @@ impl<'ctx> CodeGen<'ctx> {
                 self.temp_values.insert(dest.to_string(), result.into());
                 Some(result.into())
             }
-
-            // "trimLeft" => {
-            //     let str_ptr = object_val.into_pointer_value();
-            //     let pad_char_ptr = self.resolve_value(&args[0]).into_pointer_value();
-
-            //     // Get string length
-            //     let strlen_fn = self.module.get_function("strlen").unwrap_or_else(|| {
-            //         let fn_type = self.context.i64_type().fn_type(
-            //             &[self
-            //                 .context
-            //                 .i8_type()
-            //                 .ptr_type(inkwell::AddressSpace::default())
-            //                 .into()],
-            //             false,
-            //         );
-            //         self.module.add_function("strlen", fn_type, None)
-            //     });
-
-            //     let str_len_i64 = self
-            //         .builder
-            //         .build_call(strlen_fn, &[str_ptr.into()], "str_len")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     // Find start position (skip leading pad chars)
-            //     let current_fn = self
-            //         .builder
-            //         .get_insert_block()
-            //         .unwrap()
-            //         .get_parent()
-            //         .unwrap();
-
-            //     let loop_start = self
-            //         .context
-            //         .append_basic_block(current_fn, "trimleft_loop_start");
-            //     let loop_body = self
-            //         .context
-            //         .append_basic_block(current_fn, "trimleft_loop_body");
-            //     let after_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "trimleft_after");
-
-            //     let start_ptr = self
-            //         .builder
-            //         .build_alloca(self.context.i64_type(), "start")
-            //         .unwrap();
-            //     self.builder
-            //         .build_store(start_ptr, self.context.i64_type().const_zero())
-            //         .unwrap();
-
-            //     self.builder.build_unconditional_branch(loop_start).unwrap();
-
-            //     // Loop: check if current char == pad_char
-            //     self.builder.position_at_end(loop_start);
-            //     let start_pos = self
-            //         .builder
-            //         .build_load(self.context.i64_type(), start_ptr, "start_pos")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let cmp = self
-            //         .builder
-            //         .build_int_compare(inkwell::IntPredicate::ULT, start_pos, str_len_i64, "cmp")
-            //         .unwrap();
-            //     self.builder
-            //         .build_conditional_branch(cmp, loop_body, after_block)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(loop_body);
-            //     let char_ptr = unsafe {
-            //         self.builder
-            //             .build_gep(self.context.i8_type(), str_ptr, &[start_pos], "char_ptr")
-            //             .unwrap()
-            //     };
-            //     let char_val = self
-            //         .builder
-            //         .build_load(self.context.i8_type(), char_ptr, "char_val")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let pad_val = self
-            //         .builder
-            //         .build_load(self.context.i8_type(), pad_char_ptr, "pad_val")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let is_pad = self
-            //         .builder
-            //         .build_int_compare(inkwell::IntPredicate::EQ, char_val, pad_val, "is_pad")
-            //         .unwrap();
-
-            //     let continue_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "trimleft_continue");
-            //     self.builder
-            //         .build_conditional_branch(is_pad, continue_block, after_block)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(continue_block);
-            //     let new_start = self
-            //         .builder
-            //         .build_int_add(
-            //             start_pos,
-            //             self.context.i64_type().const_int(1, false),
-            //             "new_start",
-            //         )
-            //         .unwrap();
-            //     self.builder.build_store(start_ptr, new_start).unwrap();
-            //     self.builder.build_unconditional_branch(loop_start).unwrap();
-
-            //     // Create result substring
-            //     self.builder.position_at_end(after_block);
-            //     let final_start = self
-            //         .builder
-            //         .build_load(self.context.i64_type(), start_ptr, "final_start")
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     let result_len = self
-            //         .builder
-            //         .build_int_sub(str_len_i64, final_start, "result_len")
-            //         .unwrap();
-
-            //     let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
-            //         let fn_type = self
-            //             .context
-            //             .i8_type()
-            //             .ptr_type(inkwell::AddressSpace::default())
-            //             .fn_type(&[self.context.i64_type().into()], false);
-            //         self.module.add_function("malloc", fn_type, None)
-            //     });
-
-            //     let alloc_size = self
-            //         .builder
-            //         .build_int_add(
-            //             result_len,
-            //             self.context.i64_type().const_int(1, false),
-            //             "alloc_size",
-            //         )
-            //         .unwrap();
-
-            //     let result_ptr = self
-            //         .builder
-            //         .build_call(malloc_fn, &[alloc_size.into()], "trimleft_result")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_pointer_value();
-
-            //     let src_ptr = unsafe {
-            //         self.builder
-            //             .build_gep(self.context.i8_type(), str_ptr, &[final_start], "src_ptr")
-            //             .unwrap()
-            //     };
-
-            //     let memcpy_fn = self.module.get_function("memcpy").unwrap_or_else(|| {
-            //         let fn_type = self
-            //             .context
-            //             .i8_type()
-            //             .ptr_type(inkwell::AddressSpace::default())
-            //             .fn_type(
-            //                 &[
-            //                     self.context
-            //                         .i8_type()
-            //                         .ptr_type(inkwell::AddressSpace::default())
-            //                         .into(),
-            //                     self.context
-            //                         .i8_type()
-            //                         .ptr_type(inkwell::AddressSpace::default())
-            //                         .into(),
-            //                     self.context.i64_type().into(),
-            //                 ],
-            //                 false,
-            //             );
-            //         self.module.add_function("memcpy", fn_type, None)
-            //     });
-
-            //     self.builder
-            //         .build_call(
-            //             memcpy_fn,
-            //             &[result_ptr.into(), src_ptr.into(), result_len.into()],
-            //             "",
-            //         )
-            //         .unwrap();
-
-            //     let null_pos = unsafe {
-            //         self.builder
-            //             .build_gep(
-            //                 self.context.i8_type(),
-            //                 result_ptr,
-            //                 &[result_len],
-            //                 "null_pos",
-            //             )
-            //             .unwrap()
-            //     };
-            //     self.builder
-            //         .build_store(null_pos, self.context.i8_type().const_int(0, false))
-            //         .unwrap();
-
-            //     self.temp_values.insert(dest.to_string(), result_ptr.into());
-            //     self.heap_strings.insert(dest.to_string());
-            //     Some(result_ptr.into())
-            // }
-            // "trimRight" => {
-            //     let str_ptr = object_val.into_pointer_value();
-            //     let pad_char_ptr = self.resolve_value(&args[0]).into_pointer_value();
-
-            //     let strlen_fn = self.module.get_function("strlen").unwrap_or_else(|| {
-            //         let fn_type = self.context.i64_type().fn_type(
-            //             &[self
-            //                 .context
-            //                 .i8_type()
-            //                 .ptr_type(inkwell::AddressSpace::default())
-            //                 .into()],
-            //             false,
-            //         );
-            //         self.module.add_function("strlen", fn_type, None)
-            //     });
-
-            //     let str_len_i64 = self
-            //         .builder
-            //         .build_call(strlen_fn, &[str_ptr.into()], "str_len")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     // Find end position (skip trailing pad chars)
-            //     let current_fn = self
-            //         .builder
-            //         .get_insert_block()
-            //         .unwrap()
-            //         .get_parent()
-            //         .unwrap();
-
-            //     let loop_start = self
-            //         .context
-            //         .append_basic_block(current_fn, "trimright_loop_start");
-            //     let loop_body = self
-            //         .context
-            //         .append_basic_block(current_fn, "trimright_loop_body");
-            //     let after_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "trimright_after");
-
-            //     let end_ptr = self
-            //         .builder
-            //         .build_alloca(self.context.i64_type(), "end")
-            //         .unwrap();
-            //     self.builder.build_store(end_ptr, str_len_i64).unwrap();
-
-            //     self.builder.build_unconditional_branch(loop_start).unwrap();
-
-            //     self.builder.position_at_end(loop_start);
-            //     let end_pos = self
-            //         .builder
-            //         .build_load(self.context.i64_type(), end_ptr, "end_pos")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let cmp = self
-            //         .builder
-            //         .build_int_compare(
-            //             inkwell::IntPredicate::UGT,
-            //             end_pos,
-            //             self.context.i64_type().const_zero(),
-            //             "cmp",
-            //         )
-            //         .unwrap();
-            //     self.builder
-            //         .build_conditional_branch(cmp, loop_body, after_block)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(loop_body);
-            //     let idx = self
-            //         .builder
-            //         .build_int_sub(end_pos, self.context.i64_type().const_int(1, false), "idx")
-            //         .unwrap();
-            //     let char_ptr = unsafe {
-            //         self.builder
-            //             .build_gep(self.context.i8_type(), str_ptr, &[idx], "char_ptr")
-            //             .unwrap()
-            //     };
-            //     let char_val = self
-            //         .builder
-            //         .build_load(self.context.i8_type(), char_ptr, "char_val")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let pad_val = self
-            //         .builder
-            //         .build_load(self.context.i8_type(), pad_char_ptr, "pad_val")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let is_pad = self
-            //         .builder
-            //         .build_int_compare(inkwell::IntPredicate::EQ, char_val, pad_val, "is_pad")
-            //         .unwrap();
-
-            //     let continue_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "trimright_continue");
-            //     self.builder
-            //         .build_conditional_branch(is_pad, continue_block, after_block)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(continue_block);
-            //     self.builder.build_store(end_ptr, idx).unwrap();
-            //     self.builder.build_unconditional_branch(loop_start).unwrap();
-
-            //     self.builder.position_at_end(after_block);
-            //     let final_end = self
-            //         .builder
-            //         .build_load(self.context.i64_type(), end_ptr, "final_end")
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
-            //         let fn_type = self
-            //             .context
-            //             .i8_type()
-            //             .ptr_type(inkwell::AddressSpace::default())
-            //             .fn_type(&[self.context.i64_type().into()], false);
-            //         self.module.add_function("malloc", fn_type, None)
-            //     });
-
-            //     let alloc_size = self
-            //         .builder
-            //         .build_int_add(
-            //             final_end,
-            //             self.context.i64_type().const_int(1, false),
-            //             "alloc_size",
-            //         )
-            //         .unwrap();
-
-            //     let result_ptr = self
-            //         .builder
-            //         .build_call(malloc_fn, &[alloc_size.into()], "trimright_result")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_pointer_value();
-
-            //     let memcpy_fn = self.module.get_function("memcpy").unwrap_or_else(|| {
-            //         let fn_type = self
-            //             .context
-            //             .i8_type()
-            //             .ptr_type(inkwell::AddressSpace::default())
-            //             .fn_type(
-            //                 &[
-            //                     self.context
-            //                         .i8_type()
-            //                         .ptr_type(inkwell::AddressSpace::default())
-            //                         .into(),
-            //                     self.context
-            //                         .i8_type()
-            //                         .ptr_type(inkwell::AddressSpace::default())
-            //                         .into(),
-            //                     self.context.i64_type().into(),
-            //                 ],
-            //                 false,
-            //             );
-            //         self.module.add_function("memcpy", fn_type, None)
-            //     });
-
-            //     self.builder
-            //         .build_call(
-            //             memcpy_fn,
-            //             &[result_ptr.into(), str_ptr.into(), final_end.into()],
-            //             "",
-            //         )
-            //         .unwrap();
-
-            //     let null_pos = unsafe {
-            //         self.builder
-            //             .build_gep(self.context.i8_type(), result_ptr, &[final_end], "null_pos")
-            //             .unwrap()
-            //     };
-            //     self.builder
-            //         .build_store(null_pos, self.context.i8_type().const_int(0, false))
-            //         .unwrap();
-
-            //     self.temp_values.insert(dest.to_string(), result_ptr.into());
-            //     self.heap_strings.insert(dest.to_string());
-            //     Some(result_ptr.into())
-            // }
-            // "padLeft" => {
-            //     let str_ptr = object_val.into_pointer_value();
-            //     let width_val = self.resolve_value(&args[0]).into_int_value();
-            //     let pad_char_ptr = self.resolve_value(&args[1]).into_pointer_value();
-
-            //     let strlen_fn = self.module.get_function("strlen").unwrap_or_else(|| {
-            //         let fn_type = self.context.i64_type().fn_type(
-            //             &[self
-            //                 .context
-            //                 .i8_type()
-            //                 .ptr_type(inkwell::AddressSpace::default())
-            //                 .into()],
-            //             false,
-            //         );
-            //         self.module.add_function("strlen", fn_type, None)
-            //     });
-
-            //     let str_len_i64 = self
-            //         .builder
-            //         .build_call(strlen_fn, &[str_ptr.into()], "str_len")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     let width_i64 = self
-            //         .builder
-            //         .build_int_z_extend(width_val, self.context.i64_type(), "width_i64")
-            //         .unwrap();
-
-            //     // If str_len >= width, return original string
-            //     let current_fn = self
-            //         .builder
-            //         .get_insert_block()
-            //         .unwrap()
-            //         .get_parent()
-            //         .unwrap();
-
-            //     let need_pad_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "padleft_need_pad");
-            //     let no_pad_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "padleft_no_pad");
-            //     let after_block = self.context.append_basic_block(current_fn, "padleft_after");
-
-            //     let needs_padding = self
-            //         .builder
-            //         .build_int_compare(
-            //             inkwell::IntPredicate::ULT,
-            //             str_len_i64,
-            //             width_i64,
-            //             "needs_padding",
-            //         )
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_conditional_branch(needs_padding, need_pad_block, no_pad_block)
-            //         .unwrap();
-
-            //     // No padding needed - return copy of original
-            //     self.builder.position_at_end(no_pad_block);
-            //     let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
-            //         let fn_type = self
-            //             .context
-            //             .i8_type()
-            //             .ptr_type(inkwell::AddressSpace::default())
-            //             .fn_type(&[self.context.i64_type().into()], false);
-            //         self.module.add_function("malloc", fn_type, None)
-            //     });
-
-            //     let no_pad_size = self
-            //         .builder
-            //         .build_int_add(
-            //             str_len_i64,
-            //             self.context.i64_type().const_int(1, false),
-            //             "no_pad_size",
-            //         )
-            //         .unwrap();
-
-            //     let no_pad_result = self
-            //         .builder
-            //         .build_call(malloc_fn, &[no_pad_size.into()], "no_pad_result")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_pointer_value();
-
-            //     let memcpy_fn = self.module.get_function("memcpy").unwrap_or_else(|| {
-            //         let fn_type = self
-            //             .context
-            //             .i8_type()
-            //             .ptr_type(inkwell::AddressSpace::default())
-            //             .fn_type(
-            //                 &[
-            //                     self.context
-            //                         .i8_type()
-            //                         .ptr_type(inkwell::AddressSpace::default())
-            //                         .into(),
-            //                     self.context
-            //                         .i8_type()
-            //                         .ptr_type(inkwell::AddressSpace::default())
-            //                         .into(),
-            //                     self.context.i64_type().into(),
-            //                 ],
-            //                 false,
-            //             );
-            //         self.module.add_function("memcpy", fn_type, None)
-            //     });
-
-            //     self.builder
-            //         .build_call(
-            //             memcpy_fn,
-            //             &[no_pad_result.into(), str_ptr.into(), str_len_i64.into()],
-            //             "",
-            //         )
-            //         .unwrap();
-
-            //     let no_pad_null = unsafe {
-            //         self.builder
-            //             .build_gep(
-            //                 self.context.i8_type(),
-            //                 no_pad_result,
-            //                 &[str_len_i64],
-            //                 "no_pad_null",
-            //             )
-            //             .unwrap()
-            //     };
-            //     self.builder
-            //         .build_store(no_pad_null, self.context.i8_type().const_int(0, false))
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_unconditional_branch(after_block)
-            //         .unwrap();
-
-            //     // Need padding
-            //     self.builder.position_at_end(need_pad_block);
-
-            //     let pad_count = self
-            //         .builder
-            //         .build_int_sub(width_i64, str_len_i64, "pad_count")
-            //         .unwrap();
-
-            //     let result_size = self
-            //         .builder
-            //         .build_int_add(
-            //             width_i64,
-            //             self.context.i64_type().const_int(1, false),
-            //             "result_size",
-            //         )
-            //         .unwrap();
-
-            //     let padded_result = self
-            //         .builder
-            //         .build_call(malloc_fn, &[result_size.into()], "padded_result")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_pointer_value();
-
-            //     // Fill with pad char
-            //     let pad_char_val = self
-            //         .builder
-            //         .build_load(self.context.i8_type(), pad_char_ptr, "pad_char_val")
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     let pad_loop_start = self
-            //         .context
-            //         .append_basic_block(current_fn, "padleft_pad_loop");
-            //     let pad_loop_body = self
-            //         .context
-            //         .append_basic_block(current_fn, "padleft_pad_body");
-            //     let pad_loop_end = self
-            //         .context
-            //         .append_basic_block(current_fn, "padleft_pad_end");
-
-            //     let pad_i_ptr = self
-            //         .builder
-            //         .build_alloca(self.context.i64_type(), "pad_i")
-            //         .unwrap();
-            //     self.builder
-            //         .build_store(pad_i_ptr, self.context.i64_type().const_zero())
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_unconditional_branch(pad_loop_start)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(pad_loop_start);
-            //     let pad_i = self
-            //         .builder
-            //         .build_load(self.context.i64_type(), pad_i_ptr, "pad_i")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let pad_cmp = self
-            //         .builder
-            //         .build_int_compare(inkwell::IntPredicate::ULT, pad_i, pad_count, "pad_cmp")
-            //         .unwrap();
-            //     self.builder
-            //         .build_conditional_branch(pad_cmp, pad_loop_body, pad_loop_end)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(pad_loop_body);
-            //     let pad_dest = unsafe {
-            //         self.builder
-            //             .build_gep(self.context.i8_type(), padded_result, &[pad_i], "pad_dest")
-            //             .unwrap()
-            //     };
-            //     self.builder.build_store(pad_dest, pad_char_val).unwrap();
-
-            //     let pad_i_inc = self
-            //         .builder
-            //         .build_int_add(
-            //             pad_i,
-            //             self.context.i64_type().const_int(1, false),
-            //             "pad_i_inc",
-            //         )
-            //         .unwrap();
-            //     self.builder.build_store(pad_i_ptr, pad_i_inc).unwrap();
-            //     self.builder
-            //         .build_unconditional_branch(pad_loop_start)
-            //         .unwrap();
-
-            //     // Copy original string after padding
-            //     self.builder.position_at_end(pad_loop_end);
-            //     let str_dest = unsafe {
-            //         self.builder
-            //             .build_gep(
-            //                 self.context.i8_type(),
-            //                 padded_result,
-            //                 &[pad_count],
-            //                 "str_dest",
-            //             )
-            //             .unwrap()
-            //     };
-
-            //     self.builder
-            //         .build_call(
-            //             memcpy_fn,
-            //             &[str_dest.into(), str_ptr.into(), str_len_i64.into()],
-            //             "",
-            //         )
-            //         .unwrap();
-
-            //     let padded_null = unsafe {
-            //         self.builder
-            //             .build_gep(
-            //                 self.context.i8_type(),
-            //                 padded_result,
-            //                 &[width_i64],
-            //                 "padded_null",
-            //             )
-            //             .unwrap()
-            //     };
-            //     self.builder
-            //         .build_store(padded_null, self.context.i8_type().const_int(0, false))
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_unconditional_branch(after_block)
-            //         .unwrap();
-
-            //     // After block - phi node to select result
-            //     self.builder.position_at_end(after_block);
-            //     let result_phi = self
-            //         .builder
-            //         .build_phi(
-            //             self.context
-            //                 .i8_type()
-            //                 .ptr_type(inkwell::AddressSpace::default()),
-            //             "result_phi",
-            //         )
-            //         .unwrap();
-
-            //     result_phi.add_incoming(&[
-            //         (&no_pad_result, no_pad_block),
-            //         (&padded_result, pad_loop_end),
-            //     ]);
-
-            //     let final_result = result_phi.as_basic_value().into_pointer_value();
-            //     self.temp_values
-            //         .insert(dest.to_string(), final_result.into());
-            //     self.heap_strings.insert(dest.to_string());
-            //     Some(final_result.into())
-            // }
-            // "padRight" => {
-            //     let str_ptr = object_val.into_pointer_value();
-            //     let width_val = self.resolve_value(&args[0]).into_int_value();
-            //     let pad_char_ptr = self.resolve_value(&args[1]).into_pointer_value();
-
-            //     let strlen_fn = self.module.get_function("strlen").unwrap_or_else(|| {
-            //         let fn_type = self.context.i64_type().fn_type(
-            //             &[self
-            //                 .context
-            //                 .i8_type()
-            //                 .ptr_type(inkwell::AddressSpace::default())
-            //                 .into()],
-            //             false,
-            //         );
-            //         self.module.add_function("strlen", fn_type, None)
-            //     });
-
-            //     let str_len_i64 = self
-            //         .builder
-            //         .build_call(strlen_fn, &[str_ptr.into()], "str_len")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     let width_i64 = self
-            //         .builder
-            //         .build_int_z_extend(width_val, self.context.i64_type(), "width_i64")
-            //         .unwrap();
-
-            //     let current_fn = self
-            //         .builder
-            //         .get_insert_block()
-            //         .unwrap()
-            //         .get_parent()
-            //         .unwrap();
-
-            //     let need_pad_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "padright_need_pad");
-            //     let no_pad_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "padright_no_pad");
-            //     let after_block = self
-            //         .context
-            //         .append_basic_block(current_fn, "padright_after");
-
-            //     let needs_padding = self
-            //         .builder
-            //         .build_int_compare(
-            //             inkwell::IntPredicate::ULT,
-            //             str_len_i64,
-            //             width_i64,
-            //             "needs_padding",
-            //         )
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_conditional_branch(needs_padding, need_pad_block, no_pad_block)
-            //         .unwrap();
-
-            //     // No padding needed
-            //     self.builder.position_at_end(no_pad_block);
-            //     let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
-            //         let fn_type = self
-            //             .context
-            //             .i8_type()
-            //             .ptr_type(inkwell::AddressSpace::default())
-            //             .fn_type(&[self.context.i64_type().into()], false);
-            //         self.module.add_function("malloc", fn_type, None)
-            //     });
-
-            //     let no_pad_size = self
-            //         .builder
-            //         .build_int_add(
-            //             str_len_i64,
-            //             self.context.i64_type().const_int(1, false),
-            //             "no_pad_size",
-            //         )
-            //         .unwrap();
-
-            //     let no_pad_result = self
-            //         .builder
-            //         .build_call(malloc_fn, &[no_pad_size.into()], "no_pad_result")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_pointer_value();
-
-            //     let memcpy_fn = self.module.get_function("memcpy").unwrap_or_else(|| {
-            //         let fn_type = self
-            //             .context
-            //             .i8_type()
-            //             .ptr_type(inkwell::AddressSpace::default())
-            //             .fn_type(
-            //                 &[
-            //                     self.context
-            //                         .i8_type()
-            //                         .ptr_type(inkwell::AddressSpace::default())
-            //                         .into(),
-            //                     self.context
-            //                         .i8_type()
-            //                         .ptr_type(inkwell::AddressSpace::default())
-            //                         .into(),
-            //                     self.context.i64_type().into(),
-            //                 ],
-            //                 false,
-            //             );
-            //         self.module.add_function("memcpy", fn_type, None)
-            //     });
-
-            //     self.builder
-            //         .build_call(
-            //             memcpy_fn,
-            //             &[no_pad_result.into(), str_ptr.into(), str_len_i64.into()],
-            //             "",
-            //         )
-            //         .unwrap();
-
-            //     let no_pad_null = unsafe {
-            //         self.builder
-            //             .build_gep(
-            //                 self.context.i8_type(),
-            //                 no_pad_result,
-            //                 &[str_len_i64],
-            //                 "no_pad_null",
-            //             )
-            //             .unwrap()
-            //     };
-            //     self.builder
-            //         .build_store(no_pad_null, self.context.i8_type().const_int(0, false))
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_unconditional_branch(after_block)
-            //         .unwrap();
-
-            //     // Need padding
-            //     self.builder.position_at_end(need_pad_block);
-
-            //     let pad_count = self
-            //         .builder
-            //         .build_int_sub(width_i64, str_len_i64, "pad_count")
-            //         .unwrap();
-
-            //     let result_size = self
-            //         .builder
-            //         .build_int_add(
-            //             width_i64,
-            //             self.context.i64_type().const_int(1, false),
-            //             "result_size",
-            //         )
-            //         .unwrap();
-
-            //     let padded_result = self
-            //         .builder
-            //         .build_call(malloc_fn, &[result_size.into()], "padded_result")
-            //         .unwrap()
-            //         .try_as_basic_value()
-            //         .left()
-            //         .unwrap()
-            //         .into_pointer_value();
-
-            //     // Copy original string first
-            //     self.builder
-            //         .build_call(
-            //             memcpy_fn,
-            //             &[padded_result.into(), str_ptr.into(), str_len_i64.into()],
-            //             "",
-            //         )
-            //         .unwrap();
-
-            //     // Fill rest with pad char
-            //     let pad_char_val = self
-            //         .builder
-            //         .build_load(self.context.i8_type(), pad_char_ptr, "pad_char_val")
-            //         .unwrap()
-            //         .into_int_value();
-
-            //     let pad_loop_start = self
-            //         .context
-            //         .append_basic_block(current_fn, "padright_pad_loop");
-            //     let pad_loop_body = self
-            //         .context
-            //         .append_basic_block(current_fn, "padright_pad_body");
-            //     let pad_loop_end = self
-            //         .context
-            //         .append_basic_block(current_fn, "padright_pad_end");
-
-            //     let pad_i_ptr = self
-            //         .builder
-            //         .build_alloca(self.context.i64_type(), "pad_i")
-            //         .unwrap();
-            //     self.builder
-            //         .build_store(pad_i_ptr, self.context.i64_type().const_zero())
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_unconditional_branch(pad_loop_start)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(pad_loop_start);
-            //     let pad_i = self
-            //         .builder
-            //         .build_load(self.context.i64_type(), pad_i_ptr, "pad_i")
-            //         .unwrap()
-            //         .into_int_value();
-            //     let pad_cmp = self
-            //         .builder
-            //         .build_int_compare(inkwell::IntPredicate::ULT, pad_i, pad_count, "pad_cmp")
-            //         .unwrap();
-            //     self.builder
-            //         .build_conditional_branch(pad_cmp, pad_loop_body, pad_loop_end)
-            //         .unwrap();
-
-            //     self.builder.position_at_end(pad_loop_body);
-            //     let pad_pos = self
-            //         .builder
-            //         .build_int_add(str_len_i64, pad_i, "pad_pos")
-            //         .unwrap();
-            //     let pad_dest = unsafe {
-            //         self.builder
-            //             .build_gep(
-            //                 self.context.i8_type(),
-            //                 padded_result,
-            //                 &[pad_pos],
-            //                 "pad_dest",
-            //             )
-            //             .unwrap()
-            //     };
-            //     self.builder.build_store(pad_dest, pad_char_val).unwrap();
-
-            //     let pad_i_inc = self
-            //         .builder
-            //         .build_int_add(
-            //             pad_i,
-            //             self.context.i64_type().const_int(1, false),
-            //             "pad_i_inc",
-            //         )
-            //         .unwrap();
-            //     self.builder.build_store(pad_i_ptr, pad_i_inc).unwrap();
-            //     self.builder
-            //         .build_unconditional_branch(pad_loop_start)
-            //         .unwrap();
-
-            //     // Null terminate
-            //     self.builder.position_at_end(pad_loop_end);
-            //     let padded_null = unsafe {
-            //         self.builder
-            //             .build_gep(
-            //                 self.context.i8_type(),
-            //                 padded_result,
-            //                 &[width_i64],
-            //                 "padded_null",
-            //             )
-            //             .unwrap()
-            //     };
-            //     self.builder
-            //         .build_store(padded_null, self.context.i8_type().const_int(0, false))
-            //         .unwrap();
-
-            //     self.builder
-            //         .build_unconditional_branch(after_block)
-            //         .unwrap();
-
-            //     // After block
-            //     self.builder.position_at_end(after_block);
-            //     let result_phi = self
-            //         .builder
-            //         .build_phi(
-            //             self.context
-            //                 .i8_type()
-            //                 .ptr_type(inkwell::AddressSpace::default()),
-            //             "result_phi",
-            //         )
-            //         .unwrap();
-
-            //     result_phi.add_incoming(&[
-            //         (&no_pad_result, no_pad_block),
-            //         (&padded_result, pad_loop_end),
-            //     ]);
-
-            //     let final_result = result_phi.as_basic_value().into_pointer_value();
-            //     self.temp_values
-            //         .insert(dest.to_string(), final_result.into());
-            //     self.heap_strings.insert(dest.to_string());
-            //     Some(final_result.into())
-            // }
             _ => None,
         }
     }
