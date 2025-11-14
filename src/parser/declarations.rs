@@ -184,6 +184,7 @@ impl<'a> Parser<'a> {
 
     /// Parses a pattern for a 'let' declaration.
     /// Supports single identifiers and tuple patterns
+    /// 🟡 TODO: Doo does not supporting tuple patter yet in var decl yet
     /// (e.g., `let x, y = ...` or with parentheses `let (x, y) = ...`).
     fn parse_let_pattern(&mut self) -> ParseResult<Pattern> {
         // - `x` → single identifier
@@ -215,10 +216,11 @@ impl<'a> Parser<'a> {
 
     /// Parses a function return type.
     /// Supports single types and tuple types (e.g., `-> Int` or `-> (Str, Int)`).
+    /// 🟡 TODO: Doo does not supporting tuple patter yet in function return yet
     fn parse_return_type(&mut self) -> ParseResult<TypeNode> {
         if let Some(tok) = self.peek() {
             // Identify multiple return types for function declarations
-            // Ex., fn Foo(a: Int, b: String) -> (String, String) {}
+            // Ex., fn Foo(a: Int, b: Str) -> (Str, Str) {}
             if tok.kind == TokenType::OpenParen {
                 // multiple return types
                 self.advance(); // consume '('
@@ -271,7 +273,6 @@ impl<'a> Parser<'a> {
                 "Float" => Ok(TypeNode::Float),
                 "Str" => Ok(TypeNode::String),
                 "Bool" => Ok(TypeNode::Bool),
-                "Void" => Ok(TypeNode::Void),
                 other => {
                     // Accept any previously declared struct as type
                     Ok(TypeNode::TypeRef(other.to_string()))
