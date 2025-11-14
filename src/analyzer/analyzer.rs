@@ -180,9 +180,7 @@ impl SemanticAnalyzer {
         }
 
         // SECOND PASS: Analyze all nodes (including function bodies)
-
         // Skip imports as they're already processed
-
         for node in nodes {
             if !matches!(node, AstNode::Import { .. }) {
                 if let Err(e) = self.analyze_node(node) {
@@ -193,7 +191,9 @@ impl SemanticAnalyzer {
 
         // Check that main() function exists only for the main module
         if self.is_main_module && !self.function_table.contains_key("main") {
-            self.collected_errors.push(SemanticError::ParseError);
+            self.collected_errors.push(SemanticError::ParseErrorMsg(
+                "main() function is missing".to_string(),
+            ));
         }
 
         // If any errors were collected, prioritize reporting a circular import error
@@ -263,6 +263,14 @@ impl SemanticAnalyzer {
             AstNode::CompoundAssignment { pattern, op, value } => {
                 self.analyze_compound_assignment(pattern, *op, value)
             }
+            AstNode::IncrementDecrement { variable, op: _ } => {
+                self.analyze_increment_decrement(variable)
+            }
+            AstNode::ElementAssignment {
+                array,
+                index,
+                value,
+            } => self.analyze_element_assignment(array, index, value),
             AstNode::Return { values } => {
                 // Check that return is inside a function
                 if self.function_depth == 0 {
@@ -340,13 +348,6 @@ impl SemanticAnalyzer {
                         });
                     };
 
-                    // If this is an alias, resolve it to the original function name
-                    let resolved_name = self
-                        .function_aliases
-                        .get(func_name)
-                        .cloned()
-                        .unwrap_or_else(|| func_name.clone());
-
                     let (param_types, _return_type) =
                         self.function_table.get(func_name).ok_or_else(|| {
                             SemanticError::UndeclaredFunction(NamedError {
@@ -397,7 +398,7 @@ impl SemanticAnalyzer {
     /// Resolve a module path (e.g., ["http", "Client"]) to a file path
     /// For import http::Client::Fetchuser, we want http/Client.doo
     /// The last element before the symbol is the file name
-    fn resolve_module_path(&self, path: &[String], symbol: &Option<String>) -> Option<PathBuf> {
+    fn resolve_module_path(&self, path: &[String], _: &Option<String>) -> Option<PathBuf> {
         // Check if this is a std import (starts with "std")
         if path.first().map(|s| s.as_str()) == Some("std") {
             // Use PathResolver to find std
@@ -498,12 +499,8 @@ impl SemanticAnalyzer {
         })?;
 
         // If this module was already analyzed, we can reuse the cached analysis
-
         // We only need to parse and analyze once per module file
-
         let (nodes, imported_analyzer) = if already_analyzed {
-            // Module already analyzed, just parse to get the AST nodes
-
             let code = fs::read_to_string(&file_path)
                 .map_err(|_| SemanticError::ModuleNotFound(file_path.display().to_string()))?;
             let arena = Bump::new();
@@ -532,21 +529,17 @@ impl SemanticAnalyzer {
             }
         } else {
             // First time analyzing this module
-
             let code = fs::read_to_string(&file_path).map_err(|_| {
                 import_stack.pop();
                 SemanticError::ModuleNotFound(file_path.display().to_string())
             })?;
 
             // Mark this module as being imported
-
             self.imported_modules.insert(module_key, true);
 
             let arena = Bump::new();
             let tokens = crate::lexer::lexer::lex(&code, &arena);
-
             let mut parser = crate::parser::Parser::new(&tokens);
-
             let ast = parser.parse_program().map_err(|e| {
                 import_stack.pop();
                 SemanticError::ParseErrorInModule {
@@ -558,12 +551,10 @@ impl SemanticAnalyzer {
             // Recursively analyze the imported AST
             if let crate::parser::ast::AstNode::Program(mut nodes) = ast {
                 // Create a temporary analyzer to collect public functions from the imported module
-
                 let mut imported_analyzer = SemanticAnalyzer::new(Some(self.project_root.clone()));
 
                 // Use analyze_program_with_stack for proper two-pass analysis with circular import detection
                 // Pass the current import_stack so recursive imports are detected correctly
-
                 imported_analyzer.is_main_module = false;
                 imported_analyzer.analyze_program_with_stack(&mut nodes, import_stack)?;
 
@@ -581,7 +572,6 @@ impl SemanticAnalyzer {
 
         // Merge public functions from imported module into current function table
         // AND store the function AST nodes for MIR generation
-
         // Determine which symbols to import
         let should_import_wildcard = items
             .iter()
@@ -690,7 +680,7 @@ impl SemanticAnalyzer {
                             }));
                         }
                     }
-                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias) => {
+                    crate::parser::ast::ImportItem::SymbolWithAlias(_, alias) => {
                         // Check using the alias name since that's what we registered
                         if !self.function_table.contains_key(alias)
                             && !self.symbol_table.contains_key(alias)
