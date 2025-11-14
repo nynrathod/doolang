@@ -159,6 +159,34 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
+    /// Declare builtin string conversion functions
+    pub fn declare_builtin_functions(&mut self) {
+        // Declare StringToInt(ptr: *const u8, len: usize) -> i32
+        let i32_type = self.context.i32_type();
+        let i64_type = self.context.i64_type();
+        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+
+        let string_to_int_fn_type = i32_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
+        self.module
+            .add_function("StringToInt", string_to_int_fn_type, None);
+
+        // Declare StringToFloat(ptr: *const u8, len: usize) -> f64
+        let f64_type = self.context.f64_type();
+        let string_to_float_fn_type = f64_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
+        self.module
+            .add_function("StringToFloat", string_to_float_fn_type, None);
+
+        // Declare IntToString(value: i32) -> *const u8
+        let int_to_string_fn_type = ptr_type.fn_type(&[i32_type.into()], false);
+        self.module
+            .add_function("IntToString", int_to_string_fn_type, None);
+
+        // Declare FloatToString(value: f64) -> *const u8
+        let float_to_string_fn_type = ptr_type.fn_type(&[f64_type.into()], false);
+        self.module
+            .add_function("FloatToString", float_to_string_fn_type, None);
+    }
+
     /// Prints the final generated LLVM IR to standard error (stderr).
     pub fn dump(&self) {
         self.module.print_to_stderr();

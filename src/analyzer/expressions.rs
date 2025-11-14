@@ -4,12 +4,11 @@ use crate::lexer::token::TokenType;
 use crate::limits::ANALYZER_MAX_DEPTH;
 use crate::parser::ast::{AstNode, Pattern, TypeNode};
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 /// Helper to extract line/col from an AstNode
 /// For now, returns None since parser hasn't been updated yet
 fn get_node_location(_node: &AstNode) -> (Option<usize>, Option<usize>) {
-    // TODO: Once parser is updated to include line/col in AST nodes,
+    // 🟡 TODO: Once parser is updated to include line/col in AST nodes,
     // implement proper extraction here
     (None, None)
 }
@@ -48,8 +47,7 @@ impl SemanticAnalyzer {
                 Ok(TypeNode::String)
             }
             // Boolean literal: always Bool type
-            AstNode::BoolLiteral(_) => Ok(TypeNode::Bool),
-
+            AstNode::BoolLiteral(name) => Ok(TypeNode::Bool),
             // Identifier (variable name): look up in symbol table (with shadowing support)
             AstNode::Identifier(name) => {
                 if let Some(info) = self.lookup_variable(name) {
@@ -77,13 +75,10 @@ impl SemanticAnalyzer {
                 // Infer types of both sides
                 let left_type = self.infer_type(left)?;
                 let right_type = self.infer_type(right)?;
-
                 match op {
                     // Comparison operators (==, !=, >, <, etc.)
                     TokenType::EqEq
-                    | TokenType::EqEqEq
                     | TokenType::NotEq
-                    | TokenType::NotEqEq
                     | TokenType::Gt
                     | TokenType::Lt
                     | TokenType::GtEq
@@ -99,6 +94,23 @@ impl SemanticAnalyzer {
                                 col,
                             }));
                         }
+
+                        if matches!(
+                            op,
+                            TokenType::Gt | TokenType::Lt | TokenType::GtEq | TokenType::LtEq
+                        ) {
+                            if left_type != TypeNode::Int && left_type != TypeNode::Float {
+                                let (line, col) = get_node_location(node);
+                                return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                                    expected: TypeNode::Int,
+                                    found: left_type,
+                                    value: None,
+                                    line,
+                                    col,
+                                }));
+                            }
+                        }
+
                         // Comparison always returns Bool
                         Ok(TypeNode::Bool)
                     }
@@ -352,10 +364,10 @@ impl SemanticAnalyzer {
                 let key_type = self.infer_type(&pairs[0].0)?;
                 let value_type = self.infer_type(&pairs[0].1)?;
 
-                // Only allow Int, String, or Bool as map keys
+                // Only allow Int, String, Float, or Bool as map keys
                 // TODO: check codegen if implemented or not
                 match key_type {
-                    TypeNode::Int | TypeNode::String | TypeNode::Bool => {}
+                    TypeNode::Int | TypeNode::String | TypeNode::Float | TypeNode::Bool => {}
                     _ => {
                         return Err(SemanticError::InvalidMapKeyType {
                             found: key_type.clone(),
@@ -463,17 +475,46 @@ impl SemanticAnalyzer {
 
             // Type casting: expr as TargetType
             AstNode::Cast { expr, target_type } => {
-                // Validate that the source expression can be cast
-                let _source_type = self.infer_type(expr)?;
+                let source_type = self.infer_type(expr)?;
 
-                // For now, allow casting between Int, Float, and String
-                // More complex validation can be added later
-                match target_type {
-                    TypeNode::Int | TypeNode::Float | TypeNode::String | TypeNode::Bool => {
-                        Ok(target_type.clone())
-                    }
-                    _ => Err(SemanticError::UnexpectedNode {
-                        expected: "Cast target must be Int, Float, String, or Bool".to_string(),
+                match (&source_type, target_type) {
+                    // Int casts
+                    (TypeNode::Int, TypeNode::Int) => Ok(TypeNode::Int),
+                    (TypeNode::Int, TypeNode::Float) => Ok(TypeNode::Float),
+                    (TypeNode::Int, TypeNode::String) => Ok(TypeNode::String),
+                    (TypeNode::Int, TypeNode::Bool) => Err(SemanticError::UnexpectedNode {
+                        expected: "Int to Bool is not allowed (only 0 and 1 are valid)".to_string(),
+                    }),
+
+                    // Float casts
+                    (TypeNode::Float, TypeNode::Int) => Ok(TypeNode::Int),
+                    (TypeNode::Float, TypeNode::Float) => Ok(TypeNode::Float),
+                    (TypeNode::Float, TypeNode::String) => Ok(TypeNode::String),
+                    (TypeNode::Float, TypeNode::Bool) => Err(SemanticError::UnexpectedNode {
+                        expected: "Float to Bool is not allowed".to_string(),
+                    }),
+
+                    // Bool casts
+                    (TypeNode::Bool, TypeNode::Int) => Ok(TypeNode::Int),
+                    (TypeNode::Bool, TypeNode::String) => Ok(TypeNode::String),
+                    (TypeNode::Bool, TypeNode::Float) => Err(SemanticError::UnexpectedNode {
+                        expected: "Bool to Float is not allowed".to_string(),
+                    }),
+                    (TypeNode::Bool, TypeNode::Bool) => Ok(TypeNode::Bool),
+
+                    // String casts
+                    (TypeNode::String, TypeNode::Int) => Ok(TypeNode::Int),
+                    (TypeNode::String, TypeNode::Float) => Ok(TypeNode::Float),
+                    (TypeNode::String, TypeNode::String) => Ok(TypeNode::String),
+                    (TypeNode::String, TypeNode::Bool) => Err(SemanticError::UnexpectedNode {
+                        expected: "String to Bool is not allowed".to_string(),
+                    }),
+
+                    // Identity cast
+                    (src, tgt) if *src == *tgt => Ok(tgt.clone()),
+                    // ... other arms, update src to &src as needed ...
+                    (_, tgt) => Err(SemanticError::UnexpectedNode {
+                        expected: format!("Cast to {} is not allowed from {:?}", tgt, source_type),
                     }),
                 }
             }
@@ -895,16 +936,6 @@ impl SemanticAnalyzer {
                     }
                     Ok(TypeNode::Int)
                 }
-                "get" => {
-                    if args.len() != 1 {
-                        return Err(SemanticError::FunctionArgumentMismatch {
-                            name: format!("Array.{}", method),
-                            expected: 1,
-                            found: args.len(),
-                        });
-                    }
-                    Ok(*elem_type.clone())
-                }
                 "push" => {
                     if args.len() != 1 {
                         return Err(SemanticError::FunctionArgumentMismatch {
@@ -964,16 +995,6 @@ impl SemanticAnalyzer {
                         });
                     }
                     Ok(TypeNode::Bool)
-                }
-                "set" => {
-                    if args.len() != 2 {
-                        return Err(SemanticError::FunctionArgumentMismatch {
-                            name: format!("Array.{}", method),
-                            expected: 2,
-                            found: args.len(),
-                        });
-                    }
-                    Ok(TypeNode::Void)
                 }
                 "clear" => {
                     if !args.is_empty() {

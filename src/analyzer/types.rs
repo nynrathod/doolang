@@ -123,6 +123,7 @@ pub enum SemanticError {
         cycle: Vec<String>,
     },
     ParseError,
+    ParseErrorMsg(String),
 
     ParseErrorInModule {
         file: String,
@@ -135,7 +136,7 @@ impl fmt::Display for TypeNode {
         match self {
             TypeNode::Float => write!(f, "Float"),
             TypeNode::Int => write!(f, "Int"),
-            TypeNode::String => write!(f, "String"),
+            TypeNode::String => write!(f, "Str"),
             TypeNode::Bool => write!(f, "Bool"),
             TypeNode::Array(t) => write!(f, "Array<{}>", t),
             TypeNode::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
@@ -228,9 +229,10 @@ impl SemanticError {
             // Module Import / Parse
             SemanticError::ModuleNotFound(_) => "E0701",
             SemanticError::ParseError => "E0702",
+            SemanticError::ParseErrorMsg(_) => "E0703",
 
-            SemanticError::ParseErrorInModule { .. } => "E0703",
-            SemanticError::CircularImport { .. } => "E0704",
+            SemanticError::ParseErrorInModule { .. } => "E0704",
+            SemanticError::CircularImport { .. } => "E0705",
         }
     }
 }
@@ -463,7 +465,7 @@ impl fmt::Display for SemanticError {
             // Module Import / Parse
             E::ModuleNotFound(p) => write!(f, "error[{}]: module not found: {}", self.code(), p),
             E::ParseError => write!(f, "error[{}]: parse error in imported module", self.code()),
-
+            E::ParseErrorMsg(msg) => write!(f, "error[{}]: {}", self.code(), msg),
             E::ParseErrorInModule { file, error } => {
                 write!(f, "error[{}] in {}: {}", self.code(), file, error)
             }

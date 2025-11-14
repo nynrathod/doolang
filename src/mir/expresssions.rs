@@ -274,9 +274,17 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             } else {
                                 // Cast non-string to string
                                 let cast_tmp = builder.next_tmp();
+                                let source_type = if let Some(TypeNode::Float) =
+                                    get_operand_type(builder, &lhs_tmp)
+                                {
+                                    "Float".to_string()
+                                } else {
+                                    "Int".to_string()
+                                };
                                 block.instrs.push(MirInstr::Cast {
                                     name: cast_tmp.clone(),
                                     value: lhs_tmp.clone(),
+                                    source_type,
                                     target_type: "String".to_string(),
                                 });
                                 builder
@@ -290,9 +298,17 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             } else {
                                 // Cast non-string to string
                                 let cast_tmp = builder.next_tmp();
+                                let source_type = if let Some(TypeNode::Float) =
+                                    get_operand_type(builder, &rhs_tmp)
+                                {
+                                    "Float".to_string()
+                                } else {
+                                    "Int".to_string()
+                                };
                                 block.instrs.push(MirInstr::Cast {
                                     name: cast_tmp.clone(),
                                     value: rhs_tmp.clone(),
+                                    source_type,
                                     target_type: "String".to_string(),
                                 });
                                 builder
@@ -322,9 +338,17 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                                     } else {
                                         // Cast non-string to string
                                         let cast_tmp = builder.next_tmp();
+                                        let source_type = if let Some(TypeNode::Float) =
+                                            get_operand_type(builder, &lhs_tmp)
+                                        {
+                                            "Float".to_string()
+                                        } else {
+                                            "Int".to_string()
+                                        };
                                         block.instrs.push(MirInstr::Cast {
                                             name: cast_tmp.clone(),
                                             value: lhs_tmp.clone(),
+                                            source_type,
                                             target_type: "String".to_string(),
                                         });
                                         builder
@@ -341,9 +365,17 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                                     } else {
                                         // Cast non-string to string
                                         let cast_tmp = builder.next_tmp();
+                                        let source_type = if let Some(TypeNode::Float) =
+                                            get_operand_type(builder, &rhs_tmp)
+                                        {
+                                            "Float".to_string()
+                                        } else {
+                                            "Int".to_string()
+                                        };
                                         block.instrs.push(MirInstr::Cast {
                                             name: cast_tmp.clone(),
                                             value: rhs_tmp.clone(),
+                                            source_type,
                                             target_type: "String".to_string(),
                                         });
                                         builder
@@ -708,11 +740,37 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 _ => "Int".to_string(),
             };
 
+            // Determine source type
+            let source_type_str = if let Some(source_type) = get_operand_type(builder, &value_tmp) {
+                match source_type {
+                    TypeNode::Int => "Int".to_string(),
+                    TypeNode::Float => "Float".to_string(),
+                    TypeNode::String => "String".to_string(),
+                    TypeNode::Bool => "Bool".to_string(),
+                    _ => "Int".to_string(),
+                }
+            } else {
+                "Int".to_string()
+            };
+
             block.instrs.push(MirInstr::Cast {
                 name: result_tmp.clone(),
-                value: value_tmp,
-                target_type: target_type_str,
+                value: value_tmp.clone(),
+                source_type: source_type_str.clone(),
+                target_type: target_type_str.clone(),
             });
+
+            // Track result type in symbol table
+            let result_type = match target_type {
+                crate::parser::ast::TypeNode::Int => TypeNode::Int,
+                crate::parser::ast::TypeNode::Float => TypeNode::Float,
+                crate::parser::ast::TypeNode::String => TypeNode::String,
+                crate::parser::ast::TypeNode::Bool => TypeNode::Bool,
+                _ => TypeNode::Int,
+            };
+            builder
+                .mir_symbol_table
+                .insert(result_tmp.clone(), result_type);
 
             result_tmp
         }

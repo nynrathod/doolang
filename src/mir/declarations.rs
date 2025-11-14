@@ -141,9 +141,9 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
             params: params.iter().map(|(n, _)| n.clone()).collect(),
             param_types: params
                 .iter()
-                .map(|(_, t)| t.as_ref().map(|ty| format!("{:?}", ty)))
+                .map(|(_, t)| t.as_ref().map(|ty| ty.format_type_string()))
                 .collect(),
-            return_type: return_type.as_ref().map(|t| format!("{:?}", t)),
+            return_type: return_type.as_ref().map(|t| t.format_type_string()),
             blocks: vec![],
         };
 
