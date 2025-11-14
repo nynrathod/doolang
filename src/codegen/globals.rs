@@ -8,7 +8,7 @@ use inkwell::values::{AsValueRef, BasicValue, BasicValueEnum};
 /// The code here is essential for setting up the global state of a program before function-level code generation begins.
 /// External function from the LLVM C API needed to create constant arrays
 /// of complex types (like arrays of structs, or nested arrays).
-use llvm_sys::core::LLVMConstArray;
+use llvm_sys::core::LLVMConstArray2;
 use llvm_sys::prelude::LLVMValueRef;
 
 /// Implements global code generation logic for the CodeGen struct.
@@ -29,7 +29,7 @@ impl<'ctx> CodeGen<'ctx> {
         // Convert Inkwell values to raw LLVM value references.
         let mut raw: Vec<LLVMValueRef> = values.iter().map(|v| v.as_value_ref()).collect();
         // Call the raw LLVM function to build the constant array.
-        let arr_ref = LLVMConstArray(elem_type.as_type_ref(), raw.as_mut_ptr(), raw.len() as u32);
+        let arr_ref = LLVMConstArray2(elem_type.as_type_ref(), raw.as_mut_ptr(), raw.len() as u64);
         // Convert the raw reference back into an Inkwell ArrayValue.
         unsafe { inkwell::values::ArrayValue::new(arr_ref) }.as_basic_value_enum()
     }
@@ -245,8 +245,8 @@ impl<'ctx> CodeGen<'ctx> {
             MirInstr::Map {
                 name,
                 entries,
-                key_type,
-                value_type,
+                key_type: _,
+                value_type: _,
             } => {
                 // Determine the types of the key and value from the first entry.
                 let first_key = self.resolve_global_value(&entries[0].0);

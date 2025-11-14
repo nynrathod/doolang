@@ -9,25 +9,50 @@ pub enum TypeNode {
     Int,
     String,
     Bool,
-    Array(Box<TypeNode>),              // Array<Int>, Array<String>
-    Map(Box<TypeNode>, Box<TypeNode>), // Map<String, Int>
+    Array(Box<TypeNode>),
+    Map(Box<TypeNode>, Box<TypeNode>),
     Tuple(Vec<TypeNode>),
     Void,
-    Struct(String, HashMap<String, TypeNode>), // StructName -> field types
+    Struct(String, HashMap<String, TypeNode>),
     Enum(String, HashMap<String, Option<TypeNode>>),
     Range(Box<TypeNode>, Box<TypeNode>, bool),
     TypeRef(String),
-    Function(Vec<TypeNode>, Box<TypeNode>), // (params, return_type)
+    Function(Vec<TypeNode>, Box<TypeNode>),
 }
 
-#[derive(Debug, Clone)]
-pub enum ImportItem {
-    /// Single import: `Add`
-    Symbol(String),
-    /// Aliased import: `Add as mathAdd`
-    SymbolWithAlias(String, String), // (name, alias)
-    /// Wildcard import: `*`
-    Wildcard,
+impl TypeNode {
+    /// Format a TypeNode into a proper string representation for MIR
+    /// This produces format like "Array(Int)", "Map(Str,Int)", etc.
+    pub fn format_type_string(&self) -> String {
+        match self {
+            TypeNode::Float => "Float".to_string(),
+            TypeNode::Int => "Int".to_string(),
+            TypeNode::String => "Str".to_string(),
+            TypeNode::Bool => "Bool".to_string(),
+            TypeNode::Array(inner) => format!("Array({})", inner.format_type_string()),
+            TypeNode::Map(key, value) => {
+                format!(
+                    "Map({},{})",
+                    key.format_type_string(),
+                    value.format_type_string()
+                )
+            }
+            TypeNode::Tuple(types) => {
+                let type_strs: Vec<String> = types.iter().map(|t| t.format_type_string()).collect();
+                format!("Tuple({})", type_strs.join(","))
+            }
+            TypeNode::Void => "Void".to_string(),
+            TypeNode::Struct(name, _) => format!("Struct({})", name),
+            TypeNode::Enum(name, _) => format!("Enum({})", name),
+            TypeNode::Range(_, _, _) => "Range".to_string(),
+            TypeNode::TypeRef(name) => name.clone(),
+            TypeNode::Function(params, ret) => {
+                let param_strs: Vec<String> =
+                    params.iter().map(|t| t.format_type_string()).collect();
+                format!("Fn({})→{}", param_strs.join(","), ret.format_type_string())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +60,13 @@ pub enum Pattern {
     Identifier(String),
     Tuple(Vec<Pattern>),
     Wildcard,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportItem {
+    Symbol(String),                  // Single import: `Add`
+    SymbolWithAlias(String, String), // Aliased import: `Add as mathAdd`
+    Wildcard,                        // Wildcard import: `*`
 }
 
 #[derive(Debug, Clone)]
@@ -47,18 +79,17 @@ pub enum AstNode {
     BoolLiteral(bool),
     ArrayLiteral(Vec<AstNode>),
     MapLiteral(Vec<(AstNode, AstNode)>),
+
     UnaryExpr {
         op: TokenType,
         expr: Box<AstNode>,
     },
-
     // 1+2 || a+2
     BinaryExpr {
         left: Box<AstNode>,
         op: TokenType,
         right: Box<AstNode>,
     },
-
     LetDecl {
         mutable: bool,
         type_annotation: Option<TypeNode>,
@@ -66,17 +97,14 @@ pub enum AstNode {
         value: Box<AstNode>,
         is_ref_counted: Option<bool>,
     },
-
     StructDecl {
         name: String,
         fields: Vec<(String, TypeNode)>,
     },
-
     EnumDecl {
         name: String,
         variants: Vec<(String, Option<TypeNode>)>,
     },
-
     ConditionalStmt {
         condition: Box<AstNode>,
         then_block: Vec<AstNode>,
@@ -84,25 +112,31 @@ pub enum AstNode {
     },
     Block(Vec<AstNode>),
     Return {
-        values: Vec<AstNode>, // multiple expressions can be returned
+        values: Vec<AstNode>,
     },
     Print {
         exprs: Vec<AstNode>,
     },
     Break,
     Continue,
-
     Assignment {
         pattern: Pattern,
         value: Box<AstNode>,
     },
-
     CompoundAssignment {
         pattern: Pattern,
         op: TokenType, // PlusEq, MinusEq, StarEq, SlashEq
         value: Box<AstNode>,
     },
-
+    IncrementDecrement {
+        variable: String,
+        op: TokenType, // PlusPlus or MinusMinus
+    },
+    ElementAssignment {
+        array: Box<AstNode>,
+        index: Box<AstNode>,
+        value: Box<AstNode>,
+    },
     FunctionDecl {
         name: String,
         visibility: String,
@@ -111,7 +145,7 @@ pub enum AstNode {
         body: Vec<AstNode>,
     },
     FunctionCall {
-        func: Box<AstNode>, // usually an Identifier node
+        func: Box<AstNode>,
         args: Vec<AstNode>,
     },
     MethodCall {
@@ -119,43 +153,39 @@ pub enum AstNode {
         method: String,
         args: Vec<AstNode>,
     },
-
     ForLoopStmt {
         pattern: Pattern,
         iterable: Option<Box<AstNode>>,
-        body: Vec<AstNode>, // keep Vec (block already returns Vec)
+        body: Vec<AstNode>,
     },
-
     TupleLiteral(Vec<AstNode>),
-
     Range {
         start: Box<AstNode>,
         end: Box<AstNode>,
         inclusive: bool,
     },
 
-    // --- Array/Map Element Access ---
+    // Array/Map Element Access
     ElementAccess {
         array: Box<AstNode>,
         index: Box<AstNode>,
     },
 
-    // --- Module Import ---
     Import {
-        path: Vec<String>,      // e.g. ["core", "math"]
-        items: Vec<ImportItem>, // Multiple imports with optional aliases, or wildcard
+        path: Vec<String>,
+        items: Vec<ImportItem>,
     },
 
-    // --- Type Casting ---
+    // Type cast variable
     Cast {
         expr: Box<AstNode>,
         target_type: TypeNode,
     },
 
-    // --- Closure ---
+    // Closure: () => {}
     Closure {
-        params: Vec<(String, Option<TypeNode>)>, // parameter name and optional type
-        body: Box<AstNode>,                      // closure body (expression or block)
-        return_type: Option<TypeNode>,           // optional explicit return type
+        params: Vec<(String, Option<TypeNode>)>,
+        body: Box<AstNode>,
+        return_type: Option<TypeNode>,
     },
 }

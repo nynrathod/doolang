@@ -26,6 +26,7 @@ impl<'ctx> CodeGen<'ctx> {
                 start,
                 end,
                 inclusive,
+                cond_block: _,
                 body_block,
                 exit_block,
             } => {
@@ -37,6 +38,7 @@ impl<'ctx> CodeGen<'ctx> {
                 var,
                 array,
                 index_var,
+                cond_block: _,
                 body_block,
                 exit_block,
             } => {
@@ -47,6 +49,7 @@ impl<'ctx> CodeGen<'ctx> {
                 value_var,
                 map,
                 index_var,
+                cond_block: _,
                 body_block,
                 exit_block,
             } => {
@@ -289,7 +292,7 @@ impl<'ctx> CodeGen<'ctx> {
             // Check if old value is not null before decreffing
             if old_val.is_pointer_value() {
                 let old_ptr = old_val.into_pointer_value();
-                let null_ptr = self
+                let _ = self
                     .context
                     .ptr_type(inkwell::AddressSpace::default())
                     .const_null();

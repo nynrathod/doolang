@@ -10,7 +10,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         name: &str,
         params: &[String],
-        param_types: &[Option<String>],
+        _param_types: &[Option<String>],
         body_expr: &str,
         body_ast: &Option<Box<AstNode>>,
         _return_type: &Option<String>,

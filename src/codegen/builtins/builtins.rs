@@ -45,7 +45,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                     let fn_type = self
                         .context
-                        .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .fn_type(&[self.context.i64_type().into()], false);
                     self.module.add_function("malloc", fn_type, None)

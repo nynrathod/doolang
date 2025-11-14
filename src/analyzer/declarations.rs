@@ -272,11 +272,6 @@ impl SemanticAnalyzer {
             self.symbol_table = outer;
         }
 
-        // println!(
-        //     "{} {:?} {:?} {:?} {:?}",
-        //     name, visibility, params, return_type, body
-        // );
-
         Ok(())
     }
 
