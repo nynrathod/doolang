@@ -26,29 +26,11 @@ impl<'a> Parser<'a> {
     /// - `min_prec`: minimum precedence to consider (used for recursion).
     /// Returns the parsed AST node for the expression.
     fn parse_expression_prec(&mut self, min_prec: u8) -> ParseResult<AstNode> {
-        let mut left = if let Some(tok) = self.peek() {
-            match tok.kind {
-                // Allow unary operators: !, -, +
-                TokenType::Bang | TokenType::Minus | TokenType::Plus => {
-                    let op = tok.kind;
-                    self.advance(); // consume operator
-                    let expr = self.parse_expression_prec(7)?; // unary has high precedence
-                    AstNode::UnaryExpr {
-                        op,
-                        expr: Box::new(expr),
-                    }
-                }
-                // Primary expressions:
-                // Handles: number, identifier, function call foo(a + b), string, boolean, array, map
-                _ => self.parse_primary()?,
-            }
-        } else {
-            return Err(ParseError::EndOfInput);
-        };
+        // First parse unary and primary
+        let mut left = self.parse_unary_primary()?;
 
-        // Postfix operations: array/map element access
-        // Handles: arr[0], map["key"], nested[i][j], etc.
-        // 🟡 TODO: nested[i][j] not supported yet
+        // Then apply postfix operations (array access, method calls, casts)
+        // This ensures that -42 as Str parses as (-42) as Str, not -(42 as Str)
         left = self.parse_postfix(left)?;
 
         // Binary operator expressions:
@@ -80,6 +62,32 @@ impl<'a> Parser<'a> {
         }
 
         Ok(left)
+    }
+
+    /// Parse unary operators and primary expressions.
+    /// Unary operators (-, !, +) are right-associative, so !!x is parsed as !(!(x))
+    /// This is called before postfix operations, so postfix operators apply to the result of unary.
+    fn parse_unary_primary(&mut self) -> ParseResult<AstNode> {
+        if let Some(tok) = self.peek() {
+            match tok.kind {
+                // Allow unary operators: !, -, +
+                TokenType::Bang | TokenType::Minus | TokenType::Plus => {
+                    let op = tok.kind;
+                    self.advance(); // consume operator
+                                    // Recursively parse unary for chaining: !!x, ---x, etc.
+                    let expr = self.parse_unary_primary()?;
+                    Ok(AstNode::UnaryExpr {
+                        op,
+                        expr: Box::new(expr),
+                    })
+                }
+                // Primary expressions:
+                // Handles: number, identifier, function call foo(a + b), string, boolean, array, map
+                _ => self.parse_primary(),
+            }
+        } else {
+            Err(ParseError::EndOfInput)
+        }
     }
 
     /// Parses postfix operations on an expression.
@@ -240,11 +248,11 @@ impl<'a> Parser<'a> {
                     if self.is_arrow_function() {
                         self.parse_arrow_closure()
                     } else {
-                        Err(ParseError::UnexpectedTokenAt {
-                            msg: "Parentheses are not allowed in expressions unless used for arrow functions (x) =>".to_string(),
-                            line: tok_line,
-                            col: tok_col,
-                        })
+                        // Otherwise, treat as grouping parentheses: (expr)
+                        self.advance(); // consume '('
+                        let expr = self.parse_expression()?;
+                        self.expect(TokenType::CloseParen)?;
+                        Ok(expr)
                     }
                 }
                 _ => Err(ParseError::UnexpectedTokenAt {
