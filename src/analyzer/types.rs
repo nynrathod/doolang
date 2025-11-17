@@ -44,6 +44,11 @@ pub enum SemanticError {
     InvalidFunctionCall {
         func: String,
     },
+    MethodNotFoundOnType {
+        object_type: String,
+        method_name: String,
+        correct_type: Option<String>,
+    },
     FunctionArgumentMismatch {
         name: String,
         expected: usize,
@@ -165,7 +170,9 @@ impl fmt::Display for TypeNode {
 
 impl fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "expected {}, found {}", self.expected, self.found)
+        let expected = self.expected.to_string().to_lowercase();
+        let found = self.found.to_string().to_lowercase();
+        write!(f, "expected {}, found {}", expected, found)
     }
 }
 
@@ -194,6 +201,7 @@ impl SemanticError {
             SemanticError::UndeclaredFunction(_) => "E0104",
             SemanticError::InvalidFunctionCall { .. } => "E0105",
             SemanticError::FunctionArgumentMismatch { .. } => "E0106",
+            SemanticError::MethodNotFoundOnType { .. } => "E0112",
             SemanticError::FunctionArgumentTypeMismatch { .. } => "E0107",
             SemanticError::MissingFunctionReturn { .. } => "E0108",
             SemanticError::InvalidReturnInVoidFunction { .. } => "E0109",
@@ -252,13 +260,13 @@ impl fmt::Display for SemanticError {
             // Variable Declaration/Assignment Errors
             E::VariableRedeclaration(n) => write!(
                 f,
-                "error[{}]: variable '{}' redeclared in this scope",
+                "error[{}]: duplicate variable '{}'",
                 self.code(),
                 n
             ),
             E::UndeclaredVariable(n) => write!(
                 f,
-                "error[{}]: use of undeclared variable '{}'",
+                "error[{}]: use of undefined variable '{}'",
                 self.code(),
                 n
             ),
@@ -298,11 +306,11 @@ impl fmt::Display for SemanticError {
 
             // Function Declaration/Call Errors
             E::FunctionRedeclaration(n) => {
-                write!(f, "error[{}]: function '{}' redeclared", self.code(), n)
+                write!(f, "error[{}]: duplicate function '{}'", self.code(), n)
             }
             E::FunctionParamRedeclaration(n) => write!(
                 f,
-                "error[{}]: duplicate parameter name '{}'",
+                "error[{}]: duplicate parameter '{}'",
                 self.code(),
                 n
             ),
@@ -314,7 +322,7 @@ impl fmt::Display for SemanticError {
             ),
             E::UndeclaredFunction(n) => write!(
                 f,
-                "error[{}]: call to undeclared function '{}'",
+                "error[{}]: undefined function '{}'",
                 self.code(),
                 n
             ),
@@ -324,13 +332,33 @@ impl fmt::Display for SemanticError {
                 self.code(),
                 func
             ),
+            E::MethodNotFoundOnType { object_type, method_name, correct_type } => {
+                if let Some(ct) = correct_type {
+                    write!(
+                        f,
+                        "error[{}]: {} type does not have method '{}' (this is a {} method)",
+                        self.code(),
+                        object_type,
+                        method_name,
+                        ct
+                    )
+                } else {
+                    write!(
+                        f,
+                        "error[{}]: {} type does not have method '{}'",
+                        self.code(),
+                        object_type,
+                        method_name
+                    )
+                }
+            }
             E::FunctionArgumentMismatch {
                 name,
                 expected,
                 found,
             } => write!(
                 f,
-                "error[{}]: function '{}' expects {} arguments, found {}",
+                "error[{}]: function '{}' expects {} parameters as arguments, found {}",
                 self.code(),
                 name,
                 expected,
@@ -376,7 +404,7 @@ impl fmt::Display for SemanticError {
 
             // Type/Operator Errors
             E::OperatorTypeMismatch(m) => {
-                write!(f, "error[{}]: operator type mismatch: {}", self.code(), m)
+                write!(f, "error[{}]: type mismatch: {}", self.code(), m)
             }
             E::EmptyCollectionTypeInferenceError(m) => write!(
                 f,
@@ -385,7 +413,7 @@ impl fmt::Display for SemanticError {
                 m
             ),
             E::InvalidConditionType(m) => {
-                write!(f, "error[{}]: invalid condition type: {}", self.code(), m)
+                write!(f, "error[{}]: condition must be bool, {}", self.code(), m)
             }
 
             // Print
