@@ -574,7 +574,8 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             MirInstr::ArrayGet { name, array, index } => {
-                let array_ptr = self.resolve_value(array).into_pointer_value();
+                let array_val = self.resolve_value(array);
+                let array_ptr = array_val.into_pointer_value();
                 let index_val = self.resolve_value(index).into_int_value();
 
                 // Track that this ArrayGet result came from this source array
@@ -611,7 +612,46 @@ impl<'ctx> CodeGen<'ctx> {
                 }
 
                 // Normal array element access
-                let elem_type = self.get_array_element_type(array);
+                // Try multiple name variations to find metadata for array iteration
+                let elem_type = if let Some(metadata) = self.array_metadata.get(array) {
+                    match metadata.element_type.as_str() {
+                        "Int" => self.context.i32_type().into(),
+                        "Float" => self.context.f64_type().into(),
+                        "Bool" => self.context.bool_type().into(),
+                        "Str" => self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into(),
+                        _ => self.context.i32_type().into(),
+                    }
+                } else {
+                    // Try array name variations (without _array suffix, with % prefix, etc)
+                    let base_name = array.trim_start_matches('%').trim_end_matches("_array");
+                    let variations = vec![
+                        array.to_string(),
+                        base_name.to_string(),
+                        format!("{}_array", base_name),
+                        format!("{}item_array", base_name),
+                    ];
+
+                    let mut found_type = self.context.i32_type().as_basic_type_enum();
+                    for var in variations {
+                        if let Some(metadata) = self.array_metadata.get(&var) {
+                            found_type = match metadata.element_type.as_str() {
+                                "Int" => self.context.i32_type().into(),
+                                "Float" => self.context.f64_type().into(),
+                                "Bool" => self.context.bool_type().into(),
+                                "Str" => self
+                                    .context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                                _ => self.context.i32_type().into(),
+                            };
+                            break;
+                        }
+                    }
+                    found_type
+                };
 
                 // Use direct pointer arithmetic with single index for runtime arrays
                 // This is clearer and more explicit than the two-index array syntax
