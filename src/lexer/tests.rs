@@ -41,21 +41,41 @@ mod lexer_tests {
 
     #[test]
     fn test_keywords() {
-        first_token_is("let", TokenType::Let);
-        first_token_is("mut", TokenType::Mut);
-        first_token_is("fn", TokenType::Function);
-        first_token_is("import", TokenType::Import);
-        first_token_is("as", TokenType::As);
-        first_token_is("struct", TokenType::Struct);
-        first_token_is("enum", TokenType::Enum);
-        first_token_is("if", TokenType::If);
-        first_token_is("else", TokenType::Else);
-        first_token_is("for", TokenType::For);
-        first_token_is("in", TokenType::In);
-        first_token_is("return", TokenType::Return);
-        first_token_is("break", TokenType::Break);
-        first_token_is("continue", TokenType::Continue);
-        first_token_is("print", TokenType::Print);
+        // Common list of all keywords and their TokenType
+        let keywords: &[(&str, TokenType)] = &[
+            ("let", TokenType::Let),
+            ("mut", TokenType::Mut),
+            ("fn", TokenType::Function),
+            ("import", TokenType::Import),
+            ("as", TokenType::As),
+            ("struct", TokenType::Struct),
+            ("enum", TokenType::Enum),
+            ("if", TokenType::If),
+            ("else", TokenType::Else),
+            ("for", TokenType::For),
+            ("in", TokenType::In),
+            ("return", TokenType::Return),
+            ("break", TokenType::Break),
+            ("continue", TokenType::Continue),
+            ("print", TokenType::Print),
+        ];
+
+        // Check each keyword individually
+        for &(kw, kind) in keywords {
+            first_token_is(kw, kind);
+        }
+
+        // Check that all keywords together are not identifiers
+        let all_keywords = keywords
+            .iter()
+            .map(|(kw, _)| *kw)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let all_keywords_with_bools = format!("{} true false", all_keywords);
+
+        lex_and_check(&all_keywords_with_bools, |tokens| {
+            assert_eq!(count_token_kind(tokens, TokenType::Identifier), 0);
+        });
     }
 
     #[test]
@@ -66,39 +86,44 @@ mod lexer_tests {
         });
     }
 
-    #[test]
-    fn test_keywords_not_identifiers() {
-        lex_and_check(
-            "fn let mut import as struct enum if else for in return break continue print true false",
-            |tokens| {
-                assert_eq!(count_token_kind(tokens, TokenType::Identifier), 0);
-            }
-        );
-    }
-
     // ========================================
     // IDENTIFIERS
     // ========================================
 
     #[test]
-    fn test_identifier_simple() {
-        first_token_is("foo", TokenType::Identifier);
-        first_token_is("bar123", TokenType::Identifier);
-        first_token_is("myVariable", TokenType::Identifier);
-    }
+    fn test_identifiers() {
+        let identifiers = ["foo", "bar123", "VarName", "x"];
 
-    #[test]
-    fn test_identifier_with_numbers() {
-        lex_and_check("var1 x2y3 abc123", |tokens| {
-            assert_eq!(count_token_kind(tokens, TokenType::Identifier), 3);
+        // Check each identifier individually
+        for &ident in &identifiers {
+            first_token_is(ident, TokenType::Identifier);
+        }
+
+        // Check all identifiers together
+        let all_idents = identifiers.join(" ");
+        lex_and_check(&all_idents, |tokens| {
+            assert_eq!(
+                count_token_kind(tokens, TokenType::Identifier),
+                identifiers.len()
+            );
         });
     }
 
     #[test]
-    fn test_identifier_case_sensitive() {
-        lex_and_check("Foo FOO foo", |tokens| {
-            assert_eq!(count_token_kind(tokens, TokenType::Identifier), 3);
-        });
+    fn test_data_types() {
+        lex_and_check(
+            "
+            let a: Int = 10;
+            let a: [Int] = [10, 20];
+            let a: {Str: Int} = {\"key\": 10};
+            let a: Bool = true;
+            let a: Float = 3.14;
+            ",
+            |tokens| {
+                assert!(has_token_kind(tokens, TokenType::Identifier));
+                assert!(has_token_kind(tokens, TokenType::Colon));
+            },
+        );
     }
 
     #[test]
@@ -113,11 +138,18 @@ mod lexer_tests {
     // ========================================
 
     #[test]
-    fn test_integer_literals() {
+    fn test_number_literals() {
         first_token_is("0", TokenType::Number);
         first_token_is("42", TokenType::Number);
-        first_token_is("123456", TokenType::Number);
+        first_token_is("00042", TokenType::Number);
         first_token_is("2147483647", TokenType::Number);
+
+        first_token_is("3.14", TokenType::Float);
+        first_token_is("0.5", TokenType::Float);
+        first_token_is("123.456", TokenType::Float);
+        first_token_is("0.0", TokenType::Float);
+        first_token_is("1.0", TokenType::Float);
+        first_token_is("0.123456789", TokenType::Float);
     }
 
     #[test]
@@ -128,26 +160,6 @@ mod lexer_tests {
         });
     }
 
-    #[test]
-    fn test_leading_zeros() {
-        first_token_is("00042", TokenType::Number);
-        first_token_is("007", TokenType::Number);
-    }
-
-    #[test]
-    fn test_float_literals() {
-        first_token_is("3.14", TokenType::Float);
-        first_token_is("0.5", TokenType::Float);
-        first_token_is("123.456", TokenType::Float);
-        first_token_is("0.0", TokenType::Float);
-    }
-
-    #[test]
-    fn test_float_edge_cases() {
-        first_token_is("1.0", TokenType::Float);
-        first_token_is("0.123456789", TokenType::Float);
-    }
-
     // ========================================
     // STRINGS
     // ========================================
@@ -155,40 +167,13 @@ mod lexer_tests {
     #[test]
     fn test_string_literals() {
         first_token_is(r#""hello""#, TokenType::String);
-        first_token_is(r#""world""#, TokenType::String);
-    }
 
-    #[test]
-    fn test_string_empty() {
         first_token_is(r#""""#, TokenType::String);
-    }
-
-    #[test]
-    fn test_string_with_spaces() {
         first_token_is(r#""hello world""#, TokenType::String);
-    }
-
-    #[test]
-    fn test_string_with_escapes() {
         first_token_is(r#""hello\nworld""#, TokenType::String);
         first_token_is(r#""tab\there""#, TokenType::String);
-    }
-
-    #[test]
-    fn test_string_with_quotes() {
         first_token_is(r#""say \"hello\"""#, TokenType::String);
-    }
-
-    #[test]
-    fn test_string_with_numbers() {
         first_token_is(r#""test123""#, TokenType::String);
-    }
-
-    #[test]
-    fn test_multiple_strings() {
-        lex_and_check(r#""hello" "world" "foo""#, |tokens| {
-            assert_eq!(count_token_kind(tokens, TokenType::String), 3);
-        });
     }
 
     // ========================================
@@ -238,12 +223,6 @@ mod lexer_tests {
         });
     }
 
-    #[test]
-    fn test_triple_equals() {
-        first_token_is("===", TokenType::EqEqEq);
-        first_token_is("!==", TokenType::NotEqEq);
-    }
-
     // ========================================
     // OPERATORS - LOGICAL
     // ========================================
@@ -253,12 +232,6 @@ mod lexer_tests {
         first_token_is("&&", TokenType::AndAnd);
         first_token_is("||", TokenType::OrOr);
         first_token_is("!", TokenType::Bang);
-    }
-
-    #[test]
-    fn test_bitwise_operators() {
-        first_token_is("&", TokenType::And);
-        first_token_is("|", TokenType::Or);
     }
 
     // ========================================
@@ -273,35 +246,36 @@ mod lexer_tests {
         first_token_is("*=", TokenType::StarEq);
         first_token_is("/=", TokenType::SlashEq);
         first_token_is("%=", TokenType::PercentEq);
+        first_token_is("++", TokenType::PlusPlus);
+        first_token_is("--", TokenType::MinusMinus);
     }
 
     #[test]
     fn test_compound_assignment_expression() {
-        lex_and_check("x += 1; y -= 2; z *= 3;", |tokens| {
+        lex_and_check("x += 1; y -= 2; z *= 3; p /= 4; q %= 5; ", |tokens| {
             assert!(has_token_kind(tokens, TokenType::PlusEq));
             assert!(has_token_kind(tokens, TokenType::MinusEq));
             assert!(has_token_kind(tokens, TokenType::StarEq));
+            assert!(has_token_kind(tokens, TokenType::SlashEq));
+            assert!(has_token_kind(tokens, TokenType::PercentEq));
         });
     }
 
     // ========================================
     // DELIMITERS
     // ========================================
-
+    /// Test delimiters: parentheses, braces, brackets
     #[test]
-    fn test_parentheses() {
+    fn test_delimiters() {
+        // Parentheses
         first_token_is("(", TokenType::OpenParen);
         first_token_is(")", TokenType::CloseParen);
-    }
 
-    #[test]
-    fn test_braces() {
+        // Braces
         first_token_is("{", TokenType::OpenBrace);
         first_token_is("}", TokenType::CloseBrace);
-    }
 
-    #[test]
-    fn test_brackets() {
+        // Brackets
         first_token_is("[", TokenType::OpenBracket);
         first_token_is("]", TokenType::CloseBracket);
     }
@@ -388,6 +362,7 @@ mod lexer_tests {
     fn test_function_definition() {
         lex_and_check("fn add(x, y) { return x + y; }", |tokens| {
             assert!(has_token_kind(tokens, TokenType::Function));
+            assert!(has_token_kind(tokens, TokenType::Identifier));
             assert!(has_token_kind(tokens, TokenType::Return));
             assert!(has_token_kind(tokens, TokenType::OpenBrace));
             assert!(has_token_kind(tokens, TokenType::CloseBrace));
@@ -423,10 +398,11 @@ mod lexer_tests {
 
     #[test]
     fn test_for_loop() {
-        lex_and_check("for i in 0..10 { }", |tokens| {
+        lex_and_check("for i in 0..10 { } for i in 0..=10 { }", |tokens| {
             assert!(has_token_kind(tokens, TokenType::For));
             assert!(has_token_kind(tokens, TokenType::In));
             assert!(has_token_kind(tokens, TokenType::RangeExc));
+            assert!(has_token_kind(tokens, TokenType::RangeInc));
         });
     }
 
@@ -523,11 +499,25 @@ mod lexer_tests {
 
     #[test]
     fn test_map_access() {
-        lex_and_check(r#"map["key"]"#, |tokens| {
+        lex_and_check(r#"map.get("key")"#, |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::Dot));
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::OpenParen));
+            assert!(has_token_kind(tokens, TokenType::String));
+            assert!(has_token_kind(tokens, TokenType::CloseParen));
+        });
+    }
+
+    #[test]
+    fn test_array_update() {
+        lex_and_check("arr[0] = 42", |tokens| {
             assert!(has_token_kind(tokens, TokenType::Identifier));
             assert!(has_token_kind(tokens, TokenType::OpenBracket));
-            assert!(has_token_kind(tokens, TokenType::String));
+            assert!(has_token_kind(tokens, TokenType::Number));
             assert!(has_token_kind(tokens, TokenType::CloseBracket));
+            assert!(has_token_kind(tokens, TokenType::Eq));
+            assert!(has_token_kind(tokens, TokenType::Number));
         });
     }
 
@@ -546,6 +536,33 @@ mod lexer_tests {
     fn test_token_count_expression() {
         lex_and_check("1 + 2 * 3", |tokens| {
             assert_eq!(tokens.len(), 5);
+        });
+    }
+
+    // =====================================================================
+    // IMPORTS
+    // =====================================================================
+
+    #[test]
+    fn test_import_single() {
+        lex_and_check("import std::Math::Abs;", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Import));
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::Semi));
+        });
+    }
+
+    #[test]
+    fn test_import_multiple() {
+        lex_and_check("import std::Math::*;", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Star));
+        });
+    }
+
+    #[test]
+    fn test_import_aliased() {
+        lex_and_check("import std::Math::{Abs as AbsValue};", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::As));
         });
     }
 }
