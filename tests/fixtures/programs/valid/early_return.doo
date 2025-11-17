@@ -13,7 +13,7 @@ fn CheckValue(X: Int) -> Str {
 
 fn findFirstEven(Arr: [Int]) -> Int {
     for I in 0..5 {
-        if Arr[I] % 2 == 0 {
+        if Arr[I] * 2 == 8 {
             return Arr[I];
         }
     }

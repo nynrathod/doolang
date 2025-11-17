@@ -1,0 +1,8 @@
+// expect-fail: circular import with conditional logic
+import A::FuncA;
+
+fn main() {
+    print("Testing circular import with conditional logic detection...");
+    let result = FuncA();
+    print("Result:", result);
+}

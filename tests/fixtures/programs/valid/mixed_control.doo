@@ -27,7 +27,7 @@ fn main() {
 
     let mut multiplied = 0;
     for j in 1..10 {
-        if j % 3 == 0 {
+        if j * 3 == 12 {
             multiplied = j * 2;
             print("Multiple of 3:", j, "Doubled:", multiplied);
         }

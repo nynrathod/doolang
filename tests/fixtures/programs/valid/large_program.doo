@@ -89,27 +89,84 @@ fn average(arr: [Int]) -> Int {
 }
 
 fn reverse(arr: [Int]) -> [Int] {
-    return [arr[9], arr[8], arr[7], arr[6], arr[5], arr[4], arr[3], arr[2], arr[1], arr[0]];
+    return [
+        arr[9], arr[8], arr[7], arr[6], arr[5], arr[4], arr[3], arr[2], arr[1], arr[0],
+    ];
 }
 
 fn doubleArray(arr: [Int]) -> [Int] {
-    return [arr[0] * 2, arr[1] * 2, arr[2] * 2, arr[3] * 2, arr[4] * 2, arr[5] * 2, arr[6] * 2, arr[7] * 2, arr[8] * 2, arr[9] * 2];
+    return [
+        arr[0] * 2,
+        arr[1] * 2,
+        arr[2] * 2,
+        arr[3] * 2,
+        arr[4] * 2,
+        arr[5] * 2,
+        arr[6] * 2,
+        arr[7] * 2,
+        arr[8] * 2,
+        arr[9] * 2,
+    ];
 }
 
 fn halveArray(arr: [Int]) -> [Int] {
-    return [arr[0] / 2, arr[1] / 2, arr[2] / 2, arr[3] / 2, arr[4] / 2, arr[5] / 2, arr[6] / 2, arr[7] / 2, arr[8] / 2, arr[9] / 2];
+    return [
+        arr[0] / 2,
+        arr[1] / 2,
+        arr[2] / 2,
+        arr[3] / 2,
+        arr[4] / 2,
+        arr[5] / 2,
+        arr[6] / 2,
+        arr[7] / 2,
+        arr[8] / 2,
+        arr[9] / 2,
+    ];
 }
 
 fn addOne(arr: [Int]) -> [Int] {
-    return [arr[0] + 1, arr[1] + 1, arr[2] + 1, arr[3] + 1, arr[4] + 1, arr[5] + 1, arr[6] + 1, arr[7] + 1, arr[8] + 1, arr[9] + 1];
+    return [
+        arr[0] + 1,
+        arr[1] + 1,
+        arr[2] + 1,
+        arr[3] + 1,
+        arr[4] + 1,
+        arr[5] + 1,
+        arr[6] + 1,
+        arr[7] + 1,
+        arr[8] + 1,
+        arr[9] + 1,
+    ];
 }
 
 fn subtractOne(arr: [Int]) -> [Int] {
-    return [arr[0] - 1, arr[1] - 1, arr[2] - 1, arr[3] - 1, arr[4] - 1, arr[5] - 1, arr[6] - 1, arr[7] - 1, arr[8] - 1, arr[9] - 1];
+    return [
+        arr[0] - 1,
+        arr[1] - 1,
+        arr[2] - 1,
+        arr[3] - 1,
+        arr[4] - 1,
+        arr[5] - 1,
+        arr[6] - 1,
+        arr[7] - 1,
+        arr[8] - 1,
+        arr[9] - 1,
+    ];
 }
 
 fn squareArray(arr: [Int]) -> [Int] {
-    return [arr[0] * arr[0], arr[1] * arr[1], arr[2] * arr[2], arr[3] * arr[3], arr[4] * arr[4], arr[5] * arr[5], arr[6] * arr[6], arr[7] * arr[7], arr[8] * arr[8], arr[9] * arr[9]];
+    return [
+        arr[0] * arr[0],
+        arr[1] * arr[1],
+        arr[2] * arr[2],
+        arr[3] * arr[3],
+        arr[4] * arr[4],
+        arr[5] * arr[5],
+        arr[6] * arr[6],
+        arr[7] * arr[7],
+        arr[8] * arr[8],
+        arr[9] * arr[9],
+    ];
 }
 
 fn cubeArray(arr: [Int]) -> [Int] {
@@ -248,7 +305,7 @@ fn gcd(a: Int, b: Int) -> Int {
 }
 
 fn lcm(a: Int, b: Int) -> Int {
-    return (a * b) / gcd(a, b);
+    return a * b / gcd(a, b);
 }
 
 fn power(base: Int, exp: Int) -> Int {
@@ -265,7 +322,7 @@ fn digitSum(num: Int) -> Int {
     if num < 10 {
         return num;
     }
-    return (num % 10) + digitSum(num / 10);
+    return num % 10 + digitSum(num / 10);
 }
 
 fn reverseNumber(num: Int) -> Int {
@@ -322,7 +379,7 @@ fn isArmstrong(num: Int) -> Int {
 }
 
 fn trapezoidArea(a: Int, b: Int, h: Int) -> Int {
-    return ((a + b) * h) / 2;
+    return a + b * h / 2;
 }
 
 fn circleArea(r: Int) -> Int {
@@ -330,7 +387,7 @@ fn circleArea(r: Int) -> Int {
 }
 
 fn triangleArea(base: Int, height: Int) -> Int {
-    return (base * height) / 2;
+    return base * height / 2;
 }
 
 fn rectangleArea(length: Int, width: Int) -> Int {
@@ -342,7 +399,7 @@ fn parallelogramArea(base: Int, height: Int) -> Int {
 }
 
 fn rhombusArea(d1: Int, d2: Int) -> Int {
-    return (d1 * d2) / 2;
+    return d1 * d2 / 2;
 }
 
 fn pentagonPerimeter(side: Int) -> Int {
@@ -374,11 +431,11 @@ fn cylinderVolume(r: Int, h: Int) -> Int {
 }
 
 fn conesurfaceArea(r: Int, h: Int) -> Int {
-    return r * (r + h) * 314 / 100;
+    return r * r + h * 314 / 100;
 }
 
 fn pyramidVolume(baseArea: Int, height: Int) -> Int {
-    return (baseArea * height) / 3;
+    return baseArea * height / 3;
 }
 
 fn distanceBetweenPoints(x1: Int, y1: Int, x2: Int, y2: Int) -> Int {
@@ -388,8 +445,8 @@ fn distanceBetweenPoints(x1: Int, y1: Int, x2: Int, y2: Int) -> Int {
 }
 
 fn manhattanDistance(x1: Int, y1: Int, x2: Int, y2: Int) -> Int {
-    let dx = x2 - x1;
-    let dy = y2 - y1;
+    let mut dx = x2 - x1;
+    let mut dy = y2 - y1;
     if dx < 0 {
         dx = dx * -1;
     }
@@ -400,11 +457,11 @@ fn manhattanDistance(x1: Int, y1: Int, x2: Int, y2: Int) -> Int {
 }
 
 fn midpointX(x1: Int, x2: Int) -> Int {
-    return (x1 + x2) / 2;
+    return x1 + x2 / 2;
 }
 
 fn midpointY(y1: Int, y2: Int) -> Int {
-    return (y1 + y2) / 2;
+    return y1 + y2 / 2;
 }
 
 fn slopeOfLine(x1: Int, y1: Int, x2: Int, y2: Int) -> Int {
@@ -453,7 +510,10 @@ fn main() {
     print("RectangleArea(5, 10):", rectangleArea(5, 10));
     print("CubeVolume(3):", cubeVolume(3));
 
-    print("DistanceBetweenPoints(0,0,3,4):", distanceBetweenPoints(0, 0, 3, 4));
+    print(
+        "DistanceBetweenPoints(0,0,3,4):",
+        distanceBetweenPoints(0, 0, 3, 4),
+    );
     print("MidpointX(0, 10):", midpointX(0, 10));
     print("SlopeOfLine(0,0,1,1):", slopeOfLine(0, 0, 1, 1));
 

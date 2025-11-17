@@ -1,0 +1,5 @@
+import CircularY::FuncY;
+
+fn FuncX() -> Int {
+    return FuncY() + 10;
+}

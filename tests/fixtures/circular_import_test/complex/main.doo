@@ -1,0 +1,9 @@
+
+// expect-fail: circular import (indirect, three-file)
+import CircularX::FuncX;
+
+fn main() {
+    print("Testing complex circular import detection...");
+    let result = FuncX();
+    print("Result:", result);
+}

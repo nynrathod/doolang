@@ -1,0 +1,8 @@
+// expect-fail: circular import with types
+import A::FuncA;
+
+fn main() {
+    print("Testing circular import with types detection...");
+    let result = FuncA(10);
+    print("Result:", result);
+}

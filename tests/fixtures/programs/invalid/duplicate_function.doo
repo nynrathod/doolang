@@ -1,0 +1,10 @@
+fn test() {
+    print("first");
+}
+
+fn test() {
+    print("second");
+}
+
+fn main() {
+}

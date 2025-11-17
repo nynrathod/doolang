@@ -1,0 +1,7 @@
+import B::TypeB;
+
+type TypeA = Int;
+
+fn funcA(x: TypeB) -> TypeA {
+    return x + 1;
+}

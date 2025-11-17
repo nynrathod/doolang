@@ -1,0 +1,6 @@
+fn getValue() -> Int {
+    return "hello";
+}
+
+fn main() {
+}
