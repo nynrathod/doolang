@@ -319,6 +319,29 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_float_div(lhs_float, rhs_float, "fdiv_tmp")
                         .unwrap()
                         .into(),
+                    "mod" => {
+                        // Modulo doesn't exist for floats in LLVM, so convert both to int
+                        let lhs_int = self
+                            .builder
+                            .build_float_to_signed_int(
+                                lhs_float,
+                                self.context.i32_type(),
+                                "fmod_lhs_to_i",
+                            )
+                            .unwrap();
+                        let rhs_int = self
+                            .builder
+                            .build_float_to_signed_int(
+                                rhs_float,
+                                self.context.i32_type(),
+                                "fmod_rhs_to_i",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_signed_rem(lhs_int, rhs_int, "fmod_tmp")
+                            .unwrap()
+                            .into()
+                    }
                     "eq" => {
                         let cmp_result = self
                             .builder

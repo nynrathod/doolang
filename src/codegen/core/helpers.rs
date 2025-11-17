@@ -33,14 +33,18 @@ impl<'ctx> CodeGen<'ctx> {
 
         if let Some(sym) = self.symbols.get(name) {
             // Special handling for array/map variables - they should always be pointers
-            let load_type =
-                if (name.contains("_array") || name.contains("_map")) && sym.ty.is_int_type() {
-                    self.context
-                        .ptr_type(inkwell::AddressSpace::default())
-                        .into()
-                } else {
-                    sym.ty
-                };
+            // Check both naming convention and heap tracking sets
+            let is_array_or_map = (name.contains("_array") || name.contains("_map"))
+                || self.heap_arrays.contains(name)
+                || self.heap_maps.contains(name);
+
+            let load_type = if is_array_or_map && sym.ty.is_int_type() {
+                self.context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into()
+            } else {
+                sym.ty
+            };
 
             return self
                 .builder

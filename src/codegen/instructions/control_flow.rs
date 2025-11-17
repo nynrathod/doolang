@@ -123,10 +123,14 @@ impl<'ctx> CodeGen<'ctx> {
         let printf_fn = self.get_or_declare_printf();
 
         for (idx, value) in values.iter().enumerate() {
-            let _ = value.trim_start_matches('%').trim_end_matches("_array");
+            let base_name = value.trim_start_matches('%').trim_end_matches("_array");
 
             // Check if this value is a loop iteration variable (should NOT be treated as array/map)
-            let is_loop_var = self.is_loop_var(value);
+            // Try multiple name variations to ensure we catch loop variables
+            let is_loop_var = self.is_loop_var(value)
+                || self.is_loop_var(base_name)
+                || self.is_loop_var(&format!("{}_array", base_name))
+                || self.is_loop_var(&value.trim_start_matches('%').to_string());
 
             // Check if this value is an array or map by looking at metadata
             // But NEVER treat loop iteration variables as arrays/maps
@@ -151,8 +155,17 @@ impl<'ctx> CodeGen<'ctx> {
                     .map_metadata
                     .contains_key(&value.trim_start_matches('%').to_string());
 
-            let is_array = !is_loop_var && (has_array_metadata || self.heap_arrays.contains(value));
-            let is_map = !is_loop_var && (has_map_metadata || self.heap_maps.contains(value));
+            // Only treat as array/map if it's actually a pointer value
+            // Non-pointer values (like loop iteration variables) should never be treated as collections
+            let resolved_val = self.resolve_value(value);
+            let is_actually_pointer = resolved_val.is_pointer_value();
+
+            let is_array = !is_loop_var
+                && is_actually_pointer
+                && (has_array_metadata || self.heap_arrays.contains(value));
+            let is_map = !is_loop_var
+                && is_actually_pointer
+                && (has_map_metadata || self.heap_maps.contains(value));
 
             if is_array {
                 self.print_array(value);
