@@ -457,8 +457,8 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                                 block.instrs.push(MirInstr::BinaryOp(
                                     format!("{}:int", op_str),
                                     dest_tmp.clone(),
-                                    lhs_tmp,
-                                    rhs_tmp,
+                                    lhs_tmp.clone(),
+                                    rhs_tmp.clone(),
                                 ));
                                 builder
                                     .mir_symbol_table
