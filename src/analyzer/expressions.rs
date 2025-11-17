@@ -47,7 +47,7 @@ impl SemanticAnalyzer {
                 Ok(TypeNode::String)
             }
             // Boolean literal: always Bool type
-            AstNode::BoolLiteral(name) => Ok(TypeNode::Bool),
+            AstNode::BoolLiteral(_name) => Ok(TypeNode::Bool),
             // Identifier (variable name): look up in symbol table (with shadowing support)
             AstNode::Identifier(name) => {
                 if let Some(info) = self.lookup_variable(name) {
@@ -75,6 +75,7 @@ impl SemanticAnalyzer {
                 // Infer types of both sides
                 let left_type = self.infer_type(left)?;
                 let right_type = self.infer_type(right)?;
+
                 match op {
                     // Comparison operators (==, !=, >, <, etc.)
                     TokenType::EqEq
@@ -175,7 +176,7 @@ impl SemanticAnalyzer {
                     | TokenType::Star
                     | TokenType::Slash
                     | TokenType::Percent => {
-                        // Only Plus allows string concatenation with mixed types
+                        // Plus allows string concatenation with mixed types
                         if op == &TokenType::Plus {
                             match (left_type.clone(), right_type.clone()) {
                                 // Int + Int -> Int
@@ -208,8 +209,26 @@ impl SemanticAnalyzer {
                                     }))
                                 }
                             }
+                        } else if op == &TokenType::Percent {
+                            // Modulo (%) is only supported for integers
+                            if left_type == TypeNode::Int && right_type == TypeNode::Int {
+                                Ok(TypeNode::Int)
+                            } else {
+                                let (line, col) = get_node_location(node);
+                                return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                                    expected: TypeNode::Int,
+                                    found: if left_type != TypeNode::Int {
+                                        left_type
+                                    } else {
+                                        right_type
+                                    },
+                                    value: None,
+                                    line,
+                                    col,
+                                }));
+                            }
                         } else {
-                            // For other arithmetic operators (-, *, /, %), no concatenation allowed
+                            // For other arithmetic operators (-, *, /), no concatenation allowed
                             match (left_type.clone(), right_type.clone()) {
                                 // Int with Int
                                 (TypeNode::Int, TypeNode::Int) => Ok(TypeNode::Int),
@@ -322,8 +341,7 @@ impl SemanticAnalyzer {
                 // let empty = [];
                 if elements.is_empty() {
                     // Allow empty array: infer type from annotation if present, otherwise default to Array<Int>
-                    // If you want to support type annotation, you can pass it in or check node context.
-                    // For now, default to Array<Int>
+                    // Note: Type annotation should be passed from analyze_let_decl when available
                     return Ok(TypeNode::Array(Box::new(TypeNode::Int)));
                 }
 
@@ -483,7 +501,7 @@ impl SemanticAnalyzer {
                     (TypeNode::Int, TypeNode::Float) => Ok(TypeNode::Float),
                     (TypeNode::Int, TypeNode::String) => Ok(TypeNode::String),
                     (TypeNode::Int, TypeNode::Bool) => Err(SemanticError::UnexpectedNode {
-                        expected: "Int to Bool is not allowed (only 0 and 1 are valid)".to_string(),
+                        expected: "Int to Bool is not allowed".to_string(),
                     }),
 
                     // Float casts
@@ -921,9 +939,31 @@ impl SemanticAnalyzer {
                     }
                     Ok(TypeNode::Int)
                 }
-                _ => Err(SemanticError::UndeclaredFunction(NamedError {
-                    name: format!("String.{}", method),
-                })),
+                "repeat" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                "countSubstr" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("String.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Int)
+                }
+                _ => Err(SemanticError::MethodNotFoundOnType {
+                    object_type: "string".to_string(),
+                    method_name: method.to_string(),
+                    correct_type: None,
+                }),
             },
             TypeNode::Array(elem_type) => match method {
                 "len" => {
@@ -1066,8 +1106,18 @@ impl SemanticAnalyzer {
                             found: args.len(),
                         });
                     }
-                    // Infer the return type of the lambda and return Array of that type
+                    // Infer the return type of the lambda and validate it matches the element type
                     let lambda_return_type = self.infer_lambda_return_type(&args[0], elem_type)?;
+                    if lambda_return_type != **elem_type {
+                        let (line, col) = get_node_location(&args[0]);
+                        return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                            expected: (**elem_type).clone(),
+                            found: lambda_return_type,
+                            value: None,
+                            line,
+                            col,
+                        }));
+                    }
                     Ok(TypeNode::Array(Box::new(lambda_return_type)))
                 }
                 "reduce" => {
@@ -1095,9 +1145,21 @@ impl SemanticAnalyzer {
                     }
                     Ok(TypeNode::String)
                 }
-                _ => Err(SemanticError::UndeclaredFunction(NamedError {
-                    name: format!("Array.{}", method),
-                })),
+                _ => Err(SemanticError::MethodNotFoundOnType {
+                    object_type: "array".to_string(),
+                    method_name: method.to_string(),
+                    correct_type: if method == "has"
+                        || method == "containsKey"
+                        || method == "containsValue"
+                        || method == "keys"
+                        || method == "values"
+                        || method == "clear"
+                    {
+                        Some("map".to_string())
+                    } else {
+                        None
+                    },
+                }),
             },
             TypeNode::Map(_key_type, value_type) => match method {
                 "get" => {
@@ -1210,9 +1272,24 @@ impl SemanticAnalyzer {
                     }
                     Ok(TypeNode::Bool)
                 }
-                _ => Err(SemanticError::UndeclaredFunction(NamedError {
-                    name: format!("Map.{}", method),
-                })),
+                _ => Err(SemanticError::MethodNotFoundOnType {
+                    object_type: "map".to_string(),
+                    method_name: method.to_string(),
+                    correct_type: if method == "push"
+                        || method == "pop"
+                        || method == "contains"
+                        || method == "reverse"
+                        || method == "first"
+                        || method == "last"
+                        || method == "isEmpty"
+                        || method == "clear"
+                        || method == "sort"
+                    {
+                        Some("array".to_string())
+                    } else {
+                        None
+                    },
+                }),
             },
             TypeNode::Int => match method {
                 "toChar" => {
@@ -1225,18 +1302,40 @@ impl SemanticAnalyzer {
                     }
                     Ok(TypeNode::String)
                 }
-                _ => Err(SemanticError::UndeclaredFunction(NamedError {
-                    name: format!("Int.{}", method),
-                })),
+                _ => Err(SemanticError::MethodNotFoundOnType {
+                    object_type: "int".to_string(),
+                    method_name: method.to_string(),
+                    correct_type: if method == "toUpper"
+                        || method == "toLower"
+                        || method == "charAt"
+                        || method == "substring"
+                        || method == "contains"
+                        || method == "indexOf"
+                        || method == "startsWith"
+                        || method == "endsWith"
+                        || method == "split"
+                        || method == "replace"
+                        || method == "repeat"
+                        || method == "countSubstr"
+                    {
+                        Some("string".to_string())
+                    } else {
+                        None
+                    },
+                }),
             },
             TypeNode::Float => match method {
-                _ => Err(SemanticError::UndeclaredFunction(NamedError {
-                    name: format!("Float.{}", method),
-                })),
+                _ => Err(SemanticError::MethodNotFoundOnType {
+                    object_type: "float".to_string(),
+                    method_name: method.to_string(),
+                    correct_type: None,
+                }),
             },
-            _ => Err(SemanticError::UndeclaredFunction(NamedError {
-                name: format!("{:?}.{}", object_type, method),
-            })),
+            _ => Err(SemanticError::MethodNotFoundOnType {
+                object_type: format!("{:?}", object_type).to_lowercase(),
+                method_name: method.to_string(),
+                correct_type: None,
+            }),
         }
     }
 }

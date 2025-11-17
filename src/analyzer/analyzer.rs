@@ -56,9 +56,6 @@ impl SemanticAnalyzer {
     pub fn new(project_root: Option<PathBuf>) -> Self {
         let project_root = project_root
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        if cfg!(debug_assertions) {
-            println!("[DEBUG] Project root set to: {:?}", project_root);
-        }
 
         let mut function_table = HashMap::new();
 
@@ -447,13 +444,6 @@ impl SemanticAnalyzer {
 
         let module_key = path.join("::");
 
-        if cfg!(debug_assertions) {
-            println!(
-                "[DEBUG] Importing module: {} (import stack: {:?})",
-                module_key, import_stack
-            );
-        }
-
         // CIRCULAR DEPENDENCY DETECTION
         if import_stack.contains(&module_key) {
             let mut cycle = import_stack.clone();
@@ -464,9 +454,6 @@ impl SemanticAnalyzer {
             return Err(SemanticError::CircularImport { cycle });
         }
         import_stack.push(module_key.clone());
-        if cfg!(debug_assertions) {
-            println!("[DEBUG] Import stack updated: {:?}", import_stack);
-        }
 
         // For non-wildcard imports, check if symbols are already imported
         let has_wildcard = items
@@ -676,17 +663,17 @@ impl SemanticAnalyzer {
                             && !self.symbol_table.contains_key(sym)
                         {
                             return Err(SemanticError::UndeclaredFunction(NamedError {
-                                name: sym.clone(),
+                                name: format!("symbol '{}' not found in module", sym),
                             }));
                         }
                     }
-                    crate::parser::ast::ImportItem::SymbolWithAlias(_, alias) => {
+                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias) => {
                         // Check using the alias name since that's what we registered
                         if !self.function_table.contains_key(alias)
                             && !self.symbol_table.contains_key(alias)
                         {
                             return Err(SemanticError::UndeclaredFunction(NamedError {
-                                name: alias.clone(),
+                                name: format!("symbol '{}' not found in module", sym),
                             }));
                         }
                     }

@@ -45,29 +45,55 @@ impl SemanticAnalyzer {
                     }
                 }
 
-                // Use infer_rhs_types to ensure function call argument checks are performed
-                let rhs_types_vec = self.infer_rhs_types(value, 1)?;
-                let rhs_type = rhs_types_vec.get(0).cloned().ok_or_else(|| {
-                    SemanticError::VarTypeMismatch(TypeMismatch {
-                        expected: type_annotation.clone().unwrap_or(TypeNode::Int),
-                        found: TypeNode::Void,
-                        value: Some(value.clone()),
-                        line: None,
-                        col: None,
-                    })
-                })?;
+                // For empty maps and arrays, use the type annotation if available
+                let rhs_type = if let Some(annotated_type) = type_annotation.as_ref() {
+                    // If we have a type annotation and value is empty map/array, use annotation directly
+                    match (&**value, annotated_type) {
+                        (AstNode::MapLiteral(pairs), _) if pairs.is_empty() => {
+                            annotated_type.clone()
+                        }
+                        (AstNode::ArrayLiteral(elements), _) if elements.is_empty() => {
+                            annotated_type.clone()
+                        }
+                        _ => {
+                            // Otherwise, infer normally
+                            let rhs_types_vec = self.infer_rhs_types(value, 1)?;
+                            let inferred = rhs_types_vec.get(0).cloned().ok_or_else(|| {
+                                SemanticError::VarTypeMismatch(TypeMismatch {
+                                    expected: annotated_type.clone(),
+                                    found: TypeNode::Void,
+                                    value: Some(value.clone()),
+                                    line: None,
+                                    col: None,
+                                })
+                            })?;
 
-                if let Some(annotated_type) = type_annotation.as_ref() {
-                    if rhs_type != *annotated_type {
-                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
-                            expected: annotated_type.clone(),
-                            found: rhs_type,
+                            // Verify inferred type matches annotation
+                            if inferred != *annotated_type {
+                                return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                    expected: annotated_type.clone(),
+                                    found: inferred,
+                                    value: Some(value.clone()),
+                                    line: None,
+                                    col: None,
+                                }));
+                            }
+                            inferred
+                        }
+                    }
+                } else {
+                    // Use infer_rhs_types to ensure function call argument checks are performed
+                    let rhs_types_vec = self.infer_rhs_types(value, 1)?;
+                    rhs_types_vec.get(0).cloned().ok_or_else(|| {
+                        SemanticError::VarTypeMismatch(TypeMismatch {
+                            expected: TypeNode::Int,
+                            found: TypeNode::Void,
                             value: Some(value.clone()),
                             line: None,
                             col: None,
-                        }));
-                    }
-                }
+                        })
+                    })?
+                };
 
                 // Update the type annotation to reflect the inferred type if it was missing.
                 *type_annotation = Some(rhs_type.clone());

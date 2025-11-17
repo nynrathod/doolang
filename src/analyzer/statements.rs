@@ -278,24 +278,32 @@ impl SemanticAnalyzer {
 
         // Look up function definition in the table
         if let Some((param_types, ret_ty)) = self.function_table.get(name.as_str()) {
-            // Check number of arguments
-            if args.len() != param_types.len() {
-                return Err(SemanticError::FunctionArgumentMismatch {
-                    name: name.clone(),
-                    expected: param_types.len(),
-                    found: args.len(),
-                });
-            }
-
-            // Check argument types
-            for (arg, expected_ty) in args.iter().zip(param_types.iter()) {
-                let arg_ty = self.infer_type(arg)?;
-                if &arg_ty != expected_ty {
-                    return Err(SemanticError::FunctionArgumentTypeMismatch {
+            // Skip argument checking for variadic built-in functions
+            if name != "print" && name != "println" && name != "panic" && name != "typeOf" {
+                // Check number of arguments
+                if args.len() != param_types.len() {
+                    return Err(SemanticError::FunctionArgumentMismatch {
                         name: name.clone(),
-                        expected: expected_ty.clone(),
-                        found: arg_ty,
+                        expected: param_types.len(),
+                        found: args.len(),
                     });
+                }
+
+                // Check argument types
+                for (arg, expected_ty) in args.iter().zip(param_types.iter()) {
+                    let arg_ty = self.infer_type(arg)?;
+                    if &arg_ty != expected_ty {
+                        return Err(SemanticError::FunctionArgumentTypeMismatch {
+                            name: name.clone(),
+                            expected: expected_ty.clone(),
+                            found: arg_ty,
+                        });
+                    }
+                }
+            } else {
+                // For variadic functions, just validate that all arguments can be inferred
+                for arg in args {
+                    let _ = self.infer_type(arg)?;
                 }
             }
 
