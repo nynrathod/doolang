@@ -195,6 +195,9 @@ impl<'ctx> CodeGen<'ctx> {
         self.temp_values.insert(name.to_string(), data_ptr.into());
         self.heap_arrays.insert(name.to_string());
 
+        // Store full heap pointer for tuple returns
+        self.heap_pointers.insert(name.to_string(), heap_ptr);
+
         Some(data_ptr.into())
     }
 
@@ -249,6 +252,7 @@ impl<'ctx> CodeGen<'ctx> {
         // STEP 4: CRITICAL - Runtime length extraction from heap header
         // For dynamically created arrays (like innerarr), extract length at runtime
 
+        // Try symbols first
         if let Some(sym) = self.symbols.get(array_name) {
             if let Ok(loaded) = self.builder.build_load(sym.ty, sym.ptr, "runtime_load") {
                 if loaded.is_pointer_value() {
@@ -284,6 +288,46 @@ impl<'ctx> CodeGen<'ctx> {
                                 );
                                 return runtime_len.into_int_value();
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // STEP 5: Try temp_values (for tuple-extracted arrays)
+        if let Some(temp_val) = self.temp_values.get(array_name) {
+            if temp_val.is_pointer_value() {
+                let arr_ptr = temp_val.into_pointer_value();
+
+                // Array layout: [RC: 4 bytes][Length: 4 bytes][data at offset 8]
+                // arr_ptr points to data, so length is at offset -4
+                let len_ptr_result = unsafe {
+                    self.builder.build_in_bounds_gep(
+                        self.context.i8_type(),
+                        arr_ptr,
+                        &[self.context.i32_type().const_int((-4_i32) as u64, true)],
+                        &format!("{}_runtime_len_ptr", array_name),
+                    )
+                };
+
+                if let Ok(len_ptr) = len_ptr_result {
+                    let len_ptr_cast_result = self.builder.build_pointer_cast(
+                        len_ptr,
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        &format!("{}_len_ptr_cast", array_name),
+                    );
+
+                    if let Ok(len_ptr_cast) = len_ptr_cast_result {
+                        if let Ok(runtime_len) = self.builder.build_load(
+                            self.context.i32_type(),
+                            len_ptr_cast,
+                            &format!("{}_runtime_len", array_name),
+                        ) {
+                            eprintln!(
+                                "[SUCCESS] Extracted runtime length for '{}' from temp_values",
+                                array_name
+                            );
+                            return runtime_len.into_int_value();
                         }
                     }
                 }

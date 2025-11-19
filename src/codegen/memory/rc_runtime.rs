@@ -304,6 +304,21 @@ impl<'ctx> CodeGen<'ctx> {
 
             let data_ptr = loaded_value.into_pointer_value();
 
+            // Check if the pointer is null before computing RC header
+            let is_null = self.builder.build_is_null(data_ptr, "is_null").unwrap();
+
+            let current_block = self.builder.get_insert_block().unwrap();
+            let func = current_block.get_parent().unwrap();
+            let decref_block = self.context.append_basic_block(func, "do_decref");
+            let continue_block = self.context.append_basic_block(func, "after_decref");
+
+            self.builder
+                .build_conditional_branch(is_null, continue_block, decref_block)
+                .unwrap();
+
+            // In decref_block, compute RC header and call decref
+            self.builder.position_at_end(decref_block);
+
             // Compute the RC header pointer by subtracting 8 bytes
             let rc_header = unsafe {
                 self.builder.build_in_bounds_gep(
@@ -320,6 +335,13 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder
                 .build_call(decref, &[rc_header.into()], "")
                 .unwrap();
+
+            self.builder
+                .build_unconditional_branch(continue_block)
+                .unwrap();
+
+            // Continue with the rest of the code
+            self.builder.position_at_end(continue_block);
         }
     }
 }

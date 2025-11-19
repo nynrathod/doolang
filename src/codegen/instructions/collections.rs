@@ -13,33 +13,16 @@ impl<'ctx> CodeGen<'ctx> {
         let is_string = self.array_contains_strings(array);
         let elem_type = self.get_array_element_type(array);
 
-        // Get array metadata to know the array type
-        let array_len = if let Some(metadata) = self.array_metadata.get(array) {
-            metadata.length as u32
-        } else {
-            0
-        };
+        // Use a large array type for GEP - we use 1000000 as a safe upper bound
+        // The actual runtime bounds checking is done by the runtime, not LLVM type system
+        // Array layout: [RC (i32)] [Length (i32)] [Elements...] at offset +8
+        let array_type = elem_type.array_type(1000000);
 
-        let array_type = elem_type.array_type(array_len);
-
-        // Cast data pointer to array pointer
-        let typed_array_ptr = self
-            .builder
-            .build_pointer_cast(
-                array_ptr,
-                self.context.ptr_type(inkwell::AddressSpace::default()),
-                "array_ptr_typed",
-            )
-            .unwrap();
-
-        // GEP to get element pointer
+        // GEP to get element pointer using the large array type
+        // This allows GEP to work with any runtime index value
         let elem_ptr = unsafe {
-            self.builder.build_gep(
-                array_type,
-                typed_array_ptr,
-                &[self.context.i32_type().const_zero(), index_val],
-                "elem_ptr",
-            )
+            self.builder
+                .build_gep(array_type, array_ptr, &[index_val], "elem_ptr")
         }
         .unwrap();
 
@@ -50,6 +33,7 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap();
 
         // If it's a heap-allocated string, increment RC
+        // Note: arrays with contains_strings=false will skip this block
         if is_string && elem_val.is_pointer_value() {
             let str_ptr = elem_val.into_pointer_value();
             let rc_header = unsafe {

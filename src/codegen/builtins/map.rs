@@ -23,6 +23,8 @@ impl<'ctx> CodeGen<'ctx> {
                         self.context
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()
+                    } else if metadata.key_type == "Float" {
+                        self.context.f64_type().into()
                     } else {
                         self.context.i32_type().into()
                     };
@@ -244,6 +246,16 @@ impl<'ctx> CodeGen<'ctx> {
                                 inkwell::IntPredicate::EQ,
                                 stored_key.into_int_value(),
                                 key_val.into_int_value(),
+                                "keys_equal",
+                            )
+                            .unwrap()
+                    } else if stored_key.is_float_value() && key_val.is_float_value() {
+                        // For float keys, use floating point comparison
+                        self.builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::OEQ,
+                                stored_key.into_float_value(),
+                                key_val.into_float_value(),
                                 "keys_equal",
                             )
                             .unwrap()

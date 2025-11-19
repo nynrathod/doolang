@@ -1,3 +1,4 @@
+use crate::codegen::core::helpers::parse_tuple_types;
 use crate::codegen::core::CodeGen;
 use crate::mir::mir::{CodegenBlock, MirBlock, MirFunction, MirInstr, MirProgram, MirTerminator};
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
@@ -94,7 +95,42 @@ impl<'ctx> CodeGen<'ctx> {
             // Force main to be i32 () for C/Clang compatibility
             self.context.i32_type().fn_type(&param_types, false)
         } else if let Some(ref ret_type_str) = func.return_type {
-            if ret_type_str.contains("Void") {
+            // Check if this is a tuple return (contains comma outside of parentheses)
+            if ret_type_str.contains(',') {
+                // Multi-value return - create a struct type
+                // Parse types carefully to handle nested structures like Map(Str,Int)
+                // Strip Tuple() wrapper if present
+                let inner_types =
+                    if ret_type_str.starts_with("Tuple(") && ret_type_str.ends_with(')') {
+                        &ret_type_str[6..ret_type_str.len() - 1]
+                    } else {
+                        ret_type_str.as_str()
+                    };
+                let types = parse_tuple_types(inner_types);
+                let mut field_types: Vec<BasicTypeEnum> = Vec::new();
+
+                for type_str in &types {
+                    let llvm_type = if type_str.contains("String") || type_str.contains("Str") {
+                        self.context.ptr_type(AddressSpace::default()).into()
+                    } else if type_str.contains("Array") || type_str.contains("Map") {
+                        self.context.ptr_type(AddressSpace::default()).into()
+                    } else if type_str.contains("Float") {
+                        self.context.f64_type().into()
+                    } else if type_str.contains("Bool") {
+                        self.context.bool_type().into()
+                    } else {
+                        self.context.i32_type().into()
+                    };
+                    field_types.push(llvm_type);
+                }
+
+                // Create and cache the struct type
+                let struct_type = self.context.struct_type(&field_types, false);
+                let tuple_type_str = format!("Tuple({})", ret_type_str);
+                self.tuple_struct_types.insert(tuple_type_str, struct_type);
+
+                struct_type.fn_type(&param_types, false)
+            } else if ret_type_str.contains("Void") {
                 self.context.void_type().fn_type(&param_types, false)
             } else if ret_type_str.contains("String") || ret_type_str.contains("Str") {
                 self.context
@@ -350,8 +386,37 @@ impl<'ctx> CodeGen<'ctx> {
             // Force main to be i32 () for C/Clang compatibility
             self.context.i32_type().fn_type(&param_types, false)
         } else if let Some(ref ret_type_str) = func.return_type {
-            // Map MIR type strings to LLVM types
-            if ret_type_str.contains("Void") {
+            // Check if this is a tuple return (contains comma)
+            if ret_type_str.contains(',') {
+                // Multi-value return - create a struct type
+                // Strip Tuple() wrapper if present
+                let inner_types =
+                    if ret_type_str.starts_with("Tuple(") && ret_type_str.ends_with(')') {
+                        &ret_type_str[6..ret_type_str.len() - 1]
+                    } else {
+                        ret_type_str.as_str()
+                    };
+                let types = parse_tuple_types(inner_types);
+                let mut field_types: Vec<BasicTypeEnum> = Vec::new();
+
+                for type_str in &types {
+                    let llvm_type = if type_str.contains("String") || type_str.contains("Str") {
+                        self.context.ptr_type(AddressSpace::default()).into()
+                    } else if type_str.contains("Array") || type_str.contains("Map") {
+                        self.context.ptr_type(AddressSpace::default()).into()
+                    } else if type_str.contains("Float") {
+                        self.context.f64_type().into()
+                    } else if type_str.contains("Bool") {
+                        self.context.bool_type().into()
+                    } else {
+                        self.context.i32_type().into()
+                    };
+                    field_types.push(llvm_type);
+                }
+
+                let struct_type = self.context.struct_type(&field_types, false);
+                struct_type.fn_type(&param_types, false)
+            } else if ret_type_str.contains("Void") {
                 self.context.void_type().fn_type(&param_types, false)
             } else if ret_type_str.contains("String") || ret_type_str.contains("Str") {
                 self.context
@@ -677,6 +742,73 @@ impl<'ctx> CodeGen<'ctx> {
                     // Boolean constants are i32
                     crate::mir::MirInstr::ConstBool { name, .. } => {
                         var_types.insert(name.clone(), self.context.i32_type().into());
+                    }
+                    // TupleExtract - determine type from tuple element
+                    crate::mir::MirInstr::TupleExtract {
+                        name,
+                        source,
+                        index,
+                    } => {
+                        // Check if we have tuple type info for the source
+                        if let Some(return_type_str) = self
+                            .function_return_types
+                            .values()
+                            .find(|rt| rt.contains(','))
+                        {
+                            // Parse the tuple types to determine element type
+                            let inner_types = if return_type_str.starts_with("Tuple(")
+                                && return_type_str.ends_with(')')
+                            {
+                                &return_type_str[6..return_type_str.len() - 1]
+                            } else {
+                                return_type_str.as_str()
+                            };
+                            let types = parse_tuple_types(inner_types);
+                            if let Some(type_str) = types.get(*index) {
+                                if type_str.contains("Array")
+                                    || type_str.contains("Map")
+                                    || type_str.contains("Str")
+                                {
+                                    var_types.insert(
+                                        name.clone(),
+                                        self.context.ptr_type(AddressSpace::default()).into(),
+                                    );
+                                } else if type_str.contains("Float") {
+                                    var_types.insert(name.clone(), self.context.f64_type().into());
+                                } else if type_str.contains("Bool") {
+                                    var_types.insert(name.clone(), self.context.i32_type().into());
+                                } else {
+                                    var_types.insert(name.clone(), self.context.i32_type().into());
+                                }
+                            }
+                        }
+                    }
+                    // Call - determine type from function return type
+                    crate::mir::MirInstr::Call { dest, func, .. } => {
+                        if let Some(return_type_str) = self.function_return_types.get(func) {
+                            if dest.len() == 1 {
+                                // Single return value
+                                let dest_name = &dest[0];
+                                if return_type_str.contains("Array")
+                                    || return_type_str.contains("Map")
+                                    || return_type_str.contains("Str")
+                                {
+                                    var_types.insert(
+                                        dest_name.clone(),
+                                        self.context.ptr_type(AddressSpace::default()).into(),
+                                    );
+                                } else if return_type_str.contains("Float") {
+                                    var_types
+                                        .insert(dest_name.clone(), self.context.f64_type().into());
+                                } else if return_type_str.contains("Bool") {
+                                    var_types
+                                        .insert(dest_name.clone(), self.context.i32_type().into());
+                                } else {
+                                    var_types
+                                        .insert(dest_name.clone(), self.context.i32_type().into());
+                                }
+                            }
+                        }
                     }
                     // Binary operations - determine type from op string
                     crate::mir::MirInstr::BinaryOp(op, name, ..) => {
@@ -1372,7 +1504,8 @@ impl<'ctx> CodeGen<'ctx> {
                         // Void return - no value
                         self.builder.build_return(None).unwrap();
                     }
-                } else {
+                } else if values.len() == 1 {
+                    // Single return value
                     let return_value_name = &values[0];
 
                     // Track if this function returns a heap-allocated value
@@ -1441,6 +1574,37 @@ impl<'ctx> CodeGen<'ctx> {
                     }
 
                     self.builder.build_return(Some(&val)).unwrap();
+                } else {
+                    // Multiple return values - build a struct
+                    let return_values: Vec<BasicValueEnum> =
+                        values.iter().map(|v| self.resolve_value(v)).collect();
+
+                    let types: Vec<BasicTypeEnum> =
+                        return_values.iter().map(|v| v.get_type()).collect();
+
+                    let struct_type = self.context.struct_type(&types, false);
+                    let struct_alloca =
+                        self.builder.build_alloca(struct_type, "ret_tuple").unwrap();
+
+                    for (i, val) in return_values.iter().enumerate() {
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                struct_type,
+                                struct_alloca,
+                                i as u32,
+                                &format!("ret_field_{}", i),
+                            )
+                            .unwrap();
+                        self.builder.build_store(field_ptr, *val).unwrap();
+                    }
+
+                    let tuple_val = self
+                        .builder
+                        .build_load(struct_type, struct_alloca, "ret_tuple_val")
+                        .unwrap();
+
+                    self.builder.build_return(Some(&tuple_val)).unwrap();
                 }
             }
             // Handles unconditional jump (goto).

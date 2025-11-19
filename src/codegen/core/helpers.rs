@@ -4,6 +4,44 @@ use inkwell::values::FunctionValue;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::AddressSpace;
 
+/// Parse tuple types from a comma-separated string, respecting nested parentheses
+/// E.g., "Map(Str,Int), Int" -> ["Map(Str,Int)", "Int"]
+pub fn parse_tuple_types(type_str: &str) -> Vec<String> {
+    let mut types = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+
+    for ch in type_str.chars() {
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                // Top-level comma, split here
+                if !current.trim().is_empty() {
+                    types.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+
+    // Add the last type
+    if !current.trim().is_empty() {
+        types.push(current.trim().to_string());
+    }
+
+    types
+}
+
 impl<'ctx> CodeGen<'ctx> {
     /// Resolves a variable or constant name to its pointer (for arrays/maps).
     /// Used when we need the actual pointer, not the loaded value.
@@ -38,7 +76,8 @@ impl<'ctx> CodeGen<'ctx> {
                 || self.heap_arrays.contains(name)
                 || self.heap_maps.contains(name);
 
-            let load_type = if is_array_or_map && sym.ty.is_int_type() {
+            let load_type = if is_array_or_map {
+                // Arrays and maps are always pointers, regardless of how they were stored
                 self.context
                     .ptr_type(inkwell::AddressSpace::default())
                     .into()

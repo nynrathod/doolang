@@ -45,6 +45,10 @@ impl SemanticAnalyzer {
                     }
                 }
 
+                // First, collect patterns to know how many values we expect
+                let patterns = self.collect_and_validate_targets(pattern)?;
+                let expected_count = patterns.len();
+
                 // For empty maps and arrays, use the type annotation if available
                 let rhs_type = if let Some(annotated_type) = type_annotation.as_ref() {
                     // If we have a type annotation and value is empty map/array, use annotation directly
@@ -56,17 +60,23 @@ impl SemanticAnalyzer {
                             annotated_type.clone()
                         }
                         _ => {
-                            // Otherwise, infer normally
-                            let rhs_types_vec = self.infer_rhs_types(value, 1)?;
-                            let inferred = rhs_types_vec.get(0).cloned().ok_or_else(|| {
-                                SemanticError::VarTypeMismatch(TypeMismatch {
-                                    expected: annotated_type.clone(),
-                                    found: TypeNode::Void,
-                                    value: Some(value.clone()),
-                                    line: None,
-                                    col: None,
-                                })
-                            })?;
+                            // Otherwise, infer normally - request correct number of types
+                            let rhs_types_vec = self.infer_rhs_types(value, expected_count)?;
+
+                            // If we got multiple types back, wrap in Tuple
+                            let inferred = if rhs_types_vec.len() > 1 {
+                                TypeNode::Tuple(rhs_types_vec.clone())
+                            } else {
+                                rhs_types_vec.get(0).cloned().ok_or_else(|| {
+                                    SemanticError::VarTypeMismatch(TypeMismatch {
+                                        expected: annotated_type.clone(),
+                                        found: TypeNode::Void,
+                                        value: Some(value.clone()),
+                                        line: None,
+                                        col: None,
+                                    })
+                                })?
+                            };
 
                             // Verify inferred type matches annotation
                             if inferred != *annotated_type {
@@ -83,16 +93,23 @@ impl SemanticAnalyzer {
                     }
                 } else {
                     // Use infer_rhs_types to ensure function call argument checks are performed
-                    let rhs_types_vec = self.infer_rhs_types(value, 1)?;
-                    rhs_types_vec.get(0).cloned().ok_or_else(|| {
-                        SemanticError::VarTypeMismatch(TypeMismatch {
-                            expected: TypeNode::Int,
-                            found: TypeNode::Void,
-                            value: Some(value.clone()),
-                            line: None,
-                            col: None,
-                        })
-                    })?
+                    // Request the correct number of types based on pattern count
+                    let rhs_types_vec = self.infer_rhs_types(value, expected_count)?;
+
+                    // If we got multiple types back, wrap in Tuple
+                    if rhs_types_vec.len() > 1 {
+                        TypeNode::Tuple(rhs_types_vec)
+                    } else {
+                        rhs_types_vec.get(0).cloned().ok_or_else(|| {
+                            SemanticError::VarTypeMismatch(TypeMismatch {
+                                expected: TypeNode::Int,
+                                found: TypeNode::Void,
+                                value: Some(value.clone()),
+                                line: None,
+                                col: None,
+                            })
+                        })?
+                    }
                 };
 
                 // Update the type annotation to reflect the inferred type if it was missing.
@@ -105,12 +122,27 @@ impl SemanticAnalyzer {
                 // println!("After: {:?}", is_ref_counted);
 
                 // Validate and collect assignment targets from the pattern.
-                let targets = self.collect_and_validate_targets(pattern)?;
+                // Note: patterns was already collected above
+                let targets = patterns;
 
-                // If RHS is a tuple, each element must match a pattern.
+                // If RHS is a tuple (but not a Result), each element must match a pattern.
+                // Result types CAN be unpacked if the inner type is a tuple and user destructures
                 // Otherwise, treat RHS as a single-element list.
                 let rhs_types = match &rhs_type {
                     TypeNode::Tuple(types) => types.clone(),
+                    TypeNode::Result(ok_type, _error_type) => {
+                        // Result types can be unpacked if inner type is tuple and user uses tuple destructuring
+                        match &**ok_type {
+                            TypeNode::Tuple(inner_types) if targets.len() > 1 => {
+                                // User is destructuring and inner is tuple - unpack both layers
+                                inner_types.clone()
+                            }
+                            _ => {
+                                // Either not a tuple inside, or user is not destructuring
+                                vec![rhs_type.clone()]
+                            }
+                        }
+                    }
                     t => vec![t.clone()],
                 };
                 // Check that the number of LHS patterns matches the number of RHS types.
@@ -199,6 +231,7 @@ impl SemanticAnalyzer {
         visibility: &str,
         params: &mut Vec<(String, Option<TypeNode>)>,
         return_type: &mut Option<TypeNode>,
+        error_type: &mut Option<TypeNode>,
         body: &mut Vec<AstNode>,
     ) -> Result<(), SemanticError> {
         // Function signature is already registered in analyze_program's first pass
@@ -282,8 +315,16 @@ impl SemanticAnalyzer {
         }
 
         self.function_depth += 1;
+
+        // Set current function's error type for ? operator validation
+        let prev_error_type = self.current_function_error_type.clone();
+        self.current_function_error_type = error_type.clone();
+
         // Analyze function body with isolated scope.
         self.analyze_program(body)?;
+
+        // Restore previous error type
+        self.current_function_error_type = prev_error_type;
 
         // Now verify return types after body has been analyzed and local variables are in scope.
         if let Some(ret_type) = return_type.as_ref() {
@@ -399,16 +440,32 @@ impl SemanticAnalyzer {
         expected: &TypeNode,
         fn_name: &str,
     ) -> Result<(), SemanticError> {
+        // If the return contains OkExpr or ErrExpr, extract the inner values
+        let actual_values = if values.len() == 1 {
+            match &values[0] {
+                AstNode::OkExpr {
+                    values: inner_values,
+                } => inner_values.clone(),
+                AstNode::ErrExpr { .. } => {
+                    // ErrExpr is valid, skip type checking for now
+                    return Ok(());
+                }
+                _ => values.clone(),
+            }
+        } else {
+            values.clone()
+        };
+
         match expected {
             TypeNode::Tuple(expected_vec) => {
                 // For tuple returns, check length and types of each element.
-                if values.len() != expected_vec.len() {
+                if actual_values.len() != expected_vec.len() {
                     return Err(SemanticError::ReturnTypeMismatch {
                         function: fn_name.to_string(),
                         mismatch: TypeMismatch {
                             expected: expected.clone(),
                             found: TypeNode::Tuple(
-                                values
+                                actual_values
                                     .iter()
                                     .map(|v| self.infer_type(v))
                                     .collect::<Result<Vec<_>, _>>()?,
@@ -419,7 +476,7 @@ impl SemanticAnalyzer {
                         },
                     });
                 }
-                for (value, expected_type) in values.iter().zip(expected_vec.iter()) {
+                for (value, expected_type) in actual_values.iter().zip(expected_vec.iter()) {
                     let value_type = self.infer_type(value)?;
                     if &value_type != expected_type {
                         return Err(SemanticError::ReturnTypeMismatch {
@@ -438,13 +495,13 @@ impl SemanticAnalyzer {
             _ => {
                 // single return
                 // For single-value returns, check there is exactly one value and its type matches.
-                if values.len() != 1 {
+                if actual_values.len() != 1 {
                     return Err(SemanticError::ReturnTypeMismatch {
                         function: fn_name.to_string(),
                         mismatch: TypeMismatch {
                             expected: expected.clone(),
                             found: TypeNode::Tuple(
-                                values
+                                actual_values
                                     .iter()
                                     .map(|v| self.infer_type(v))
                                     .collect::<Result<Vec<_>, _>>()?,
@@ -455,7 +512,7 @@ impl SemanticAnalyzer {
                         },
                     });
                 }
-                let value_type = self.infer_type(&values[0])?;
+                let value_type = self.infer_type(&actual_values[0])?;
                 if &value_type != expected {
                     return Err(SemanticError::ReturnTypeMismatch {
                         function: fn_name.to_string(),

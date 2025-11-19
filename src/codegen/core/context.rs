@@ -98,11 +98,15 @@ pub struct CodeGen<'ctx> {
 
     pub boolean_temps: std::collections::HashSet<String>, // Track temporary variables from boolean-returning methods
     pub variable_types: HashMap<String, String>, // Track variable types for typeOf function
+    pub tuple_struct_types: HashMap<String, inkwell::types::StructType<'ctx>>, // Cache for tuple struct types
+    pub tuple_types: HashMap<String, String>, // Maps temporary values to their tuple type strings (e.g., "Tuple(Int,Str,Float)")
 
     pub declared_functions: std::collections::HashSet<String>,
     pub external_modules: HashMap<String, Vec<String>>,
     pub function_aliases: HashMap<String, String>, // Maps alias names to original function names
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
+    pub function_error_types: HashMap<String, String>, // Track function error types for Result handling
+    pub heap_pointers: HashMap<String, inkwell::values::PointerValue<'ctx>>, // Track full heap pointers for tuple returns
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -151,11 +155,15 @@ impl<'ctx> CodeGen<'ctx> {
 
             boolean_temps: std::collections::HashSet::new(),
             variable_types: HashMap::new(),
+            tuple_struct_types: HashMap::new(),
+            tuple_types: HashMap::new(),
 
             declared_functions: std::collections::HashSet::new(),
             external_modules: HashMap::new(),
             function_aliases: HashMap::new(),
             recursion_depth: 0,
+            function_error_types: HashMap::new(),
+            heap_pointers: HashMap::new(),
         }
     }
 

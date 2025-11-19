@@ -1,3 +1,4 @@
+use crate::codegen::core::helpers::parse_tuple_types;
 use crate::codegen::core::CodeGen;
 impl<'ctx> CodeGen<'ctx> {
     pub fn generate_call(
@@ -51,6 +52,74 @@ impl<'ctx> CodeGen<'ctx> {
                 let dest_name = &dest[0];
                 self.temp_values.insert(dest_name.clone(), result);
 
+                // Check if this is a tuple return (multi-value)
+                if let Some(return_type_str) = self.function_return_types.get(&actual_func_name) {
+                    if return_type_str.contains(',') {
+                        // This is a tuple return - store tuple type info
+                        // Don't double-wrap if already wrapped
+                        let tuple_type_str = if return_type_str.starts_with("Tuple(") {
+                            return_type_str.clone()
+                        } else {
+                            format!("Tuple({})", return_type_str)
+                        };
+                        self.tuple_types
+                            .insert(dest_name.clone(), tuple_type_str.clone());
+
+                        // Store the struct type if not already cached
+                        let struct_type = if let Some(cached_type) =
+                            self.tuple_struct_types.get(&tuple_type_str)
+                        {
+                            *cached_type
+                        } else {
+                            // Strip Tuple() wrapper if present before parsing
+                            let inner_types = if return_type_str.starts_with("Tuple(")
+                                && return_type_str.ends_with(')')
+                            {
+                                &return_type_str[6..return_type_str.len() - 1]
+                            } else {
+                                return_type_str.as_str()
+                            };
+                            let types = parse_tuple_types(inner_types);
+                            let mut field_types: Vec<inkwell::types::BasicTypeEnum> = Vec::new();
+
+                            for type_str in &types {
+                                let llvm_type = if type_str.contains("String")
+                                    || type_str.contains("Str")
+                                {
+                                    self.context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into()
+                                } else if type_str.contains("Array") || type_str.contains("Map") {
+                                    self.context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into()
+                                } else if type_str.contains("Float") {
+                                    self.context.f64_type().into()
+                                } else if type_str.contains("Bool") {
+                                    self.context.bool_type().into()
+                                } else {
+                                    self.context.i32_type().into()
+                                };
+                                field_types.push(llvm_type);
+                            }
+
+                            let new_struct_type = self.context.struct_type(&field_types, false);
+                            self.tuple_struct_types
+                                .insert(tuple_type_str.clone(), new_struct_type);
+                            new_struct_type
+                        };
+
+                        // Allocate and store the tuple struct
+                        let struct_alloca = self
+                            .builder
+                            .build_alloca(struct_type, &format!("{}_tuple", dest_name))
+                            .unwrap();
+                        self.builder.build_store(struct_alloca, result).unwrap();
+                        self.temp_values
+                            .insert(dest_name.clone(), struct_alloca.into());
+                    }
+                }
+
                 // Check if this function is known to return heap-allocated values
                 // Use actual_func_name in case func was an alias
                 if self.functions_returning_heap.contains(&actual_func_name) {
@@ -59,7 +128,7 @@ impl<'ctx> CodeGen<'ctx> {
                         if let Some(return_type_str) =
                             self.function_return_types.get(&actual_func_name)
                         {
-                            if return_type_str.contains("Array") {
+                            if return_type_str.contains("Array") && !return_type_str.contains(',') {
                                 self.heap_arrays.insert(dest_name.clone());
 
                                 // Create array metadata for the returned array

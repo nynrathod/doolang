@@ -243,6 +243,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.temp_values.insert(name.to_string(), data_ptr.into());
         self.heap_maps.insert(name.to_string());
+
+        // Store full heap pointer for tuple returns
+        self.heap_pointers.insert(name.to_string(), heap_ptr);
+
         Some(data_ptr.into())
     }
 

@@ -41,9 +41,12 @@ impl<'ctx> CodeGen<'ctx> {
         // This avoids memory leaks and unnecessary malloc/free overhead.
         // The string data is stored in the read-only data section of the binary.
 
+        // Process escape sequences
+        let processed_value = Self::process_escape_sequences(value);
+
         let str_global = self
             .builder
-            .build_global_string_ptr(value, &format!("str_const_{}", name))
+            .build_global_string_ptr(&processed_value, &format!("str_const_{}", name))
             .expect("Failed to create string constant");
 
         let data_ptr = str_global.as_pointer_value();
@@ -52,6 +55,50 @@ impl<'ctx> CodeGen<'ctx> {
         self.temp_values.insert(name.to_string(), data_ptr.into());
 
         Some(data_ptr.into())
+    }
+
+    /// Process escape sequences in a string literal
+    fn process_escape_sequences(value: &str) -> String {
+        let mut result = String::new();
+        let mut chars = value.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(&next_ch) = chars.peek() {
+                    match next_ch {
+                        'n' => {
+                            result.push('\n');
+                            chars.next();
+                        }
+                        't' => {
+                            result.push('\t');
+                            chars.next();
+                        }
+                        'r' => {
+                            result.push('\r');
+                            chars.next();
+                        }
+                        '\\' => {
+                            result.push('\\');
+                            chars.next();
+                        }
+                        '"' => {
+                            result.push('"');
+                            chars.next();
+                        }
+                        _ => {
+                            result.push(ch);
+                        }
+                    }
+                } else {
+                    result.push(ch);
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        result
     }
 
     pub fn generate_cast(
