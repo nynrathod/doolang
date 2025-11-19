@@ -95,8 +95,16 @@ impl<'ctx> CodeGen<'ctx> {
             // Force main to be i32 () for C/Clang compatibility
             self.context.i32_type().fn_type(&param_types, false)
         } else if let Some(ref ret_type_str) = func.return_type {
-            // Check if this is a tuple return (contains comma outside of parentheses)
-            if ret_type_str.contains(',') {
+            // Check if this is a tuple return (multiple top-level types, respecting nested parentheses)
+            // Use parse_tuple_types to correctly handle Map(Str,Int) which contains commas but isn't a tuple
+            let parsed_types = parse_tuple_types(ret_type_str);
+            let is_tuple_return = if ret_type_str.starts_with("Tuple(") {
+                true
+            } else {
+                parsed_types.len() > 1
+            };
+
+            if is_tuple_return {
                 // Multi-value return - create a struct type
                 // Parse types carefully to handle nested structures like Map(Str,Int)
                 // Strip Tuple() wrapper if present
@@ -386,8 +394,15 @@ impl<'ctx> CodeGen<'ctx> {
             // Force main to be i32 () for C/Clang compatibility
             self.context.i32_type().fn_type(&param_types, false)
         } else if let Some(ref ret_type_str) = func.return_type {
-            // Check if this is a tuple return (contains comma)
-            if ret_type_str.contains(',') {
+            // Check if this is a tuple return (multiple top-level types, respecting nested parentheses)
+            let parsed_types = parse_tuple_types(ret_type_str);
+            let is_tuple_return = if ret_type_str.starts_with("Tuple(") {
+                true
+            } else {
+                parsed_types.len() > 1
+            };
+
+            if is_tuple_return {
                 // Multi-value return - create a struct type
                 // Strip Tuple() wrapper if present
                 let inner_types =
@@ -750,10 +765,11 @@ impl<'ctx> CodeGen<'ctx> {
                         index,
                     } => {
                         // Check if we have tuple type info for the source
-                        if let Some(return_type_str) = self
-                            .function_return_types
-                            .values()
-                            .find(|rt| rt.contains(','))
+                        if let Some(return_type_str) =
+                            self.function_return_types.values().find(|rt| {
+                                let parsed = parse_tuple_types(rt);
+                                parsed.len() > 1 || rt.starts_with("Tuple(")
+                            })
                         {
                             // Parse the tuple types to determine element type
                             let inner_types = if return_type_str.starts_with("Tuple(")

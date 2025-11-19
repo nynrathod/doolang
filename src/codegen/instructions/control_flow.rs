@@ -53,8 +53,18 @@ impl<'ctx> CodeGen<'ctx> {
                 self.temp_values.insert(dest_name.clone(), result);
 
                 // Check if this is a tuple return (multi-value)
+                // Only treat as tuple if it explicitly starts with "Tuple(" or has top-level commas
                 if let Some(return_type_str) = self.function_return_types.get(&actual_func_name) {
-                    if return_type_str.contains(',') {
+                    // Parse types respecting nested parentheses to detect true tuples
+                    let is_tuple_return = if return_type_str.starts_with("Tuple(") {
+                        true
+                    } else {
+                        // Check if there are multiple top-level types (comma not inside parentheses)
+                        let parsed = parse_tuple_types(return_type_str);
+                        parsed.len() > 1
+                    };
+
+                    if is_tuple_return {
                         // This is a tuple return - store tuple type info
                         // Don't double-wrap if already wrapped
                         let tuple_type_str = if return_type_str.starts_with("Tuple(") {
@@ -117,6 +127,27 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder.build_store(struct_alloca, result).unwrap();
                         self.temp_values
                             .insert(dest_name.clone(), struct_alloca.into());
+                    } else {
+                        // Single-value return - track the type in variable_types
+                        if let Some(return_type_str) =
+                            self.function_return_types.get(&actual_func_name)
+                        {
+                            // Extract the base type for single-value returns
+                            if return_type_str.contains("Bool") {
+                                self.variable_types
+                                    .insert(dest_name.clone(), "Bool".to_string());
+                                self.boolean_temps.insert(dest_name.clone());
+                            } else if return_type_str.contains("Float") {
+                                self.variable_types
+                                    .insert(dest_name.clone(), "Float".to_string());
+                            } else if return_type_str.contains("Str") {
+                                self.variable_types
+                                    .insert(dest_name.clone(), "Str".to_string());
+                            } else if return_type_str.contains("Int") {
+                                self.variable_types
+                                    .insert(dest_name.clone(), "Int".to_string());
+                            }
+                        }
                     }
                 }
 
@@ -130,6 +161,8 @@ impl<'ctx> CodeGen<'ctx> {
                         {
                             if return_type_str.contains("Array") && !return_type_str.contains(',') {
                                 self.heap_arrays.insert(dest_name.clone());
+                                self.variable_types
+                                    .insert(dest_name.clone(), "Array".to_string());
 
                                 // Create array metadata for the returned array
                                 // Extract element type from Array(Type) format
@@ -149,6 +182,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 );
                             } else if return_type_str.contains("Map") {
                                 self.heap_maps.insert(dest_name.clone());
+                                self.variable_types
+                                    .insert(dest_name.clone(), "Map".to_string());
 
                                 // Create map metadata for the returned map
                                 // Extract key and value types from Map(Key,Value) format
