@@ -44,6 +44,10 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
     keywords.insert("continue", TokenType::Continue);
     keywords.insert("print", TokenType::Print);
 
+    // Error handling keywords
+    keywords.insert("Ok", TokenType::Ok);
+    keywords.insert("Err", TokenType::Err);
+
     // Special values and types
     keywords.insert("true", TokenType::Boolean);
     keywords.insert("false", TokenType::Boolean);

@@ -18,6 +18,8 @@ pub enum TokenType {
     Break,    // break
     Continue, // continue
     Print,    // print
+    Ok,       // Ok (for Result type)
+    Err,      // Err (for Result type)
 
     // --- Literals ---
     Number,
