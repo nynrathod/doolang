@@ -55,8 +55,8 @@ impl<'a> Parser<'a> {
     }
 
     /// Function decl handles function name, parameters (with mandatory types),
-    /// optional return type, and body block.
-    /// Example: `fn foo(a: Int, b: Str) -> Str { ... }`
+    /// optional return type, optional error type (with !), and body block.
+    /// Example: `fn foo(a: Int, b: Str) -> Str ! Str { ... }`
     pub fn parse_functional_decl(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::Function)?; // consume 'fn'
 
@@ -96,12 +96,32 @@ impl<'a> Parser<'a> {
 
         // Parse optional return type (e.g., '-> Type')
         let mut return_type = None;
+        let mut error_type = None;
+
         if let Some(tok) = self.peek() {
             if tok.kind == TokenType::Arrow {
                 // e.g., '->'
                 self.advance();
-                return_type = Some(self.parse_return_type()?);
-                // or parse multiple types if you want
+
+                // Check if next token is '!' (error-only function)
+                if let Some(next_tok) = self.peek() {
+                    if next_tok.kind == TokenType::Bang {
+                        // This is -> ! ErrorType (no success return)
+                        self.advance(); // consume '!'
+                        error_type = Some(self.parse_type_annotation()?);
+                    } else {
+                        // This is -> ReturnType [! ErrorType]
+                        return_type = Some(self.parse_return_type()?);
+
+                        // Now check for optional error type
+                        if let Some(err_tok) = self.peek() {
+                            if err_tok.kind == TokenType::Bang {
+                                self.advance(); // consume '!'
+                                error_type = Some(self.parse_type_annotation()?);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -113,6 +133,7 @@ impl<'a> Parser<'a> {
             visibility,
             params,
             return_type,
+            error_type,
             body: body_block,
         })
     }
@@ -215,25 +236,35 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a function return type.
-    /// Supports single types and tuple types (e.g., `-> Int` or `-> (Str, Int)`).
-    /// 🟡 TODO: Doo does not supporting tuple patter yet in function return yet
+    /// Supports single types and tuple types (e.g., `-> Int` or `-> Str, Int`).
+    /// Multiple return types are separated by commas without parentheses
     fn parse_return_type(&mut self) -> ParseResult<TypeNode> {
-        if let Some(tok) = self.peek() {
-            // Identify multiple return types for function declarations
-            // Ex., fn Foo(a: Int, b: Str) -> (Str, Str) {}
-            if tok.kind == TokenType::OpenParen {
-                // multiple return types
-                self.advance(); // consume '('
-                let types = self
-                    .parse_comma_separated(|p| p.parse_type_annotation(), TokenType::CloseParen)?;
-                self.expect(TokenType::CloseParen)?;
-                Ok(TypeNode::Tuple(types))
+        if self.peek().is_none() {
+            return Err(ParseError::EndOfInput);
+        }
+
+        // Parse first type
+        let first_type = self.parse_type_annotation()?;
+
+        // Check if there are more types (comma-separated tuple)
+        let mut types = vec![first_type];
+
+        while let Some(tok) = self.peek() {
+            if tok.kind == TokenType::Comma {
+                self.advance(); // consume ','
+                let next_type = self.parse_type_annotation()?;
+                types.push(next_type);
             } else {
-                // single return type
-                self.parse_type_annotation()
+                // Stop at any non-comma token (e.g., '{' for function body)
+                break;
             }
+        }
+
+        // Return tuple if multiple types, otherwise single type
+        if types.len() > 1 {
+            Ok(TypeNode::Tuple(types))
         } else {
-            Err(ParseError::EndOfInput)
+            Ok(types.into_iter().next().unwrap())
         }
     }
 

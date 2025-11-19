@@ -18,6 +18,7 @@ pub enum TypeNode {
     Range(Box<TypeNode>, Box<TypeNode>, bool),
     TypeRef(String),
     Function(Vec<TypeNode>, Box<TypeNode>),
+    Result(Box<TypeNode>, Box<TypeNode>), // Result(OkType, ErrType)
 }
 
 impl TypeNode {
@@ -50,6 +51,13 @@ impl TypeNode {
                 let param_strs: Vec<String> =
                     params.iter().map(|t| t.format_type_string()).collect();
                 format!("Fn({})→{}", param_strs.join(","), ret.format_type_string())
+            }
+            TypeNode::Result(ok_type, err_type) => {
+                format!(
+                    "Result({},{})",
+                    ok_type.format_type_string(),
+                    err_type.format_type_string()
+                )
             }
         }
     }
@@ -142,6 +150,7 @@ pub enum AstNode {
         visibility: String,
         params: Vec<(String, Option<TypeNode>)>,
         return_type: Option<TypeNode>,
+        error_type: Option<TypeNode>, // Error type after ! in function signature
         body: Vec<AstNode>,
     },
     FunctionCall {
@@ -187,5 +196,16 @@ pub enum AstNode {
         params: Vec<(String, Option<TypeNode>)>,
         body: Box<AstNode>,
         return_type: Option<TypeNode>,
+    },
+
+    // Error handling constructs
+    OkExpr {
+        values: Vec<AstNode>, // Can be single or tuple of values
+    },
+    ErrExpr {
+        value: Box<AstNode>, // Single error value
+    },
+    TryPropagate {
+        expr: Box<AstNode>, // Expression with ? operator
     },
 }

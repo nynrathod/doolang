@@ -109,7 +109,9 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.expect(TokenType::Semi)?; // consume ';' at the end
+        // Return statements MUST end with semicolon
+        self.expect(TokenType::Semi)?;
+
         Ok(AstNode::Return { values })
     }
 
@@ -129,17 +131,38 @@ impl<'a> Parser<'a> {
         Ok(AstNode::Continue)
     }
 
-    /// Syntax: `print(expr1, expr2, ...);`
-    /// Uses parse_comma_separated for arguments inside parentheses.
+    /// Syntax: `print(expr1, expr2, ...);` or `print expr1, expr2, ...;`
+    /// Supports both with and without parentheses.
     /// Returns a Print AST node.
     pub fn parse_print(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::Print)?;
-        self.expect(TokenType::OpenParen)?;
 
-        // Parse comma-separated print arguments
-        let args = self.parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
+        let args = if self.peek().map(|t| t.kind) == Some(TokenType::OpenParen) {
+            // Parse with parentheses: print(expr1, expr2)
+            self.advance(); // consume '('
+            let exprs =
+                self.parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
+            self.expect(TokenType::CloseParen)?;
+            exprs
+        } else {
+            // Parse without parentheses: print expr1, expr2
+            let mut exprs = Vec::new();
+            loop {
+                exprs.push(self.parse_expression()?);
 
-        self.expect(TokenType::CloseParen)?;
+                if let Some(tok) = self.peek() {
+                    if tok.kind == TokenType::Comma {
+                        self.advance(); // consume ','
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            exprs
+        };
+
         self.expect(TokenType::Semi)?;
 
         Ok(AstNode::Print { exprs: args })
@@ -240,12 +263,15 @@ impl<'a> Parser<'a> {
 
     /// Parses a block of statements enclosed in braces `{ ... }`.
     /// Returns a vector of AST nodes for each statement in the block.
+    /// Ok/Err statements MUST end with semicolons.
     fn parse_block(&mut self) -> ParseResult<Vec<AstNode>> {
         let mut stmts = Vec::new();
         while let Some(tok) = self.peek() {
             if tok.kind == TokenType::CloseBrace {
                 break;
             }
+
+            // Regular statement - use parse_statement which handles Ok/Err
             stmts.push(self.parse_statement()?);
         }
         self.expect(TokenType::CloseBrace)?; // consume '}'
