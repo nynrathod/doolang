@@ -277,7 +277,7 @@ impl SemanticAnalyzer {
         };
 
         // Look up function definition in the table
-        if let Some((param_types, ret_ty)) = self.function_table.get(name.as_str()) {
+        if let Some((param_types, ret_ty, error_ty)) = self.function_table.get(name.as_str()) {
             // Skip argument checking for variadic built-in functions
             if name != "print" && name != "println" && name != "panic" && name != "typeOf" {
                 // Check number of arguments
@@ -308,10 +308,18 @@ impl SemanticAnalyzer {
             }
 
             // Return type(s)
-            Ok(match ret_ty {
-                TypeNode::Tuple(types) => types.clone(), // multi-value
-                t => vec![t.clone()],                    // single value
-            })
+            // If the function has an error type, wrap return type in Result
+            if let Some(error_type) = error_ty {
+                Ok(vec![TypeNode::Result(
+                    Box::new(ret_ty.clone()),
+                    Box::new(error_type.clone()),
+                )])
+            } else {
+                Ok(match ret_ty {
+                    TypeNode::Tuple(types) => types.clone(), // multi-value
+                    t => vec![t.clone()],                    // single value
+                })
+            }
         } else {
             Err(SemanticError::UndeclaredFunction(NamedError {
                 name: name.clone(),
@@ -356,7 +364,8 @@ impl SemanticAnalyzer {
                     | TypeNode::String
                     | TypeNode::Array(_)
                     | TypeNode::Map(_, _)
-                    | TypeNode::Tuple(_) => {
+                    | TypeNode::Tuple(_)
+                    | TypeNode::Result(_, _) => {
                         // Supported type for printing.
                     }
                     _ => {

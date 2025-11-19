@@ -164,6 +164,9 @@ impl fmt::Display for TypeNode {
                 let param_strs: Vec<String> = params.iter().map(|t| t.to_string()).collect();
                 write!(f, "Fn({}) -> {}", param_strs.join(", "), ret)
             }
+            TypeNode::Result(ok_type, err_type) => {
+                write!(f, "Result<{}, {}>", ok_type, err_type)
+            }
         }
     }
 }

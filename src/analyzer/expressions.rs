@@ -311,8 +311,17 @@ impl SemanticAnalyzer {
                     });
                 };
                 // Look up function in function table
-                if let Some((_param_types, ret_ty)) = self.function_table.get(name) {
-                    Ok(ret_ty.clone())
+                if let Some((_param_types, ret_ty, err_ty)) = self.function_table.get(name) {
+                    // If the function has an error type, wrap the return type in Result
+                    // This prevents automatic tuple unpacking for functions with error handling
+                    if let Some(error_type) = err_ty {
+                        Ok(TypeNode::Result(
+                            Box::new(ret_ty.clone()),
+                            Box::new(error_type.clone()),
+                        ))
+                    } else {
+                        Ok(ret_ty.clone())
+                    }
                 } else {
                     // Function not found
                     Err(SemanticError::UndeclaredFunction(NamedError {
@@ -534,6 +543,34 @@ impl SemanticAnalyzer {
                     (_, tgt) => Err(SemanticError::UnexpectedNode {
                         expected: format!("Cast to {} is not allowed from {:?}", tgt, source_type),
                     }),
+                }
+            }
+
+            // Ok expression: infer from the values
+            AstNode::OkExpr { values } => {
+                if values.is_empty() {
+                    Ok(TypeNode::Void)
+                } else if values.len() == 1 {
+                    self.infer_type(&values[0])
+                } else {
+                    // Multiple values: infer as tuple
+                    let types: Result<Vec<TypeNode>, SemanticError> =
+                        values.iter().map(|v| self.infer_type(v)).collect();
+                    Ok(TypeNode::Tuple(types?))
+                }
+            }
+
+            // Err expression: infer from the error value
+            AstNode::ErrExpr { value } => self.infer_type(value),
+
+            // Try propagate: infer from the expression being propagated
+            // The ? operator unwraps a Result<T, E> to just T
+            AstNode::TryPropagate { expr } => {
+                let expr_type = self.infer_type(expr)?;
+                match expr_type {
+                    TypeNode::Result(ok_type, _err_type) => Ok(*ok_type),
+                    // If not a Result type, just return the type as-is
+                    other => Ok(other),
                 }
             }
 
@@ -818,6 +855,7 @@ impl SemanticAnalyzer {
             collected_errors: Vec::new(),
             is_main_module: self.is_main_module,
             type_inference_depth: RefCell::new(*self.type_inference_depth.borrow()),
+            current_function_error_type: self.current_function_error_type.clone(),
         }
     }
 

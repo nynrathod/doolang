@@ -22,7 +22,7 @@ pub struct SymbolInfo {
 /// Responsible for type checking, symbol resolution, and semantic validation.
 pub struct SemanticAnalyzer {
     pub(crate) symbol_table: HashMap<String, SymbolInfo>, // Current scope variables
-    pub(crate) function_table: HashMap<String, (Vec<TypeNode>, TypeNode)>, // Function signatures
+    pub(crate) function_table: HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>, // Function signatures (params, return_type, error_type)
 
     pub(crate) outer_symbol_table: Option<HashMap<String, SymbolInfo>>, // For nested scopes
     pub(crate) project_root: PathBuf, // Root directory for module resolution
@@ -36,6 +36,7 @@ pub struct SemanticAnalyzer {
     pub collected_errors: Vec<SemanticError>, // Collect all errors for reporting
     pub is_main_module: bool,             // Track if analyzing main program or imported module
     pub type_inference_depth: RefCell<usize>, // Track type inference recursion depth using interior mutability
+    pub(crate) current_function_error_type: Option<TypeNode>, // Track current function's error type for ? operator validation
 }
 
 impl SemanticAnalyzer {
@@ -59,13 +60,13 @@ impl SemanticAnalyzer {
 
         let mut function_table = HashMap::new();
 
-        function_table.insert("print".to_string(), (vec![], TypeNode::Void));
-        function_table.insert("println".to_string(), (vec![], TypeNode::Void));
+        function_table.insert("print".to_string(), (vec![], TypeNode::Void, None));
+        function_table.insert("println".to_string(), (vec![], TypeNode::Void, None));
         function_table.insert(
             "panic".to_string(),
-            (vec![TypeNode::String], TypeNode::Void),
+            (vec![TypeNode::String], TypeNode::Void, None),
         );
-        function_table.insert("typeOf".to_string(), (vec![], TypeNode::String));
+        function_table.insert("typeOf".to_string(), (vec![], TypeNode::String, None));
 
         Self {
             symbol_table: HashMap::new(),
@@ -82,6 +83,7 @@ impl SemanticAnalyzer {
             collected_errors: Vec::new(),
             is_main_module: true,
             type_inference_depth: RefCell::new(0),
+            current_function_error_type: None,
         }
     }
 
@@ -149,6 +151,7 @@ impl SemanticAnalyzer {
                     name,
                     params,
                     return_type,
+                    error_type,
                     ..
                 } => {
                     // Check if function already defined
@@ -169,7 +172,11 @@ impl SemanticAnalyzer {
                     // Register function signature (all functions, not just public ones)
                     self.function_table.insert(
                         name.to_string(),
-                        (param_types, return_type.clone().unwrap_or(TypeNode::Void)),
+                        (
+                            param_types,
+                            return_type.clone().unwrap_or(TypeNode::Void),
+                            error_type.clone(),
+                        ),
                     );
                 }
                 _ => {} // Skip other nodes in first pass
@@ -247,8 +254,16 @@ impl SemanticAnalyzer {
                 visibility,
                 params,
                 return_type,
+                error_type,
                 body,
-            } => self.analyze_functional_decl(name, visibility, params, return_type, body),
+            } => self.analyze_functional_decl(
+                name,
+                visibility,
+                params,
+                return_type,
+                error_type,
+                body,
+            ),
             AstNode::StructDecl { .. } => self.analyze_struct(node),
             AstNode::EnumDecl { .. } => self.analyze_enum(node),
 
@@ -300,6 +315,47 @@ impl SemanticAnalyzer {
                 }
                 Ok(())
             }
+            AstNode::OkExpr { values } => {
+                // Check that Ok is inside a function with error type
+                if self.function_depth == 0 {
+                    return Err(SemanticError::UnexpectedNode {
+                        expected: "Ok expression inside function with error type".to_string(),
+                    });
+                }
+                // Type check values
+                for v in values {
+                    self.infer_type(v)?;
+                }
+                Ok(())
+            }
+            AstNode::ErrExpr { value } => {
+                // Check that Err is inside a function with error type
+                if self.function_depth == 0 {
+                    return Err(SemanticError::UnexpectedNode {
+                        expected: "Err expression inside function with error type".to_string(),
+                    });
+                }
+                // Type check error value
+                self.infer_type(value)?;
+                Ok(())
+            }
+            AstNode::TryPropagate { expr } => {
+                // Check that ? is inside a function with error type
+                if self.function_depth == 0 {
+                    return Err(SemanticError::UnexpectedNode {
+                        expected: "? operator inside function with error type".to_string(),
+                    });
+                }
+                // Check that current function has an error return type
+                if self.current_function_error_type.is_none() {
+                    return Err(SemanticError::UnexpectedNode {
+                        expected: "? operator can only be used in functions with error return type (e.g., -> T ! E)".to_string(),
+                    });
+                }
+                // Type check the expression
+                self.infer_type(expr)?;
+                Ok(())
+            }
             AstNode::ConditionalStmt {
                 condition,
                 then_block,
@@ -345,7 +401,7 @@ impl SemanticAnalyzer {
                         });
                     };
 
-                    let (param_types, _return_type) =
+                    let (param_types, _return_type, _error_type) =
                         self.function_table.get(func_name).ok_or_else(|| {
                             SemanticError::UndeclaredFunction(NamedError {
                                 name: func_name.clone(),
@@ -610,11 +666,14 @@ impl SemanticAnalyzer {
                         });
 
                         // Copy function signature to current function table
-                        if let Some((params, ret)) = imported_analyzer.function_table.get(name) {
+                        if let Some((params, ret, err)) = imported_analyzer.function_table.get(name)
+                        {
                             let fn_table_key =
                                 registered_name.clone().unwrap_or_else(|| name.clone());
-                            self.function_table
-                                .insert(fn_table_key.clone(), (params.clone(), ret.clone()));
+                            self.function_table.insert(
+                                fn_table_key.clone(),
+                                (params.clone(), ret.clone(), err.clone()),
+                            );
 
                             // If we have an alias, store the mapping
                             if let Some(alias) = registered_name {
@@ -646,9 +705,13 @@ impl SemanticAnalyzer {
                 }
                 // Add to function_table if not already present
                 if !self.function_table.contains_key(trans_name) {
-                    if let Some((params, ret)) = imported_analyzer.function_table.get(trans_name) {
-                        self.function_table
-                            .insert(trans_name.clone(), (params.clone(), ret.clone()));
+                    if let Some((params, ret, err)) =
+                        imported_analyzer.function_table.get(trans_name)
+                    {
+                        self.function_table.insert(
+                            trans_name.clone(),
+                            (params.clone(), ret.clone(), err.clone()),
+                        );
                     }
                 }
             }

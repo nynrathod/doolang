@@ -285,18 +285,29 @@ impl SemanticAnalyzer {
 
             // Ensure no return values are present in Void functions.
             for node in body.iter() {
-                if let AstNode::Return { values } = node {
-                    if !values.is_empty() {
+                match node {
+                    AstNode::Return { values } => {
+                        if !values.is_empty() {
+                            return Err(SemanticError::InvalidReturnInVoidFunction {
+                                function: name.to_string(),
+                            });
+                        }
+                    }
+                    AstNode::OkExpr { .. } | AstNode::ErrExpr { .. } => {
                         return Err(SemanticError::InvalidReturnInVoidFunction {
                             function: name.to_string(),
                         });
                     }
+                    _ => {}
                 }
             }
 
-            // Append implicit empty return if last statement is not Return.
+            // Append implicit empty return if last statement is not Return/Ok/Err.
             if let Some(last) = body.last() {
-                if !matches!(last, AstNode::Return { .. }) {
+                if !matches!(
+                    last,
+                    AstNode::Return { .. } | AstNode::OkExpr { .. } | AstNode::ErrExpr { .. }
+                ) {
                     body.push(AstNode::Return { values: vec![] });
                 }
             }
@@ -347,6 +358,7 @@ impl SemanticAnalyzer {
     ///
     /// Used for functions that declare a non-void return type.
     /// Returns an error if no return statement is found.
+    /// Treats Ok/Err expressions as implicit returns.
     fn ensure_has_return(&self, body: &Vec<AstNode>, fn_name: &str) -> Result<(), SemanticError> {
         if !self.has_return_statement(body) {
             return Err(SemanticError::MissingFunctionReturn {
@@ -362,7 +374,9 @@ impl SemanticAnalyzer {
     fn has_return_statement(&self, nodes: &Vec<AstNode>) -> bool {
         for node in nodes {
             match node {
-                AstNode::Return { .. } => return true,
+                AstNode::Return { .. } | AstNode::OkExpr { .. } | AstNode::ErrExpr { .. } => {
+                    return true
+                }
                 AstNode::ConditionalStmt {
                     then_block,
                     else_branch,
@@ -402,6 +416,13 @@ impl SemanticAnalyzer {
             match node {
                 AstNode::Return { values } => {
                     self.verify_single_return(values, expected, fn_name)?;
+                }
+                AstNode::OkExpr { values } => {
+                    self.verify_single_return(values, expected, fn_name)?;
+                }
+                AstNode::ErrExpr { value } => {
+                    // For Err expressions, verify the error type matches (skip for now)
+                    // Just ensure it's treated as a valid return
                 }
                 AstNode::ConditionalStmt {
                     then_block,
