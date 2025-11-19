@@ -283,6 +283,7 @@ impl MirBuilder {
                         params: vec![],
                         param_types: vec![],
                         return_type: None,
+                        error_type: None,
                         blocks: vec![],
                     };
 
@@ -313,6 +314,7 @@ impl MirBuilder {
                         params: vec![],
                         param_types: vec![],
                         return_type: None,
+                        error_type: None,
                         blocks: vec![],
                     };
 

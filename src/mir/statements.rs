@@ -50,14 +50,15 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     for (i, pattern) in patterns.iter().enumerate() {
                         if let Pattern::Identifier(name) = pattern {
                             // Extract each tuple element into a temporary variable.
+                            let extract_tmp = builder.next_tmp();
                             block.instrs.push(MirInstr::TupleExtract {
-                                name: builder.next_tmp(),
+                                name: extract_tmp.clone(),
                                 source: value_tmp.clone(),
                                 index: i,
                             });
                             block.instrs.push(MirInstr::Assign {
                                 name: name.clone(),
-                                value: builder.next_tmp(),
+                                value: extract_tmp,
                                 mutable: *mutable,
                             });
                         }
@@ -92,14 +93,15 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     for (i, pattern) in patterns.iter().enumerate() {
                         if let Pattern::Identifier(name) = pattern {
                             // Extract each tuple element into a temporary variable.
+                            let extract_tmp = builder.next_tmp();
                             block.instrs.push(MirInstr::TupleExtract {
-                                name: builder.next_tmp(),
+                                name: extract_tmp.clone(),
                                 source: value_tmp.clone(),
                                 index: i,
                             });
                             block.instrs.push(MirInstr::Assign {
                                 name: name.clone(),
-                                value: builder.next_tmp(),
+                                value: extract_tmp,
                                 mutable: true,
                             });
                         }

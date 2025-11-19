@@ -689,6 +689,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Determine variable types by scanning instructions that define them
         let mut var_types: HashMap<String, BasicTypeEnum<'ctx>> = HashMap::new();
+        // Track which function produced each tuple (for TupleExtract type resolution)
+        let mut tuple_sources: HashMap<String, String> = HashMap::new();
+
+        // First pass: process all instructions except Assign
         for block in &func.blocks {
             for instr in &block.instrs {
                 match instr {
@@ -764,64 +768,117 @@ impl<'ctx> CodeGen<'ctx> {
                         source,
                         index,
                     } => {
-                        // Check if we have tuple type info for the source
-                        if let Some(return_type_str) =
-                            self.function_return_types.values().find(|rt| {
-                                let parsed = parse_tuple_types(rt);
-                                parsed.len() > 1 || rt.starts_with("Tuple(")
-                            })
-                        {
-                            // Parse the tuple types to determine element type
-                            let inner_types = if return_type_str.starts_with("Tuple(")
-                                && return_type_str.ends_with(')')
+                        eprintln!("DEBUG: Processing TupleExtract");
+                        eprintln!("  name: {}", name);
+                        eprintln!("  source: {}", source);
+                        eprintln!("  index: {}", index);
+                        eprintln!(
+                            "  tuple_sources.get(source): {:?}",
+                            tuple_sources.get(source)
+                        );
+                        // Look up the function that produced this tuple via tuple_sources
+                        if let Some(func_name) = tuple_sources.get(source) {
+                            eprintln!("  Found func_name: {}", func_name);
+                            if let Some(return_type_str) = self.function_return_types.get(func_name)
                             {
-                                &return_type_str[6..return_type_str.len() - 1]
-                            } else {
-                                return_type_str.as_str()
-                            };
-                            let types = parse_tuple_types(inner_types);
-                            if let Some(type_str) = types.get(*index) {
-                                if type_str.contains("Array")
-                                    || type_str.contains("Map")
-                                    || type_str.contains("Str")
+                                // Strip Tuple() wrapper if present
+                                let inner = if return_type_str.starts_with("Tuple(")
+                                    && return_type_str.ends_with(')')
                                 {
-                                    var_types.insert(
-                                        name.clone(),
-                                        self.context.ptr_type(AddressSpace::default()).into(),
-                                    );
-                                } else if type_str.contains("Float") {
-                                    var_types.insert(name.clone(), self.context.f64_type().into());
-                                } else if type_str.contains("Bool") {
-                                    var_types.insert(name.clone(), self.context.i32_type().into());
+                                    &return_type_str[6..return_type_str.len() - 1]
                                 } else {
-                                    var_types.insert(name.clone(), self.context.i32_type().into());
+                                    return_type_str.as_str()
+                                };
+                                let types = parse_tuple_types(inner);
+                                if let Some(type_str) = types.get(*index) {
+                                    let llvm_type = if type_str.starts_with('[')
+                                        || type_str.starts_with("Array")
+                                    {
+                                        // Array type
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    } else if type_str.starts_with('{')
+                                        || type_str.starts_with("Map")
+                                    {
+                                        // Map type
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    } else if type_str.contains("Str")
+                                        || type_str.contains("String")
+                                    {
+                                        // String type
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    } else if type_str.contains("Float") {
+                                        // Float type
+                                        self.context.f64_type().into()
+                                    } else if type_str.contains("Bool") {
+                                        // Bool type
+                                        self.context.i32_type().into()
+                                    } else {
+                                        // Int or default
+                                        self.context.i32_type().into()
+                                    };
+                                    eprintln!("  -> Setting var_types[{}] = {:?}", name, llvm_type);
+                                    var_types.insert(name.clone(), llvm_type);
                                 }
                             }
+                        } else {
+                            eprintln!("  -> No tuple source found for {}", source);
                         }
                     }
                     // Call - determine type from function return type
                     crate::mir::MirInstr::Call { dest, func, .. } => {
+                        eprintln!("DEBUG: Processing Call instruction");
+                        eprintln!("  func: {}", func);
+                        eprintln!("  dest.len(): {}", dest.len());
+                        eprintln!("  dest: {:?}", dest);
                         if let Some(return_type_str) = self.function_return_types.get(func) {
+                            eprintln!("  return_type_str: {}", return_type_str);
                             if dest.len() == 1 {
-                                // Single return value
                                 let dest_name = &dest[0];
-                                if return_type_str.contains("Array")
-                                    || return_type_str.contains("Map")
-                                    || return_type_str.contains("Str")
+                                // Check if this is a tuple return by parsing the type
+                                // Strip Tuple() wrapper if present
+                                let inner = if return_type_str.starts_with("Tuple(")
+                                    && return_type_str.ends_with(')')
                                 {
-                                    var_types.insert(
-                                        dest_name.clone(),
-                                        self.context.ptr_type(AddressSpace::default()).into(),
-                                    );
-                                } else if return_type_str.contains("Float") {
-                                    var_types
-                                        .insert(dest_name.clone(), self.context.f64_type().into());
-                                } else if return_type_str.contains("Bool") {
-                                    var_types
-                                        .insert(dest_name.clone(), self.context.i32_type().into());
+                                    &return_type_str[6..return_type_str.len() - 1]
                                 } else {
-                                    var_types
-                                        .insert(dest_name.clone(), self.context.i32_type().into());
+                                    return_type_str.as_str()
+                                };
+                                let types = crate::codegen::core::helpers::parse_tuple_types(inner);
+                                eprintln!("  parsed types: {:?}", types);
+                                eprintln!("  types.len(): {}", types.len());
+                                if types.len() > 1 {
+                                    // This is a tuple return - track it so TupleExtract can find types
+                                    eprintln!(
+                                        "  -> Tracking as tuple source: {} -> {}",
+                                        dest_name, func
+                                    );
+                                    tuple_sources.insert(dest_name.clone(), func.clone());
+                                } else {
+                                    // Single return value
+                                    if return_type_str.contains("Array")
+                                        || return_type_str.contains("Map")
+                                        || return_type_str.contains("Str")
+                                    {
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.ptr_type(AddressSpace::default()).into(),
+                                        );
+                                    } else if return_type_str.contains("Float") {
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.f64_type().into(),
+                                        );
+                                    } else if return_type_str.contains("Bool") {
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.i32_type().into(),
+                                        );
+                                    } else {
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.i32_type().into(),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -851,7 +908,29 @@ impl<'ctx> CodeGen<'ctx> {
                         };
                         var_types.insert(name.clone(), cast_type);
                     }
+                    // Skip Assign in first pass
+                    crate::mir::MirInstr::Assign { .. } => {}
                     _ => {}
+                }
+            }
+        }
+
+        // Second pass: process Assign instructions to propagate types
+        for block in &func.blocks {
+            for instr in &block.instrs {
+                if let crate::mir::MirInstr::Assign { name, value, .. } = instr {
+                    eprintln!("DEBUG: Processing Assign in second pass");
+                    eprintln!("  name: {}", name);
+                    eprintln!("  value: {}", value);
+                    eprintln!(
+                        "  var_types.contains_key(value): {}",
+                        var_types.contains_key(value)
+                    );
+                    // If the source value has a known type, propagate it to the destination
+                    if let Some(&source_type) = var_types.get(value) {
+                        eprintln!("  -> Propagating type from {} to {}", value, name);
+                        var_types.insert(name.clone(), source_type);
+                    }
                 }
             }
         }
@@ -862,6 +941,23 @@ impl<'ctx> CodeGen<'ctx> {
                 // Skip function parameters - they are already initialized from incoming values
                 if func.params.contains(var) {
                     continue;
+                }
+
+                // Debug output for iarr
+                if var == "iarr" {
+                    eprintln!("DEBUG: Allocating iarr");
+                    eprintln!(
+                        "  var_types contains iarr: {}",
+                        var_types.contains_key("iarr")
+                    );
+                    if let Some(ty) = var_types.get("iarr") {
+                        eprintln!("  iarr type: {:?}", ty);
+                    }
+                    eprintln!("  tuple_sources: {:?}", tuple_sources);
+                    eprintln!(
+                        "  All var_types keys: {:?}",
+                        var_types.keys().collect::<Vec<_>>()
+                    );
                 }
 
                 // Determine the correct type for this variable
