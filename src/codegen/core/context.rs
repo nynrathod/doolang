@@ -107,6 +107,10 @@ pub struct CodeGen<'ctx> {
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
     pub function_error_types: HashMap<String, String>, // Track function error types for Result handling
     pub heap_pointers: HashMap<String, inkwell::values::PointerValue<'ctx>>, // Track full heap pointers for tuple returns
+
+    // Result/Error type tracking
+    pub result_types: HashMap<String, (String, String)>, // Maps temp to (ok_type, err_type) e.g., ("Int", "Str")
+    pub result_values: HashMap<String, (bool, String)>, // Maps temp to (is_ok, value_temp) to track Ok vs Err
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -164,6 +168,8 @@ impl<'ctx> CodeGen<'ctx> {
             recursion_depth: 0,
             function_error_types: HashMap::new(),
             heap_pointers: HashMap::new(),
+            result_types: HashMap::new(),
+            result_values: HashMap::new(),
         }
     }
 

@@ -132,6 +132,7 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         name,
         params,
         return_type,
+        error_type,
         body,
         ..
     } = node
@@ -144,6 +145,7 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
                 .map(|(_, t)| t.as_ref().map(|ty| ty.format_type_string()))
                 .collect(),
             return_type: return_type.as_ref().map(|t| t.format_type_string()),
+            error_type: error_type.as_ref().map(|t| t.format_type_string()),
             blocks: vec![],
         };
 

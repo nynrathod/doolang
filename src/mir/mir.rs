@@ -18,6 +18,7 @@ pub struct MirFunction {
     pub params: Vec<String>,
     pub param_types: Vec<Option<String>>, // Parameter types (e.g., "Int", "Str", "Array", "Map")
     pub return_type: Option<String>,
+    pub error_type: Option<String>, // Error type for functions that can fail
     pub blocks: Vec<MirBlock>,
 }
 
@@ -324,6 +325,45 @@ pub enum MirInstr {
         key: String,
         value: String,
         cond_block: String,
+    },
+
+    // Error handling instructions
+    /// Create an Ok result value
+    ResultOk {
+        name: String,
+        values: Vec<String>, // Success values
+    },
+
+    /// Create an Err result value
+    ResultErr {
+        name: String,
+        error: String, // Error value
+    },
+
+    /// Check if result is Ok or Err and branch
+    ResultCheck {
+        result: String,
+        is_ok_dest: String, // Temp to store boolean: true if Ok, false if Err
+    },
+
+    /// Extract value from Ok result
+    ResultUnwrapOk {
+        name: String,
+        result: String,
+    },
+
+    /// Extract error from Err result
+    ResultUnwrapErr {
+        name: String,
+        result: String,
+    },
+
+    /// Propagate error if Err, otherwise continue with Ok value
+    /// This is the ? operator
+    TryPropagate {
+        name: String,        // Destination for Ok value
+        result: String,      // Result to check
+        error_block: String, // Block to jump to if Err
     },
 }
 

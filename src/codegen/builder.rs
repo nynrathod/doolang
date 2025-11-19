@@ -1351,6 +1351,86 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
 
+            // Result/Error handling: Ok expression creates a success result
+            MirInstr::ResultOk { name, values } => {
+                // For now, just return the value(s) directly
+                // Track that this is a Result type with metadata
+                let ok_types: Vec<String> = values
+                    .iter()
+                    .map(|v| {
+                        self.variable_types
+                            .get(v)
+                            .cloned()
+                            .unwrap_or_else(|| "Unknown".to_string())
+                    })
+                    .collect();
+
+                let err_type = "Str".to_string();
+                let ok_type = if ok_types.len() == 1 {
+                    ok_types[0].clone()
+                } else {
+                    format!("Tuple({})", ok_types.join(","))
+                };
+
+                self.result_types
+                    .insert(name.clone(), (ok_type.clone(), err_type));
+                self.result_values
+                    .insert(name.clone(), (true, values.join(",")));
+                self.variable_types
+                    .insert(name.clone(), "Result".to_string());
+
+                // For now, return the first value (or unit if no values)
+                // Full Result<T,E> support with proper tagging will come later
+                if values.is_empty() {
+                    let unit_val = self.context.i32_type().const_int(0, false);
+                    Some(unit_val.into())
+                } else {
+                    let val = self.resolve_value(&values[0]);
+                    Some(val)
+                }
+            }
+
+            // Result/Error handling: Err expression creates an error result
+            MirInstr::ResultErr { name, error } => {
+                // For now, just return the error value directly
+                // Track that this is a Result type with metadata
+                let error_val = self.resolve_value(error);
+                self.variable_types
+                    .insert(name.clone(), "Result".to_string());
+
+                let error_type = self
+                    .variable_types
+                    .get(error)
+                    .cloned()
+                    .unwrap_or_else(|| "Str".to_string());
+
+                self.result_types
+                    .insert(name.clone(), ("Unknown".to_string(), error_type.clone()));
+                self.result_values
+                    .insert(name.clone(), (false, error.clone()));
+
+                Some(error_val)
+            }
+
+            // Try propagate (?): check result and propagate error if needed
+            MirInstr::TryPropagate {
+                name,
+                result: result_tmp,
+                error_block: _error_block,
+            } => {
+                // For now, just pass through the result value
+                // Full error propagation with control flow needs more integration
+                let result_val = self.resolve_value(result_tmp);
+                let tmp_name = name.clone();
+
+                self.result_values
+                    .insert(tmp_name.clone(), (true, result_tmp.clone()));
+                self.variable_types
+                    .insert(tmp_name.clone(), "Unknown".to_string());
+
+                Some(result_val)
+            }
+
             _ => None,
         };
 
