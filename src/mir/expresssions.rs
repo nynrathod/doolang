@@ -75,12 +75,13 @@ pub fn determine_op_type(builder: &MirBuilder, lhs: &str, rhs: &str) -> Result<S
             lhs_t, rhs_t
         )),
         (None, None) => {
-            // If we don't know both types, assume float (safer for mixed int/float operations)
-            Ok("float".to_string())
+            // If we don't know both types, assume int (most common case)
+            Ok("int".to_string())
         }
         _ => {
-            // One type is unknown - assume float to handle mixed int/float cases
-            Ok("float".to_string())
+            // One type is unknown - assume int (most common case)
+            // If it's actually a float operation, the codegen will handle it
+            Ok("int".to_string())
         }
     }
 }
@@ -773,6 +774,37 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 .insert(result_tmp.clone(), result_type);
 
             result_tmp
+        }
+
+        // Try propagate (? operator): expr?
+        AstNode::TryPropagate { expr } => {
+            // Build the expression that might fail
+            let result_tmp = build_expression(builder, expr, block);
+
+            // Create a temporary for the unwrapped value
+            let unwrapped_tmp = builder.next_tmp();
+
+            // Generate TryPropagate instruction
+            // This will check the Result tag at runtime:
+            // - If Err: return the Err immediately
+            // - If Ok: extract and continue with the Ok value
+            block.instrs.push(MirInstr::TryPropagate {
+                name: unwrapped_tmp.clone(),
+                result: result_tmp.clone(),
+                error_block: String::new(), // Will be handled by codegen
+            });
+
+            // The unwrapped value has the Ok type of the Result
+            // Copy type info from the result if available
+            if let Some(result_type) = builder.mir_symbol_table.get(&result_tmp).cloned() {
+                // If the result is a Result type, we need to extract the Ok type
+                // For now, just copy the type - codegen will handle the unwrapping
+                builder
+                    .mir_symbol_table
+                    .insert(unwrapped_tmp.clone(), result_type);
+            }
+
+            unwrapped_tmp
         }
 
         _ => {

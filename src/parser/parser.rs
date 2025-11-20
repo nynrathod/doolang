@@ -123,6 +123,14 @@ impl<'a> Parser<'a> {
                 TokenType::Break => self.parse_break(),
                 TokenType::Continue => self.parse_continue(),
                 TokenType::Print => self.parse_print(),
+
+                // Ok and Err expressions as statements (implicit returns in Result functions)
+                TokenType::Ok | TokenType::Err => {
+                    let expr = self.parse_expression()?;
+                    self.expect(TokenType::Semi)?;
+                    Ok(expr)
+                }
+
                 TokenType::OpenBrace => {
                     // Handle empty block or block statement: {}
                     self.advance(); // consume '{'

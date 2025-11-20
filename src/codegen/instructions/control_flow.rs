@@ -1,5 +1,6 @@
 use crate::codegen::core::helpers::parse_tuple_types;
 use crate::codegen::core::CodeGen;
+use inkwell::types::BasicTypeEnum;
 impl<'ctx> CodeGen<'ctx> {
     pub fn generate_call(
         &mut self,
@@ -49,103 +50,288 @@ impl<'ctx> CodeGen<'ctx> {
 
         if let Some(result) = call_result.try_as_basic_value().left() {
             if !dest.is_empty() {
+                // Check if this is a Result type by checking struct signature
+                // Result structs have { i32 tag, <any_type> value }
+                // We detect by: struct with 2 fields, first field is i32
+                let is_result_type = if result.is_struct_value() {
+                    let struct_type = result.get_type();
+                    if let BasicTypeEnum::StructType(st) = struct_type {
+                        if st.count_fields() == 2 {
+                            // Check if first field is i32 (Result tag field)
+                            if let Some(field0_type) = st.get_field_type_at_index(0) {
+                                if let BasicTypeEnum::IntType(int_type) = field0_type {
+                                    int_type.get_bit_width() == 32
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                // If we have multiple destinations and result is Result type, keep Result in temp_values
+                if is_result_type && dest.len() > 1 {
+                    // Multi-value Result return - keep the Result struct and set up metadata for TupleExtract
+                    // The Result struct is { i32 tag, ptr value } where ptr points to a heap tuple
+                    let result_struct = result.into_struct_value();
+                    let tuple_ptr_value = self
+                        .builder
+                        .build_extract_value(result_struct, 1, "unwrapped_ptr")
+                        .unwrap();
+
+                    // The extracted value should be a pointer
+                    let tuple_ptr = if tuple_ptr_value.is_pointer_value() {
+                        tuple_ptr_value.into_pointer_value()
+                    } else {
+                        // Shouldn't happen, but handle gracefully
+                        return None;
+                    };
+
+                    // Set up tuple type metadata for TupleExtract to use
+                    if let Some(return_type_str) = self
+                        .function_return_types
+                        .get(&actual_func_name)
+                        .or_else(|| self.function_return_types.get(func))
+                    {
+                        let types = parse_tuple_types(return_type_str);
+                        let tuple_type_str = format!("Tuple({})", return_type_str);
+
+                        // Build tuple struct type
+                        let tuple_field_types: Vec<inkwell::types::BasicTypeEnum> =
+                            types.iter().map(|t| self.map_type_str_to_llvm(t)).collect();
+                        let tuple_type = self.context.struct_type(&tuple_field_types, false);
+
+                        // Store tuple metadata
+                        self.tuple_struct_types
+                            .insert(tuple_type_str.clone(), tuple_type);
+
+                        // Get error type for result_types
+                        let err_type = self
+                            .function_error_types
+                            .get(&actual_func_name)
+                            .or_else(|| self.function_error_types.get(func))
+                            .cloned()
+                            .unwrap_or_else(|| "Str".to_string());
+
+                        // Store the tuple pointer with the first dest name, and tuple metadata
+                        // so TupleExtract can find it
+                        let tuple_holder_name = format!("{}_tuple_ptr", dest[0]);
+                        self.temp_values
+                            .insert(tuple_holder_name.clone(), tuple_ptr.into());
+                        self.tuple_types
+                            .insert(tuple_holder_name.clone(), tuple_type_str.clone());
+
+                        // Also store in symbols with pointer type
+                        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr_alloca = self
+                            .builder
+                            .build_alloca(ptr_type, &format!("{}_ptr_storage", dest[0]))
+                            .unwrap();
+                        self.builder.build_store(ptr_alloca, tuple_ptr).unwrap();
+                        self.symbols.insert(
+                            tuple_holder_name.clone(),
+                            crate::codegen::Symbol {
+                                ptr: ptr_alloca,
+                                ty: ptr_type.into(),
+                            },
+                        );
+
+                        // CRITICAL: Store result_types for the call result temp
+                        // This is used by TupleExtract to know the field types
+                        self.result_types
+                            .insert(dest[0].clone(), (return_type_str.clone(), err_type.clone()));
+
+                        // For each dest, set up an alias that points to the tuple holder
+                        // This way TupleExtract can find the tuple via any dest name
+                        for dest_name in dest.iter() {
+                            // Create a mapping from dest_name to the tuple holder
+                            self.tuple_types
+                                .insert(dest_name.clone(), tuple_type_str.clone());
+                            self.temp_values.insert(dest_name.clone(), tuple_ptr.into());
+                            // Also store result_types for each dest
+                            self.result_types.insert(
+                                dest_name.clone(),
+                                (return_type_str.clone(), err_type.clone()),
+                            );
+                        }
+                    }
+
+                    // Return the full Result struct so it can be stored if needed
+                    self.temp_values.insert(dest[0].clone(), result);
+                    return Some(result);
+                }
+
                 let dest_name = &dest[0];
-                self.temp_values.insert(dest_name.clone(), result);
+
+                // CRITICAL FIX: For Result types, store the FULL struct (with tag)
+                // Don't unwrap it here - let print and other operations handle the tag checking
+                let final_result = result;
+
+                // Track that this is a Result type so downstream operations know to handle it specially
+                if is_result_type {
+                    // Get the Ok type from function_return_types
+                    let ok_type = self
+                        .function_return_types
+                        .get(&actual_func_name)
+                        .or_else(|| self.function_return_types.get(func))
+                        .cloned()
+                        .unwrap_or_else(|| "Unknown".to_string());
+
+                    // Get the Err type from function_error_types
+                    let err_type = self
+                        .function_error_types
+                        .get(&actual_func_name)
+                        .or_else(|| self.function_error_types.get(func))
+                        .cloned()
+                        .unwrap_or_else(|| "Str".to_string());
+
+                    self.result_types
+                        .insert(dest_name.clone(), (ok_type, err_type));
+
+                    // Store the Result struct in temp_values AND in symbols
+                    // This ensures both resolve_value and print can access it properly
+                    self.temp_values.insert(dest_name.clone(), final_result);
+
+                    // Also store the Result struct on the stack for proper resolution
+                    // This ensures that resolve_value can load it as a struct from memory
+                    let result_struct_val = final_result.into_struct_value();
+                    let result_struct_type = result_struct_val.get_type();
+                    let struct_alloca = self
+                        .builder
+                        .build_alloca(result_struct_type, &format!("{}_result_storage", dest_name))
+                        .unwrap();
+                    self.builder
+                        .build_store(struct_alloca, result_struct_val)
+                        .unwrap();
+                    self.symbols.insert(
+                        dest_name.clone(),
+                        crate::codegen::Symbol {
+                            ptr: struct_alloca,
+                            ty: result_struct_type.into(),
+                        },
+                    );
+
+                    // Mark variable type as Result so it doesn't get unwrapped
+                    self.variable_types
+                        .insert(dest_name.clone(), "Result".to_string());
+
+                    // Return early - do NOT continue with normal single-value handling
+                    return Some(result);
+                } else {
+                    // Non-Result type - store normally
+                    self.temp_values.insert(dest_name.clone(), final_result);
+                }
 
                 // Check if this is a tuple return (multi-value)
                 // Only treat as tuple if it explicitly starts with "Tuple(" or has top-level commas
-                if let Some(return_type_str) = self.function_return_types.get(&actual_func_name) {
-                    // Parse types respecting nested parentheses to detect true tuples
-                    let is_tuple_return = if return_type_str.starts_with("Tuple(") {
-                        true
-                    } else {
-                        // Check if there are multiple top-level types (comma not inside parentheses)
-                        let parsed = parse_tuple_types(return_type_str);
-                        parsed.len() > 1
-                    };
-
-                    if is_tuple_return {
-                        // This is a tuple return - store tuple type info
-                        // Don't double-wrap if already wrapped
-                        let tuple_type_str = if return_type_str.starts_with("Tuple(") {
-                            return_type_str.clone()
+                // BUT: Skip this for Result types - they have their own handling above
+                if !is_result_type {
+                    if let Some(return_type_str) = self.function_return_types.get(&actual_func_name)
+                    {
+                        // Parse types respecting nested parentheses to detect true tuples
+                        let is_tuple_return = if return_type_str.starts_with("Tuple(") {
+                            true
                         } else {
-                            format!("Tuple({})", return_type_str)
+                            // Check if there are multiple top-level types (comma not inside parentheses)
+                            let parsed = parse_tuple_types(return_type_str);
+                            parsed.len() > 1
                         };
-                        self.tuple_types
-                            .insert(dest_name.clone(), tuple_type_str.clone());
 
-                        // Store the struct type if not already cached
-                        let struct_type = if let Some(cached_type) =
-                            self.tuple_struct_types.get(&tuple_type_str)
-                        {
-                            *cached_type
-                        } else {
-                            // Strip Tuple() wrapper if present before parsing
-                            let inner_types = if return_type_str.starts_with("Tuple(")
-                                && return_type_str.ends_with(')')
-                            {
-                                &return_type_str[6..return_type_str.len() - 1]
+                        if is_tuple_return {
+                            // This is a tuple return - store tuple type info
+                            // Don't double-wrap if already wrapped
+                            let tuple_type_str = if return_type_str.starts_with("Tuple(") {
+                                return_type_str.clone()
                             } else {
-                                return_type_str.as_str()
+                                format!("Tuple({})", return_type_str)
                             };
-                            let types = parse_tuple_types(inner_types);
-                            let mut field_types: Vec<inkwell::types::BasicTypeEnum> = Vec::new();
+                            self.tuple_types
+                                .insert(dest_name.clone(), tuple_type_str.clone());
 
-                            for type_str in &types {
-                                let llvm_type = if type_str.contains("String")
-                                    || type_str.contains("Str")
+                            // Store the struct type if not already cached
+                            let struct_type = if let Some(cached_type) =
+                                self.tuple_struct_types.get(&tuple_type_str)
+                            {
+                                *cached_type
+                            } else {
+                                // Strip Tuple() wrapper if present before parsing
+                                let inner_types = if return_type_str.starts_with("Tuple(")
+                                    && return_type_str.ends_with(')')
                                 {
-                                    self.context
-                                        .ptr_type(inkwell::AddressSpace::default())
-                                        .into()
-                                } else if type_str.contains("Array") || type_str.contains("Map") {
-                                    self.context
-                                        .ptr_type(inkwell::AddressSpace::default())
-                                        .into()
-                                } else if type_str.contains("Float") {
-                                    self.context.f64_type().into()
-                                } else if type_str.contains("Bool") {
-                                    self.context.bool_type().into()
+                                    &return_type_str[6..return_type_str.len() - 1]
                                 } else {
-                                    self.context.i32_type().into()
+                                    return_type_str.as_str()
                                 };
-                                field_types.push(llvm_type);
-                            }
+                                let types = parse_tuple_types(inner_types);
+                                let mut field_types: Vec<inkwell::types::BasicTypeEnum> =
+                                    Vec::new();
 
-                            let new_struct_type = self.context.struct_type(&field_types, false);
-                            self.tuple_struct_types
-                                .insert(tuple_type_str.clone(), new_struct_type);
-                            new_struct_type
-                        };
+                                for type_str in &types {
+                                    let llvm_type = if type_str.contains("String")
+                                        || type_str.contains("Str")
+                                    {
+                                        self.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into()
+                                    } else if type_str.contains("Array") || type_str.contains("Map")
+                                    {
+                                        self.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into()
+                                    } else if type_str.contains("Float") {
+                                        self.context.f64_type().into()
+                                    } else if type_str.contains("Bool") {
+                                        self.context.bool_type().into()
+                                    } else {
+                                        self.context.i32_type().into()
+                                    };
+                                    field_types.push(llvm_type);
+                                }
 
-                        // Allocate and store the tuple struct
-                        let struct_alloca = self
-                            .builder
-                            .build_alloca(struct_type, &format!("{}_tuple", dest_name))
-                            .unwrap();
-                        self.builder.build_store(struct_alloca, result).unwrap();
-                        self.temp_values
-                            .insert(dest_name.clone(), struct_alloca.into());
-                    } else {
-                        // Single-value return - track the type in variable_types
-                        if let Some(return_type_str) =
-                            self.function_return_types.get(&actual_func_name)
-                        {
-                            // Extract the base type for single-value returns
-                            if return_type_str.contains("Bool") {
-                                self.variable_types
-                                    .insert(dest_name.clone(), "Bool".to_string());
-                                self.boolean_temps.insert(dest_name.clone());
-                            } else if return_type_str.contains("Float") {
-                                self.variable_types
-                                    .insert(dest_name.clone(), "Float".to_string());
-                            } else if return_type_str.contains("Str") {
-                                self.variable_types
-                                    .insert(dest_name.clone(), "Str".to_string());
-                            } else if return_type_str.contains("Int") {
-                                self.variable_types
-                                    .insert(dest_name.clone(), "Int".to_string());
+                                let new_struct_type = self.context.struct_type(&field_types, false);
+                                self.tuple_struct_types
+                                    .insert(tuple_type_str.clone(), new_struct_type);
+                                new_struct_type
+                            };
+
+                            // Allocate and store the tuple struct
+                            let struct_alloca = self
+                                .builder
+                                .build_alloca(struct_type, &format!("{}_tuple", dest_name))
+                                .unwrap();
+                            self.builder
+                                .build_store(struct_alloca, final_result)
+                                .unwrap();
+                            self.temp_values
+                                .insert(dest_name.clone(), struct_alloca.into());
+                        } else {
+                            // Single-value return - track the type in variable_types
+                            if let Some(return_type_str) =
+                                self.function_return_types.get(&actual_func_name)
+                            {
+                                // Extract the base type for single-value returns
+                                if return_type_str.contains("Bool") {
+                                    self.variable_types
+                                        .insert(dest_name.clone(), "Bool".to_string());
+                                    self.boolean_temps.insert(dest_name.clone());
+                                } else if return_type_str.contains("Float") {
+                                    self.variable_types
+                                        .insert(dest_name.clone(), "Float".to_string());
+                                } else if return_type_str.contains("Str") {
+                                    self.variable_types
+                                        .insert(dest_name.clone(), "Str".to_string());
+                                } else if return_type_str.contains("Int") {
+                                    self.variable_types
+                                        .insert(dest_name.clone(), "Int".to_string());
+                                }
                             }
                         }
                     }
@@ -271,6 +457,34 @@ impl<'ctx> CodeGen<'ctx> {
                 && is_actually_pointer
                 && (has_map_metadata || self.heap_maps.contains(value));
 
+            // Check if this value is a Result struct by checking result_types
+            // Also check if the resolved value is a struct (fallback detection)
+            let resolved_val_for_result_check = self.resolve_value(value);
+            let is_struct_value = resolved_val_for_result_check.is_struct_value();
+            let is_result_struct_value = is_struct_value && {
+                let struct_type = resolved_val_for_result_check.get_type();
+                if let BasicTypeEnum::StructType(st) = struct_type {
+                    st.count_fields() == 2
+                        && st
+                            .get_field_type_at_index(0)
+                            .map(|f| {
+                                if let BasicTypeEnum::IntType(it) = f {
+                                    it.get_bit_width() == 32
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false)
+                } else {
+                    false
+                }
+            };
+            let is_result = (self.result_types.contains_key(value)
+                || self
+                    .result_types
+                    .contains_key(&value.trim_start_matches('%').to_string()))
+                || is_result_struct_value;
+
             if is_array {
                 self.print_array(value);
                 if idx < values.len() - 1 {
@@ -298,6 +512,262 @@ impl<'ctx> CodeGen<'ctx> {
                             printf_fn,
                             &[space_fmt.as_pointer_value().into()],
                             "space_call",
+                        )
+                        .unwrap();
+                }
+            } else if is_result {
+                // Special handling for Result structs: check tag at runtime
+                let val = self.resolve_value(value);
+
+                // Result struct is { i32 tag, ptr value }
+                if val.is_struct_value() {
+                    let result_struct = val.into_struct_value();
+
+                    // Extract tag (field 0)
+                    let tag = self
+                        .builder
+                        .build_extract_value(result_struct, 0, "result_tag")
+                        .unwrap()
+                        .into_int_value();
+
+                    // Extract value (field 1)
+                    let value_ptr = self
+                        .builder
+                        .build_extract_value(result_struct, 1, "result_value_ptr")
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Create two blocks: one for Ok, one for Err
+                    let func = self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let ok_block = self.context.append_basic_block(func, "print_ok_block");
+                    let err_block = self.context.append_basic_block(func, "print_err_block");
+                    let continue_block = self
+                        .context
+                        .append_basic_block(func, "print_result_continue");
+
+                    // Compare tag with 0: if 0 (Ok) branch to ok_block, else branch to err_block
+                    let is_ok = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            tag,
+                            self.context.i32_type().const_int(0, false),
+                            "is_ok_tag",
+                        )
+                        .unwrap();
+
+                    self.builder
+                        .build_conditional_branch(is_ok, ok_block, err_block)
+                        .unwrap();
+
+                    // === OK BLOCK: Print the Ok value ===
+                    self.builder.position_at_end(ok_block);
+                    let ok_type = self.result_types.get(value).cloned().map(|(t, _)| t);
+
+                    // Check if this is a multi-value tuple (not a single string)
+                    let is_multi_tuple = ok_type.as_ref().map_or(false, |t| {
+                        t.starts_with("Tuple(") && !t.starts_with("Tuple(Str)")
+                    });
+
+                    if is_multi_tuple {
+                        // Multi-value tuple - can't print as single value, show placeholder
+                        let placeholder = "<multi-value Ok>";
+                        let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_tuple_fmt")
+                            .unwrap();
+                        let placeholder_global = self
+                            .builder
+                            .build_global_string_ptr(placeholder, "tuple_placeholder")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[
+                                    format_global.as_pointer_value().into(),
+                                    placeholder_global.as_pointer_value().into(),
+                                ],
+                                "print_tuple",
+                            )
+                            .unwrap();
+                    } else if ok_type
+                        .as_ref()
+                        .map_or(true, |t| t.contains("Str") || t.contains("String"))
+                    {
+                        // String - print as string
+                        let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_ok_fmt")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[format_global.as_pointer_value().into(), value_ptr.into()],
+                                "print_ok_str",
+                            )
+                            .unwrap();
+                    } else if ok_type.as_ref().map_or(false, |t| t.contains("Float")) {
+                        // Float: convert pointer back to i64 then to f64
+                        let i64_val = self
+                            .builder
+                            .build_ptr_to_int(value_ptr, self.context.i64_type(), "ptr_to_i64")
+                            .unwrap();
+                        let alloca = self
+                            .builder
+                            .build_alloca(self.context.i64_type(), "i64_tmp_ok")
+                            .unwrap();
+                        self.builder.build_store(alloca, i64_val).unwrap();
+                        let f64_ptr = self
+                            .builder
+                            .build_pointer_cast(
+                                alloca,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "f64_ptr_ok",
+                            )
+                            .unwrap();
+                        let f64_val = self
+                            .builder
+                            .build_load(self.context.f64_type(), f64_ptr, "i64_as_float_ok")
+                            .unwrap();
+                        let format_str = if idx < values.len() - 1 { "%f " } else { "%f" };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_ok_fmt_float")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[format_global.as_pointer_value().into(), f64_val.into()],
+                                "print_ok_float",
+                            )
+                            .unwrap();
+                    } else if ok_type.as_ref().map_or(false, |t| t.contains("Bool")) {
+                        // Bool: convert pointer back to i32, then print as "true"/"false"
+                        let i64_val = self
+                            .builder
+                            .build_ptr_to_int(value_ptr, self.context.i64_type(), "ptr_to_i64_ok")
+                            .unwrap();
+                        let i32_val = self
+                            .builder
+                            .build_int_truncate(i64_val, self.context.i32_type(), "ptr_to_i32_ok")
+                            .unwrap();
+
+                        // Check if value is 0 (false) or non-zero (true)
+                        let zero = self.context.i32_type().const_int(0, false);
+                        let is_false = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                i32_val,
+                                zero,
+                                "is_false_ok",
+                            )
+                            .unwrap();
+
+                        // Use select to choose between "true" and "false" strings
+                        let true_str = if idx < values.len() - 1 {
+                            "true "
+                        } else {
+                            "true"
+                        };
+                        let false_str = if idx < values.len() - 1 {
+                            "false "
+                        } else {
+                            "false"
+                        };
+
+                        let true_global = self
+                            .builder
+                            .build_global_string_ptr(true_str, "bool_true_ok")
+                            .unwrap();
+                        let false_global = self
+                            .builder
+                            .build_global_string_ptr(false_str, "bool_false_ok")
+                            .unwrap();
+
+                        // Use select instruction to choose the correct string
+                        let selected_str = self
+                            .builder
+                            .build_select(
+                                is_false,
+                                false_global.as_pointer_value(),
+                                true_global.as_pointer_value(),
+                                "select_bool_str_ok",
+                            )
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Print the selected string
+                        self.builder
+                            .build_call(printf_fn, &[selected_str.into()], "print_bool_ok")
+                            .unwrap();
+                    } else {
+                        // Int or other: convert pointer back to i32
+                        let i64_val = self
+                            .builder
+                            .build_ptr_to_int(value_ptr, self.context.i64_type(), "ptr_to_i64_ok")
+                            .unwrap();
+                        let i32_val = self
+                            .builder
+                            .build_int_truncate(i64_val, self.context.i32_type(), "ptr_to_i32_ok")
+                            .unwrap();
+                        let format_str = if idx < values.len() - 1 { "%d " } else { "%d" };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_ok_fmt_int")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[format_global.as_pointer_value().into(), i32_val.into()],
+                                "print_ok_int",
+                            )
+                            .unwrap();
+                    }
+                    self.builder
+                        .build_unconditional_branch(continue_block)
+                        .unwrap();
+
+                    // === ERR BLOCK: Print the error message ===
+                    self.builder.position_at_end(err_block);
+                    // Error value is a string pointer - print as string
+                    let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                    let format_global = self
+                        .builder
+                        .build_global_string_ptr(format_str, "print_err_fmt")
+                        .unwrap();
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[format_global.as_pointer_value().into(), value_ptr.into()],
+                            "print_err_str",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_unconditional_branch(continue_block)
+                        .unwrap();
+
+                    // Continue after the Result printing
+                    self.builder.position_at_end(continue_block);
+                } else {
+                    // Fallback: shouldn't happen, but treat as pointer
+                    let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                    let format_global = self
+                        .builder
+                        .build_global_string_ptr(format_str, "print_fmt")
+                        .unwrap();
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[format_global.as_pointer_value().into(), val.into()],
+                            "print_call",
                         )
                         .unwrap();
                 }

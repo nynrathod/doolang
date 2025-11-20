@@ -111,6 +111,7 @@ pub struct CodeGen<'ctx> {
     // Result/Error type tracking
     pub result_types: HashMap<String, (String, String)>, // Maps temp to (ok_type, err_type) e.g., ("Int", "Str")
     pub result_values: HashMap<String, (bool, String)>, // Maps temp to (is_ok, value_temp) to track Ok vs Err
+    pub no_storage_vars: std::collections::HashSet<String>, // Track variables that should NOT get stack allocations (e.g., tuple pointers from Result unwrapping)
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -147,6 +148,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             composite_strings: HashMap::new(),
             composite_string_ptrs: HashMap::new(),
+            no_storage_vars: std::collections::HashSet::new(),
 
             array_metadata: HashMap::new(),
             map_metadata: HashMap::new(),

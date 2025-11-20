@@ -1241,6 +1241,45 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             };
         }
 
+        // Handle Ok expression (implicit return with success value)
+        AstNode::OkExpr { values } => {
+            // Build MIR for each value expression
+            let value_tmps: Vec<String> = values
+                .iter()
+                .map(|v| build_expression(builder, v, block))
+                .collect();
+
+            // Create a Result Ok instruction
+            let result_tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::ResultOk {
+                name: result_tmp.clone(),
+                values: value_tmps,
+            });
+
+            // Set terminator to return the Ok result
+            block.terminator = Some(MirInstr::Return {
+                values: vec![result_tmp],
+            });
+        }
+
+        // Handle Err expression (implicit return with error value)
+        AstNode::ErrExpr { value } => {
+            // Build MIR for the error value
+            let error_tmp = build_expression(builder, value, block);
+
+            // Create a Result Err instruction
+            let result_tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::ResultErr {
+                name: result_tmp.clone(),
+                error: error_tmp,
+            });
+
+            // Set terminator to return the Err result
+            block.terminator = Some(MirInstr::Return {
+                values: vec![result_tmp],
+            });
+        }
+
         // For any unhandled AST node types, do nothing.
         // This branch is a safeguard for future AST node types.
         _ => {}

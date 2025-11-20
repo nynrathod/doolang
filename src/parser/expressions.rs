@@ -175,6 +175,12 @@ impl<'a> Parser<'a> {
                         "Only single-variable increment/decrement is allowed".into(),
                     ));
                 }
+            } else if self.peek_is(TokenType::Question) {
+                // Handle ? operator (try propagate): expr?
+                self.advance(); // consume '?'
+                expr = AstNode::TryPropagate {
+                    expr: Box::new(expr),
+                };
             } else {
                 break;
             }
@@ -254,6 +260,51 @@ impl<'a> Parser<'a> {
                         self.expect(TokenType::CloseParen)?;
                         Ok(expr)
                     }
+                }
+                TokenType::Ok => {
+                    self.advance(); // consume 'Ok'
+                                    // Ok can have values with or without parentheses
+                                    // Ok 42  or  Ok(42)  or  Ok 10, 20  or  Ok(10, 20)
+                    let mut values = Vec::new();
+
+                    if self.peek_is(TokenType::OpenParen) {
+                        // Ok(values)
+                        self.advance(); // consume '('
+                        if !self.peek_is(TokenType::CloseParen) {
+                            values = self.parse_comma_separated(
+                                |p| p.parse_expression(),
+                                TokenType::CloseParen,
+                            )?;
+                        }
+                        self.expect(TokenType::CloseParen)?;
+                    } else {
+                        // Ok values (without parens)
+                        // Parse comma-separated values until semicolon or other delimiter
+                        values.push(self.parse_expression()?);
+                        while self.peek_is(TokenType::Comma) {
+                            self.advance(); // consume ','
+                            values.push(self.parse_expression()?);
+                        }
+                    }
+
+                    Ok(AstNode::OkExpr { values })
+                }
+                TokenType::Err => {
+                    self.advance(); // consume 'Err'
+                                    // Err can have a value with or without parentheses
+                                    // Err "message"  or  Err("message")
+                    let value = if self.peek_is(TokenType::OpenParen) {
+                        self.advance(); // consume '('
+                        let expr = self.parse_expression()?;
+                        self.expect(TokenType::CloseParen)?;
+                        expr
+                    } else {
+                        self.parse_expression()?
+                    };
+
+                    Ok(AstNode::ErrExpr {
+                        value: Box::new(value),
+                    })
                 }
                 _ => Err(ParseError::UnexpectedTokenAt {
                     msg: format!("Expected primary expression, got {:?}", tok_kind),

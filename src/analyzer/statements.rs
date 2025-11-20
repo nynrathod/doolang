@@ -248,7 +248,26 @@ impl SemanticAnalyzer {
                 elements.iter().map(|e| self.infer_type(e)).collect()
             }
 
-            // If LHS expects multiple values but RHS isn’t tuple/function → error
+            // Try propagate (? operator): unwrap the Result and return the Ok type(s)
+            AstNode::TryPropagate { expr } => {
+                // First check what the inner expression returns
+                let expr_type = self.infer_type(expr)?;
+
+                // If it's a Result type, unwrap it to get the Ok type(s)
+                match expr_type {
+                    TypeNode::Result(ok_type, _err_type) => {
+                        // The Ok type might be a Tuple (for multi-value returns)
+                        match *ok_type {
+                            TypeNode::Tuple(types) => Ok(types),
+                            single_type => Ok(vec![single_type]),
+                        }
+                    }
+                    // If not a Result type, just return it as-is (shouldn't happen with ?)
+                    other => Ok(vec![other]),
+                }
+            }
+
+            // If LHS expects multiple values but RHS isn't tuple/function → error
             _ if lhs_count > 1 => Err(SemanticError::InvalidFunctionCall {
                 func: format!("{:?}", value),
             }),

@@ -44,6 +44,12 @@ impl<'ctx> CodeGen<'ctx> {
                     self.functions_returning_heap.insert(func.name.clone());
                 }
             }
+
+            // Store error type if function can fail
+            if let Some(ref err_type_str) = func.error_type {
+                self.function_error_types
+                    .insert(func.name.clone(), err_type_str.clone());
+            }
         }
 
         // --- PRE-PROCESSING ---
@@ -90,70 +96,42 @@ impl<'ctx> CodeGen<'ctx> {
             .map(|type_opt| self.map_type_to_llvm(type_opt))
             .collect();
 
-        // Determine return type
-        let fn_type = if func.name == "main" {
+        // Determine base return type first
+        let base_return_type = if func.name == "main" {
             // Force main to be i32 () for C/Clang compatibility
-            self.context.i32_type().fn_type(&param_types, false)
+            Some(self.context.i32_type().into())
         } else if let Some(ref ret_type_str) = func.return_type {
-            // Check if this is a tuple return (multiple top-level types, respecting nested parentheses)
-            // Use parse_tuple_types to correctly handle Map(Str,Int) which contains commas but isn't a tuple
-            let parsed_types = parse_tuple_types(ret_type_str);
-            let is_tuple_return = if ret_type_str.starts_with("Tuple(") {
-                true
+            Some(self.get_llvm_return_type(ret_type_str))
+        } else {
+            None
+        };
+
+        // If function has error type, wrap return in Result struct { i32 tag, value }
+        let fn_type = if func.name == "main" {
+            self.context.i32_type().fn_type(&param_types, false)
+        } else if let Some(base_type) = base_return_type {
+            if func.error_type.is_some() {
+                // CRITICAL FIX: For Result types, ALWAYS use ptr for field 1
+                // This allows both Ok and Err to store their values uniformly:
+                // - Ok values: boxed/allocated, pointer stored
+                // - Err values: already pointers (strings)
+                // This fixes the type mismatch where Ok used i32 but Err used ptr
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let result_struct = self
+                    .context
+                    .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                result_struct.fn_type(&param_types, false)
             } else {
-                parsed_types.len() > 1
-            };
-
-            if is_tuple_return {
-                // Multi-value return - create a struct type
-                // Parse types carefully to handle nested structures like Map(Str,Int)
-                // Strip Tuple() wrapper if present
-                let inner_types =
-                    if ret_type_str.starts_with("Tuple(") && ret_type_str.ends_with(')') {
-                        &ret_type_str[6..ret_type_str.len() - 1]
-                    } else {
-                        ret_type_str.as_str()
-                    };
-                let types = parse_tuple_types(inner_types);
-                let mut field_types: Vec<BasicTypeEnum> = Vec::new();
-
-                for type_str in &types {
-                    let llvm_type = if type_str.contains("String") || type_str.contains("Str") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Array") || type_str.contains("Map") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Float") {
-                        self.context.f64_type().into()
-                    } else if type_str.contains("Bool") {
-                        self.context.bool_type().into()
-                    } else {
-                        self.context.i32_type().into()
-                    };
-                    field_types.push(llvm_type);
+                // Convert BasicTypeEnum to a function type
+                match base_type {
+                    BasicTypeEnum::IntType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::FloatType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::PointerType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::StructType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::ArrayType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::VectorType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::ScalableVectorType(t) => t.fn_type(&param_types, false),
                 }
-
-                // Create and cache the struct type
-                let struct_type = self.context.struct_type(&field_types, false);
-                let tuple_type_str = format!("Tuple({})", ret_type_str);
-                self.tuple_struct_types.insert(tuple_type_str, struct_type);
-
-                struct_type.fn_type(&param_types, false)
-            } else if ret_type_str.contains("Void") {
-                self.context.void_type().fn_type(&param_types, false)
-            } else if ret_type_str.contains("String") || ret_type_str.contains("Str") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else if ret_type_str.contains("Array") || ret_type_str.contains("Map") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else if ret_type_str.contains("Float") {
-                self.context.f64_type().fn_type(&param_types, false)
-            } else if ret_type_str.contains("Bool") {
-                self.context.bool_type().fn_type(&param_types, false)
-            } else {
-                self.context.i32_type().fn_type(&param_types, false)
             }
         } else {
             self.context.void_type().fn_type(&param_types, false)
@@ -162,6 +140,61 @@ impl<'ctx> CodeGen<'ctx> {
         // Declare function
         self.module.add_function(&func.name, fn_type, None);
         self.declared_functions.insert(func.name.clone());
+    }
+
+    fn get_llvm_return_type(&mut self, ret_type_str: &str) -> BasicTypeEnum<'ctx> {
+        if ret_type_str.contains("Void") {
+            // Void is not a BasicType, so return i32 as placeholder
+            return self.context.i32_type().into();
+        }
+
+        let parsed_types = parse_tuple_types(ret_type_str);
+        let is_tuple_return = if ret_type_str.starts_with("Tuple(") {
+            true
+        } else {
+            parsed_types.len() > 1
+        };
+
+        if is_tuple_return {
+            // Multi-value return - create a struct type
+            let inner_types = if ret_type_str.starts_with("Tuple(") && ret_type_str.ends_with(')') {
+                &ret_type_str[6..ret_type_str.len() - 1]
+            } else {
+                ret_type_str
+            };
+            let types = parse_tuple_types(inner_types);
+            let mut field_types: Vec<BasicTypeEnum> = Vec::new();
+
+            for type_str in &types {
+                let llvm_type = if type_str.contains("String") || type_str.contains("Str") {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                } else if type_str.contains("Array") || type_str.contains("Map") {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                } else if type_str.contains("Float") {
+                    self.context.f64_type().into()
+                } else if type_str.contains("Bool") {
+                    self.context.bool_type().into()
+                } else {
+                    self.context.i32_type().into()
+                };
+                field_types.push(llvm_type);
+            }
+
+            let struct_type = self.context.struct_type(&field_types, false);
+            let tuple_type_str = format!("Tuple({})", ret_type_str);
+            self.tuple_struct_types.insert(tuple_type_str, struct_type);
+            struct_type.into()
+        } else if ret_type_str.contains("String") || ret_type_str.contains("Str") {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if ret_type_str.contains("Array") || ret_type_str.contains("Map") {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if ret_type_str.contains("Float") {
+            self.context.f64_type().into()
+        } else if ret_type_str.contains("Bool") {
+            self.context.bool_type().into()
+        } else {
+            self.context.i32_type().into()
+        }
     }
 
     fn map_type_to_llvm(&self, type_opt: &Option<String>) -> BasicMetadataTypeEnum<'ctx> {
@@ -336,6 +369,38 @@ impl<'ctx> CodeGen<'ctx> {
         // Reset recursion depth for this function to prevent accumulation across functions
         self.recursion_depth = 0;
 
+        // Clear no_storage_vars to ensure fresh state for this function
+        self.no_storage_vars.clear();
+
+        // Pre-scan Call instructions to identify tuple pointer variables from Result returns
+        // These should NOT get stack allocations since they're just pointers
+        // This MUST happen before cross-block analysis and allocation
+        for block in &func.blocks {
+            for instr in &block.instrs {
+                if let crate::mir::MirInstr::Call {
+                    dest, func: callee, ..
+                } = instr
+                {
+                    // Check if this function returns a Result with multi-value Ok
+                    if let Some(error_type) = self.function_error_types.get(callee) {
+                        if !error_type.is_empty() {
+                            // This function can fail (returns Result)
+                            if let Some(return_type) = self.function_return_types.get(callee) {
+                                // Check if return type is multi-value
+                                let is_multi_value =
+                                    return_type.contains(',') || return_type.starts_with("Tuple(");
+
+                                if is_multi_value && !dest.is_empty() {
+                                    // Mark first dest as no-storage (it's the tuple pointer)
+                                    self.no_storage_vars.insert(dest[0].clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Clear symbols table to prevent conflicts between functions
         self.symbols.clear();
         self.temp_values.clear();
@@ -363,117 +428,11 @@ impl<'ctx> CodeGen<'ctx> {
                 .push((param_name.clone(), param_type));
         }
 
-        // Build parameter types based on function signature
-        let param_types: Vec<BasicMetadataTypeEnum> = func
-            .param_types
-            .iter()
-            .map(|type_opt| {
-                if let Some(type_str) = type_opt {
-                    // Map MIR type strings to LLVM types
-                    if type_str.contains("String") || type_str.contains("Str") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Array") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Map") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Float") {
-                        self.context.f64_type().into()
-                    } else if type_str.contains("Bool") {
-                        self.context.bool_type().into()
-                    } else {
-                        self.context.i32_type().into()
-                    }
-                } else {
-                    self.context.i32_type().into()
-                }
-            })
-            .collect();
-
-        // Determine return type and create function signature
-        let fn_type = if func.name == "main" {
-            // Force main to be i32 () for C/Clang compatibility
-            self.context.i32_type().fn_type(&param_types, false)
-        } else if let Some(ref ret_type_str) = func.return_type {
-            // Check if this is a tuple return (multiple top-level types, respecting nested parentheses)
-            let parsed_types = parse_tuple_types(ret_type_str);
-            let is_tuple_return = if ret_type_str.starts_with("Tuple(") {
-                true
-            } else {
-                parsed_types.len() > 1
-            };
-
-            if is_tuple_return {
-                // Multi-value return - create a struct type
-                // Strip Tuple() wrapper if present
-                let inner_types =
-                    if ret_type_str.starts_with("Tuple(") && ret_type_str.ends_with(')') {
-                        &ret_type_str[6..ret_type_str.len() - 1]
-                    } else {
-                        ret_type_str.as_str()
-                    };
-                let types = parse_tuple_types(inner_types);
-                let mut field_types: Vec<BasicTypeEnum> = Vec::new();
-
-                for type_str in &types {
-                    let llvm_type = if type_str.contains("String") || type_str.contains("Str") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Array") || type_str.contains("Map") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Float") {
-                        self.context.f64_type().into()
-                    } else if type_str.contains("Bool") {
-                        self.context.bool_type().into()
-                    } else {
-                        self.context.i32_type().into()
-                    };
-                    field_types.push(llvm_type);
-                }
-
-                let struct_type = self.context.struct_type(&field_types, false);
-                struct_type.fn_type(&param_types, false)
-            } else if ret_type_str.contains("Void") {
-                self.context.void_type().fn_type(&param_types, false)
-            } else if ret_type_str.contains("String") || ret_type_str.contains("Str") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else if ret_type_str.contains("Array") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else if ret_type_str.contains("Map") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else if ret_type_str.contains("Float") {
-                self.context.f64_type().fn_type(&param_types, false)
-            } else if ret_type_str.contains("Bool") {
-                self.context.bool_type().fn_type(&param_types, false)
-            } else {
-                self.context.i32_type().fn_type(&param_types, false)
-            }
-        } else {
-            self.context.void_type().fn_type(&param_types, false)
-        };
-
-        // Check if function was already declared (for forward references/imports)
-        let llvm_func = if let Some(existing_func) = self.module.get_function(&func.name) {
-            // Verify signature matches
-            if existing_func.get_type() == fn_type {
-                existing_func
-            } else {
-                eprintln!(
-                    "Warning: Function {} signature mismatch between declaration and definition",
-                    func.name
-                );
-                eprintln!("  Declared: {:?}", existing_func.get_type());
-                eprintln!("  Expected: {:?}", fn_type);
-                // Create new function with correct signature
-                self.module.add_function(&func.name, fn_type, None)
-            }
-        } else {
-            self.module.add_function(&func.name, fn_type, None)
-        };
+        // Use the predeclared function (which already has correct signature with Result wrapping if needed)
+        let llvm_func = self.module.get_function(&func.name).expect(&format!(
+            "Function '{}' should have been predeclared",
+            func.name
+        ));
 
         // Create a separate entry block for parameter allocation
         let entry_block = self.context.append_basic_block(llvm_func, "entry");
@@ -768,17 +727,8 @@ impl<'ctx> CodeGen<'ctx> {
                         source,
                         index,
                     } => {
-                        eprintln!("DEBUG: Processing TupleExtract");
-                        eprintln!("  name: {}", name);
-                        eprintln!("  source: {}", source);
-                        eprintln!("  index: {}", index);
-                        eprintln!(
-                            "  tuple_sources.get(source): {:?}",
-                            tuple_sources.get(source)
-                        );
                         // Look up the function that produced this tuple via tuple_sources
                         if let Some(func_name) = tuple_sources.get(source) {
-                            eprintln!("  Found func_name: {}", func_name);
                             if let Some(return_type_str) = self.function_return_types.get(func_name)
                             {
                                 // Strip Tuple() wrapper if present
@@ -816,22 +766,14 @@ impl<'ctx> CodeGen<'ctx> {
                                         // Int or default
                                         self.context.i32_type().into()
                                     };
-                                    eprintln!("  -> Setting var_types[{}] = {:?}", name, llvm_type);
                                     var_types.insert(name.clone(), llvm_type);
                                 }
                             }
-                        } else {
-                            eprintln!("  -> No tuple source found for {}", source);
                         }
                     }
                     // Call - determine type from function return type
                     crate::mir::MirInstr::Call { dest, func, .. } => {
-                        eprintln!("DEBUG: Processing Call instruction");
-                        eprintln!("  func: {}", func);
-                        eprintln!("  dest.len(): {}", dest.len());
-                        eprintln!("  dest: {:?}", dest);
                         if let Some(return_type_str) = self.function_return_types.get(func) {
-                            eprintln!("  return_type_str: {}", return_type_str);
                             if dest.len() == 1 {
                                 let dest_name = &dest[0];
                                 // Check if this is a tuple return by parsing the type
@@ -844,14 +786,8 @@ impl<'ctx> CodeGen<'ctx> {
                                     return_type_str.as_str()
                                 };
                                 let types = crate::codegen::core::helpers::parse_tuple_types(inner);
-                                eprintln!("  parsed types: {:?}", types);
-                                eprintln!("  types.len(): {}", types.len());
                                 if types.len() > 1 {
                                     // This is a tuple return - track it so TupleExtract can find types
-                                    eprintln!(
-                                        "  -> Tracking as tuple source: {} -> {}",
-                                        dest_name, func
-                                    );
                                     tuple_sources.insert(dest_name.clone(), func.clone());
                                 } else {
                                     // Single return value
@@ -919,16 +855,8 @@ impl<'ctx> CodeGen<'ctx> {
         for block in &func.blocks {
             for instr in &block.instrs {
                 if let crate::mir::MirInstr::Assign { name, value, .. } = instr {
-                    eprintln!("DEBUG: Processing Assign in second pass");
-                    eprintln!("  name: {}", name);
-                    eprintln!("  value: {}", value);
-                    eprintln!(
-                        "  var_types.contains_key(value): {}",
-                        var_types.contains_key(value)
-                    );
                     // If the source value has a known type, propagate it to the destination
                     if let Some(&source_type) = var_types.get(value) {
-                        eprintln!("  -> Propagating type from {} to {}", value, name);
                         var_types.insert(name.clone(), source_type);
                     }
                 }
@@ -943,21 +871,9 @@ impl<'ctx> CodeGen<'ctx> {
                     continue;
                 }
 
-                // Debug output for iarr
-                if var == "iarr" {
-                    eprintln!("DEBUG: Allocating iarr");
-                    eprintln!(
-                        "  var_types contains iarr: {}",
-                        var_types.contains_key("iarr")
-                    );
-                    if let Some(ty) = var_types.get("iarr") {
-                        eprintln!("  iarr type: {:?}", ty);
-                    }
-                    eprintln!("  tuple_sources: {:?}", tuple_sources);
-                    eprintln!(
-                        "  All var_types keys: {:?}",
-                        var_types.keys().collect::<Vec<_>>()
-                    );
+                // Skip variables marked as no-storage (e.g., tuple pointers from Result unwrapping)
+                if self.no_storage_vars.contains(var) {
+                    continue;
                 }
 
                 // Determine the correct type for this variable

@@ -308,7 +308,13 @@ impl SemanticAnalyzer {
                     last,
                     AstNode::Return { .. } | AstNode::OkExpr { .. } | AstNode::ErrExpr { .. }
                 ) {
-                    body.push(AstNode::Return { values: vec![] });
+                    // If function has error type, use OkExpr instead of Return
+                    // so that it returns a Result struct even with void Ok value
+                    if error_type.is_some() {
+                        body.push(AstNode::OkExpr { values: vec![] });
+                    } else {
+                        body.push(AstNode::Return { values: vec![] });
+                    }
                 }
             }
         }

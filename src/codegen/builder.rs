@@ -162,6 +162,14 @@ impl<'ctx> CodeGen<'ctx> {
                 if self.boolean_temps.contains(value) {
                     self.boolean_temps.insert(name.clone());
                 }
+                // Propagate Result type information from source to destination
+                if let Some(result_type) = self.result_types.get(value).cloned() {
+                    self.result_types.insert(name.clone(), result_type);
+                }
+                // Propagate tuple type information from source to destination
+                if let Some(tuple_type) = self.tuple_types.get(value).cloned() {
+                    self.tuple_types.insert(name.clone(), tuple_type);
+                }
                 // Propagate array metadata from source to destination
                 if let Some(array_meta) = self.array_metadata.get(value).cloned() {
                     self.array_metadata.insert(name.clone(), array_meta);
@@ -726,6 +734,101 @@ impl<'ctx> CodeGen<'ctx> {
                 index,
             } => {
                 // Extract element from a tuple (multi-value function return)
+                // CRITICAL FIX: For Result returns, the source is a pointer to heap-allocated tuple
+                // We must use it directly WITHOUT creating intermediate storage
+
+                // First check if source is directly in temp_values (bypassing resolve_value)
+                if let Some(source_val) = self.temp_values.get(source).copied() {
+                    if source_val.is_pointer_value() {
+                        let tuple_ptr = source_val.into_pointer_value();
+
+                        // Get tuple type info to determine field types
+                        if let Some(tuple_type_str) = self.tuple_types.get(source).cloned() {
+                            if let Some(struct_type) = self.tuple_struct_types.get(&tuple_type_str)
+                            {
+                                // Use struct_gep to get field pointer from heap tuple
+                                let field_ptr = self
+                                    .builder
+                                    .build_struct_gep(
+                                        *struct_type,
+                                        tuple_ptr,
+                                        *index as u32,
+                                        &format!("{}_field", name),
+                                    )
+                                    .unwrap();
+
+                                // Load the field value
+                                let field_type =
+                                    struct_type.get_field_type_at_index(*index as u32).unwrap();
+                                let field_val = self
+                                    .builder
+                                    .build_load(field_type, field_ptr, name)
+                                    .unwrap();
+
+                                // Track array/map metadata if this field is an array or map
+                                let inner = tuple_type_str
+                                    .strip_prefix("Tuple(")
+                                    .and_then(|s| s.strip_suffix(")"))
+                                    .unwrap_or("");
+                                let types = crate::codegen::core::helpers::parse_tuple_types(inner);
+                                if let Some(type_str) = types.get(*index) {
+                                    let type_str = type_str.as_str();
+
+                                    if type_str.starts_with("Array") {
+                                        self.heap_arrays.insert(name.clone());
+                                        if let Some(elem_type) = type_str
+                                            .strip_prefix("Array(")
+                                            .and_then(|s| s.strip_suffix(")"))
+                                        {
+                                            self.array_metadata.insert(
+                                                name.clone(),
+                                                crate::codegen::ArrayMetadata {
+                                                    length: 0,
+                                                    element_type: elem_type.to_string(),
+                                                    contains_strings: elem_type == "Str",
+                                                },
+                                            );
+                                        }
+                                    } else if type_str.starts_with("Map") {
+                                        self.heap_maps.insert(name.clone());
+                                        if let Some(inner) = type_str
+                                            .strip_prefix("Map(")
+                                            .and_then(|s| s.strip_suffix(")"))
+                                        {
+                                            let parts: Vec<&str> = inner.split(',').collect();
+                                            if parts.len() == 2 {
+                                                let key_type = parts[0].trim().to_string();
+                                                let value_type = parts[1].trim().to_string();
+                                                self.map_metadata.insert(
+                                                    name.clone(),
+                                                    crate::codegen::MapMetadata {
+                                                        length: 0,
+                                                        key_type: key_type.clone(),
+                                                        value_type: value_type.clone(),
+                                                        key_is_string: key_type == "Str",
+                                                        value_is_string: value_type == "Str",
+                                                        key_needs_rc: key_type == "Str",
+                                                        value_needs_rc: value_type == "Str",
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    } else if type_str == "Bool" {
+                                        self.boolean_temps.insert(name.clone());
+                                    }
+
+                                    self.variable_types
+                                        .insert(name.clone(), type_str.to_string());
+                                }
+
+                                self.temp_values.insert(name.clone(), field_val);
+                                return Some(field_val);
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: use resolve_value for non-Result cases
                 let source_val = self.resolve_value(source);
 
                 // Check if source has tuple type info
@@ -821,12 +924,240 @@ impl<'ctx> CodeGen<'ctx> {
                 // Fallback: if no tuple type info, try to extract from struct anyway
                 if source_val.is_struct_value() {
                     let struct_val = source_val.into_struct_value();
-                    let field_val = self
-                        .builder
-                        .build_extract_value(struct_val, *index as u32, name)
-                        .unwrap();
-                    self.temp_values.insert(name.clone(), field_val);
-                    return Some(field_val);
+                    let struct_type = struct_val.get_type();
+                    let num_fields = struct_type.count_fields();
+
+                    // Check if this is a Result struct { i32 tag, ptr value }
+                    if num_fields == 2 {
+                        if let Some(field0_type) = struct_type.get_field_type_at_index(0) {
+                            if let BasicTypeEnum::IntType(int_type) = field0_type {
+                                if int_type.get_bit_width() == 32 {
+                                    // This is a Result struct!
+                                    // CRITICAL: Check the tag at runtime - only extract if Ok (tag=0)
+                                    let tag = self
+                                        .builder
+                                        .build_extract_value(struct_val, 0, "result_tag_check")
+                                        .unwrap()
+                                        .into_int_value();
+
+                                    let is_ok = self
+                                        .builder
+                                        .build_int_compare(
+                                            inkwell::IntPredicate::EQ,
+                                            tag,
+                                            self.context.i32_type().const_int(0, false),
+                                            "is_ok_for_extract",
+                                        )
+                                        .unwrap();
+
+                                    // Create blocks for Ok and Err cases
+                                    let func = self
+                                        .builder
+                                        .get_insert_block()
+                                        .unwrap()
+                                        .get_parent()
+                                        .unwrap();
+                                    let ok_extract_block =
+                                        self.context.append_basic_block(func, "extract_ok_value");
+                                    let err_extract_block = self
+                                        .context
+                                        .append_basic_block(func, "extract_err_placeholder");
+                                    let continue_block =
+                                        self.context.append_basic_block(func, "extract_continue");
+
+                                    self.builder
+                                        .build_conditional_branch(
+                                            is_ok,
+                                            ok_extract_block,
+                                            err_extract_block,
+                                        )
+                                        .unwrap();
+
+                                    // OK block: Extract from tuple
+                                    self.builder.position_at_end(ok_extract_block);
+                                    let tuple_ptr_value = self
+                                        .builder
+                                        .build_extract_value(struct_val, 1, "result_tuple_ptr")
+                                        .unwrap();
+
+                                    let ok_result: BasicValueEnum = if tuple_ptr_value
+                                        .is_pointer_value()
+                                    {
+                                        let tuple_ptr = tuple_ptr_value.into_pointer_value();
+
+                                        // TYPE-AWARE APPROACH: Use actual result_types to build correct tuple
+                                        let tuple_struct_type = if let Some((ok_type_str, _)) =
+                                            self.result_types.get(source)
+                                        {
+                                            // Parse the tuple types from the ok_type_str
+                                            // Strip "Tuple(...)" wrapper if present
+                                            let inner_types = if ok_type_str.starts_with("Tuple(")
+                                                && ok_type_str.ends_with(")")
+                                            {
+                                                &ok_type_str[6..ok_type_str.len() - 1]
+                                            } else {
+                                                ok_type_str
+                                            };
+                                            let types =
+                                                crate::codegen::core::helpers::parse_tuple_types(
+                                                    inner_types,
+                                                );
+                                            let tuple_field_types: Vec<
+                                                inkwell::types::BasicTypeEnum,
+                                            > = types
+                                                .iter()
+                                                .map(|t| self.map_type_str_to_llvm(t))
+                                                .collect();
+
+                                            self.context.struct_type(&tuple_field_types, false)
+                                        } else {
+                                            // Fallback: use i32 tuple if no type info
+                                            let i32_type = self.context.i32_type();
+                                            let max_fields = 10;
+                                            let tuple_field_types: Vec<
+                                                inkwell::types::BasicTypeEnum,
+                                            > = vec![i32_type.into(); max_fields];
+                                            self.context.struct_type(&tuple_field_types, false)
+                                        };
+
+                                        let num_fields = tuple_struct_type.count_fields();
+
+                                        // Use struct GEP to get the field at index
+                                        if *index < num_fields as usize {
+                                            let field_ptr = self
+                                                .builder
+                                                .build_struct_gep(
+                                                    tuple_struct_type,
+                                                    tuple_ptr,
+                                                    *index as u32,
+                                                    &format!("{}_field_from_result", name),
+                                                )
+                                                .unwrap();
+
+                                            let field_type = tuple_struct_type
+                                                .get_field_type_at_index(*index as u32)
+                                                .unwrap();
+
+                                            // Track metadata for the extracted field
+                                            if let Some((ok_type_str, _)) =
+                                                self.result_types.get(source)
+                                            {
+                                                // Strip "Tuple(...)" wrapper if present
+                                                let inner_types = if ok_type_str
+                                                    .starts_with("Tuple(")
+                                                    && ok_type_str.ends_with(")")
+                                                {
+                                                    &ok_type_str[6..ok_type_str.len() - 1]
+                                                } else {
+                                                    ok_type_str
+                                                };
+                                                let types = crate::codegen::core::helpers::parse_tuple_types(inner_types);
+                                                if let Some(type_str) = types.get(*index) {
+                                                    self.variable_types
+                                                        .insert(name.clone(), type_str.clone());
+
+                                                    if type_str == "Bool" {
+                                                        self.boolean_temps.insert(name.clone());
+                                                    }
+                                                }
+                                            }
+
+                                            self.builder
+                                                .build_load(field_type, field_ptr, "ok_field")
+                                                .unwrap()
+                                        } else {
+                                            // Fallback to appropriate zero value
+                                            self.context.i32_type().const_int(0, false).into()
+                                        }
+                                    } else {
+                                        self.context.i32_type().const_int(0, false).into()
+                                    };
+
+                                    self.builder
+                                        .build_unconditional_branch(continue_block)
+                                        .unwrap();
+
+                                    // ERR block: Return a sentinel value matching the field type
+                                    self.builder.position_at_end(err_extract_block);
+
+                                    // Determine the correct type for the error sentinel
+                                    let err_result: BasicValueEnum = if let Some((ok_type_str, _)) =
+                                        self.result_types.get(source)
+                                    {
+                                        // Strip "Tuple(...)" wrapper if present
+                                        let inner_types = if ok_type_str.starts_with("Tuple(")
+                                            && ok_type_str.ends_with(")")
+                                        {
+                                            &ok_type_str[6..ok_type_str.len() - 1]
+                                        } else {
+                                            ok_type_str
+                                        };
+                                        let types =
+                                            crate::codegen::core::helpers::parse_tuple_types(
+                                                inner_types,
+                                            );
+                                        if let Some(type_str) = types.get(*index) {
+                                            let field_type = self.map_type_str_to_llvm(type_str);
+                                            match field_type {
+                                                BasicTypeEnum::IntType(int_type) => {
+                                                    int_type.const_int(0, false).into()
+                                                }
+                                                BasicTypeEnum::FloatType(float_type) => {
+                                                    float_type.const_float(0.0).into()
+                                                }
+                                                BasicTypeEnum::PointerType(ptr_type) => {
+                                                    ptr_type.const_null().into()
+                                                }
+                                                _ => self
+                                                    .context
+                                                    .i32_type()
+                                                    .const_int(0, false)
+                                                    .into(),
+                                            }
+                                        } else {
+                                            self.context.i32_type().const_int(0, false).into()
+                                        }
+                                    } else {
+                                        self.context.i32_type().const_int(0, false).into()
+                                    };
+
+                                    self.builder
+                                        .build_unconditional_branch(continue_block)
+                                        .unwrap();
+
+                                    // Continue block: Phi node to merge Ok and Err results
+                                    self.builder.position_at_end(continue_block);
+
+                                    let phi_type = ok_result.get_type();
+                                    let phi = self.builder.build_phi(phi_type, name).unwrap();
+                                    phi.add_incoming(&[
+                                        (&ok_result, ok_extract_block),
+                                        (&err_result, err_extract_block),
+                                    ]);
+
+                                    let final_val = phi.as_basic_value();
+                                    self.temp_values.insert(name.clone(), final_val);
+                                    return Some(final_val);
+                                }
+                            }
+                        }
+                    }
+
+                    if *index < num_fields as usize {
+                        let field_val = self
+                            .builder
+                            .build_extract_value(struct_val, *index as u32, name)
+                            .unwrap();
+                        self.temp_values.insert(name.clone(), field_val);
+                        return Some(field_val);
+                    } else {
+                        eprintln!("ERROR: TupleExtract trying to extract field {} from struct with only {} fields", index, num_fields);
+                        eprintln!("  source={}, name={}", source, name);
+                        panic!(
+                            "ExtractOutOfRange: field {} out of {} fields",
+                            index, num_fields
+                        );
+                    }
                 }
 
                 // If source is a pointer to struct, try loading as i32 at the index
@@ -1353,8 +1684,8 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Result/Error handling: Ok expression creates a success result
             MirInstr::ResultOk { name, values } => {
-                // For now, just return the value(s) directly
-                // Track that this is a Result type with metadata
+                // Create a Result struct with tag=0 (Ok) and the value(s)
+                // NEW APPROACH: Don't force through i64, keep actual types
                 let ok_types: Vec<String> = values
                     .iter()
                     .map(|v| {
@@ -1379,21 +1710,225 @@ impl<'ctx> CodeGen<'ctx> {
                 self.variable_types
                     .insert(name.clone(), "Result".to_string());
 
-                // For now, return the first value (or unit if no values)
-                // Full Result<T,E> support with proper tagging will come later
                 if values.is_empty() {
-                    let unit_val = self.context.i32_type().const_int(0, false);
-                    Some(unit_val.into())
+                    // No value (void Ok) - create Result struct with tag=0 and null pointer
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let struct_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                    let struct_alloca = self
+                        .builder
+                        .build_alloca(struct_type, "result_void_ok")
+                        .unwrap();
+
+                    // Set tag = 0 (Ok)
+                    let tag_ptr = self
+                        .builder
+                        .build_struct_gep(struct_type, struct_alloca, 0, "tag_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(tag_ptr, self.context.i32_type().const_int(0, false))
+                        .unwrap();
+
+                    // Set value to null pointer (void)
+                    let value_ptr_field = self
+                        .builder
+                        .build_struct_gep(struct_type, struct_alloca, 1, "value_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(value_ptr_field, ptr_type.const_null())
+                        .unwrap();
+
+                    // Load and return the struct
+                    let result_struct = self
+                        .builder
+                        .build_load(struct_type, struct_alloca, "result_void_struct")
+                        .unwrap();
+
+                    self.temp_values.insert(name.clone(), result_struct);
+                    Some(result_struct)
+                } else if values.len() == 1 {
+                    // CRITICAL FIX: Use ptrtoint for primitives, keep pointers as-is
+                    // This avoids boxing and makes Ok/Err symmetric
+                    let value = self.resolve_value(&values[0]);
+
+                    // Convert value to pointer representation
+                    let value_ptr = if value.is_pointer_value() {
+                        // Already a pointer (string, array, map)
+                        value.into_pointer_value()
+                    } else if value.is_int_value() {
+                        // Cast integer to pointer using inttoptr
+                        let int_val = value.into_int_value();
+                        let int_64 = if int_val.get_type().get_bit_width() == 64 {
+                            int_val
+                        } else {
+                            self.builder
+                                .build_int_z_extend(int_val, self.context.i64_type(), "ext")
+                                .unwrap()
+                        };
+                        self.builder
+                            .build_int_to_ptr(
+                                int_64,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "int_as_ptr",
+                            )
+                            .unwrap()
+                    } else if value.is_float_value() {
+                        // Bitcast float to i64 then to pointer
+                        let float_val = value.into_float_value();
+                        let alloca = self
+                            .builder
+                            .build_alloca(self.context.f64_type(), "f_tmp")
+                            .unwrap();
+                        self.builder.build_store(alloca, float_val).unwrap();
+                        let i64_ptr = self
+                            .builder
+                            .build_pointer_cast(
+                                alloca,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "i64_ptr",
+                            )
+                            .unwrap();
+                        let i64_val = self
+                            .builder
+                            .build_load(self.context.i64_type(), i64_ptr, "f_as_i64")
+                            .unwrap()
+                            .into_int_value();
+                        self.builder
+                            .build_int_to_ptr(
+                                i64_val,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "float_as_ptr",
+                            )
+                            .unwrap()
+                    } else {
+                        // Fallback: use null pointer
+                        self.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .const_null()
+                    };
+
+                    // Create Result struct: { i32 tag, ptr value }
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let struct_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                    let struct_alloca =
+                        self.builder.build_alloca(struct_type, "result_ok").unwrap();
+
+                    // Set tag = 0 (Ok)
+                    let tag_ptr = self
+                        .builder
+                        .build_struct_gep(struct_type, struct_alloca, 0, "tag_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(tag_ptr, self.context.i32_type().const_int(0, false))
+                        .unwrap();
+
+                    // Set value (as pointer)
+                    let value_ptr_field = self
+                        .builder
+                        .build_struct_gep(struct_type, struct_alloca, 1, "value_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(value_ptr_field, value_ptr)
+                        .unwrap();
+
+                    // Load and return the struct
+                    let result_struct = self
+                        .builder
+                        .build_load(struct_type, struct_alloca, "result_struct")
+                        .unwrap();
+
+                    // Store in temp_values so it can be retrieved by Return
+                    self.temp_values.insert(name.clone(), result_struct);
+                    Some(result_struct)
                 } else {
-                    let val = self.resolve_value(&values[0]);
-                    Some(val)
+                    // Multiple values - create tuple on heap and return { i32, ptr }
+                    let value_vec: Vec<BasicValueEnum> =
+                        values.iter().map(|v| self.resolve_value(v)).collect();
+
+                    let value_types: Vec<BasicTypeEnum> =
+                        value_vec.iter().map(|v| v.get_type()).collect();
+
+                    let tuple_type = self.context.struct_type(&value_types, false);
+
+                    // Allocate tuple on heap using malloc
+                    let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
+                        let malloc_type = self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .fn_type(&[self.context.i64_type().into()], false);
+                        self.module.add_function("malloc", malloc_type, None)
+                    });
+
+                    let tuple_size = tuple_type.size_of().unwrap();
+                    let heap_ptr = self
+                        .builder
+                        .build_call(malloc_fn, &[tuple_size.into()], "heap_tuple")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Store tuple fields into heap memory
+                    for (i, val) in value_vec.iter().enumerate() {
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                tuple_type,
+                                heap_ptr,
+                                i as u32,
+                                &format!("field_{}", i),
+                            )
+                            .unwrap();
+                        self.builder.build_store(field_ptr, *val).unwrap();
+                    }
+
+                    // Create Result struct: { i32 tag, ptr value }
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let struct_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                    let struct_alloca =
+                        self.builder.build_alloca(struct_type, "result_ok").unwrap();
+
+                    // Set tag = 0 (Ok)
+                    let tag_ptr = self
+                        .builder
+                        .build_struct_gep(struct_type, struct_alloca, 0, "tag_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(tag_ptr, self.context.i32_type().const_int(0, false))
+                        .unwrap();
+
+                    // Set value (tuple pointer, keep as pointer type)
+                    let value_ptr = self
+                        .builder
+                        .build_struct_gep(struct_type, struct_alloca, 1, "value_ptr")
+                        .unwrap();
+                    self.builder.build_store(value_ptr, heap_ptr).unwrap();
+
+                    // Load and return the struct
+                    let result_struct = self
+                        .builder
+                        .build_load(struct_type, struct_alloca, "result_struct")
+                        .unwrap();
+
+                    // Store in temp_values so it can be retrieved by Return
+                    self.temp_values.insert(name.clone(), result_struct);
+                    Some(result_struct)
                 }
             }
 
             // Result/Error handling: Err expression creates an error result
             MirInstr::ResultErr { name, error } => {
-                // For now, just return the error value directly
-                // Track that this is a Result type with metadata
+                // Create a Result struct with tag=1 (Err) and the error value
+                // NEW APPROACH: Keep error as pointer (usually string pointer)
                 let error_val = self.resolve_value(error);
                 self.variable_types
                     .insert(name.clone(), "Result".to_string());
@@ -1409,7 +1944,55 @@ impl<'ctx> CodeGen<'ctx> {
                 self.result_values
                     .insert(name.clone(), (false, error.clone()));
 
-                Some(error_val)
+                // Create Result struct: { i32 tag, ptr error }
+                // For Err: tag = 1, keep error as pointer
+                let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                let struct_type = self
+                    .context
+                    .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                let struct_alloca = self
+                    .builder
+                    .build_alloca(struct_type, "result_err")
+                    .unwrap();
+
+                // Set tag = 1 (Err)
+                let tag_ptr = self
+                    .builder
+                    .build_struct_gep(struct_type, struct_alloca, 0, "tag_ptr")
+                    .unwrap();
+                self.builder
+                    .build_store(tag_ptr, self.context.i32_type().const_int(1, false))
+                    .unwrap();
+
+                // Set error value (as pointer)
+                let error_ptr_val = if error_val.is_pointer_value() {
+                    error_val.into_pointer_value()
+                } else {
+                    // If not a pointer, allocate and store it
+                    let alloca = self
+                        .builder
+                        .build_alloca(error_val.get_type(), "err_alloca")
+                        .unwrap();
+                    self.builder.build_store(alloca, error_val).unwrap();
+                    alloca
+                };
+
+                let error_ptr = self
+                    .builder
+                    .build_struct_gep(struct_type, struct_alloca, 1, "error_ptr")
+                    .unwrap();
+                self.builder.build_store(error_ptr, error_ptr_val).unwrap();
+
+                // Load and return the struct
+                let result_struct = self
+                    .builder
+                    .build_load(struct_type, struct_alloca, "result_struct")
+                    .unwrap();
+
+                // Store in temp_values so it can be retrieved by Return
+                self.temp_values.insert(name.clone(), result_struct);
+                Some(result_struct)
             }
 
             // Try propagate (?): check result and propagate error if needed
@@ -1418,17 +2001,143 @@ impl<'ctx> CodeGen<'ctx> {
                 result: result_tmp,
                 error_block: _error_block,
             } => {
-                // For now, just pass through the result value
-                // Full error propagation with control flow needs more integration
+                // Extract the Result struct and check the tag
                 let result_val = self.resolve_value(result_tmp);
-                let tmp_name = name.clone();
 
-                self.result_values
-                    .insert(tmp_name.clone(), (true, result_tmp.clone()));
-                self.variable_types
-                    .insert(tmp_name.clone(), "Unknown".to_string());
+                // If result is a struct (Result type), extract tag and value
+                if result_val.is_struct_value() {
+                    let result_struct = result_val.into_struct_value();
 
-                Some(result_val)
+                    // Extract tag (field 0)
+                    let tag = self
+                        .builder
+                        .build_extract_value(result_struct, 0, "result_tag")
+                        .unwrap()
+                        .into_int_value();
+
+                    // Check if tag == 1 (Err)
+                    let is_err = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            tag,
+                            self.context.i32_type().const_int(1, false),
+                            "is_err",
+                        )
+                        .unwrap();
+
+                    // Create blocks for error and ok paths
+                    let func = self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let err_block = self.context.append_basic_block(func, "propagate_err");
+                    let ok_block = self.context.append_basic_block(func, "propagate_ok");
+
+                    self.builder
+                        .build_conditional_branch(is_err, err_block, ok_block)
+                        .unwrap();
+
+                    // Error path: return the error struct as-is
+                    self.builder.position_at_end(err_block);
+                    self.builder.build_return(Some(&result_struct)).unwrap();
+
+                    // Ok path: extract value (field 1) which is a pointer
+                    self.builder.position_at_end(ok_block);
+                    let ok_value_ptr = self
+                        .builder
+                        .build_extract_value(result_struct, 1, "ok_value_ptr")
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Get the Ok type from result_types to know how to convert the pointer back
+                    let ok_type = self
+                        .result_types
+                        .get(result_tmp)
+                        .map(|(t, _)| t.clone())
+                        .unwrap_or_else(|| "Int".to_string());
+
+                    // For void Ok types, don't try to extract a value
+                    if ok_type == "Void" || ok_type.is_empty() {
+                        // Void result - no value to extract, just continue
+                        // Store a dummy i32(0) as a placeholder
+                        let void_placeholder = self.context.i32_type().const_int(0, false);
+                        self.temp_values
+                            .insert(name.clone(), void_placeholder.into());
+                        self.variable_types.insert(name.clone(), "Void".to_string());
+                        Some(void_placeholder.into())
+                    } else {
+                        // Convert pointer back to actual value based on type
+                        let actual_value = if ok_type.contains("Str")
+                            || ok_type.contains("String")
+                            || ok_type.contains("Array")
+                            || ok_type.contains("Map")
+                        {
+                            // Already a pointer - use as-is
+                            ok_value_ptr.into()
+                        } else if ok_type.contains("Float") {
+                            // Convert pointer to i64 then to f64
+                            let i64_val = self
+                                .builder
+                                .build_ptr_to_int(
+                                    ok_value_ptr,
+                                    self.context.i64_type(),
+                                    "ptr_to_i64",
+                                )
+                                .unwrap();
+                            let alloca = self
+                                .builder
+                                .build_alloca(self.context.i64_type(), "i64_tmp")
+                                .unwrap();
+                            self.builder.build_store(alloca, i64_val).unwrap();
+                            let f64_ptr = self
+                                .builder
+                                .build_pointer_cast(
+                                    alloca,
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    "f64_ptr",
+                                )
+                                .unwrap();
+                            self.builder
+                                .build_load(self.context.f64_type(), f64_ptr, "f64_val")
+                                .unwrap()
+                        } else {
+                            // Int, Bool, or default - convert pointer to i32
+                            let i64_val = self
+                                .builder
+                                .build_ptr_to_int(
+                                    ok_value_ptr,
+                                    self.context.i64_type(),
+                                    "ptr_to_i64",
+                                )
+                                .unwrap();
+                            self.builder
+                                .build_int_truncate(i64_val, self.context.i32_type(), "ptr_to_i32")
+                                .unwrap()
+                                .into()
+                        };
+
+                        // Store the unwrapped value
+                        self.temp_values.insert(name.clone(), actual_value);
+
+                        // Set the variable type to the Ok type (not Result anymore - it's been unwrapped)
+                        self.variable_types.insert(name.clone(), ok_type.clone());
+
+                        // DO NOT propagate result_types - the unwrapped value is NOT a Result
+                        // It's the inner Ok type (Int, Str, etc.)
+
+                        Some(actual_value)
+                    }
+                } else {
+                    // Not a Result struct, just pass through
+                    self.temp_values.insert(name.clone(), result_val);
+                    self.variable_types
+                        .insert(name.clone(), "Unknown".to_string());
+
+                    Some(result_val)
+                }
             }
 
             _ => None,
@@ -1686,6 +2395,30 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
             }
+        }
+    }
+
+    /// Map a type string to LLVM BasicTypeEnum
+    pub fn map_type_str_to_llvm(&self, type_str: &str) -> BasicTypeEnum<'ctx> {
+        let trimmed = type_str.trim();
+        if trimmed.contains("Str") || trimmed.contains("String") {
+            self.context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()
+        } else if trimmed.contains("Array") {
+            self.context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()
+        } else if trimmed.contains("Map") {
+            self.context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()
+        } else if trimmed.contains("Float") {
+            self.context.f64_type().into()
+        } else if trimmed.contains("Bool") {
+            self.context.bool_type().into()
+        } else {
+            self.context.i32_type().into()
         }
     }
 }
