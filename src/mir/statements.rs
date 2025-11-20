@@ -1280,8 +1280,13 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             });
         }
 
-        // For any unhandled AST node types, do nothing.
-        // This branch is a safeguard for future AST node types.
-        _ => {}
+        // Handle expression statements (expressions used as statements with ;)
+        // This includes TryPropagate (?), function calls, etc.
+        _ => {
+            // If this is an expression node, build it to generate its side effects
+            // This is critical for ? operator used as a statement: CheckPositive(x)?;
+            // The expression will be built and the TryPropagate instruction will be added
+            build_expression(builder, stmt, block);
+        }
     }
 }

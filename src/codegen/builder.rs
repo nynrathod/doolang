@@ -2002,7 +2002,31 @@ impl<'ctx> CodeGen<'ctx> {
                 error_block: _error_block,
             } => {
                 // Extract the Result struct and check the tag
-                let result_val = self.resolve_value(result_tmp);
+                let mut result_val = self.resolve_value(result_tmp);
+
+                // CRITICAL FIX: If result is not a struct but we know it should be a Result type,
+                // try to load it from symbols as a struct
+                if !result_val.is_struct_value() {
+                    // Check if this is supposed to be a Result type
+                    if let Some((ok_type, _err_type)) = self.result_types.get(result_tmp) {
+                        // This should be a Result struct but resolve_value didn't return it as such
+                        // Try loading it directly from symbols with the correct struct type
+                        if let Some(sym) = self.symbols.get(result_tmp) {
+                            // Create the Result struct type: { i32, ptr }
+                            let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                            let result_struct_type = self.context.struct_type(
+                                &[self.context.i32_type().into(), ptr_type.into()],
+                                false,
+                            );
+
+                            // Load as struct
+                            result_val = self
+                                .builder
+                                .build_load(result_struct_type, sym.ptr, "result_struct_reload")
+                                .expect("Failed to reload Result struct");
+                        }
+                    }
+                }
 
                 // If result is a struct (Result type), extract tag and value
                 if result_val.is_struct_value() {
@@ -2131,7 +2155,8 @@ impl<'ctx> CodeGen<'ctx> {
                         Some(actual_value)
                     }
                 } else {
-                    // Not a Result struct, just pass through
+                    // Not a Result struct - this should not happen for properly typed Result functions
+                    // Pass through without error checking
                     self.temp_values.insert(name.clone(), result_val);
                     self.variable_types
                         .insert(name.clone(), "Unknown".to_string());
