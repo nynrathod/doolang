@@ -47,6 +47,7 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
     // Error handling keywords
     keywords.insert("Ok", TokenType::Ok);
     keywords.insert("Err", TokenType::Err);
+    keywords.insert("nil", TokenType::Nil);
 
     // Special values and types
     keywords.insert("true", TokenType::Boolean);
@@ -108,9 +109,12 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
     operators.insert("..", TokenType::RangeExc);
 
     // Miscellaneous symbols
+    operators.insert("::", TokenType::ColonColon);
     operators.insert(":", TokenType::Colon);
     operators.insert("#", TokenType::Pound);
+    operators.insert("@", TokenType::At);
     operators.insert("~", TokenType::Tilde);
+    operators.insert("??", TokenType::DoubleQuestion);
     operators.insert("?", TokenType::Question);
     operators.insert("$", TokenType::Dollar);
 

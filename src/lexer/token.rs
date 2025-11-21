@@ -20,6 +20,7 @@ pub enum TokenType {
     Print,    // print
     Ok,       // Ok (for Result type)
     Err,      // Err (for Result type)
+    Nil,      // nil (null value)
 
     // --- Literals ---
     Number,
@@ -70,23 +71,26 @@ pub enum TokenType {
     FatArrow, // =>
 
     // --- Delimiters & Punctuation ---
-    OpenParen,    // (
-    CloseParen,   // )
-    OpenBrace,    // {
-    CloseBrace,   // }
-    OpenBracket,  // [
-    CloseBracket, // ]
-    Comma,        // ,
-    Semi,         // ;
-    Dot,          // .
-    RangeInc,     // ..=
-    RangeExc,     // ..
-    Colon,        // :
-    Pound,        // #
-    Tilde,        // ~
-    Question,     // ?
-    Dollar,       // $
-    Underscore,   // _
+    OpenParen,      // (
+    CloseParen,     // )
+    OpenBrace,      // {
+    CloseBrace,     // }
+    OpenBracket,    // [
+    CloseBracket,   // ]
+    Comma,          // ,
+    Semi,           // ;
+    Dot,            // .
+    RangeInc,       // ..=
+    RangeExc,       // ..
+    Colon,          // :
+    ColonColon,     // ::
+    Pound,          // #
+    At,             // @
+    Tilde,          // ~
+    Question,       // ?
+    DoubleQuestion, // ??
+    Dollar,         // $
+    Underscore,     // _
 }
 
 #[derive(Debug, Clone)]
