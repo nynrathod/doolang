@@ -178,6 +178,33 @@ impl<'ctx> CodeGen<'ctx> {
                 if let Some(map_meta) = self.map_metadata.get(value).cloned() {
                     self.map_metadata.insert(name.clone(), map_meta);
                 }
+                // Propagate struct instance type from source to destination
+                // Check both with and without '%' prefix to handle temp variables
+                let struct_type = self
+                    .struct_instance_types
+                    .get(value)
+                    .cloned()
+                    .or_else(|| {
+                        self.struct_instance_types
+                            .get(&value.trim_start_matches('%').to_string())
+                            .cloned()
+                    })
+                    .or_else(|| {
+                        // Also check if source has a % prefix but we're looking without it
+                        self.struct_instance_types
+                            .get(&format!("%{}", value))
+                            .cloned()
+                    });
+
+                if let Some(struct_type) = struct_type {
+                    self.struct_instance_types
+                        .insert(name.clone(), struct_type.clone());
+                    // Also store with % prefix if name doesn't have it
+                    if !name.starts_with('%') {
+                        self.struct_instance_types
+                            .insert(format!("%{}", name), struct_type);
+                    }
+                }
                 // Propagate heap tracking
                 if self.heap_arrays.contains(value) {
                     self.heap_arrays.insert(name.clone());
@@ -2869,6 +2896,23 @@ impl<'ctx> CodeGen<'ctx> {
                         inferred_type
                     };
 
+                // Track this struct instance type for printing
+                // Store with multiple name variations for robust lookups
+                self.struct_instance_types
+                    .insert(name.clone(), struct_name.clone());
+                // Also store without % prefix if name has it
+                if name.starts_with('%') {
+                    self.struct_instance_types.insert(
+                        name.trim_start_matches('%').to_string(),
+                        struct_name.clone(),
+                    );
+                }
+                // Also store with % prefix if name doesn't have it
+                if !name.starts_with('%') {
+                    self.struct_instance_types
+                        .insert(format!("%{}", name), struct_name.clone());
+                }
+
                 // Allocate space for the struct on the heap (RC managed)
                 let struct_size = struct_type.size_of().unwrap();
 
@@ -2905,6 +2949,45 @@ impl<'ctx> CodeGen<'ctx> {
                             .find(|(field_name, _)| field_name == canonical_field_name)
                         {
                             let value = self.resolve_value(value_tmp);
+
+                            // Increment reference count for heap-allocated values stored in struct fields
+                            // Only incref if the value is tracked as heap-allocated (has RC header)
+                            let field_type = metadata.field_types.get(canonical_idx);
+                            if let Some(type_str) = field_type {
+                                if (type_str.contains("Str")
+                                    || type_str.contains("String")
+                                    || type_str.contains("Array")
+                                    || type_str.contains("Map"))
+                                    && value.is_pointer_value()
+                                {
+                                    // Only incref if this is a heap-allocated value (not a global constant)
+                                    let is_heap_value = self.heap_strings.contains(value_tmp)
+                                        || self.heap_arrays.contains(value_tmp)
+                                        || self.heap_maps.contains(value_tmp);
+
+                                    if is_heap_value {
+                                        let ptr = value.into_pointer_value();
+                                        let rc_header = unsafe {
+                                            self.builder.build_in_bounds_gep(
+                                                self.context.i8_type(),
+                                                ptr,
+                                                &[self
+                                                    .context
+                                                    .i32_type()
+                                                    .const_int((-8_i32) as u64, true)],
+                                                "struct_field_rc_header",
+                                            )
+                                        }
+                                        .unwrap();
+
+                                        let incref_fn = self.incref_fn.unwrap();
+                                        self.builder
+                                            .build_call(incref_fn, &[rc_header.into()], "")
+                                            .unwrap();
+                                    }
+                                }
+                            }
+
                             let field_ptr = self
                                 .builder
                                 .build_struct_gep(
@@ -2921,6 +3004,48 @@ impl<'ctx> CodeGen<'ctx> {
                     // Fallback: store in the order provided (for backward compatibility)
                     for (idx, (field_name, value_tmp)) in fields.iter().enumerate() {
                         let value = self.resolve_value(value_tmp);
+
+                        // Increment reference count for heap-allocated values stored in struct fields
+                        // Try to get type from metadata if available
+                        // Only incref if the value is tracked as heap-allocated (has RC header)
+                        if let Some(metadata) = self.struct_metadata.get(struct_name) {
+                            let field_type = metadata.field_types.get(idx);
+                            if let Some(type_str) = field_type {
+                                if (type_str.contains("Str")
+                                    || type_str.contains("String")
+                                    || type_str.contains("Array")
+                                    || type_str.contains("Map"))
+                                    && value.is_pointer_value()
+                                {
+                                    // Only incref if this is a heap-allocated value (not a global constant)
+                                    let is_heap_value = self.heap_strings.contains(value_tmp)
+                                        || self.heap_arrays.contains(value_tmp)
+                                        || self.heap_maps.contains(value_tmp);
+
+                                    if is_heap_value {
+                                        let ptr = value.into_pointer_value();
+                                        let rc_header = unsafe {
+                                            self.builder.build_in_bounds_gep(
+                                                self.context.i8_type(),
+                                                ptr,
+                                                &[self
+                                                    .context
+                                                    .i32_type()
+                                                    .const_int((-8_i32) as u64, true)],
+                                                "struct_field_rc_header",
+                                            )
+                                        }
+                                        .unwrap();
+
+                                        let incref_fn = self.incref_fn.unwrap();
+                                        self.builder
+                                            .build_call(incref_fn, &[rc_header.into()], "")
+                                            .unwrap();
+                                    }
+                                }
+                            }
+                        }
+
                         let field_ptr = self
                             .builder
                             .build_struct_gep(

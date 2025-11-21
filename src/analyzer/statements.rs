@@ -389,8 +389,10 @@ impl SemanticAnalyzer {
                     | TypeNode::Array(_)
                     | TypeNode::Map(_, _)
                     | TypeNode::Tuple(_)
-                    | TypeNode::Result(_, _) => {
-                        // Supported type for printing.
+                    | TypeNode::Result(_, _)
+                    | TypeNode::Struct(_, _)
+                    | TypeNode::TypeRef(_) => {
+                        // Supported type for printing (TypeRef includes struct references).
                     }
                     _ => {
                         // If the type is not supported, return an error.

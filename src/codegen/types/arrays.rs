@@ -807,4 +807,336 @@ impl<'ctx> CodeGen<'ctx> {
             .build_call(printf_fn, &[close_bracket.as_pointer_value().into()], "")
             .unwrap();
     }
+
+    pub fn print_struct_with_fields(
+        &mut self,
+        struct_var: &str,
+        struct_name: &str,
+        idx: usize,
+        total_values: usize,
+    ) {
+        let printf_fn = self.get_or_declare_printf();
+
+        // Get struct metadata
+        if let Some(metadata) = self.struct_metadata.get(struct_name).cloned() {
+            // Try to get canonical struct type - if not available, just print struct name with field names
+            if let Some(canonical_type) = self.canonical_struct_types.get(struct_name).cloned() {
+                // Print struct name and opening brace
+                let struct_header = format!("{} {{ ", struct_name);
+                let header_fmt = self
+                    .builder
+                    .build_global_string_ptr("%s", "struct_header_fmt")
+                    .unwrap();
+                let header_str = self
+                    .builder
+                    .build_global_string_ptr(&struct_header, "struct_header_str")
+                    .unwrap();
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[
+                            header_fmt.as_pointer_value().into(),
+                            header_str.as_pointer_value().into(),
+                        ],
+                        "print_struct_header",
+                    )
+                    .unwrap();
+
+                // Try to get the struct value - it may be in temp_values or symbols
+                let struct_val_opt = self.temp_values.get(struct_var).cloned().or_else(|| {
+                    if let Some(sym) = self.symbols.get(struct_var) {
+                        Some(
+                            self.builder
+                                .build_load(sym.ty, sym.ptr, &format!("load_{}", struct_var))
+                                .unwrap(),
+                        )
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(struct_val) = struct_val_opt {
+                    // Handle struct value - could be pointer or direct struct
+                    let struct_ptr = if struct_val.is_pointer_value() {
+                        struct_val.into_pointer_value()
+                    } else {
+                        // If it's a direct struct value, allocate and store it
+                        let struct_alloca = self
+                            .builder
+                            .build_alloca(canonical_type, "struct_print_alloca")
+                            .unwrap();
+                        self.builder.build_store(struct_alloca, struct_val).unwrap();
+                        struct_alloca
+                    };
+
+                    // Iterate through fields and print each one
+                    for (field_idx, (field_name, field_type)) in metadata
+                        .field_names
+                        .iter()
+                        .zip(metadata.field_types.iter())
+                        .enumerate()
+                    {
+                        // Get field pointer using struct GEP
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                canonical_type,
+                                struct_ptr,
+                                field_idx as u32,
+                                &format!("field_{}_ptr", field_name),
+                            )
+                            .unwrap();
+
+                        // Print field name and colon
+                        let field_label = format!("{}: ", field_name);
+                        let label_fmt = self
+                            .builder
+                            .build_global_string_ptr("%s", "field_label_fmt")
+                            .unwrap();
+                        let label_str = self
+                            .builder
+                            .build_global_string_ptr(&field_label, "field_label_str")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[
+                                    label_fmt.as_pointer_value().into(),
+                                    label_str.as_pointer_value().into(),
+                                ],
+                                "print_field_label",
+                            )
+                            .unwrap();
+
+                        // Load field value and print based on type
+                        match field_type.as_str() {
+                            "Str" => {
+                                let field_val = self
+                                    .builder
+                                    .build_load(
+                                        self.context.ptr_type(AddressSpace::default()),
+                                        field_ptr,
+                                        &format!("field_{}_val", field_name),
+                                    )
+                                    .unwrap()
+                                    .into_pointer_value();
+
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("\"%s\"", "str_field_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt.as_pointer_value().into(), field_val.into()],
+                                        "print_str_field",
+                                    )
+                                    .unwrap();
+                            }
+                            "Int" => {
+                                let field_val = self
+                                    .builder
+                                    .build_load(
+                                        self.context.i32_type(),
+                                        field_ptr,
+                                        &format!("field_{}_val", field_name),
+                                    )
+                                    .unwrap()
+                                    .into_int_value();
+
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("%d", "int_field_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt.as_pointer_value().into(), field_val.into()],
+                                        "print_int_field",
+                                    )
+                                    .unwrap();
+                            }
+                            "Float" => {
+                                let field_val = self
+                                    .builder
+                                    .build_load(
+                                        self.context.f64_type(),
+                                        field_ptr,
+                                        &format!("field_{}_val", field_name),
+                                    )
+                                    .unwrap()
+                                    .into_float_value();
+
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("%.15g", "float_field_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt.as_pointer_value().into(), field_val.into()],
+                                        "print_float_field",
+                                    )
+                                    .unwrap();
+                            }
+                            "Bool" => {
+                                let field_val = self
+                                    .builder
+                                    .build_load(
+                                        self.context.bool_type(),
+                                        field_ptr,
+                                        &format!("field_{}_val", field_name),
+                                    )
+                                    .unwrap()
+                                    .into_int_value();
+
+                                let true_str = self
+                                    .builder
+                                    .build_global_string_ptr("true", "bool_true_str")
+                                    .unwrap();
+                                let false_str = self
+                                    .builder
+                                    .build_global_string_ptr("false", "bool_false_str")
+                                    .unwrap();
+
+                                let is_true = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::NE,
+                                        field_val,
+                                        field_val.get_type().const_zero(),
+                                        "is_true",
+                                    )
+                                    .unwrap();
+
+                                let selected = self
+                                    .builder
+                                    .build_select(
+                                        is_true,
+                                        true_str.as_pointer_value(),
+                                        false_str.as_pointer_value(),
+                                        "bool_str",
+                                    )
+                                    .unwrap()
+                                    .into_pointer_value();
+
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("%s", "bool_field_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt.as_pointer_value().into(), selected.into()],
+                                        "print_bool_field",
+                                    )
+                                    .unwrap();
+                            }
+                            _ => {
+                                // Unknown type - print placeholder
+                                let placeholder = self
+                                    .builder
+                                    .build_global_string_ptr("?", "unknown_field_fmt")
+                                    .unwrap();
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("%s", "unknown_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[
+                                            fmt.as_pointer_value().into(),
+                                            placeholder.as_pointer_value().into(),
+                                        ],
+                                        "print_unknown_field",
+                                    )
+                                    .unwrap();
+                            }
+                        }
+
+                        // Print comma and space if not last field
+                        if field_idx < metadata.field_names.len() - 1 {
+                            let comma_fmt = self
+                                .builder
+                                .build_global_string_ptr(", ", "comma_fmt")
+                                .unwrap();
+                            self.builder
+                                .build_call(
+                                    printf_fn,
+                                    &[comma_fmt.as_pointer_value().into()],
+                                    "print_comma",
+                                )
+                                .unwrap();
+                        }
+                    }
+                } else {
+                    // Can't access struct value, print field names as fallback
+                    let field_list = metadata.field_names.join(", ");
+                    let fallback = format!("{}", field_list);
+                    let fmt = self
+                        .builder
+                        .build_global_string_ptr("%s", "struct_fallback_fmt")
+                        .unwrap();
+                    let fallback_str = self
+                        .builder
+                        .build_global_string_ptr(&fallback, "struct_fallback_str")
+                        .unwrap();
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[
+                                fmt.as_pointer_value().into(),
+                                fallback_str.as_pointer_value().into(),
+                            ],
+                            "print_struct_fallback",
+                        )
+                        .unwrap();
+                }
+
+                // Print closing brace
+                let closing = if idx < total_values - 1 { " } " } else { " }" };
+                let close_fmt = self
+                    .builder
+                    .build_global_string_ptr("%s", "struct_close_fmt")
+                    .unwrap();
+                let close_str = self
+                    .builder
+                    .build_global_string_ptr(closing, "struct_close_str")
+                    .unwrap();
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[
+                            close_fmt.as_pointer_value().into(),
+                            close_str.as_pointer_value().into(),
+                        ],
+                        "print_struct_close",
+                    )
+                    .unwrap();
+            } else {
+                // No canonical type - just print struct name with field names
+                let field_list = metadata.field_names.join(", ");
+                let info = format!("{} {{ {} }}", struct_name, field_list);
+                let fmt = self
+                    .builder
+                    .build_global_string_ptr("%s", "struct_no_type_fmt")
+                    .unwrap();
+                let info_str = self
+                    .builder
+                    .build_global_string_ptr(&info, "struct_no_type_str")
+                    .unwrap();
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[
+                            fmt.as_pointer_value().into(),
+                            info_str.as_pointer_value().into(),
+                        ],
+                        "print_struct_no_type",
+                    )
+                    .unwrap();
+            }
+        }
+    }
 }

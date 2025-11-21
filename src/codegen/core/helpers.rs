@@ -76,14 +76,15 @@ impl<'ctx> CodeGen<'ctx> {
                 || self.heap_arrays.contains(name)
                 || self.heap_maps.contains(name);
 
-            // Check if this is a struct parameter by looking at variable_types
-            let is_struct_param = self
+            // Check if this is a struct by looking at variable_types
+            // Structs can be stored as "Struct(Name)" or just "Name" (if it's in struct_metadata)
+            let is_struct = self
                 .variable_types
                 .get(name)
-                .map(|t| t.contains("Struct("))
+                .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
                 .unwrap_or(false);
 
-            let load_type = if is_array_or_map || is_struct_param {
+            let load_type = if is_array_or_map || is_struct {
                 // Arrays, maps, and structs are always pointers, regardless of how they were stored
                 self.context
                     .ptr_type(inkwell::AddressSpace::default())

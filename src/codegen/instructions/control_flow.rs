@@ -259,14 +259,71 @@ impl<'ctx> CodeGen<'ctx> {
                 } else {
                     // Non-Result type - store normally
                     self.temp_values.insert(dest_name.clone(), final_result);
+
+                    // IMPORTANT: Check for struct return type FIRST and track it
+                    // This must happen before tuple checks or any other logic
+                    let return_type_str = self
+                        .function_return_types
+                        .get(&actual_func_name)
+                        .or_else(|| self.function_return_types.get(func));
+
+                    if let Some(return_type_str) = return_type_str {
+                        // Check if this is a struct type - handle both "Struct(Name)" and bare "Name" formats
+                        let struct_name_opt = if return_type_str.starts_with("Struct(")
+                            && return_type_str.ends_with(")")
+                        {
+                            // Struct(Name) format - extract the name
+                            Some(&return_type_str[7..return_type_str.len() - 1])
+                        } else if !return_type_str.contains('(')
+                            && !return_type_str.contains(',')
+                            && return_type_str != "Int"
+                            && return_type_str != "Float"
+                            && return_type_str != "Bool"
+                            && return_type_str != "Str"
+                            && return_type_str != "Void"
+                            && self.struct_metadata.contains_key(return_type_str)
+                        {
+                            // Bare struct name format (TypeRef) - use as is if it's in struct_metadata
+                            Some(return_type_str.as_str())
+                        } else {
+                            None
+                        };
+
+                        if let Some(struct_name) = struct_name_opt {
+                            // Always track struct instances for printing with multiple name variations
+                            self.struct_instance_types
+                                .insert(dest_name.clone(), struct_name.to_string());
+                            // Also store without % prefix if dest has it
+                            if dest_name.starts_with('%') {
+                                self.struct_instance_types.insert(
+                                    dest_name.trim_start_matches('%').to_string(),
+                                    struct_name.to_string(),
+                                );
+                            }
+                            // Also store with % prefix if dest doesn't have it
+                            if !dest_name.starts_with('%') {
+                                self.struct_instance_types
+                                    .insert(format!("%{}", dest_name), struct_name.to_string());
+                            }
+
+                            // Also track in variable_types so temp variables can resolve back to struct type
+                            self.variable_types
+                                .insert(dest_name.clone(), struct_name.to_string());
+                        }
+                    }
                 }
 
                 // Check if this is a tuple return (multi-value)
                 // Only treat as tuple if it explicitly starts with "Tuple(" or has top-level commas
                 // BUT: Skip this for Result types - they have their own handling above
                 if !is_result_type {
-                    if let Some(return_type_str) = self.function_return_types.get(&actual_func_name)
-                    {
+                    // Try to get return type, checking both actual_func_name and original func name
+                    let return_type_str = self
+                        .function_return_types
+                        .get(&actual_func_name)
+                        .or_else(|| self.function_return_types.get(func));
+
+                    if let Some(return_type_str) = return_type_str {
                         // Parse types respecting nested parentheses to detect true tuples
                         let is_tuple_return = if return_type_str.starts_with("Tuple(") {
                             true
@@ -345,9 +402,13 @@ impl<'ctx> CodeGen<'ctx> {
                                 .insert(dest_name.clone(), struct_alloca.into());
                         } else {
                             // Single-value return - track the type in variable_types
-                            if let Some(return_type_str) =
-                                self.function_return_types.get(&actual_func_name)
-                            {
+                            // Try both actual_func_name and original func name
+                            let return_type_str = self
+                                .function_return_types
+                                .get(&actual_func_name)
+                                .or_else(|| self.function_return_types.get(func));
+
+                            if let Some(return_type_str) = return_type_str {
                                 // Extract the base type for single-value returns
                                 if return_type_str.contains("Bool") {
                                     self.variable_types
@@ -363,6 +424,8 @@ impl<'ctx> CodeGen<'ctx> {
                                     self.variable_types
                                         .insert(dest_name.clone(), "Int".to_string());
                                 }
+                                // Note: Struct type tracking is now handled earlier (above)
+                                // to ensure it always executes before other conditional paths
                             }
                         }
                     }
@@ -453,8 +516,38 @@ impl<'ctx> CodeGen<'ctx> {
                 || self.is_loop_var(&format!("{}_array", base_name))
                 || self.is_loop_var(&value.trim_start_matches('%').to_string());
 
+            // Check if this is a regular struct instance FIRST (before array/map check)
+            // This prevents structs from being misidentified as empty arrays
+            let struct_instance_name = self
+                .struct_instance_types
+                .get(value)
+                .cloned()
+                .or_else(|| {
+                    self.struct_instance_types
+                        .get(&value.trim_start_matches('%').to_string())
+                        .cloned()
+                })
+                .or_else(|| {
+                    // If not found in struct_instance_types, check variable_types
+                    // The variable_types map might have the type information
+                    if let Some(type_str) = self.variable_types.get(value) {
+                        // Check if this type is a struct type
+                        if type_str.starts_with("Struct(") && type_str.ends_with(")") {
+                            // Extract struct name from "Struct(StructName)"
+                            let struct_name = &type_str[7..type_str.len() - 1];
+                            if self.struct_metadata.contains_key(struct_name) {
+                                return Some(struct_name.to_string());
+                            }
+                        } else if self.struct_metadata.contains_key(type_str) {
+                            // Direct struct name (no "Struct(...)" wrapper)
+                            return Some(type_str.clone());
+                        }
+                    }
+                    None
+                });
+
             // Check if this value is an array or map by looking at metadata
-            // But NEVER treat loop iteration variables as arrays/maps
+            // But NEVER treat loop iteration variables or struct instances as arrays/maps
             // Also check name variations to handle returned arrays/maps
             let has_array_metadata = self.array_metadata.contains_key(value)
                 || self
@@ -478,13 +571,16 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Only treat as array/map if it's actually a pointer value
             // Non-pointer values (like loop iteration variables) should never be treated as collections
+            // Also exclude struct instances from being treated as arrays
             let resolved_val = self.resolve_value(value);
             let is_actually_pointer = resolved_val.is_pointer_value();
 
             let is_array = !is_loop_var
+                && struct_instance_name.is_none()
                 && is_actually_pointer
                 && (has_array_metadata || self.heap_arrays.contains(value));
             let is_map = !is_loop_var
+                && struct_instance_name.is_none()
                 && is_actually_pointer
                 && (has_map_metadata || self.heap_maps.contains(value));
 
@@ -516,7 +612,293 @@ impl<'ctx> CodeGen<'ctx> {
                     .contains_key(&value.trim_start_matches('%').to_string()))
                 || is_result_struct_value;
 
-            if is_array {
+            // Check for regular struct instances FIRST before arrays/maps
+            if struct_instance_name.is_some() && !is_result {
+                // Print struct with actual field values
+                let struct_name = struct_instance_name.unwrap();
+                let struct_val = self.resolve_value(value);
+
+                if let Some(metadata) = self.struct_metadata.get(&struct_name) {
+                    // Check if struct_val is a pointer - if so, print with actual values
+                    // If not, use a safe fallback showing field names only
+                    let struct_ptr_opt = if struct_val.is_pointer_value() {
+                        Some(struct_val.into_pointer_value())
+                    } else {
+                        // For non-pointer values, use fallback showing field names only
+                        None
+                    };
+
+                    if let Some(struct_ptr) = struct_ptr_opt {
+                        // We have a valid struct pointer - print with actual field values
+                        // Start with struct name and opening brace
+                        let opening = format!("{} {{ ", struct_name);
+                        let opening_global = self
+                            .builder
+                            .build_global_string_ptr(&opening, "struct_opening")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[opening_global.as_pointer_value().into()],
+                                "print_struct_opening",
+                            )
+                            .unwrap();
+
+                        // Get the canonical struct type
+                        let struct_type = if let Some(canonical_type) =
+                            self.canonical_struct_types.get(&struct_name)
+                        {
+                            *canonical_type
+                        } else {
+                            // Fallback: reconstruct from metadata
+                            let field_llvm_types: Vec<inkwell::types::BasicTypeEnum> = metadata
+                                .field_types
+                                .iter()
+                                .map(|type_name| match type_name.as_str() {
+                                    "Int" => self.context.i32_type().into(),
+                                    "Float" => self.context.f64_type().into(),
+                                    "Bool" => self.context.bool_type().into(),
+                                    "Str" | "String" => self
+                                        .context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                    _ => self.context.i32_type().into(),
+                                })
+                                .collect();
+                            self.context.struct_type(&field_llvm_types, false)
+                        };
+
+                        for (field_idx, field_name) in metadata.field_names.iter().enumerate() {
+                            // Print field name
+                            let field_name_str = format!("{}: ", field_name);
+                            let field_name_global = self
+                                .builder
+                                .build_global_string_ptr(&field_name_str, "field_name")
+                                .unwrap();
+                            self.builder
+                                .build_call(
+                                    printf_fn,
+                                    &[field_name_global.as_pointer_value().into()],
+                                    "print_field_name",
+                                )
+                                .unwrap();
+
+                            // Get field type from metadata
+                            let field_type = metadata
+                                .field_types
+                                .get(field_idx)
+                                .map(|s| s.as_str())
+                                .unwrap_or("");
+
+                            // Get the field LLVM type from the struct type
+                            let field_llvm_type = struct_type
+                                .get_field_type_at_index(field_idx as u32)
+                                .unwrap_or_else(|| self.context.i32_type().into());
+
+                            // Access field using GEP
+                            let field_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    struct_type,
+                                    struct_ptr,
+                                    field_idx as u32,
+                                    &format!("field_{}_ptr", field_name),
+                                )
+                                .unwrap();
+
+                            // Load the field value
+                            let field_value = self
+                                .builder
+                                .build_load(
+                                    field_llvm_type,
+                                    field_ptr,
+                                    &format!("field_{}", field_name),
+                                )
+                                .unwrap();
+
+                            // Print field value based on type
+                            if field_type == "Str" || field_type == "String" {
+                                let format_str = "%s";
+                                let format_global = self
+                                    .builder
+                                    .build_global_string_ptr(format_str, "field_str_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[
+                                            format_global.as_pointer_value().into(),
+                                            field_value.into(),
+                                        ],
+                                        "print_field_str",
+                                    )
+                                    .unwrap();
+                            } else if field_type == "Int" {
+                                let format_str = "%d";
+                                let format_global = self
+                                    .builder
+                                    .build_global_string_ptr(format_str, "field_int_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[
+                                            format_global.as_pointer_value().into(),
+                                            field_value.into(),
+                                        ],
+                                        "print_field_int",
+                                    )
+                                    .unwrap();
+                            } else if field_type == "Float" {
+                                let format_str = "%f";
+                                let format_global = self
+                                    .builder
+                                    .build_global_string_ptr(format_str, "field_float_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[
+                                            format_global.as_pointer_value().into(),
+                                            field_value.into(),
+                                        ],
+                                        "print_field_float",
+                                    )
+                                    .unwrap();
+                            } else if field_type == "Bool" {
+                                let int_val = field_value.into_int_value();
+                                let zero = self.context.i32_type().const_int(0, false);
+                                let is_true = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::NE,
+                                        int_val,
+                                        zero,
+                                        "is_true_field",
+                                    )
+                                    .unwrap();
+
+                                let true_global = self
+                                    .builder
+                                    .build_global_string_ptr("true", "bool_true_field")
+                                    .unwrap();
+                                let false_global = self
+                                    .builder
+                                    .build_global_string_ptr("false", "bool_false_field")
+                                    .unwrap();
+
+                                let selected_str = self
+                                    .builder
+                                    .build_select(
+                                        is_true,
+                                        true_global.as_pointer_value(),
+                                        false_global.as_pointer_value(),
+                                        "select_bool_str_field",
+                                    )
+                                    .unwrap()
+                                    .into_pointer_value();
+
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[selected_str.into()],
+                                        "print_bool_field",
+                                    )
+                                    .unwrap();
+                            } else {
+                                // Fallback for unknown types
+                                let format_str = "%d";
+                                let format_global = self
+                                    .builder
+                                    .build_global_string_ptr(format_str, "field_default_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[
+                                            format_global.as_pointer_value().into(),
+                                            field_value.into(),
+                                        ],
+                                        "print_field_default",
+                                    )
+                                    .unwrap();
+                            }
+
+                            // Print comma separator if not last field
+                            if field_idx < metadata.field_names.len() - 1 {
+                                let comma_global =
+                                    self.builder.build_global_string_ptr(", ", "comma").unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[comma_global.as_pointer_value().into()],
+                                        "print_comma",
+                                    )
+                                    .unwrap();
+                            }
+                        }
+
+                        // Print closing brace
+                        let closing = if idx < values.len() - 1 { " } " } else { " }" };
+                        let closing_global = self
+                            .builder
+                            .build_global_string_ptr(closing, "struct_closing")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[closing_global.as_pointer_value().into()],
+                                "print_struct_closing",
+                            )
+                            .unwrap();
+                    } else {
+                        // Fallback: show field names only (for structs returned from functions)
+                        let field_list = metadata.field_names.join(", ");
+                        let field_info = format!("{} {{ {} }}", struct_name, field_list);
+                        let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_struct_fmt")
+                            .unwrap();
+                        let info_global = self
+                            .builder
+                            .build_global_string_ptr(&field_info, "struct_info")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[
+                                    format_global.as_pointer_value().into(),
+                                    info_global.as_pointer_value().into(),
+                                ],
+                                "print_struct",
+                            )
+                            .unwrap();
+                    }
+                } else {
+                    // Fallback if no metadata available
+                    let placeholder = format!("<{}>", struct_name);
+                    let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                    let format_global = self
+                        .builder
+                        .build_global_string_ptr(format_str, "print_struct_fmt")
+                        .unwrap();
+                    let placeholder_global = self
+                        .builder
+                        .build_global_string_ptr(&placeholder, "struct_placeholder")
+                        .unwrap();
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[
+                                format_global.as_pointer_value().into(),
+                                placeholder_global.as_pointer_value().into(),
+                            ],
+                            "print_struct_placeholder",
+                        )
+                        .unwrap();
+                }
+            } else if is_array {
                 self.print_array(value);
                 if idx < values.len() - 1 {
                     let space_fmt = self
@@ -842,7 +1224,7 @@ impl<'ctx> CodeGen<'ctx> {
             } else {
                 let val = self.resolve_value(value);
 
-                // Special handling for boolean values
+                // Struct instances are now handled above, so skip redundant check
                 if self.is_boolean_value(value) {
                     // Use a simple approach to avoid crashes
                     let bool_val = self.resolve_value(value);

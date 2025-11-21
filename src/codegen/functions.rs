@@ -220,6 +220,11 @@ impl<'ctx> CodeGen<'ctx> {
             self.context.f64_type().into()
         } else if ret_type_str.contains("Bool") {
             self.context.bool_type().into()
+        } else if ret_type_str.contains("Struct(")
+            || self.struct_metadata.contains_key(ret_type_str)
+        {
+            // Struct return types are pointers to heap-allocated structs
+            self.context.ptr_type(AddressSpace::default()).into()
         } else {
             self.context.i32_type().into()
         }
