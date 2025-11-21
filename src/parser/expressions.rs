@@ -116,27 +116,26 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 self.advance(); // consume '.'
-                let method_tok = self.expect(TokenType::Identifier)?;
-                let method_name = method_tok.value.to_string();
-                let method_line = method_tok.line;
-                let method_col = method_tok.col;
+                let field_tok = self.expect(TokenType::Identifier)?;
+                let field_name = field_tok.value.to_string();
 
                 if self.peek_is(TokenType::OpenParen) {
+                    // Method call: obj.method(args)
                     self.advance(); // consume '('
                     let args = self
                         .parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
                     self.expect(TokenType::CloseParen)?;
                     expr = AstNode::MethodCall {
                         object: Box::new(expr),
-                        method: method_name,
+                        method: field_name,
                         args,
                     };
                 } else {
-                    return Err(ParseError::UnexpectedTokenAt {
-                        msg: format!("Expected '(' after method name '{}'", method_name),
-                        line: method_line,
-                        col: method_col,
-                    });
+                    // Field access: obj.field
+                    expr = AstNode::FieldAccess {
+                        object: Box::new(expr),
+                        field: field_name,
+                    };
                 }
             } else if self.peek_is(TokenType::As) {
                 // Handle type casting: expr as Int, expr as Float, expr as String
@@ -236,6 +235,58 @@ impl<'a> Parser<'a> {
                         });
                     }
 
+                    // If followed by '::', parse as enum variant
+                    if self.peek_is(TokenType::ColonColon) {
+                        self.advance(); // consume '::'
+                        let variant_tok = self.expect(TokenType::Identifier)?;
+                        let variant = variant_tok.value.to_string();
+
+                        // Check for payload
+                        let payload = if self.peek_is(TokenType::OpenParen) {
+                            self.advance(); // consume '('
+                            let expr = self.parse_expression()?;
+                            self.expect(TokenType::CloseParen)?;
+                            Some(Box::new(expr))
+                        } else {
+                            None
+                        };
+
+                        return Ok(AstNode::EnumVariant {
+                            enum_name: name,
+                            variant,
+                            payload,
+                        });
+                    }
+
+                    // If followed by '{', parse as struct literal
+                    // BUT only if the identifier starts with uppercase (struct types use PascalCase)
+                    // This prevents parsing `flag { ... }` as a struct when it's an expression + block
+                    if self.peek_is(TokenType::OpenBrace)
+                        && name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_uppercase())
+                            .unwrap_or(false)
+                    {
+                        self.advance(); // consume '{'
+                        let mut fields = Vec::new();
+
+                        // Parse field: value pairs
+                        while !self.peek_is(TokenType::CloseBrace) {
+                            let field_tok = self.expect(TokenType::Identifier)?;
+                            let field_name = field_tok.value.to_string();
+                            self.expect(TokenType::Colon)?;
+                            let value = self.parse_expression()?;
+                            fields.push((field_name, Box::new(value)));
+
+                            if !self.peek_is(TokenType::CloseBrace) {
+                                self.expect(TokenType::Comma)?;
+                            }
+                        }
+                        self.expect(TokenType::CloseBrace)?;
+                        return Ok(AstNode::StructLiteral { name, fields });
+                    }
+
                     Ok(AstNode::Identifier(name))
                 }
                 TokenType::String => {
@@ -246,6 +297,10 @@ impl<'a> Parser<'a> {
                     let tok = self.advance().unwrap();
                     let value = tok.value == "true";
                     Ok(AstNode::BoolLiteral(value))
+                }
+                TokenType::Nil => {
+                    self.advance(); // consume 'nil'
+                    Ok(AstNode::NilLiteral)
                 }
                 TokenType::OpenBracket => self.parse_array_literal(),
                 TokenType::OpenBrace => self.parse_map_literal(),
@@ -263,12 +318,12 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::Ok => {
                     self.advance(); // consume 'Ok'
-                                    // Ok can have values with or without parentheses
+                                    // Ok values - parentheses are optional but not recommended
                                     // Ok 42  or  Ok(42)  or  Ok 10, 20  or  Ok(10, 20)
                     let mut values = Vec::new();
 
                     if self.peek_is(TokenType::OpenParen) {
-                        // Ok(values)
+                        // With parentheses: Ok(values)
                         self.advance(); // consume '('
                         if !self.peek_is(TokenType::CloseParen) {
                             values = self.parse_comma_separated(
@@ -278,7 +333,7 @@ impl<'a> Parser<'a> {
                         }
                         self.expect(TokenType::CloseParen)?;
                     } else {
-                        // Ok values (without parens)
+                        // Without parentheses: Ok values
                         // Parse comma-separated values until semicolon or other delimiter
                         values.push(self.parse_expression()?);
                         while self.peek_is(TokenType::Comma) {
@@ -291,14 +346,16 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::Err => {
                     self.advance(); // consume 'Err'
-                                    // Err can have a value with or without parentheses
+                                    // Err value - parentheses are optional but not recommended
                                     // Err "message"  or  Err("message")
                     let value = if self.peek_is(TokenType::OpenParen) {
+                        // With parentheses: Err(value)
                         self.advance(); // consume '('
                         let expr = self.parse_expression()?;
                         self.expect(TokenType::CloseParen)?;
                         expr
                     } else {
+                        // Without parentheses: Err value
                         self.parse_expression()?
                     };
 

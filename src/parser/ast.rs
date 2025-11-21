@@ -13,8 +13,9 @@ pub enum TypeNode {
     Map(Box<TypeNode>, Box<TypeNode>),
     Tuple(Vec<TypeNode>),
     Void,
-    Struct(String, HashMap<String, TypeNode>),
-    Enum(String, HashMap<String, Option<TypeNode>>),
+    Struct(String, HashMap<String, TypeNode>), // Name and fields map
+    Enum(String, HashMap<String, Option<TypeNode>>), // Name and variants map
+    Optional(Box<TypeNode>),                   // T? - optional type
     Range(Box<TypeNode>, Box<TypeNode>, bool),
     TypeRef(String),
     Function(Vec<TypeNode>, Box<TypeNode>),
@@ -45,6 +46,7 @@ impl TypeNode {
             TypeNode::Void => "Void".to_string(),
             TypeNode::Struct(name, _) => format!("Struct({})", name),
             TypeNode::Enum(name, _) => format!("Enum({})", name),
+            TypeNode::Optional(inner) => format!("Optional({})", inner.format_type_string()),
             TypeNode::Range(_, _, _) => "Range".to_string(),
             TypeNode::TypeRef(name) => name.clone(),
             TypeNode::Function(params, ret) => {
@@ -60,6 +62,86 @@ impl TypeNode {
                 )
             }
         }
+    }
+
+    /// Check if a name is public (starts with uppercase)
+    pub fn is_public_name(name: &str) -> bool {
+        name.chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
+    }
+}
+
+/// Represents a struct field with full metadata
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub field_type: TypeNode,
+    pub is_public: bool,   // Determined by PascalCase vs camelCase
+    pub is_optional: bool, // Has ? suffix
+    pub default_value: Option<Box<AstNode>>, // Default value expression
+    pub decorators: Vec<Decorator>, // @email, @unique, etc.
+}
+
+/// Represents an enum variant
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub payload: Option<TypeNode>, // None for unit variants, Some(T) for variants with data
+}
+
+/// Represents a decorator/annotation
+#[derive(Debug, Clone)]
+pub struct Decorator {
+    pub name: String,
+    pub args: Vec<AstNode>, // Decorator arguments like @min(8)
+}
+
+impl StructField {
+    /// Create a new struct field with default settings
+    pub fn new(name: String, field_type: TypeNode) -> Self {
+        let is_public = TypeNode::is_public_name(&name);
+        StructField {
+            name,
+            field_type,
+            is_public,
+            is_optional: false,
+            default_value: None,
+            decorators: Vec::new(),
+        }
+    }
+
+    /// Set this field as optional
+    pub fn with_optional(mut self, optional: bool) -> Self {
+        self.is_optional = optional;
+        self
+    }
+
+    /// Add a default value
+    pub fn with_default(mut self, default: Box<AstNode>) -> Self {
+        self.default_value = Some(default);
+        self
+    }
+
+    /// Add a decorator
+    pub fn with_decorator(mut self, decorator: Decorator) -> Self {
+        self.decorators.push(decorator);
+        self
+    }
+}
+
+impl EnumVariant {
+    /// Create a new enum variant
+    pub fn new(name: String, payload: Option<TypeNode>) -> Self {
+        EnumVariant { name, payload }
+    }
+}
+
+impl Decorator {
+    /// Create a new decorator
+    pub fn new(name: String, args: Vec<AstNode>) -> Self {
+        Decorator { name, args }
     }
 }
 
@@ -85,6 +167,7 @@ pub enum AstNode {
     Identifier(String),
     StringLiteral(String),
     BoolLiteral(bool),
+    NilLiteral,
     ArrayLiteral(Vec<AstNode>),
     MapLiteral(Vec<(AstNode, AstNode)>),
 
@@ -107,11 +190,13 @@ pub enum AstNode {
     },
     StructDecl {
         name: String,
-        fields: Vec<(String, TypeNode)>,
+        fields: Vec<StructField>,
+        is_public: bool, // Determined by PascalCase vs camelCase
     },
     EnumDecl {
         name: String,
-        variants: Vec<(String, Option<TypeNode>)>,
+        variants: Vec<EnumVariant>,
+        is_public: bool, // Determined by PascalCase vs camelCase
     },
     ConditionalStmt {
         condition: Box<AstNode>,
@@ -207,5 +292,25 @@ pub enum AstNode {
     },
     TryPropagate {
         expr: Box<AstNode>, // Expression with ? operator
+    },
+    ManualErrorExtract {
+        expr: Box<AstNode>,  // Expression that returns Result
+        ok_pattern: Pattern, // Pattern for Ok values (can be tuple)
+        error_var: String,   // Variable name for error (or "_" to ignore)
+    },
+
+    // Struct and Enum operations
+    StructLiteral {
+        name: String,                        // Struct type name
+        fields: Vec<(String, Box<AstNode>)>, // Field name and value pairs
+    },
+    FieldAccess {
+        object: Box<AstNode>, // Object to access field from
+        field: String,        // Field name
+    },
+    EnumVariant {
+        enum_name: String,             // Enum type name
+        variant: String,               // Variant name
+        payload: Option<Box<AstNode>>, // Optional payload value
     },
 }

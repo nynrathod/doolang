@@ -5,6 +5,7 @@ use crate::parser::{ParseError, ParseResult, Parser};
 impl<'a> Parser<'a> {
     /// Let decl handles optional 'mut', pattern, optional type annotation, assignment, and semicolon.
     /// Example: `let mut x: Int = 42;`
+    /// Also supports manual error extraction: `let a, b ?? err = expr;`
     pub fn parse_let_decl(&mut self) -> ParseResult<AstNode> {
         // Consume the 'let' keyword
         let first_tok = self.advance().ok_or(ParseError::EndOfInput)?;
@@ -27,6 +28,41 @@ impl<'a> Parser<'a> {
 
         // Parse the pattern (single or tuple of variables)
         let pattern = self.parse_let_pattern()?;
+
+        // Check for ?? operator (manual error extraction)
+        if let Some(tok) = self.peek() {
+            if tok.kind == TokenType::DoubleQuestion {
+                self.advance(); // consume '??'
+
+                // Parse the error variable name (or _ to ignore)
+                let error_var = if let Some(tok) = self.peek() {
+                    if tok.kind == TokenType::Underscore {
+                        self.advance(); // consume '_'
+                        "_".to_string()
+                    } else {
+                        self.expect_ident()?
+                    }
+                } else {
+                    return Err(ParseError::EndOfInput);
+                };
+
+                // Parse assignment operator '='
+                self.expect(TokenType::Eq)?;
+
+                // Parse the expression that returns a Result
+                let expr = self.parse_expression()?;
+
+                // Expect a semicolon
+                self.expect(TokenType::Semi)?;
+
+                // Return ManualErrorExtract node wrapped in LetDecl
+                return Ok(AstNode::ManualErrorExtract {
+                    expr: Box::new(expr),
+                    ok_pattern: pattern,
+                    error_var,
+                });
+            }
+        }
 
         // Parse optional type annotation (e.g., ': Int')
         let mut type_annotation = None;
@@ -138,46 +174,125 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Struct decl Handles struct name, fields (name and type), and braces.
-    /// Example: `struct Foo { x: Int, y: Str }`
+    /// Struct decl with full support for decorators, optional fields, default values
+    /// Example: `struct User { email: Str @email @unique, age: Int?, Role: Str = "user" }`
     pub fn parse_struct_decl(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::Struct)?; // consume 'struct'
 
         let struct_name = self.expect_ident()?; // Parse struct name
+        let is_public = crate::parser::ast::TypeNode::is_public_name(&struct_name);
 
         self.expect(TokenType::OpenBrace)?; // `{`
 
         // Parse fields until closing brace
-        let fields = self.parse_comma_separated(
-            |p| {
-                let field_name = p.expect_ident()?;
-                p.expect(TokenType::Colon)?;
-                let field_type = p.parse_type_annotation()?;
-                Ok((field_name, field_type))
-            },
-            TokenType::CloseBrace,
-        )?;
+        let mut fields = Vec::new();
+
+        while !self.peek_is(TokenType::CloseBrace) {
+            // Parse field with all metadata
+            let field = self.parse_struct_field()?;
+            fields.push(field);
+
+            // Expect comma or closing brace
+            if !self.peek_is(TokenType::CloseBrace) {
+                self.expect(TokenType::Comma)?;
+            }
+        }
 
         self.expect(TokenType::CloseBrace)?;
 
         Ok(AstNode::StructDecl {
             name: struct_name,
             fields,
+            is_public,
         })
     }
 
+    /// Parse a single struct field with decorators, optional marker, and default value
+    /// Example: `email: Str @email @unique` or `age: Int?` or `Role: Str = "user"`
+    fn parse_struct_field(&mut self) -> ParseResult<crate::parser::ast::StructField> {
+        use crate::parser::ast::{Decorator, StructField, TypeNode};
+
+        let field_name = self.expect_ident()?;
+        self.expect(TokenType::Colon)?;
+
+        // Parse the base type
+        let mut field_type = self.parse_type_annotation()?;
+
+        // Check for optional marker (?)
+        let is_optional = if self.peek_is(TokenType::Question) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        // Wrap in Optional type if marked optional
+        if is_optional {
+            field_type = TypeNode::Optional(Box::new(field_type));
+        }
+
+        // Parse decorators (@email, @unique, @min(8), etc.)
+        let mut decorators = Vec::new();
+        while self.peek_is(TokenType::At) {
+            self.advance(); // consume '@'
+            let decorator = self.parse_decorator()?;
+            decorators.push(decorator);
+        }
+
+        // Parse default value (= expr)
+        let default_value = if self.peek_is(TokenType::Eq) {
+            self.advance(); // consume '='
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+
+        // Create field with metadata
+        let is_public = TypeNode::is_public_name(&field_name);
+        Ok(StructField {
+            name: field_name,
+            field_type,
+            is_public,
+            is_optional,
+            default_value,
+            decorators,
+        })
+    }
+
+    /// Parse a decorator like @email or @min(8) or @hash
+    fn parse_decorator(&mut self) -> ParseResult<crate::parser::ast::Decorator> {
+        use crate::parser::ast::Decorator;
+
+        let decorator_name = self.expect_ident()?;
+
+        // Check for arguments
+        let args = if self.peek_is(TokenType::OpenParen) {
+            self.advance(); // consume '('
+            let args =
+                self.parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
+            self.expect(TokenType::CloseParen)?;
+            args
+        } else {
+            Vec::new()
+        };
+
+        Ok(Decorator::new(decorator_name, args))
+    }
+
     /// Enum decl handles enum name, variants (with optional associated types), and braces.
-    /// Example: `enum Bar { A, B(Int), C(Str) }`
+    /// Example: `enum UserRole { Admin(AdminRole), Guest }`
     pub fn parse_enum_decl(&mut self) -> ParseResult<AstNode> {
+        use crate::parser::ast::EnumVariant;
+
         self.expect(TokenType::Enum)?; // consume 'enum'
 
         // Parse enum name
-        let struct_name = self.expect_ident()?;
+        let enum_name = self.expect_ident()?;
+        let is_public = crate::parser::ast::TypeNode::is_public_name(&enum_name);
 
         self.expect(TokenType::OpenBrace)?;
 
         // Parse variants until closing brace
-        // Enum doesn't support multiple parameter in type
         let variants = self.parse_comma_separated(
             |p| {
                 let variant_name = p.expect_ident()?;
@@ -190,7 +305,7 @@ impl<'a> Parser<'a> {
                         p.expect(TokenType::CloseParen)?;
                     }
                 }
-                Ok((variant_name, variant_data))
+                Ok(EnumVariant::new(variant_name, variant_data))
             },
             TokenType::CloseBrace,
         )?;
@@ -198,8 +313,9 @@ impl<'a> Parser<'a> {
         self.expect(TokenType::CloseBrace)?;
 
         Ok(AstNode::EnumDecl {
-            name: struct_name,
+            name: enum_name,
             variants,
+            is_public,
         })
     }
 
