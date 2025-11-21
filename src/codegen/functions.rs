@@ -20,6 +20,35 @@ impl<'ctx> CodeGen<'ctx> {
         // Store the global instructions for later use (e.g., initialization).
         self.globals = program.globals.clone();
 
+        // --- PRE-PROCESSING ---
+        // CRITICAL: Scan for struct declarations FIRST to populate metadata and create canonical types
+        // This MUST happen BEFORE predeclaring functions so that struct parameter types are recognized
+        for instr in &program.globals {
+            if let MirInstr::StructDecl {
+                struct_name,
+                field_names,
+                field_types,
+            } = instr
+            {
+                // Store metadata for this struct type
+                let metadata = crate::codegen::core::context::StructMetadata {
+                    field_names: field_names.clone(),
+                    field_types: field_types.clone(),
+                };
+                self.struct_metadata.insert(struct_name.clone(), metadata);
+
+                // Create the canonical LLVM struct type
+                let llvm_field_types: Vec<BasicTypeEnum> = field_types
+                    .iter()
+                    .map(|type_str| self.type_string_to_llvm_type(type_str))
+                    .collect();
+
+                let struct_type = self.context.struct_type(&llvm_field_types, false);
+                self.canonical_struct_types
+                    .insert(struct_name.clone(), struct_type);
+            }
+        }
+
         // Pre-scan and declare all functions for forward references
         // This allows functions to call each other regardless of definition order
         for func in &program.functions {
@@ -52,7 +81,6 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // --- PRE-PROCESSING ---
         // Scan all global instructions to identify strings involved in concatenation.
         // This helps optimize string handling and memory management.
         for instr in &program.globals {
@@ -199,9 +227,16 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn map_type_to_llvm(&self, type_opt: &Option<String>) -> BasicMetadataTypeEnum<'ctx> {
         if let Some(type_str) = type_opt {
+            // Check if this is a known struct type (either "Struct(Name)" or just "Name")
+            let is_struct =
+                type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
+
             if type_str.contains("String") || type_str.contains("Str") {
                 self.context.ptr_type(AddressSpace::default()).into()
             } else if type_str.contains("Array") || type_str.contains("Map") {
+                self.context.ptr_type(AddressSpace::default()).into()
+            } else if is_struct {
+                // Struct parameters are passed as pointers
                 self.context.ptr_type(AddressSpace::default()).into()
             } else if type_str.contains("Float") {
                 self.context.f64_type().into()
@@ -251,6 +286,43 @@ impl<'ctx> CodeGen<'ctx> {
             ("Int", "Bool")
         } else {
             ("Int", "Int") // default
+        }
+    }
+
+    /// Convert a type string to an LLVM BasicTypeEnum
+    /// Handles primitives, pointers (Str, Array, Map), and structs
+    fn type_string_to_llvm_type(&self, type_str: &str) -> BasicTypeEnum<'ctx> {
+        let type_str = type_str.trim();
+
+        if type_str == "Int" || type_str == "i32" {
+            self.context.i32_type().into()
+        } else if type_str == "Float" || type_str == "f64" {
+            self.context.f64_type().into()
+        } else if type_str == "Bool" {
+            self.context.bool_type().into()
+        } else if type_str == "Str" || type_str == "String" {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if type_str.starts_with("Array") {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if type_str.starts_with("Map") {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if type_str.starts_with("Struct(") {
+            // Extract struct name from "Struct(Name)"
+            let struct_name = type_str
+                .trim_start_matches("Struct(")
+                .trim_end_matches(")")
+                .trim();
+
+            // If we already have a canonical type for this struct, use it
+            if let Some(struct_type) = self.canonical_struct_types.get(struct_name) {
+                (*struct_type).into()
+            } else {
+                // Fallback to pointer for forward-declared structs
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
+        } else {
+            // Default fallback
+            self.context.i32_type().into()
         }
     }
 
@@ -466,12 +538,19 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Get the correct type for this parameter
             let param_type = if let Some(Some(ref type_str)) = func.param_types.get(i) {
+                // Check if this is a known struct type (either "Struct(Name)" or just "Name")
+                let is_struct =
+                    type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
+
                 // Map MIR type strings to LLVM types
                 if type_str.contains("String") || type_str.contains("Str") {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Array") {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Map") {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                } else if is_struct {
+                    // Struct parameters are passed as pointers
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Float") {
                     self.context.f64_type().into()
@@ -506,6 +585,10 @@ impl<'ctx> CodeGen<'ctx> {
             // Create metadata for array and map parameters
             // This is crucial for imported functions to work with arrays/maps
             if let Some(Some(ref type_str)) = func.param_types.get(i) {
+                // Check if this is a known struct type (either "Struct(Name)" or just "Name")
+                let is_struct =
+                    type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
+
                 if type_str.contains("Array") {
                     // Extract element type from Array(Type) format
                     let element_type = Self::extract_array_element_type(type_str);
@@ -548,6 +631,20 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Also store the parameter value so it can be resolved
                     self.temp_values.insert(param.clone(), param_val);
+                } else if is_struct {
+                    // Normalize the type string to "Struct(Name)" format
+                    let normalized_type = if type_str.contains("Struct(") {
+                        type_str.clone()
+                    } else {
+                        format!("Struct({})", type_str)
+                    };
+
+                    // Store struct type metadata and temp value for struct parameters
+                    self.variable_types.insert(param.clone(), normalized_type);
+                    self.temp_values.insert(param.clone(), param_val);
+
+                    // Track as heap-allocated for RC purposes
+                    self.heap_arrays.insert(param.clone());
                 }
             }
         }

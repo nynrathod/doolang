@@ -69,6 +69,39 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             }
         }
 
+        // Handle manual error extraction with ?? operator (e.g., let a, b ?? err = expr;)
+        AstNode::ManualErrorExtract {
+            expr,
+            ok_pattern,
+            error_var,
+        } => {
+            // Build MIR for the expression that returns Result
+            let result_tmp = build_expression(builder, expr, block);
+
+            // Collect Ok value names from the pattern
+            let ok_names = match ok_pattern {
+                Pattern::Identifier(name) => vec![name.clone()],
+                Pattern::Tuple(patterns) => patterns
+                    .iter()
+                    .filter_map(|p| {
+                        if let Pattern::Identifier(name) = p {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                Pattern::Wildcard => vec![],
+            };
+
+            // Generate ManualErrorExtract instruction
+            block.instrs.push(MirInstr::ManualErrorExtract {
+                ok_names,
+                error_name: error_var.clone(),
+                result: result_tmp,
+            });
+        }
+
         // Handle assignment statements (e.g., x = expr, (a, b) = func()).
         AstNode::Assignment { pattern, value } => {
             let value_tmp = build_expression(builder, value, block);
@@ -206,14 +239,18 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
         }
 
         // Handle struct declarations (type definitions, not instances).
-        AstNode::StructDecl { name, fields } => {
+        AstNode::StructDecl {
+            name,
+            fields,
+            is_public,
+        } => {
             // Create a placeholder instance showing the structure.
             let tmp = builder.next_tmp();
             let field_vals: Vec<(String, String)> = fields
                 .iter()
-                .map(|(fname, _typ)| {
+                .map(|field| {
                     let val_tmp = builder.next_tmp();
-                    (fname.clone(), val_tmp)
+                    (field.name.clone(), val_tmp)
                 })
                 .collect();
 
@@ -225,8 +262,14 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
         }
 
         // Handle enum declarations (type definitions, not instances).
-        AstNode::EnumDecl { name, variants } => {
-            for (variant_name, opt_type) in variants {
+        AstNode::EnumDecl {
+            name,
+            variants,
+            is_public,
+        } => {
+            for variant in variants {
+                let variant_name = &variant.name;
+                let opt_type = &variant.payload;
                 let tmp = builder.next_tmp();
                 let value_tmp = opt_type.as_ref().map(|_| builder.next_tmp());
                 block.instrs.push(MirInstr::EnumInit {

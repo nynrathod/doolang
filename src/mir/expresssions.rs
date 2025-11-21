@@ -135,6 +135,19 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             tmp
         }
 
+        AstNode::NilLiteral => {
+            let tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::ConstInt {
+                name: tmp.clone(),
+                value: 0, // Nil is represented as null pointer (0)
+            });
+            // Track type in symbol table as String (null pointer type)
+            builder
+                .mir_symbol_table
+                .insert(tmp.clone(), TypeNode::String);
+            tmp
+        }
+
         AstNode::StringLiteral(s) => {
             let tmp = builder.next_tmp();
             block.instrs.push(MirInstr::ConstString {
@@ -805,6 +818,67 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             }
 
             unwrapped_tmp
+        }
+
+        // Struct literal: Point { x: 10, y: 20 }
+        AstNode::StructLiteral { name, fields } => {
+            // Build MIR for each field value expression
+            let mut field_values = Vec::new();
+            for (field_name, field_expr) in fields {
+                let value_tmp = build_expression(builder, field_expr, block);
+                field_values.push((field_name.clone(), value_tmp));
+            }
+
+            // Create struct initialization instruction
+            let struct_tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::StructInit {
+                name: struct_tmp.clone(),
+                struct_name: name.clone(),
+                fields: field_values,
+            });
+
+            struct_tmp
+        }
+
+        // Field access: obj.field
+        AstNode::FieldAccess { object, field } => {
+            // Build MIR for the object expression
+            let object_tmp = build_expression(builder, object, block);
+
+            // Create field access instruction
+            let field_tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::StructGet {
+                name: field_tmp.clone(),
+                struct_instance: object_tmp,
+                field: field.clone(),
+            });
+
+            field_tmp
+        }
+
+        // Enum variant: Direction::North or Status::Active(value)
+        AstNode::EnumVariant {
+            enum_name,
+            variant,
+            payload,
+        } => {
+            // Build MIR for payload if present
+            let payload_tmp = if let Some(payload_expr) = payload {
+                Some(build_expression(builder, payload_expr, block))
+            } else {
+                None
+            };
+
+            // Create enum initialization instruction
+            let enum_tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::EnumInit {
+                name: enum_tmp.clone(),
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                value: payload_tmp,
+            });
+
+            enum_tmp
         }
 
         _ => {

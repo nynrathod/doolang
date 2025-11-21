@@ -150,21 +150,25 @@ impl MirBuilder {
                 }
 
                 // Handle struct declarations (type definitions, not instances).
-                AstNode::StructDecl { name, fields } => {
-                    // For demonstration, create a placeholder instance showing the structure.
-                    let tmp = self.next_tmp();
-                    let field_vals: Vec<(String, String)> = fields
+                AstNode::StructDecl {
+                    name,
+                    fields,
+                    is_public,
+                } => {
+                    // Extract field names and types from the StructField metadata
+                    let field_names: Vec<String> =
+                        fields.iter().map(|field| field.name.clone()).collect();
+
+                    let field_types: Vec<String> = fields
                         .iter()
-                        .map(|(fname, _typ)| {
-                            let val_tmp = self.next_tmp();
-                            (fname.clone(), val_tmp)
-                        })
+                        .map(|field| field.field_type.format_type_string())
                         .collect();
 
-                    self.program.globals.push(MirInstr::StructInit {
-                        name: tmp,
+                    // Emit StructDecl with complete type information
+                    self.program.globals.push(MirInstr::StructDecl {
                         struct_name: name.clone(),
-                        fields: field_vals,
+                        field_names,
+                        field_types,
                     });
                 }
 
@@ -186,8 +190,14 @@ impl MirBuilder {
                     });
                 }
 
-                AstNode::EnumDecl { name, variants } => {
-                    for (variant_name, opt_type) in variants {
+                AstNode::EnumDecl {
+                    name,
+                    variants,
+                    is_public,
+                } => {
+                    for variant in variants {
+                        let variant_name = &variant.name;
+                        let opt_type = &variant.payload;
                         let tmp = self.next_tmp();
                         let value_tmp = if opt_type.is_some() {
                             Some(self.next_tmp())

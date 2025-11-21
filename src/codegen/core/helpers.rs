@@ -70,14 +70,21 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         if let Some(sym) = self.symbols.get(name) {
-            // Special handling for array/map variables - they should always be pointers
+            // Special handling for array/map/struct variables - they should always be pointers
             // Check both naming convention and heap tracking sets
             let is_array_or_map = (name.contains("_array") || name.contains("_map"))
                 || self.heap_arrays.contains(name)
                 || self.heap_maps.contains(name);
 
-            let load_type = if is_array_or_map {
-                // Arrays and maps are always pointers, regardless of how they were stored
+            // Check if this is a struct parameter by looking at variable_types
+            let is_struct_param = self
+                .variable_types
+                .get(name)
+                .map(|t| t.contains("Struct("))
+                .unwrap_or(false);
+
+            let load_type = if is_array_or_map || is_struct_param {
+                // Arrays, maps, and structs are always pointers, regardless of how they were stored
                 self.context
                     .ptr_type(inkwell::AddressSpace::default())
                     .into()
@@ -104,13 +111,19 @@ impl<'ctx> CodeGen<'ctx> {
             return self.context.i32_type().const_int(0, false).into();
         }
 
-        debug_assert!(
-            false,
+        eprintln!("ERROR: Unknown variable or literal: {}", name);
+        eprintln!(
+            "Available in temp_values: {:?}",
+            self.temp_values.keys().collect::<Vec<_>>()
+        );
+        eprintln!(
+            "Available in symbols: {:?}",
+            self.symbols.keys().collect::<Vec<_>>()
+        );
+        panic!(
             "Unknown variable or literal: {} - check your MIR generation",
             name
         );
-        // Return a zero value as fallback for release builds
-        self.context.i32_type().const_int(0, false).into()
     }
 
     /// Returns the LLVM type corresponding to a type name string.

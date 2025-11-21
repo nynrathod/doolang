@@ -194,7 +194,38 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap_or_else(|| "Str".to_string());
 
                     self.result_types
-                        .insert(dest_name.clone(), (ok_type, err_type));
+                        .insert(dest_name.clone(), (ok_type.clone(), err_type.clone()));
+
+                    // Check if ok_type is a tuple/multi-value type
+                    // If so, set up tuple_types so TupleExtract can work properly
+                    if ok_type.contains(',') || ok_type.starts_with("Tuple(") {
+                        let tuple_type_str = if ok_type.starts_with("Tuple(") {
+                            ok_type.clone()
+                        } else {
+                            format!("Tuple({})", ok_type)
+                        };
+
+                        // Build tuple struct type
+                        // Strip "Tuple(...)" wrapper before parsing
+                        let inner_types = if tuple_type_str.starts_with("Tuple(")
+                            && tuple_type_str.ends_with(')')
+                        {
+                            &tuple_type_str[6..tuple_type_str.len() - 1]
+                        } else {
+                            &tuple_type_str
+                        };
+                        let types = crate::codegen::core::helpers::parse_tuple_types(inner_types);
+                        let tuple_field_types: Vec<inkwell::types::BasicTypeEnum> =
+                            types.iter().map(|t| self.map_type_str_to_llvm(t)).collect();
+                        let tuple_type = self.context.struct_type(&tuple_field_types, false);
+
+                        // Store tuple metadata
+                        self.tuple_struct_types
+                            .insert(tuple_type_str.clone(), tuple_type);
+
+                        // Set tuple_types for this Result so TupleExtract can find it
+                        self.tuple_types.insert(dest_name.clone(), tuple_type_str);
+                    }
 
                     // Store the Result struct in temp_values AND in symbols
                     // This ensures both resolve_value and print can access it properly
@@ -574,6 +605,10 @@ impl<'ctx> CodeGen<'ctx> {
                         t.starts_with("Tuple(") && !t.starts_with("Tuple(Str)")
                     });
 
+                    // Check if this is a struct type
+                    let is_struct_type =
+                        ok_type.as_ref().map_or(false, |t| t.starts_with("Struct("));
+
                     if is_multi_tuple {
                         // Multi-value tuple - can't print as single value, show placeholder
                         let placeholder = "<multi-value Ok>";
@@ -594,6 +629,39 @@ impl<'ctx> CodeGen<'ctx> {
                                     placeholder_global.as_pointer_value().into(),
                                 ],
                                 "print_tuple",
+                            )
+                            .unwrap();
+                    } else if is_struct_type {
+                        // Struct - print struct representation
+                        let struct_name = ok_type
+                            .as_ref()
+                            .map(|t| {
+                                if t.starts_with("Struct(") && t.ends_with(")") {
+                                    &t[7..t.len() - 1]
+                                } else {
+                                    "Unknown"
+                                }
+                            })
+                            .unwrap_or("Unknown");
+
+                        let placeholder = format!("<{}>", struct_name);
+                        let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_struct_fmt")
+                            .unwrap();
+                        let placeholder_global = self
+                            .builder
+                            .build_global_string_ptr(&placeholder, "struct_placeholder")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[
+                                    format_global.as_pointer_value().into(),
+                                    placeholder_global.as_pointer_value().into(),
+                                ],
+                                "print_struct",
                             )
                             .unwrap();
                     } else if ok_type
@@ -661,13 +729,13 @@ impl<'ctx> CodeGen<'ctx> {
 
                         // Check if value is 0 (false) or non-zero (true)
                         let zero = self.context.i32_type().const_int(0, false);
-                        let is_false = self
+                        let is_true = self
                             .builder
                             .build_int_compare(
-                                inkwell::IntPredicate::EQ,
+                                inkwell::IntPredicate::NE,
                                 i32_val,
                                 zero,
-                                "is_false_ok",
+                                "is_true_ok",
                             )
                             .unwrap();
 
@@ -696,9 +764,9 @@ impl<'ctx> CodeGen<'ctx> {
                         let selected_str = self
                             .builder
                             .build_select(
-                                is_false,
-                                false_global.as_pointer_value(),
+                                is_true,
                                 true_global.as_pointer_value(),
+                                false_global.as_pointer_value(),
                                 "select_bool_str_ok",
                             )
                             .unwrap()
@@ -782,9 +850,9 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Check if value is 0 (false) or non-zero (true)
                     let zero = self.context.i32_type().const_int(0, false);
-                    let is_false = self
+                    let is_true = self
                         .builder
-                        .build_int_compare(inkwell::IntPredicate::EQ, int_val, zero, "is_false")
+                        .build_int_compare(inkwell::IntPredicate::NE, int_val, zero, "is_true")
                         .unwrap();
 
                     // Use select to choose between "true" and "false" strings
@@ -812,9 +880,9 @@ impl<'ctx> CodeGen<'ctx> {
                     let selected_str = self
                         .builder
                         .build_select(
-                            is_false,
-                            false_global.as_pointer_value(),
+                            is_true,
                             true_global.as_pointer_value(),
+                            false_global.as_pointer_value(),
                             "select_bool_str",
                         )
                         .unwrap()

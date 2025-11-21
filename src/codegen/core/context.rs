@@ -37,6 +37,13 @@ pub struct MapMetadata {
     pub value_needs_rc: bool,
 }
 
+/// Metadata for tracking struct field information
+#[derive(Debug, Clone)]
+pub struct StructMetadata {
+    pub field_names: Vec<String>,
+    pub field_types: Vec<String>,
+}
+
 /// Loop type enumeration
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoopType {
@@ -98,6 +105,8 @@ pub struct CodeGen<'ctx> {
 
     pub boolean_temps: std::collections::HashSet<String>, // Track temporary variables from boolean-returning methods
     pub variable_types: HashMap<String, String>, // Track variable types for typeOf function
+    pub struct_metadata: HashMap<String, StructMetadata>, // Track struct type definitions (name -> field info)
+    pub canonical_struct_types: HashMap<String, inkwell::types::StructType<'ctx>>, // Canonical LLVM struct types by name
     pub tuple_struct_types: HashMap<String, inkwell::types::StructType<'ctx>>, // Cache for tuple struct types
     pub tuple_types: HashMap<String, String>, // Maps temporary values to their tuple type strings (e.g., "Tuple(Int,Str,Float)")
 
@@ -161,6 +170,8 @@ impl<'ctx> CodeGen<'ctx> {
 
             boolean_temps: std::collections::HashSet::new(),
             variable_types: HashMap::new(),
+            struct_metadata: HashMap::new(),
+            canonical_struct_types: HashMap::new(),
             tuple_struct_types: HashMap::new(),
             tuple_types: HashMap::new(),
 

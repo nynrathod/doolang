@@ -12,8 +12,39 @@ impl<'ctx> CodeGen<'ctx> {
         rhs: &str,
     ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
         // Check if this is a string concatenation (add operation with pointer operands)
-        let lhs_val = self.resolve_value(lhs);
-        let rhs_val = self.resolve_value(rhs);
+        let mut lhs_val = self.resolve_value(lhs);
+        let mut rhs_val = self.resolve_value(rhs);
+
+        // Support op:type format for int/float operations
+        let parts: Vec<&str> = op.split(':').collect();
+        let op_name = parts[0];
+        let op_type = parts.get(1).copied().unwrap_or("int");
+
+        // Handle pointer-to-nil comparisons (e.g., err != nil)
+        // Convert nil (int 0) to null pointer for comparison
+        if (op_name == "eq" || op_name == "ne") {
+            if lhs_val.is_pointer_value() && rhs_val.is_int_value() {
+                let rhs_int = rhs_val.into_int_value();
+                if rhs_int.is_const() && rhs_int.get_zero_extended_constant() == Some(0) {
+                    // rhs is nil (0), convert to null pointer
+                    rhs_val = self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
+                        .into();
+                }
+            } else if rhs_val.is_pointer_value() && lhs_val.is_int_value() {
+                let lhs_int = lhs_val.into_int_value();
+                if lhs_int.is_const() && lhs_int.get_zero_extended_constant() == Some(0) {
+                    // lhs is nil (0), convert to null pointer
+                    lhs_val = self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
+                        .into();
+                }
+            }
+        }
 
         // If both are pointers and operation is "add", treat as string concatenation
         if op == "add" && lhs_val.is_pointer_value() && rhs_val.is_pointer_value() {
@@ -24,11 +55,6 @@ impl<'ctx> CodeGen<'ctx> {
                 right: rhs.to_string(),
             });
         }
-
-        // Support op:type format for int/float operations
-        let parts: Vec<&str> = op.split(':').collect();
-        let op_name = parts[0];
-        let op_type = parts.get(1).copied().unwrap_or("int");
 
         // Track that this destination is a boolean if the operation type is "bool"
         if op_type == "bool" {
@@ -44,16 +70,71 @@ impl<'ctx> CodeGen<'ctx> {
             });
         }
 
-        // Handle string comparisons using strcmp
+        // Handle pointer comparisons (including nil checks)
         if (op_name == "eq" || op_name == "ne")
             && lhs_val.is_pointer_value()
             && rhs_val.is_pointer_value()
-            && op_type != "array"
-            && op_type != "map"
         {
+            // Check if this is a nil comparison (null pointer check)
             let lhs_ptr = lhs_val.into_pointer_value();
             let rhs_ptr = rhs_val.into_pointer_value();
 
+            // Use pointer comparison for nil checks and other pointer comparisons
+            let null_ptr = self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .const_null();
+
+            let is_nil_check = (lhs_ptr.is_const() && lhs_ptr.is_null())
+                || (rhs_ptr.is_const() && rhs_ptr.is_null());
+
+            if is_nil_check || op_type == "array" || op_type == "map" {
+                // Direct pointer comparison for nil checks, arrays, and maps
+                let ptr_as_int_lhs = self
+                    .builder
+                    .build_ptr_to_int(lhs_ptr, self.context.i64_type(), "ptr_to_int_lhs")
+                    .unwrap();
+                let ptr_as_int_rhs = self
+                    .builder
+                    .build_ptr_to_int(rhs_ptr, self.context.i64_type(), "ptr_to_int_rhs")
+                    .unwrap();
+
+                let cmp_i1 = if op_name == "eq" {
+                    self.builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            ptr_as_int_lhs,
+                            ptr_as_int_rhs,
+                            "ptreq_tmp",
+                        )
+                        .unwrap()
+                } else {
+                    self.builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            ptr_as_int_lhs,
+                            ptr_as_int_rhs,
+                            "ptrne_tmp",
+                        )
+                        .unwrap()
+                };
+
+                let result = self
+                    .builder
+                    .build_int_z_extend(cmp_i1, self.context.i32_type(), "ptr_cmp_ext")
+                    .unwrap();
+
+                self.boolean_temps.insert(dst.to_string());
+                self.temp_values.insert(dst.to_string(), result.into());
+                if let Some(sym) = self.symbols.get(dst) {
+                    self.builder.build_store(sym.ptr, result).unwrap();
+                }
+                self.variable_types
+                    .insert(dst.to_string(), "Bool".to_string());
+                return Some(result.into());
+            }
+
+            // String comparison using strcmp for non-nil checks
             // Declare/get strcmp function
             let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
                 let i8_ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
