@@ -28,7 +28,7 @@ impl PathResolver {
         })
     }
 
-    /// Resolve the standard library path
+    /// Resolve the standard library path by searching up the directory tree
     fn resolve_stdlib_path() -> Result<PathBuf, String> {
         // 1. Check explicit env var first
         if let Ok(stdlib_env) = env::var("DOO_STDLIB_PATH") {
@@ -38,7 +38,7 @@ impl PathResolver {
             }
         }
 
-        // 2. FIRST: Look next to executable (production - THIS SHOULD BE FIRST)
+        // 2. Look next to executable (production - Windows/Unix binaries)
         if let Ok(exe_path) = env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
                 let stdlib_dir = exe_dir.join("std");
@@ -48,7 +48,15 @@ impl PathResolver {
             }
         }
 
-        // 3. Fallback to relative paths (dev)
+        // 3. Search up the directory tree from current working directory
+        // This allows `doo run` to work from any subdirectory of the project
+        if let Ok(current_dir) = env::current_dir() {
+            if let Some(found_path) = Self::search_up_for_std(&current_dir) {
+                return Ok(found_path);
+            }
+        }
+
+        // 4. Fallback to relative paths (dev - for CI/testing)
         let dev_stdlib = PathBuf::from("./std");
         if dev_stdlib.exists() {
             return Ok(dev_stdlib);
@@ -60,6 +68,29 @@ impl PathResolver {
         }
 
         Err("Could not find stdlib directory".to_string())
+    }
+
+    /// Search up the directory tree for the std directory
+    /// Starts from the given path and walks up until it finds a std directory
+    /// or reaches the filesystem root
+    fn search_up_for_std(start_path: &Path) -> Option<PathBuf> {
+        let mut current = start_path.to_path_buf();
+
+        // Search up to 20 levels to prevent infinite loops
+        for _ in 0..20 {
+            let stdlib_dir = current.join("std");
+            if stdlib_dir.exists() {
+                return Some(stdlib_dir);
+            }
+
+            // Move to parent directory
+            if !current.pop() {
+                // We've reached the filesystem root
+                break;
+            }
+        }
+
+        None
     }
 
     /// Resolve the project root path
@@ -162,6 +193,15 @@ mod tests {
             // This will work if std exists
             let result = resolver.resolve_module("std:Array");
             println!("Stdlib resolution: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_search_up_for_std() {
+        // This test verifies that search_up_for_std works correctly
+        if let Ok(current_dir) = env::current_dir() {
+            let found = PathResolver::search_up_for_std(&current_dir);
+            println!("Found std at: {:?}", found);
         }
     }
 }

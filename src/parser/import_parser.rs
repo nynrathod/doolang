@@ -19,9 +19,8 @@ impl<'a> Parser<'a> {
         path.push(first.value.to_string());
 
         // Parse :: separated identifiers until we determine what type of import this is
-        while self.peek_is(TokenType::Colon) {
-            self.advance(); // first :
-            self.expect(TokenType::Colon)?; // second :
+        while self.peek_is(TokenType::ColonColon) {
+            self.advance(); // consume ::
 
             // Now peek at what comes after ::
             if self.peek_is(TokenType::Star) {
@@ -45,7 +44,7 @@ impl<'a> Parser<'a> {
                 let ident_str = ident.value.to_string();
 
                 // Peek at what comes after this identifier
-                if self.peek_is(TokenType::Colon) {
+                if self.peek_is(TokenType::ColonColon) {
                     // Another :: follows, so this is part of the path
                     path.push(ident_str);
                     // Continue the loop to process the next ::

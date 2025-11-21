@@ -138,7 +138,7 @@ impl SemanticAnalyzer {
         nodes: &mut Vec<AstNode>,
         import_stack: &mut Vec<String>,
     ) -> Result<(), SemanticError> {
-        // FIRST PASS: Process imports and register all function signatures
+        // FIRST PASS: Process imports, register all function signatures, structs, and enums
         // Collect errors but don't stop at first module error
 
         for node in nodes.iter_mut() {
@@ -149,6 +149,66 @@ impl SemanticAnalyzer {
                         // Collect error but don't return immediately - continue processing
                         self.collected_errors.push(e);
                     }
+                }
+                // Register struct declarations early so they can be used in function signatures
+                AstNode::StructDecl {
+                    name,
+                    fields,
+                    is_public,
+                } => {
+                    if self.struct_table.contains_key(name) {
+                        self.collected_errors
+                            .push(SemanticError::StructRedeclaration(NamedError {
+                                name: name.clone(),
+                            }));
+                        continue;
+                    }
+                    // Build field map
+                    let mut field_map = HashMap::new();
+                    for field in fields {
+                        field_map.insert(field.name.clone(), field.field_type.clone());
+                    }
+                    self.struct_table.insert(name.clone(), field_map.clone());
+                    // Also add to symbol table
+                    self.symbol_table.insert(
+                        name.clone(),
+                        SymbolInfo {
+                            ty: TypeNode::Struct(name.clone(), field_map),
+                            mutable: false,
+                            is_ref_counted: true,
+                            is_parameter: false,
+                        },
+                    );
+                }
+                // Register enum declarations early so they can be used in function signatures
+                AstNode::EnumDecl {
+                    name,
+                    variants,
+                    is_public,
+                } => {
+                    if self.enum_table.contains_key(name) {
+                        self.collected_errors
+                            .push(SemanticError::EnumRedeclaration(NamedError {
+                                name: name.clone(),
+                            }));
+                        continue;
+                    }
+                    // Build variant map
+                    let mut variant_map = HashMap::new();
+                    for variant in variants {
+                        variant_map.insert(variant.name.clone(), variant.payload.clone());
+                    }
+                    self.enum_table.insert(name.clone(), variant_map.clone());
+                    // Also add to symbol table
+                    self.symbol_table.insert(
+                        name.clone(),
+                        SymbolInfo {
+                            ty: TypeNode::Enum(name.clone(), variant_map),
+                            mutable: false,
+                            is_ref_counted: true,
+                            is_parameter: false,
+                        },
+                    );
                 }
                 // Register local function signatures
                 AstNode::FunctionDecl {
@@ -188,9 +248,12 @@ impl SemanticAnalyzer {
         }
 
         // SECOND PASS: Analyze all nodes (including function bodies)
-        // Skip imports as they're already processed
+        // Skip imports, enums, and structs as they're already processed in first pass
         for node in nodes {
-            if !matches!(node, AstNode::Import { .. }) {
+            if !matches!(
+                node,
+                AstNode::Import { .. } | AstNode::EnumDecl { .. } | AstNode::StructDecl { .. }
+            ) {
                 if let Err(e) = self.analyze_node(node) {
                     self.collected_errors.push(e);
                 }
@@ -368,12 +431,20 @@ impl SemanticAnalyzer {
                 // Type check the expression that returns Result
                 let expr_type = self.infer_type(expr)?;
 
-                // Declare the error variable in symbol table
+                // Extract Ok and Err types from Result
+                let (ok_type, err_type) = if let TypeNode::Result(ok_type, err_type) = &expr_type {
+                    (ok_type.as_ref().clone(), err_type.as_ref().clone())
+                } else {
+                    // Fallback if not a Result type
+                    (TypeNode::Int, TypeNode::String)
+                };
+
+                // Declare the error variable in symbol table with the actual error type
                 if error_var != "_" {
                     self.symbol_table.insert(
                         error_var.clone(),
                         SymbolInfo {
-                            ty: TypeNode::String,
+                            ty: err_type.clone(),
                             mutable: false,
                             is_ref_counted: true,
                             is_parameter: false,
@@ -384,16 +455,11 @@ impl SemanticAnalyzer {
                 // Declare ok pattern variables in symbol table
                 match ok_pattern {
                     Pattern::Identifier(name) => {
-                        // For single value, try to infer type from Result
-                        let ok_type = if let TypeNode::Result(ok_type, _) = expr_type {
-                            *ok_type
-                        } else {
-                            TypeNode::Int
-                        };
+                        // For single value, use the extracted ok_type
                         self.symbol_table.insert(
                             name.clone(),
                             SymbolInfo {
-                                ty: ok_type,
+                                ty: ok_type.clone(),
                                 mutable: false,
                                 is_ref_counted: true,
                                 is_parameter: false,
@@ -401,13 +467,22 @@ impl SemanticAnalyzer {
                         );
                     }
                     Pattern::Tuple(patterns) => {
-                        // For tuple, each pattern gets declared
-                        for pattern in patterns {
+                        // For tuple, extract element types from tuple type
+                        let element_types = if let TypeNode::Tuple(types) = &ok_type {
+                            types.clone()
+                        } else {
+                            // Fallback: assign Int to all patterns
+                            vec![TypeNode::Int; patterns.len()]
+                        };
+
+                        for (i, pattern) in patterns.iter().enumerate() {
                             if let Pattern::Identifier(name) = pattern {
+                                let elem_type =
+                                    element_types.get(i).cloned().unwrap_or(TypeNode::Int);
                                 self.symbol_table.insert(
                                     name.clone(),
                                     SymbolInfo {
-                                        ty: TypeNode::Int,
+                                        ty: elem_type,
                                         mutable: false,
                                         is_ref_counted: true,
                                         is_parameter: false,
@@ -566,16 +641,12 @@ impl SemanticAnalyzer {
         import_stack: &mut Vec<String>,
     ) -> Result<(), SemanticError> {
         // Create module key for circular import detection
-
         let module_key = path.join("::");
 
         // CIRCULAR DEPENDENCY DETECTION
         if import_stack.contains(&module_key) {
             let mut cycle = import_stack.clone();
             cycle.push(module_key.clone());
-            if cfg!(debug_assertions) {
-                println!("[ERROR] Circular import detected: {}", cycle.join(" -> "));
-            }
             return Err(SemanticError::CircularImport { cycle });
         }
         import_stack.push(module_key.clone());
@@ -585,13 +656,17 @@ impl SemanticAnalyzer {
             .iter()
             .any(|item| matches!(item, crate::parser::ast::ImportItem::Wildcard));
         if !has_wildcard && !items.is_empty() {
-            // Check if all specific symbols are already imported
+            // Check if all specific symbols are already imported (functions, structs, or enums)
             let all_imported = items.iter().all(|item| match item {
                 crate::parser::ast::ImportItem::Symbol(name) => {
                     self.function_table.contains_key(name)
+                        || self.struct_table.contains_key(name)
+                        || self.enum_table.contains_key(name)
                 }
                 crate::parser::ast::ImportItem::SymbolWithAlias(name, _) => {
                     self.function_table.contains_key(name)
+                        || self.struct_table.contains_key(name)
+                        || self.enum_table.contains_key(name)
                 }
                 crate::parser::ast::ImportItem::Wildcard => false,
             });
@@ -694,26 +769,30 @@ impl SemanticAnalyzer {
             .collect();
 
         for node in nodes {
-            if let AstNode::FunctionDecl { name, .. } = &node {
-                // Only import functions that start with uppercase (public convention)
-                if name.chars().next().unwrap_or('a').is_uppercase() {
-                    let should_import = if should_import_wildcard {
-                        // Wildcard: import all public functions
-                        true
-                    } else if specific_imports.is_empty() {
-                        // No specific imports and no wildcard - shouldn't happen but handle it
-                        false
-                    } else {
-                        // Check if this function is in the specific imports list
-                        specific_imports.iter().any(|item| match item {
-                            crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
-                            crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => sym == name,
-                            crate::parser::ast::ImportItem::Wildcard => false,
-                        })
-                    };
+            match &node {
+                // Import functions
+                AstNode::FunctionDecl { name, .. } => {
+                    // Only import functions that start with uppercase (public convention)
+                    if name.chars().next().unwrap_or('a').is_uppercase() {
+                        let should_expose = if should_import_wildcard {
+                            // Wildcard: expose all public functions
+                            true
+                        } else if specific_imports.is_empty() {
+                            // No specific imports and no wildcard - shouldn't happen but handle it
+                            false
+                        } else {
+                            // Check if this function is in the specific imports list
+                            specific_imports.iter().any(|item| match item {
+                                crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
+                                crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
+                                    sym == name
+                                }
+                                crate::parser::ast::ImportItem::Wildcard => false,
+                            })
+                        };
 
-                    if should_import {
-                        // Check if already imported
+                        // ALWAYS add public functions to imported_functions for MIR (for dependencies)
+                        // But only expose requested ones to function_table (for caller access)
                         if !self.imported_functions.iter().any(|n| {
                             if let AstNode::FunctionDecl { name: fn_name, .. } = n {
                                 fn_name == name
@@ -724,33 +803,119 @@ impl SemanticAnalyzer {
                             self.imported_functions.push(node.clone());
                         }
 
-                        // Get the alias name for this import if one exists
-                        let registered_name = specific_imports.iter().find_map(|item| match item {
-                            crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias)
-                                if sym == name =>
+                        // Only expose to function_table if explicitly requested
+                        if should_expose {
+                            // Get the alias name for this import if one exists
+                            let registered_name =
+                                specific_imports.iter().find_map(|item| match item {
+                                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias)
+                                        if sym == name =>
+                                    {
+                                        Some(alias.clone())
+                                    }
+                                    _ => None,
+                                });
+
+                            // Copy function signature to current function table
+                            if let Some((params, ret, err)) =
+                                imported_analyzer.function_table.get(name)
                             {
-                                Some(alias.clone())
-                            }
-                            _ => None,
-                        });
+                                let fn_table_key =
+                                    registered_name.clone().unwrap_or_else(|| name.clone());
+                                self.function_table.insert(
+                                    fn_table_key.clone(),
+                                    (params.clone(), ret.clone(), err.clone()),
+                                );
 
-                        // Copy function signature to current function table
-                        if let Some((params, ret, err)) = imported_analyzer.function_table.get(name)
-                        {
-                            let fn_table_key =
-                                registered_name.clone().unwrap_or_else(|| name.clone());
-                            self.function_table.insert(
-                                fn_table_key.clone(),
-                                (params.clone(), ret.clone(), err.clone()),
-                            );
-
-                            // If we have an alias, store the mapping
-                            if let Some(alias) = registered_name {
-                                self.function_aliases.insert(alias, name.clone());
+                                // If we have an alias, store the mapping
+                                if let Some(alias) = registered_name {
+                                    self.function_aliases.insert(alias, name.clone());
+                                }
                             }
                         }
                     }
                 }
+                // Import structs
+                AstNode::StructDecl {
+                    name, is_public, ..
+                } => {
+                    // Only import public structs (PascalCase - starts with uppercase)
+                    if *is_public {
+                        let should_import = if should_import_wildcard {
+                            // Wildcard: import all public structs
+                            true
+                        } else if specific_imports.is_empty() {
+                            false
+                        } else {
+                            // Check if this struct is in the specific imports list
+                            specific_imports.iter().any(|item| match item {
+                                crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
+                                crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
+                                    sym == name
+                                }
+                                crate::parser::ast::ImportItem::Wildcard => false,
+                            })
+                        };
+
+                        if should_import {
+                            // Copy struct definition to current struct table
+                            if let Some(fields) = imported_analyzer.struct_table.get(name) {
+                                self.struct_table.insert(name.clone(), fields.clone());
+                                // Also add to symbol_table for type resolution
+                                self.symbol_table.insert(
+                                    name.clone(),
+                                    SymbolInfo {
+                                        ty: TypeNode::Struct(name.clone(), fields.clone()),
+                                        mutable: false,
+                                        is_ref_counted: true,
+                                        is_parameter: false,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                // Import enums
+                AstNode::EnumDecl {
+                    name, is_public, ..
+                } => {
+                    // Only import public enums (PascalCase - starts with uppercase)
+                    if *is_public {
+                        let should_import = if should_import_wildcard {
+                            // Wildcard: import all public enums
+                            true
+                        } else if specific_imports.is_empty() {
+                            false
+                        } else {
+                            // Check if this enum is in the specific imports list
+                            specific_imports.iter().any(|item| match item {
+                                crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
+                                crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
+                                    sym == name
+                                }
+                                crate::parser::ast::ImportItem::Wildcard => false,
+                            })
+                        };
+
+                        if should_import {
+                            // Copy enum definition to current enum table
+                            if let Some(variants) = imported_analyzer.enum_table.get(name) {
+                                self.enum_table.insert(name.clone(), variants.clone());
+                                // Also add to symbol_table for type resolution
+                                self.symbol_table.insert(
+                                    name.clone(),
+                                    SymbolInfo {
+                                        ty: TypeNode::Enum(name.clone(), variants.clone()),
+                                        mutable: false,
+                                        is_ref_counted: true,
+                                        is_parameter: false,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -793,6 +958,8 @@ impl SemanticAnalyzer {
                     crate::parser::ast::ImportItem::Symbol(sym) => {
                         if !self.function_table.contains_key(sym)
                             && !self.symbol_table.contains_key(sym)
+                            && !self.struct_table.contains_key(sym)
+                            && !self.enum_table.contains_key(sym)
                         {
                             return Err(SemanticError::UndeclaredFunction(NamedError {
                                 name: format!("symbol '{}' not found in module", sym),
@@ -803,6 +970,8 @@ impl SemanticAnalyzer {
                         // Check using the alias name since that's what we registered
                         if !self.function_table.contains_key(alias)
                             && !self.symbol_table.contains_key(alias)
+                            && !self.struct_table.contains_key(sym)
+                            && !self.enum_table.contains_key(sym)
                         {
                             return Err(SemanticError::UndeclaredFunction(NamedError {
                                 name: format!("symbol '{}' not found in module", sym),
