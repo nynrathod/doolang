@@ -195,29 +195,9 @@ impl MirBuilder {
                     variants,
                     is_public,
                 } => {
-                    for variant in variants {
-                        let variant_name = &variant.name;
-                        let opt_type = &variant.payload;
-                        let tmp = self.next_tmp();
-                        let value_tmp = if opt_type.is_some() {
-                            Some(self.next_tmp())
-                        } else {
-                            None
-                        };
-
-                        self.program.globals.push(MirInstr::EnumInit {
-                            name: tmp.clone(),
-                            enum_name: name.clone(),
-                            variant: variant_name.clone(),
-                            value: value_tmp,
-                        });
-
-                        self.program.globals.push(MirInstr::Assign {
-                            name: format!("global_enum_{}_{}", name, variant_name),
-                            value: tmp,
-                            mutable: false,
-                        });
-                    }
+                    // Enum declarations are type definitions only.
+                    // No MIR instructions needed - the analyzer handles type tracking.
+                    // Actual enum instances are created when using EnumVariant expressions.
                 }
 
                 // Handle global assignments (outside functions).

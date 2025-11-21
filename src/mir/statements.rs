@@ -267,18 +267,9 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             variants,
             is_public,
         } => {
-            for variant in variants {
-                let variant_name = &variant.name;
-                let opt_type = &variant.payload;
-                let tmp = builder.next_tmp();
-                let value_tmp = opt_type.as_ref().map(|_| builder.next_tmp());
-                block.instrs.push(MirInstr::EnumInit {
-                    name: tmp,
-                    enum_name: name.clone(),
-                    variant: variant_name.clone(),
-                    value: value_tmp,
-                });
-            }
+            // Enum declarations are type definitions only.
+            // No MIR instructions needed - the analyzer handles type tracking.
+            // Actual enum instances are created when using EnumVariant expressions.
         }
 
         // Handle conditional statements (if/else).
