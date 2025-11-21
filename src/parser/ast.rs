@@ -21,6 +21,7 @@ pub enum TypeNode {
     TypeRef(String),
     Function(Vec<TypeNode>, Box<TypeNode>),
     Result(Box<TypeNode>, Box<TypeNode>), // Result(OkType, ErrType)
+    Builtin(String),                      // Builtin types like "json", "file"
 }
 
 impl TypeNode {
@@ -63,6 +64,7 @@ impl TypeNode {
                     err_type.format_type_string()
                 )
             }
+            TypeNode::Builtin(name) => format!("Builtin({})", name),
         }
     }
 

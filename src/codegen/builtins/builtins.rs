@@ -10,6 +10,16 @@ impl<'ctx> CodeGen<'ctx> {
         method: &str,
         args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
+        // Check for json builtin first
+        if object == "json" {
+            return self.generate_json_method(dest, method, args);
+        }
+
+        // Check for file builtin
+        if object == "file" {
+            return self.generate_file_method(dest, method, args);
+        }
+
         let object_val = self.resolve_value(object);
 
         // Check arrays and maps BEFORE strings, since they are also pointer types

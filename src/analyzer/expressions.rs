@@ -52,6 +52,14 @@ impl SemanticAnalyzer {
             AstNode::NilLiteral => Ok(TypeNode::Nil),
             // Identifier (variable name): look up in symbol table (with shadowing support)
             AstNode::Identifier(name) => {
+                // Check for builtin identifiers first
+                if name == "json" {
+                    return Ok(TypeNode::Builtin("json".to_string()));
+                }
+                if name == "file" {
+                    return Ok(TypeNode::Builtin("file".to_string()));
+                }
+
                 if let Some(info) = self.lookup_variable(name) {
                     Ok(info.ty.clone())
                 } else if let Some(outer) = &self.outer_symbol_table {
@@ -1512,6 +1520,94 @@ impl SemanticAnalyzer {
             TypeNode::Float => match method {
                 _ => Err(SemanticError::MethodNotFoundOnType {
                     object_type: "float".to_string(),
+                    method_name: method.to_string(),
+                    correct_type: None,
+                }),
+            },
+            TypeNode::Builtin(name) if name == "json" => match method {
+                "parse" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("json.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    // json.parse returns a Map<String, Any> - we'll use Map<String, String> for simplicity
+                    Ok(TypeNode::Map(
+                        Box::new(TypeNode::String),
+                        Box::new(TypeNode::String),
+                    ))
+                }
+                "stringify" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("json.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                _ => Err(SemanticError::MethodNotFoundOnType {
+                    object_type: "json".to_string(),
+                    method_name: method.to_string(),
+                    correct_type: None,
+                }),
+            },
+            TypeNode::Builtin(name) if name == "file" => match method {
+                "read" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("file.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::String)
+                }
+                "write" | "append" => {
+                    if args.len() != 2 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("file.{}", method),
+                            expected: 2,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Void)
+                }
+                "exists" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("file.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Bool)
+                }
+                "delete" | "mkdir" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("file.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Void)
+                }
+                "list" | "readLines" => {
+                    if args.len() != 1 {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: format!("file.{}", method),
+                            expected: 1,
+                            found: args.len(),
+                        });
+                    }
+                    Ok(TypeNode::Array(Box::new(TypeNode::String)))
+                }
+                _ => Err(SemanticError::MethodNotFoundOnType {
+                    object_type: "file".to_string(),
                     method_name: method.to_string(),
                     correct_type: None,
                 }),
