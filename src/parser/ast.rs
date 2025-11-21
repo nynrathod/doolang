@@ -9,6 +9,7 @@ pub enum TypeNode {
     Int,
     String,
     Bool,
+    Nil, // Polymorphic nil/null value - compatible with any pointer/optional type
     Array(Box<TypeNode>),
     Map(Box<TypeNode>, Box<TypeNode>),
     Tuple(Vec<TypeNode>),
@@ -31,6 +32,7 @@ impl TypeNode {
             TypeNode::Int => "Int".to_string(),
             TypeNode::String => "Str".to_string(),
             TypeNode::Bool => "Bool".to_string(),
+            TypeNode::Nil => "Nil".to_string(),
             TypeNode::Array(inner) => format!("Array({})", inner.format_type_string()),
             TypeNode::Map(key, value) => {
                 format!(

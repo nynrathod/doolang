@@ -1879,7 +1879,11 @@ impl<'ctx> CodeGen<'ctx> {
                     })
                     .collect();
 
-                let err_type = "Str".to_string();
+                // Use the actual error type from the current function, not hardcoded "Str"
+                let err_type = self
+                    .current_error_type
+                    .clone()
+                    .unwrap_or_else(|| "Str".to_string());
                 let ok_type = if ok_types.len() == 1 {
                     ok_types[0].clone()
                 } else {
@@ -2152,17 +2156,60 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_store(tag_ptr, self.context.i32_type().const_int(1, false))
                     .unwrap();
 
-                // Set error value (as pointer)
+                // Set error value (convert to pointer representation)
                 let error_ptr_val = if error_val.is_pointer_value() {
+                    // Already a pointer (string, array, map, struct)
                     error_val.into_pointer_value()
-                } else {
-                    // If not a pointer, allocate and store it
+                } else if error_val.is_int_value() {
+                    // Cast integer to pointer using inttoptr
+                    let int_val = error_val.into_int_value();
+                    let int_64 = if int_val.get_type().get_bit_width() == 64 {
+                        int_val
+                    } else {
+                        self.builder
+                            .build_int_z_extend(int_val, self.context.i64_type(), "ext")
+                            .unwrap()
+                    };
+                    self.builder
+                        .build_int_to_ptr(
+                            int_64,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "int_as_ptr",
+                        )
+                        .unwrap()
+                } else if error_val.is_float_value() {
+                    // Bitcast float to i64 then to pointer
+                    let float_val = error_val.into_float_value();
                     let alloca = self
                         .builder
-                        .build_alloca(error_val.get_type(), "err_alloca")
+                        .build_alloca(self.context.f64_type(), "f_tmp")
                         .unwrap();
-                    self.builder.build_store(alloca, error_val).unwrap();
-                    alloca
+                    self.builder.build_store(alloca, float_val).unwrap();
+                    let i64_ptr = self
+                        .builder
+                        .build_pointer_cast(
+                            alloca,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "i64_ptr",
+                        )
+                        .unwrap();
+                    let i64_val = self
+                        .builder
+                        .build_load(self.context.i64_type(), i64_ptr, "f_as_i64")
+                        .unwrap()
+                        .into_int_value();
+                    self.builder
+                        .build_int_to_ptr(
+                            i64_val,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "float_as_ptr",
+                        )
+                        .unwrap()
+                } else {
+                    // Fallback: use null pointer
+                    self.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
                 };
 
                 let error_ptr = self
@@ -2561,12 +2608,29 @@ impl<'ctx> CodeGen<'ctx> {
                         ok_values_from_ok_path.push(actual_value);
                     }
 
-                    // Error variable from Ok path (nil)
+                    // Error variable from Ok path (nil/default value based on error type)
                     let err_from_ok_path: inkwell::values::BasicValueEnum = if error_name != "_" {
-                        self.context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .const_null()
-                            .into()
+                        // Get the error type to determine what "nil" means
+                        let err_type = self
+                            .result_types
+                            .get(result_tmp)
+                            .map(|(_, e)| e.clone())
+                            .unwrap_or_else(|| "Str".to_string());
+
+                        // Create appropriate nil/default value for error type
+                        if err_type.contains("Int") {
+                            self.context.i32_type().const_int(0, false).into()
+                        } else if err_type.contains("Float") {
+                            self.context.f64_type().const_float(0.0).into()
+                        } else if err_type.contains("Bool") {
+                            self.context.bool_type().const_int(0, false).into()
+                        } else {
+                            // Str, Array, Map, Struct - use null pointer
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null()
+                                .into()
+                        }
                     } else {
                         self.context.i32_type().const_int(0, false).into()
                     };
@@ -2581,9 +2645,95 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_pointer_value();
 
-                    // Error value from Err path
+                    // Error value from Err path - convert pointer back to actual error type
                     let err_from_err_path: inkwell::values::BasicValueEnum = if error_name != "_" {
-                        err_value_ptr.into()
+                        // Get the error type from result_types
+                        let err_type = self
+                            .result_types
+                            .get(result_tmp)
+                            .map(|(_, e)| e.clone())
+                            .unwrap_or_else(|| "Str".to_string());
+
+                        // Convert pointer back to the actual error type
+                        if err_type.contains("Str") || err_type.contains("String") {
+                            // String errors are already pointers
+                            err_value_ptr.into()
+                        } else if err_type.contains("Array") || err_type.contains("Map") {
+                            // Array and Map errors are pointers
+                            err_value_ptr.into()
+                        } else if err_type.contains("Struct(")
+                            || self.struct_metadata.contains_key(&err_type)
+                        {
+                            // Struct errors are pointers
+                            err_value_ptr.into()
+                        } else if err_type.contains("Int") {
+                            // Int errors: convert pointer to int
+                            let i64_val = self
+                                .builder
+                                .build_ptr_to_int(
+                                    err_value_ptr,
+                                    self.context.i64_type(),
+                                    "ptr_to_i64",
+                                )
+                                .unwrap();
+                            self.builder
+                                .build_int_truncate(i64_val, self.context.i32_type(), "ptr_to_i32")
+                                .unwrap()
+                                .into()
+                        } else if err_type.contains("Float") {
+                            // Float errors: convert pointer to float
+                            let i64_val = self
+                                .builder
+                                .build_ptr_to_int(
+                                    err_value_ptr,
+                                    self.context.i64_type(),
+                                    "ptr_to_i64",
+                                )
+                                .unwrap();
+                            let alloca = self
+                                .builder
+                                .build_alloca(self.context.i64_type(), "i64_tmp")
+                                .unwrap();
+                            self.builder.build_store(alloca, i64_val).unwrap();
+                            let f64_ptr = self
+                                .builder
+                                .build_pointer_cast(
+                                    alloca,
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    "f64_ptr",
+                                )
+                                .unwrap();
+                            self.builder
+                                .build_load(self.context.f64_type(), f64_ptr, "f64_val")
+                                .unwrap()
+                        } else if err_type.contains("Bool") {
+                            // Bool errors: convert pointer to i32, then compare to 0 to get bool
+                            let i64_val = self
+                                .builder
+                                .build_ptr_to_int(
+                                    err_value_ptr,
+                                    self.context.i64_type(),
+                                    "ptr_to_i64",
+                                )
+                                .unwrap();
+                            let i32_val = self
+                                .builder
+                                .build_int_truncate(i64_val, self.context.i32_type(), "ptr_to_i32")
+                                .unwrap();
+                            // Convert i32 to bool by comparing to 0
+                            self.builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::NE,
+                                    i32_val,
+                                    self.context.i32_type().const_int(0, false),
+                                    "i32_to_bool",
+                                )
+                                .unwrap()
+                                .into()
+                        } else {
+                            // Default: keep as pointer
+                            err_value_ptr.into()
+                        }
                     } else {
                         self.context.i32_type().const_int(0, false).into()
                     };
@@ -2630,21 +2780,35 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Create phi node for error variable
                     if error_name != "_" {
-                        let phi = self
-                            .builder
-                            .build_phi(
-                                self.context.ptr_type(inkwell::AddressSpace::default()),
-                                error_name,
-                            )
-                            .unwrap();
+                        // Get the actual error type to determine phi node type
+                        let err_type = self
+                            .result_types
+                            .get(result_tmp)
+                            .map(|(_, e)| e.clone())
+                            .unwrap_or_else(|| "Str".to_string());
+
+                        // Determine the LLVM type for the phi node based on error type
+                        let phi_type: inkwell::types::BasicTypeEnum = if err_type.contains("Int") {
+                            self.context.i32_type().into()
+                        } else if err_type.contains("Float") {
+                            self.context.f64_type().into()
+                        } else if err_type.contains("Bool") {
+                            self.context.bool_type().into()
+                        } else {
+                            // Str, Array, Map, Struct - all are pointers
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into()
+                        };
+
+                        let phi = self.builder.build_phi(phi_type, error_name).unwrap();
                         phi.add_incoming(&[
                             (&err_from_ok_path, ok_block),
                             (&err_from_err_path, err_block),
                         ]);
                         let phi_val = phi.as_basic_value();
                         self.temp_values.insert(error_name.clone(), phi_val);
-                        self.variable_types
-                            .insert(error_name.clone(), "Str".to_string());
+                        self.variable_types.insert(error_name.clone(), err_type);
                     }
                 }
 
@@ -2728,19 +2892,46 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .unwrap();
 
-                // Store each field value
-                for (idx, (field_name, value_tmp)) in fields.iter().enumerate() {
-                    let value = self.resolve_value(value_tmp);
-                    let field_ptr = self
-                        .builder
-                        .build_struct_gep(
-                            struct_type,
-                            typed_ptr,
-                            idx as u32,
-                            &format!("{}_field", field_name),
-                        )
-                        .unwrap();
-                    self.builder.build_store(field_ptr, value).unwrap();
+                // Store each field value in the correct order according to struct declaration
+                // We need to reorder fields from the literal to match the canonical field order
+                if let Some(metadata) = self.struct_metadata.get(struct_name) {
+                    // Use metadata to store fields in the correct order
+                    for (canonical_idx, canonical_field_name) in
+                        metadata.field_names.iter().enumerate()
+                    {
+                        // Find this field in the provided fields
+                        if let Some((_, value_tmp)) = fields
+                            .iter()
+                            .find(|(field_name, _)| field_name == canonical_field_name)
+                        {
+                            let value = self.resolve_value(value_tmp);
+                            let field_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    struct_type,
+                                    typed_ptr,
+                                    canonical_idx as u32,
+                                    &format!("{}_field", canonical_field_name),
+                                )
+                                .unwrap();
+                            self.builder.build_store(field_ptr, value).unwrap();
+                        }
+                    }
+                } else {
+                    // Fallback: store in the order provided (for backward compatibility)
+                    for (idx, (field_name, value_tmp)) in fields.iter().enumerate() {
+                        let value = self.resolve_value(value_tmp);
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                struct_type,
+                                typed_ptr,
+                                idx as u32,
+                                &format!("{}_field", field_name),
+                            )
+                            .unwrap();
+                        self.builder.build_store(field_ptr, value).unwrap();
+                    }
                 }
 
                 // Store the struct pointer
@@ -2779,10 +2970,22 @@ impl<'ctx> CodeGen<'ctx> {
                     .cloned()
                     .unwrap_or_else(|| "Unknown".to_string());
 
-                // Extract struct name from type string "Struct(StructName)"
+                // Extract struct name from type string "Struct(StructName)" or just "StructName"
                 let struct_name =
                     if struct_type_str.starts_with("Struct(") && struct_type_str.ends_with(")") {
                         &struct_type_str[7..struct_type_str.len() - 1]
+                    } else if !struct_type_str.is_empty()
+                        && struct_type_str != "Unknown"
+                        && !struct_type_str.starts_with("Array")
+                        && !struct_type_str.starts_with("Map")
+                        && !struct_type_str.starts_with("Int")
+                        && !struct_type_str.starts_with("Float")
+                        && !struct_type_str.starts_with("Bool")
+                        && !struct_type_str.starts_with("Str")
+                    {
+                        // This is likely a struct name without the "Struct(...)" wrapper
+                        // This happens when error types are TypeRef instead of Struct
+                        &struct_type_str
                     } else {
                         ""
                     };

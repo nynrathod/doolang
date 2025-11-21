@@ -48,8 +48,8 @@ impl SemanticAnalyzer {
             }
             // Boolean literal: always Bool type
             AstNode::BoolLiteral(_name) => Ok(TypeNode::Bool),
-            // Nil literal: represents null/nil pointer (treated as optional string)
-            AstNode::NilLiteral => Ok(TypeNode::String),
+            // Nil literal: polymorphic null value - compatible with any pointer/optional type
+            AstNode::NilLiteral => Ok(TypeNode::Nil),
             // Identifier (variable name): look up in symbol table (with shadowing support)
             AstNode::Identifier(name) => {
                 if let Some(info) = self.lookup_variable(name) {
@@ -86,8 +86,28 @@ impl SemanticAnalyzer {
                     | TokenType::Lt
                     | TokenType::GtEq
                     | TokenType::LtEq => {
-                        // Both sides must be the same type
-                        if left_type != right_type {
+                        // Both sides must be the same type, EXCEPT for Nil which is compatible with any type
+                        // Nil can be compared with any type for equality/inequality checks
+                        let types_compatible = if matches!(op, TokenType::EqEq | TokenType::NotEq) {
+                            // For == and !=, Nil is compatible with any type
+                            super::analyzer::types_compatible(
+                                &left_type,
+                                &right_type,
+                                &self.struct_table,
+                                &self.enum_table,
+                            ) || left_type == TypeNode::Nil
+                                || right_type == TypeNode::Nil
+                        } else {
+                            // For <, >, <=, >=, types must match using types_compatible
+                            super::analyzer::types_compatible(
+                                &left_type,
+                                &right_type,
+                                &self.struct_table,
+                                &self.enum_table,
+                            )
+                        };
+
+                        if !types_compatible {
                             let (line, col) = get_node_location(node);
                             return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
                                 expected: left_type,

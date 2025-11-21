@@ -143,6 +143,7 @@ impl fmt::Display for TypeNode {
             TypeNode::Int => write!(f, "Int"),
             TypeNode::String => write!(f, "Str"),
             TypeNode::Bool => write!(f, "Bool"),
+            TypeNode::Nil => write!(f, "Nil"),
             TypeNode::Array(t) => write!(f, "Array<{}>", t),
             TypeNode::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
             TypeNode::Tuple(ts) => {

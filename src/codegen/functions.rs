@@ -441,6 +441,10 @@ impl<'ctx> CodeGen<'ctx> {
         // Reset recursion depth for this function to prevent accumulation across functions
         self.recursion_depth = 0;
 
+        // Set current function context for error handling
+        self.current_function_name = Some(func.name.clone());
+        self.current_error_type = func.error_type.clone();
+
         // Clear no_storage_vars to ensure fresh state for this function
         self.no_storage_vars.clear();
 

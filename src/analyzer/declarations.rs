@@ -1,4 +1,4 @@
-use super::analyzer::SemanticAnalyzer;
+use super::analyzer::{types_compatible, SemanticAnalyzer};
 use std::collections::HashMap;
 
 use super::types::{NamedError, SemanticError, TypeMismatch};
@@ -79,7 +79,12 @@ impl SemanticAnalyzer {
                             };
 
                             // Verify inferred type matches annotation
-                            if inferred != *annotated_type {
+                            if !types_compatible(
+                                &inferred,
+                                annotated_type,
+                                &self.struct_table,
+                                &self.enum_table,
+                            ) {
                                 return Err(SemanticError::VarTypeMismatch(TypeMismatch {
                                     expected: annotated_type.clone(),
                                     found: inferred,

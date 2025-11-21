@@ -121,6 +121,10 @@ pub struct CodeGen<'ctx> {
     pub result_types: HashMap<String, (String, String)>, // Maps temp to (ok_type, err_type) e.g., ("Int", "Str")
     pub result_values: HashMap<String, (bool, String)>, // Maps temp to (is_ok, value_temp) to track Ok vs Err
     pub no_storage_vars: std::collections::HashSet<String>, // Track variables that should NOT get stack allocations (e.g., tuple pointers from Result unwrapping)
+
+    // Current function context
+    pub current_function_name: Option<String>, // Track the name of the function being currently generated
+    pub current_error_type: Option<String>, // Track the error type of the current function (for Result handling)
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -183,6 +187,8 @@ impl<'ctx> CodeGen<'ctx> {
             heap_pointers: HashMap::new(),
             result_types: HashMap::new(),
             result_values: HashMap::new(),
+            current_function_name: None,
+            current_error_type: None,
         }
     }
 
