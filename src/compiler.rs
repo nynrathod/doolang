@@ -387,6 +387,24 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
         let linker = extract_embedded_linker()?;
         let sdk_paths = find_windows_sdk_paths();
 
+        // Find the doo runtime library
+        let target_dir = env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .or_else(|| {
+                // Fallback: try to find target/debug or target/release
+                let cwd = env::current_dir().ok()?;
+                let debug_lib = cwd.join("target").join("debug");
+                let release_lib = cwd.join("target").join("release");
+                if debug_lib.exists() {
+                    Some(debug_lib)
+                } else if release_lib.exists() {
+                    Some(release_lib)
+                } else {
+                    None
+                }
+            });
+
         let mut cmd = Command::new(&linker);
         cmd.arg(format!("/OUT:{}", output))
             .arg(obj_file)
@@ -407,6 +425,26 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
                 .arg("vcruntime.lib")
                 .arg("legacy_stdio_definitions.lib")
                 .arg("libcmt.lib");
+        }
+
+        // Add doo runtime DLL import library for JSON/File I/O support
+        // Only add if it exists to avoid breaking simple programs
+        if let Some(lib_dir) = target_dir {
+            let doo_dll_lib = lib_dir.join("doo.dll.lib");
+            if doo_dll_lib.exists() {
+                // Add extra libraries needed for Rust runtime
+                cmd.arg("ws2_32.lib")
+                    .arg("userenv.lib")
+                    .arg("bcrypt.lib")
+                    .arg("kernel32.lib")
+                    .arg("advapi32.lib")
+                    .arg("ntdll.lib")
+                    .arg("ole32.lib")
+                    .arg("shell32.lib");
+
+                // Link against the DLL
+                cmd.arg(doo_dll_lib.to_str().unwrap());
+            }
         }
 
         let result = cmd.output();
@@ -433,11 +471,40 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
                 .to_string());
         }
 
-        let result = Command::new("clang")
-            .arg(obj_file)
-            .arg("-o")
-            .arg(output)
-            .output();
+        // Find the doo runtime library
+        let target_dir = env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .or_else(|| {
+                let cwd = env::current_dir().ok()?;
+                let debug_lib = cwd.join("target").join("debug");
+                let release_lib = cwd.join("target").join("release");
+                if debug_lib.exists() {
+                    Some(debug_lib)
+                } else if release_lib.exists() {
+                    Some(release_lib)
+                } else {
+                    None
+                }
+            });
+
+        let mut cmd = Command::new("clang");
+        cmd.arg(obj_file).arg("-o").arg(output);
+
+        // Add system libraries
+        cmd.arg("-lm");
+
+        // Add doo runtime library for JSON/File I/O support if available
+        if let Some(lib_dir) = target_dir {
+            let doo_a = lib_dir.join("libdoo.a");
+            if doo_a.exists() {
+                cmd.arg(doo_a.to_str().unwrap());
+                // Add additional libraries needed for Rust runtime
+                cmd.arg("-lpthread").arg("-ldl");
+            }
+        }
+
+        let result = cmd.output();
 
         match result {
             Ok(r) if r.status.success() => Ok(()),
