@@ -2,7 +2,7 @@ use crate::analyzer::types::{NamedError, SemanticError};
 use crate::limits::{
     ANALYZER_MAX_FUNCTION_DEPTH, ANALYZER_MAX_LOOP_DEPTH, ANALYZER_MAX_SCOPE_DEPTH,
 };
-use crate::parser::ast::{AstNode, TypeNode};
+use crate::parser::ast::{AstNode, Pattern, TypeNode};
 use crate::path_resolver::PathResolver;
 use bumpalo::Bump;
 use std::cell::RefCell;
@@ -23,6 +23,8 @@ pub struct SymbolInfo {
 pub struct SemanticAnalyzer {
     pub(crate) symbol_table: HashMap<String, SymbolInfo>, // Current scope variables
     pub(crate) function_table: HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>, // Function signatures (params, return_type, error_type)
+    pub(crate) struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field map
+    pub(crate) enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant map
 
     pub(crate) outer_symbol_table: Option<HashMap<String, SymbolInfo>>, // For nested scopes
     pub(crate) project_root: PathBuf, // Root directory for module resolution
@@ -71,6 +73,8 @@ impl SemanticAnalyzer {
         Self {
             symbol_table: HashMap::new(),
             function_table,
+            struct_table: HashMap::new(),
+            enum_table: HashMap::new(),
             outer_symbol_table: None,
             project_root,
             imported_modules: HashMap::new(),
@@ -356,6 +360,66 @@ impl SemanticAnalyzer {
                 self.infer_type(expr)?;
                 Ok(())
             }
+            AstNode::ManualErrorExtract {
+                expr,
+                ok_pattern,
+                error_var,
+            } => {
+                // Type check the expression that returns Result
+                let expr_type = self.infer_type(expr)?;
+
+                // Declare the error variable in symbol table
+                if error_var != "_" {
+                    self.symbol_table.insert(
+                        error_var.clone(),
+                        SymbolInfo {
+                            ty: TypeNode::String,
+                            mutable: false,
+                            is_ref_counted: true,
+                            is_parameter: false,
+                        },
+                    );
+                }
+
+                // Declare ok pattern variables in symbol table
+                match ok_pattern {
+                    Pattern::Identifier(name) => {
+                        // For single value, try to infer type from Result
+                        let ok_type = if let TypeNode::Result(ok_type, _) = expr_type {
+                            *ok_type
+                        } else {
+                            TypeNode::Int
+                        };
+                        self.symbol_table.insert(
+                            name.clone(),
+                            SymbolInfo {
+                                ty: ok_type,
+                                mutable: false,
+                                is_ref_counted: true,
+                                is_parameter: false,
+                            },
+                        );
+                    }
+                    Pattern::Tuple(patterns) => {
+                        // For tuple, each pattern gets declared
+                        for pattern in patterns {
+                            if let Pattern::Identifier(name) = pattern {
+                                self.symbol_table.insert(
+                                    name.clone(),
+                                    SymbolInfo {
+                                        ty: TypeNode::Int,
+                                        mutable: false,
+                                        is_ref_counted: true,
+                                        is_parameter: false,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    Pattern::Wildcard => {}
+                }
+                Ok(())
+            }
             AstNode::ConditionalStmt {
                 condition,
                 then_block,
@@ -426,7 +490,12 @@ impl SemanticAnalyzer {
                         // Check argument types
                         for (arg, expected_type) in args.iter().zip(param_types.iter()) {
                             let arg_type = self.infer_type(arg)?;
-                            if arg_type != *expected_type {
+                            if !types_compatible(
+                                &arg_type,
+                                expected_type,
+                                &self.struct_table,
+                                &self.enum_table,
+                            ) {
                                 return Err(SemanticError::FunctionArgumentTypeMismatch {
                                     name: func_name.clone(),
                                     expected: expected_type.clone(),
@@ -745,5 +814,80 @@ impl SemanticAnalyzer {
             }
         }
         Ok(())
+    }
+}
+
+/// Helper function to check if two types are compatible
+/// This handles cases where TypeRef("User") should match Struct("User", fields)
+pub(crate) fn types_compatible(
+    actual: &TypeNode,
+    expected: &TypeNode,
+    struct_table: &HashMap<String, HashMap<String, TypeNode>>,
+    enum_table: &HashMap<String, HashMap<String, Option<TypeNode>>>,
+) -> bool {
+    // Direct equality check first
+    if actual == expected {
+        return true;
+    }
+
+    // Handle TypeRef resolution
+    match (actual, expected) {
+        // Case 1: actual is Struct, expected is TypeRef
+        (TypeNode::Struct(actual_name, _), TypeNode::TypeRef(expected_name)) => {
+            actual_name == expected_name
+        }
+        // Case 2: actual is TypeRef, expected is Struct
+        (TypeNode::TypeRef(actual_name), TypeNode::Struct(expected_name, _)) => {
+            actual_name == expected_name
+        }
+        // Case 3: both are TypeRefs with same name
+        (TypeNode::TypeRef(actual_name), TypeNode::TypeRef(expected_name)) => {
+            actual_name == expected_name
+        }
+        // Case 4: actual is Enum, expected is TypeRef
+        (TypeNode::Enum(actual_name, _), TypeNode::TypeRef(expected_name)) => {
+            actual_name == expected_name
+        }
+        // Case 5: actual is TypeRef, expected is Enum
+        (TypeNode::TypeRef(actual_name), TypeNode::Enum(expected_name, _)) => {
+            actual_name == expected_name
+        }
+        // Case 6: both are Structs with same name (even if fields differ - structural equality)
+        (TypeNode::Struct(actual_name, _), TypeNode::Struct(expected_name, _)) => {
+            actual_name == expected_name
+        }
+        // Case 7: both are Enums with same name
+        (TypeNode::Enum(actual_name, _), TypeNode::Enum(expected_name, _)) => {
+            actual_name == expected_name
+        }
+        // Case 8: Array types
+        (TypeNode::Array(actual_elem), TypeNode::Array(expected_elem)) => {
+            types_compatible(actual_elem, expected_elem, struct_table, enum_table)
+        }
+        // Case 9: Map types
+        (TypeNode::Map(ak, av), TypeNode::Map(ek, ev)) => {
+            types_compatible(ak, ek, struct_table, enum_table)
+                && types_compatible(av, ev, struct_table, enum_table)
+        }
+        // Case 10: Tuple types
+        (TypeNode::Tuple(actual_types), TypeNode::Tuple(expected_types)) => {
+            if actual_types.len() != expected_types.len() {
+                return false;
+            }
+            actual_types
+                .iter()
+                .zip(expected_types.iter())
+                .all(|(a, e)| types_compatible(a, e, struct_table, enum_table))
+        }
+        // Case 11: Result types
+        (TypeNode::Result(aok, aerr), TypeNode::Result(eok, eerr)) => {
+            types_compatible(aok, eok, struct_table, enum_table)
+                && types_compatible(aerr, eerr, struct_table, enum_table)
+        }
+        // Case 12: Optional types
+        (TypeNode::Optional(actual_inner), TypeNode::Optional(expected_inner)) => {
+            types_compatible(actual_inner, expected_inner, struct_table, enum_table)
+        }
+        _ => false,
     }
 }

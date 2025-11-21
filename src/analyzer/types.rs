@@ -150,6 +150,7 @@ impl fmt::Display for TypeNode {
                 write!(f, "({})", parts.join(", "))
             }
             TypeNode::Void => write!(f, "Void"),
+            TypeNode::Optional(t) => write!(f, "{}?", t),
             TypeNode::Struct(name, _) => write!(f, "Struct {}", name),
             TypeNode::Enum(name, _) => write!(f, "Enum {}", name),
             TypeNode::Range(a, b, inclusive) => write!(

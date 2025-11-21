@@ -48,6 +48,8 @@ impl SemanticAnalyzer {
             }
             // Boolean literal: always Bool type
             AstNode::BoolLiteral(_name) => Ok(TypeNode::Bool),
+            // Nil literal: represents null/nil pointer (treated as optional string)
+            AstNode::NilLiteral => Ok(TypeNode::String),
             // Identifier (variable name): look up in symbol table (with shadowing support)
             AstNode::Identifier(name) => {
                 if let Some(info) = self.lookup_variable(name) {
@@ -598,6 +600,129 @@ impl SemanticAnalyzer {
                 }
             }
 
+            // Struct literal: Point { x: 10, y: 20 }
+            AstNode::StructLiteral { name, fields } => {
+                // Check if struct type exists
+                if let Some(struct_fields) = self.struct_table.get(name) {
+                    // Verify all required fields are provided
+                    for (field_name, field_type) in struct_fields {
+                        let field_provided = fields.iter().any(|(f, _)| f == field_name);
+                        if !field_provided {
+                            // Check if field has default value or is optional
+                            // For now, require all fields
+                            return Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: format!(
+                                    "Missing field '{}' in struct '{}'",
+                                    field_name, name
+                                ),
+                            }));
+                        }
+                    }
+
+                    // Verify field types match
+                    for (field_name, field_value) in fields {
+                        if let Some(expected_type) = struct_fields.get(field_name) {
+                            let actual_type = self.infer_type(field_value)?;
+                            // For now, basic type checking
+                            // TODO: Handle Optional types and type compatibility
+                        } else {
+                            return Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: format!(
+                                    "Unknown field '{}' in struct '{}'",
+                                    field_name, name
+                                ),
+                            }));
+                        }
+                    }
+
+                    Ok(TypeNode::Struct(name.clone(), struct_fields.clone()))
+                } else {
+                    Err(SemanticError::UndeclaredVariable(NamedError {
+                        name: format!("Undefined struct type '{}'", name),
+                    }))
+                }
+            }
+
+            // Field access: obj.field
+            AstNode::FieldAccess { object, field } => {
+                let object_type = self.infer_type(object)?;
+
+                // Resolve TypeRef to actual struct type
+                let resolved_type = match &object_type {
+                    TypeNode::TypeRef(name) => {
+                        if let Some(fields) = self.struct_table.get(name) {
+                            TypeNode::Struct(name.clone(), fields.clone())
+                        } else {
+                            object_type.clone()
+                        }
+                    }
+                    _ => object_type.clone(),
+                };
+
+                match resolved_type {
+                    TypeNode::Struct(struct_name, fields) => {
+                        if let Some(field_type) = fields.get(field) {
+                            Ok(field_type.clone())
+                        } else {
+                            Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: format!("Struct '{}' has no field '{}'", struct_name, field),
+                            }))
+                        }
+                    }
+                    _ => Err(SemanticError::UndeclaredVariable(NamedError {
+                        name: format!(
+                            "Cannot access field on non-struct type: {:?}",
+                            resolved_type
+                        ),
+                    })),
+                }
+            }
+
+            // Enum variant: Direction::North or Status::Active(value)
+            AstNode::EnumVariant {
+                enum_name,
+                variant,
+                payload,
+            } => {
+                // Check if enum type exists
+                if let Some(enum_variants) = self.enum_table.get(enum_name) {
+                    // Check if variant exists
+                    if let Some(variant_type) = enum_variants.get(variant) {
+                        // Verify payload matches
+                        match (payload, variant_type) {
+                            (Some(payload_expr), Some(expected_type)) => {
+                                let actual_type = self.infer_type(payload_expr)?;
+                                // TODO: Type compatibility check
+                                Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))
+                            }
+                            (None, None) => {
+                                Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))
+                            }
+                            (Some(_), None) => Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: format!(
+                                    "Variant '{}::{}' does not take a payload",
+                                    enum_name, variant
+                                ),
+                            })),
+                            (None, Some(_)) => Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: format!(
+                                    "Variant '{}::{}' requires a payload",
+                                    enum_name, variant
+                                ),
+                            })),
+                        }
+                    } else {
+                        Err(SemanticError::UndeclaredVariable(NamedError {
+                            name: format!("Enum '{}' has no variant '{}'", enum_name, variant),
+                        }))
+                    }
+                } else {
+                    Err(SemanticError::UndeclaredVariable(NamedError {
+                        name: format!("Undefined enum type '{}'", enum_name),
+                    }))
+                }
+            }
+
             // Any other AST node (usually statements): return Void type.
             // Actual semantic checking for statements happens elsewhere.
             _ => Ok(TypeNode::Void),
@@ -843,6 +968,8 @@ impl SemanticAnalyzer {
         SemanticAnalyzer {
             symbol_table: self.symbol_table.clone(),
             function_table: self.function_table.clone(),
+            struct_table: self.struct_table.clone(),
+            enum_table: self.enum_table.clone(),
             outer_symbol_table: self.outer_symbol_table.clone(),
             project_root: self.project_root.clone(),
             imported_modules: self.imported_modules.clone(),

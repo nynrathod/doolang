@@ -311,7 +311,12 @@ impl SemanticAnalyzer {
                 // Check argument types
                 for (arg, expected_ty) in args.iter().zip(param_types.iter()) {
                     let arg_ty = self.infer_type(arg)?;
-                    if &arg_ty != expected_ty {
+                    if !super::analyzer::types_compatible(
+                        &arg_ty,
+                        expected_ty,
+                        &self.struct_table,
+                        &self.enum_table,
+                    ) {
                         return Err(SemanticError::FunctionArgumentTypeMismatch {
                             name: name.clone(),
                             expected: expected_ty.clone(),

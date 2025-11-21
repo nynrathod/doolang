@@ -505,7 +505,12 @@ impl SemanticAnalyzer {
                 }
                 for (value, expected_type) in actual_values.iter().zip(expected_vec.iter()) {
                     let value_type = self.infer_type(value)?;
-                    if &value_type != expected_type {
+                    if !super::analyzer::types_compatible(
+                        &value_type,
+                        expected_type,
+                        &self.struct_table,
+                        &self.enum_table,
+                    ) {
                         return Err(SemanticError::ReturnTypeMismatch {
                             function: fn_name.to_string(),
                             mismatch: TypeMismatch {
@@ -540,7 +545,12 @@ impl SemanticAnalyzer {
                     });
                 }
                 let value_type = self.infer_type(&actual_values[0])?;
-                if &value_type != expected {
+                if !super::analyzer::types_compatible(
+                    &value_type,
+                    expected,
+                    &self.struct_table,
+                    &self.enum_table,
+                ) {
                     return Err(SemanticError::ReturnTypeMismatch {
                         function: fn_name.to_string(),
                         mismatch: TypeMismatch {
@@ -561,7 +571,12 @@ impl SemanticAnalyzer {
     /// ensures no duplicate fields, and adds the struct type to the symbol table.
     /// Returns semantic errors for any violations.
     pub fn analyze_struct(&mut self, node: &AstNode) -> Result<(), SemanticError> {
-        if let AstNode::StructDecl { name, fields } = node {
+        if let AstNode::StructDecl {
+            name,
+            fields,
+            is_public,
+        } = node
+        {
             // Prevent redeclaration of struct names.
             if self.symbol_table.contains_key(name) {
                 return Err(SemanticError::StructRedeclaration(NamedError {
@@ -570,9 +585,11 @@ impl SemanticAnalyzer {
             }
 
             let mut field_map = HashMap::new();
-            for (field_name, field_type) in fields {
+            for field in fields {
+                let field_name = &field.name;
+                let field_type = &field.field_type;
                 // Ensure no duplicate field names.
-                if field_map.contains_key(field_name) {
+                if field_map.contains_key(field_name.as_str()) {
                     return Err(SemanticError::DuplicateField {
                         struct_name: name.clone(),
                         field: field_name.clone(),
@@ -581,8 +598,10 @@ impl SemanticAnalyzer {
                 field_map.insert(field_name.clone(), field_type.clone());
             }
 
-            // Insert struct type into the symbol table
-            // Insert struct type into the symbol table.
+            // Insert struct type into the struct registry
+            self.struct_table.insert(name.clone(), field_map.clone());
+
+            // Insert struct type into the symbol table for type checking
             self.symbol_table.insert(
                 name.clone(),
                 SymbolInfo {
@@ -600,7 +619,12 @@ impl SemanticAnalyzer {
     /// ensures no duplicate variants, and adds the enum type to the symbol table.
     /// Returns semantic errors for any violations.
     pub fn analyze_enum(&mut self, node: &AstNode) -> Result<(), SemanticError> {
-        if let AstNode::EnumDecl { name, variants } = node {
+        if let AstNode::EnumDecl {
+            name,
+            variants,
+            is_public,
+        } = node
+        {
             // Prevent redeclaration of enum names.
             if self.symbol_table.contains_key(name) {
                 return Err(SemanticError::EnumRedeclaration(NamedError {
@@ -609,9 +633,11 @@ impl SemanticAnalyzer {
             }
 
             let mut variant_map = HashMap::new();
-            for (variant_name, variant_type) in variants {
+            for variant in variants {
+                let variant_name = &variant.name;
+                let variant_type = &variant.payload;
                 // Ensure no duplicate variant names.
-                if variant_map.contains_key(variant_name) {
+                if variant_map.contains_key(variant_name.as_str()) {
                     return Err(SemanticError::DuplicateEnumVariant {
                         enum_name: name.clone(),
                         variant: variant_name.clone(),
@@ -620,7 +646,10 @@ impl SemanticAnalyzer {
                 variant_map.insert(variant_name.clone(), variant_type.clone());
             }
 
-            // Insert enum type into the symbol table.
+            // Insert enum type into the enum registry
+            self.enum_table.insert(name.clone(), variant_map.clone());
+
+            // Insert enum type into the symbol table for type checking
             self.symbol_table.insert(
                 name.clone(),
                 SymbolInfo {
