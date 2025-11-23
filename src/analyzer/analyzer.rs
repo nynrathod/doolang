@@ -25,6 +25,8 @@ pub struct SemanticAnalyzer {
     pub(crate) function_table: HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>, // Function signatures (params, return_type, error_type)
     pub(crate) struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field map
     pub(crate) enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant map
+    pub(crate) method_table:
+        HashMap<String, HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Methods per type: TypeName -> MethodName -> (params, return_type, error_type)
 
     pub(crate) outer_symbol_table: Option<HashMap<String, SymbolInfo>>, // For nested scopes
     pub(crate) project_root: PathBuf, // Root directory for module resolution
@@ -75,6 +77,7 @@ impl SemanticAnalyzer {
             function_table,
             struct_table: HashMap::new(),
             enum_table: HashMap::new(),
+            method_table: HashMap::new(),
             outer_symbol_table: None,
             project_root,
             imported_modules: HashMap::new(),
@@ -216,32 +219,81 @@ impl SemanticAnalyzer {
                     params,
                     return_type,
                     error_type,
+                    receiver_type,
                     ..
                 } => {
-                    // Check if function already defined
-                    if self.function_table.contains_key(name) {
-                        self.collected_errors
-                            .push(SemanticError::FunctionRedeclaration(NamedError {
-                                name: name.to_string(),
-                            }));
-                        continue;
+                    // Collect parameter types (excluding first param which is receiver for methods)
+                    let param_types: Vec<TypeNode> = if receiver_type.is_some() {
+                        // Method: skip first parameter (receiver)
+                        params
+                            .iter()
+                            .skip(1)
+                            .map(|(_, t)| t.clone().unwrap_or(TypeNode::Int))
+                            .collect()
+                    } else {
+                        // Regular function: include all parameters
+                        params
+                            .iter()
+                            .map(|(_, t)| t.clone().unwrap_or(TypeNode::Int))
+                            .collect()
+                    };
+
+                    if let Some(type_name) = receiver_type {
+                        // This is a method declaration (fn Type.method)
+                        // Register in method_table
+                        let methods = self
+                            .method_table
+                            .entry(type_name.clone())
+                            .or_insert_with(HashMap::new);
+
+                        if methods.contains_key(name) {
+                            self.collected_errors
+                                .push(SemanticError::FunctionRedeclaration(NamedError {
+                                    name: format!("{}.{}", type_name, name),
+                                }));
+                            continue;
+                        }
+
+                        methods.insert(
+                            name.to_string(),
+                            (
+                                param_types.clone(),
+                                return_type.clone().unwrap_or(TypeNode::Void),
+                                error_type.clone(),
+                            ),
+                        );
+
+                        // Also register in function_table with mangled name for codegen
+                        let mangled_name = format!("{}::{}", type_name, name);
+                        self.function_table.insert(
+                            mangled_name,
+                            (
+                                param_types,
+                                return_type.clone().unwrap_or(TypeNode::Void),
+                                error_type.clone(),
+                            ),
+                        );
+                    } else {
+                        // Regular function declaration
+                        // Check if function already defined
+                        if self.function_table.contains_key(name) {
+                            self.collected_errors
+                                .push(SemanticError::FunctionRedeclaration(NamedError {
+                                    name: name.to_string(),
+                                }));
+                            continue;
+                        }
+
+                        // Register function signature (all functions, not just public ones)
+                        self.function_table.insert(
+                            name.to_string(),
+                            (
+                                param_types,
+                                return_type.clone().unwrap_or(TypeNode::Void),
+                                error_type.clone(),
+                            ),
+                        );
                     }
-
-                    // Collect parameter types
-                    let param_types: Vec<TypeNode> = params
-                        .iter()
-                        .map(|(_, t)| t.clone().unwrap_or(TypeNode::Int))
-                        .collect();
-
-                    // Register function signature (all functions, not just public ones)
-                    self.function_table.insert(
-                        name.to_string(),
-                        (
-                            param_types,
-                            return_type.clone().unwrap_or(TypeNode::Void),
-                            error_type.clone(),
-                        ),
-                    );
                 }
                 _ => {} // Skip other nodes in first pass
             }
@@ -323,6 +375,8 @@ impl SemanticAnalyzer {
                 return_type,
                 error_type,
                 body,
+                decorators,
+                receiver_type,
             } => self.analyze_functional_decl(
                 name,
                 visibility,
@@ -330,6 +384,8 @@ impl SemanticAnalyzer {
                 return_type,
                 error_type,
                 body,
+                decorators,
+                receiver_type,
             ),
             AstNode::StructDecl { .. } => self.analyze_struct(node),
             AstNode::EnumDecl { .. } => self.analyze_enum(node),
@@ -651,10 +707,16 @@ impl SemanticAnalyzer {
         }
         import_stack.push(module_key.clone());
 
-        // For non-wildcard imports, check if symbols are already imported
+        // Determine import mode:
+        // 1. Wildcard import: import std::File::*; (items contains Wildcard)
+        // 2. Specific symbols: import std::File::{Write, Read}; (items contains symbols)
+        // 3. Namespace import: import std::File; (items is empty - import the module itself)
         let has_wildcard = items
             .iter()
             .any(|item| matches!(item, crate::parser::ast::ImportItem::Wildcard));
+        let is_namespace_import = items.is_empty();
+
+        // For non-wildcard imports, check if symbols are already imported
         if !has_wildcard && !items.is_empty() {
             // Check if all specific symbols are already imported (functions, structs, or enums)
             let all_imported = items.iter().all(|item| match item {
@@ -671,6 +733,20 @@ impl SemanticAnalyzer {
                 crate::parser::ast::ImportItem::Wildcard => false,
             });
             if all_imported {
+                import_stack.pop();
+                return Ok(());
+            }
+        }
+
+        // For namespace imports, check if already imported
+        if is_namespace_import && !path.is_empty() {
+            let namespace = path.last().unwrap();
+            // Check if any function with this namespace prefix exists
+            let namespace_already_imported = self
+                .function_table
+                .keys()
+                .any(|k| k.starts_with(&format!("{}::", namespace)));
+            if namespace_already_imported {
                 import_stack.pop();
                 return Ok(());
             }
@@ -768,6 +844,13 @@ impl SemanticAnalyzer {
             .filter(|item| !matches!(item, crate::parser::ast::ImportItem::Wildcard))
             .collect();
 
+        // Get namespace for namespace-qualified imports (import std::File;)
+        let namespace_prefix = if is_namespace_import && !path.is_empty() {
+            Some(path.last().unwrap().clone())
+        } else {
+            None
+        };
+
         for node in nodes {
             match &node {
                 // Import functions
@@ -776,6 +859,9 @@ impl SemanticAnalyzer {
                     if name.chars().next().unwrap_or('a').is_uppercase() {
                         let should_expose = if should_import_wildcard {
                             // Wildcard: expose all public functions
+                            true
+                        } else if is_namespace_import {
+                            // Namespace import: expose all with namespace prefix
                             true
                         } else if specific_imports.is_empty() {
                             // No specific imports and no wildcard - shouldn't happen but handle it
@@ -820,8 +906,15 @@ impl SemanticAnalyzer {
                             if let Some((params, ret, err)) =
                                 imported_analyzer.function_table.get(name)
                             {
-                                let fn_table_key =
-                                    registered_name.clone().unwrap_or_else(|| name.clone());
+                                // Determine the key to register in function table
+                                let fn_table_key = if let Some(ns) = &namespace_prefix {
+                                    // Namespace import: register as Namespace::FunctionName
+                                    format!("{}::{}", ns, name)
+                                } else {
+                                    // Regular import: use alias or original name
+                                    registered_name.clone().unwrap_or_else(|| name.clone())
+                                };
+
                                 self.function_table.insert(
                                     fn_table_key.clone(),
                                     (params.clone(), ret.clone(), err.clone()),
@@ -830,6 +923,10 @@ impl SemanticAnalyzer {
                                 // If we have an alias, store the mapping
                                 if let Some(alias) = registered_name {
                                     self.function_aliases.insert(alias, name.clone());
+                                }
+                                // For namespace imports, store the mapping from qualified name to original
+                                else if let Some(ns) = &namespace_prefix {
+                                    self.function_aliases.insert(fn_table_key, name.clone());
                                 }
                             }
                         }

@@ -238,9 +238,22 @@ impl SemanticAnalyzer {
         return_type: &mut Option<TypeNode>,
         error_type: &mut Option<TypeNode>,
         body: &mut Vec<AstNode>,
+        decorators: &Vec<crate::parser::ast::Decorator>,
+        receiver_type: &Option<String>,
     ) -> Result<(), SemanticError> {
         // Function signature is already registered in analyze_program's first pass
         // No need to check for redeclaration or add to function_table here
+
+        // Check if this is an FFI function (has @ffi decorator)
+        let is_ffi = decorators.iter().any(|d| d.name == "ffi");
+
+        // FFI functions should have empty bodies
+        if is_ffi && !body.is_empty() {
+            return Err(SemanticError::ParseErrorMsg(format!(
+                "FFI function '{}' should have an empty body",
+                name
+            )));
+        }
 
         // Is public or private function
         // Enforce public function naming convention.
@@ -257,7 +270,40 @@ impl SemanticAnalyzer {
         // Create a local scope for function parameters.
         let mut local_scope: HashMap<String, SymbolInfo> = HashMap::new();
 
-        for (param_name, param_type) in params.iter() {
+        // If this is a method declaration, add the receiver parameter (first param)
+        if let Some(receiver_type_name) = receiver_type {
+            // Get the first parameter name (the receiver)
+            if let Some((receiver_param_name, _)) = params.first() {
+                // Convert receiver type name to TypeNode
+                let receiver_type_node = match receiver_type_name.as_str() {
+                    "Int" => TypeNode::Int,
+                    "Float" => TypeNode::Float,
+                    "Str" => TypeNode::String,
+                    "Bool" => TypeNode::Bool,
+                    other => TypeNode::TypeRef(other.to_string()),
+                };
+
+                // Add receiver parameter to local scope
+                local_scope.insert(
+                    receiver_param_name.clone(),
+                    SymbolInfo {
+                        ty: receiver_type_node,
+                        mutable: true,
+                        is_ref_counted: false,
+                        is_parameter: true,
+                    },
+                );
+            }
+        }
+
+        // Process remaining parameters (skip first one if it's a method)
+        let params_to_process = if receiver_type.is_some() {
+            params.iter().skip(1)
+        } else {
+            params.iter().skip(0)
+        };
+
+        for (param_name, param_type) in params_to_process {
             // Type is mandatory for parameters. Check type exists.
             let param_type = param_type.as_ref().ok_or_else(|| {
                 SemanticError::MissingParamType(NamedError {
@@ -288,40 +334,48 @@ impl SemanticAnalyzer {
         if return_type.is_none() {
             *return_type = Some(TypeNode::Void);
 
-            // Ensure no return values are present in Void functions.
-            for node in body.iter() {
-                match node {
-                    AstNode::Return { values } => {
-                        if !values.is_empty() {
+            // Skip body validation for FFI functions
+            if !is_ffi {
+                // Ensure no return values are present in Void functions.
+                for node in body.iter() {
+                    match node {
+                        AstNode::Return { values } => {
+                            if !values.is_empty() {
+                                return Err(SemanticError::InvalidReturnInVoidFunction {
+                                    function: name.to_string(),
+                                });
+                            }
+                        }
+                        AstNode::OkExpr { .. } | AstNode::ErrExpr { .. } => {
                             return Err(SemanticError::InvalidReturnInVoidFunction {
                                 function: name.to_string(),
                             });
                         }
+                        _ => {}
                     }
-                    AstNode::OkExpr { .. } | AstNode::ErrExpr { .. } => {
-                        return Err(SemanticError::InvalidReturnInVoidFunction {
-                            function: name.to_string(),
-                        });
-                    }
-                    _ => {}
                 }
-            }
 
-            // Append implicit empty return if last statement is not Return/Ok/Err.
-            if let Some(last) = body.last() {
-                if !matches!(
-                    last,
-                    AstNode::Return { .. } | AstNode::OkExpr { .. } | AstNode::ErrExpr { .. }
-                ) {
-                    // If function has error type, use OkExpr instead of Return
-                    // so that it returns a Result struct even with void Ok value
-                    if error_type.is_some() {
-                        body.push(AstNode::OkExpr { values: vec![] });
-                    } else {
-                        body.push(AstNode::Return { values: vec![] });
+                // Append implicit empty return if last statement is not Return/Ok/Err.
+                if let Some(last) = body.last() {
+                    if !matches!(
+                        last,
+                        AstNode::Return { .. } | AstNode::OkExpr { .. } | AstNode::ErrExpr { .. }
+                    ) {
+                        // If function has error type, use OkExpr instead of Return
+                        // so that it returns a Result struct even with void Ok value
+                        if error_type.is_some() {
+                            body.push(AstNode::OkExpr { values: vec![] });
+                        } else {
+                            body.push(AstNode::Return { values: vec![] });
+                        }
                     }
                 }
             }
+        }
+
+        // FFI functions don't need body analysis - they're implemented externally
+        if is_ffi {
+            return Ok(());
         }
 
         // Save outer symbol table and switch to local scope for function analysis.
