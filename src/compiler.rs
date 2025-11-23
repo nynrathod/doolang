@@ -41,7 +41,7 @@ fn extract_embedded_linker() -> Result<PathBuf, String> {
         let mut file = fs::File::create(&linker_path)
             .map_err(|e| format!("Failed to create linker file: {}", e))?;
         file.write_all(EMBEDDED_LINKER)
-            .map_err(|e| format!("Failed to write linker: {}", e))?;
+            .map_err(|e| format!("Failed to link (Windows): {}", e))?;
     }
 
     Ok(linker_path)
@@ -317,7 +317,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     };
     let exe_path = current_dir.join(&exe_name);
 
-    compile_to_native(&codegen, &opts, &exe_path)?;
+    compile_to_native(&codegen, &opts, &exe_path, &mir_builder.program)?;
 
     if !exe_path.exists() {
         return Ok(CompileResult {
@@ -339,6 +339,7 @@ fn compile_to_native(
     codegen: &CodeGen,
     opts: &CompileOptions,
     exe_path: &Path,
+    mir_program: &crate::mir::mir::MirProgram,
 ) -> Result<(), String> {
     Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("Failed to initialize target: {}", e))?;
@@ -369,7 +370,12 @@ fn compile_to_native(
     let exe_path_str = exe_path
         .to_str()
         .ok_or_else(|| "Could not convert executable path to string".to_string())?;
-    link_object_file(&obj_file, exe_path_str, opts.dev_mode)?;
+    link_object_file(
+        &obj_file,
+        exe_path.to_str().unwrap(),
+        opts.dev_mode,
+        mir_program,
+    )?;
 
     // Always remove .o file after linking unless keep_obj is true
     if !opts.keep_obj {
@@ -381,7 +387,19 @@ fn compile_to_native(
     Ok(())
 }
 
-fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), String> {
+fn link_object_file(
+    obj_file: &str,
+    output: &str,
+    dev_mode: bool,
+    mir_program: &crate::mir::mir::MirProgram,
+) -> Result<(), String> {
+    // Collect all FFI libraries needed
+    let mut ffi_libs = std::collections::HashSet::new();
+    for func in &mir_program.functions {
+        if let Some(ref lib_name) = func.ffi_lib {
+            ffi_libs.insert(lib_name.clone());
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         let linker = extract_embedded_linker()?;
@@ -445,6 +463,65 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
                 // Link against the DLL
                 cmd.arg(doo_dll_lib.to_str().unwrap());
             }
+
+            // Add FFI library paths first, then libraries
+            // This ensures the linker can find import libraries correctly
+            let mut ffi_lib_paths = Vec::new();
+            let mut ffi_lib_files = Vec::new();
+
+            for ffi_lib in &ffi_libs {
+                let mut found_lib = false;
+
+                // First try in target_dir
+                let ffi_lib_path = lib_dir.join(format!("{}.dll.lib", ffi_lib));
+                if ffi_lib_path.exists() {
+                    ffi_lib_files.push(ffi_lib_path);
+                    found_lib = true;
+                } else {
+                    // Try without .dll.lib suffix - just the import lib name
+                    let alt_path = lib_dir.join(format!("{}.lib", ffi_lib));
+                    if alt_path.exists() {
+                        ffi_lib_files.push(alt_path);
+                        found_lib = true;
+                    }
+                }
+
+                // If not found in target_dir, try searching in ffi_libs directory
+                if !found_lib {
+                    let ffi_libs_dir = env::current_dir().ok().map(|p| {
+                        p.join("ffi_libs")
+                            .join(format!("lib{}", ffi_lib))
+                            .join("target")
+                            .join("release")
+                    });
+
+                    if let Some(ffi_dir) = ffi_libs_dir {
+                        let ffi_dll_lib = ffi_dir.join(format!("{}.dll.lib", ffi_lib));
+                        if ffi_dll_lib.exists() {
+                            ffi_lib_files.push(ffi_dll_lib);
+                            ffi_lib_paths.push(ffi_dir.clone());
+                            found_lib = true;
+                        } else {
+                            let ffi_dll_lib_alt = ffi_dir.join(format!("{}.lib", ffi_lib));
+                            if ffi_dll_lib_alt.exists() {
+                                ffi_lib_files.push(ffi_dll_lib_alt);
+                                ffi_lib_paths.push(ffi_dir.clone());
+                                found_lib = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Add all library paths first
+            for path in ffi_lib_paths {
+                cmd.arg(format!("/LIBPATH:{}", path.display()));
+            }
+
+            // Then add all library files
+            for lib_file in ffi_lib_files {
+                cmd.arg(lib_file.to_str().unwrap());
+            }
         }
 
         let result = cmd.output();
@@ -501,6 +578,30 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
                 cmd.arg(doo_a.to_str().unwrap());
                 // Add additional libraries needed for Rust runtime
                 cmd.arg("-lpthread").arg("-ldl");
+            }
+
+            // Add FFI libraries
+            for ffi_lib in &ffi_libs {
+                // Try to find the shared library in the ffi_libs directory
+                let ffi_lib_dir = env::current_dir().ok().and_then(|p| {
+                    Some(
+                        p.join("ffi_libs")
+                            .join(format!("lib{}", ffi_lib))
+                            .join("target")
+                            .join("release"),
+                    )
+                });
+
+                if let Some(ffi_dir) = ffi_lib_dir {
+                    if ffi_dir.exists() {
+                        // Add library path
+                        cmd.arg(format!("-L{}", ffi_dir.display()));
+                        // Link the library (clang will add lib prefix and .so/.dylib suffix)
+                        cmd.arg(format!("-l{}", ffi_lib));
+                        // Add rpath so the library can be found at runtime
+                        cmd.arg(format!("-Wl,-rpath,{}", ffi_dir.display()));
+                    }
+                }
             }
         }
 
