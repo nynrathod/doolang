@@ -1,3 +1,7 @@
+// STRING UTILITY FUNCTIONS - Standard Library
+// Note: Built-in methods (len, charAt, substring, toUpper, toLower, etc.) are NOT duplicated here
+// This file contains only stdlib-specific string utilities
+
 fn TrimL(str: Str, padChar: Str) -> Str {
     let len: Int = str.len();
     let mut start: Int = 0;
@@ -64,7 +68,6 @@ fn PadR(str: Str, width: Int, padChar: Str) -> Str {
     return result;
 }
 
-// Capitalize the first character of the string, leaving the rest unchanged
 fn Capitalize(str: Str) -> Str {
     let len: Int = str.len();
     if len == 0 {
