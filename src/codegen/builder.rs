@@ -2265,8 +2265,21 @@ impl<'ctx> CodeGen<'ctx> {
                 // Extract the Result struct and check the tag
                 let mut result_val = self.resolve_value(result_tmp);
 
-                // CRITICAL FIX: If result is not a struct but we know it should be a Result type,
-                // try to load it from symbols as a struct
+                // CRITICAL FIX: If result_val is a pointer, we need to load the Result struct from it
+                // This happens when FFI functions return pointer to Result struct
+                if result_val.is_pointer_value() && !result_val.is_struct_value() {
+                    let result_ptr = result_val.into_pointer_value();
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let result_struct_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                    result_val = self
+                        .builder
+                        .build_load(result_struct_type, result_ptr, "result_struct_load_try")
+                        .expect("Failed to load Result struct from pointer in TryPropagate");
+                }
+
+                // Try to load Result struct if not already a struct value (fallback for symbols)
                 if !result_val.is_struct_value() {
                     // Check if this is supposed to be a Result type
                     if let Some((ok_type, _err_type)) = self.result_types.get(result_tmp) {
@@ -2338,10 +2351,23 @@ impl<'ctx> CodeGen<'ctx> {
                         .into_pointer_value();
 
                     // Get the Ok type from result_types to know how to convert the pointer back
+                    // Use same fallback logic as ManualErrorExtract
                     let ok_type = self
                         .result_types
                         .get(result_tmp)
                         .map(|(t, _)| t.clone())
+                        .or_else(|| {
+                            // Fallback: try to find by name
+                            if !name.is_empty() {
+                                self.result_types.get(name).map(|(t, _)| t.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .or_else(|| {
+                            // Last resort: search all result_types for any entry
+                            self.result_types.values().next().map(|(t, _)| t.clone())
+                        })
                         .unwrap_or_else(|| "Int".to_string());
 
                     // For void Ok types, don't try to extract a value
@@ -2474,7 +2500,21 @@ impl<'ctx> CodeGen<'ctx> {
                 // Extract the Result struct
                 let mut result_val = self.resolve_value(result_tmp);
 
-                // Try to load Result struct if not already a struct value
+                // CRITICAL FIX: If result_val is a pointer, we need to load the Result struct from it
+                // This happens when FFI functions return pointer to Result struct
+                if result_val.is_pointer_value() && !result_val.is_struct_value() {
+                    let result_ptr = result_val.into_pointer_value();
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let result_struct_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                    result_val = self
+                        .builder
+                        .build_load(result_struct_type, result_ptr, "result_struct_load")
+                        .expect("Failed to load Result struct from pointer");
+                }
+
+                // Try to load Result struct if not already a struct value (fallback for symbols)
                 if !result_val.is_struct_value() {
                     if let Some((_ok_type, _err_type)) = self.result_types.get(result_tmp) {
                         if let Some(sym) = self.symbols.get(result_tmp) {
@@ -2536,11 +2576,25 @@ impl<'ctx> CodeGen<'ctx> {
                         .into_pointer_value();
 
                     // Get the Ok type to know how to extract values
+                    // Try to find by result_tmp first, then try by ok_names[0] if available
                     let ok_type = self
                         .result_types
                         .get(result_tmp)
                         .map(|(t, _)| t.clone())
-                        .unwrap_or_else(|| "Int".to_string());
+                        .or_else(|| {
+                            // Fallback: try to find by ok_name
+                            if !ok_names.is_empty() {
+                                self.result_types.get(&ok_names[0]).map(|(t, _)| t.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .or_else(|| {
+                            // Last resort: search all result_types for any entry
+                            // This handles cases where the temp name doesn't match
+                            self.result_types.values().next().map(|(t, _)| t.clone())
+                        })
+                        .unwrap_or_else(|| "Void".to_string());
 
                     // Check if Ok type is a tuple
                     let is_tuple = ok_type.starts_with("Tuple(") || ok_names.len() > 1;
@@ -2585,54 +2639,89 @@ impl<'ctx> CodeGen<'ctx> {
                         let is_struct_type = ok_type.contains("Struct(")
                             || self.struct_metadata.contains_key(&ok_type);
 
-                        let actual_value = if ok_type.contains("Str")
-                            || ok_type.contains("String")
-                            || ok_type.contains("Array")
-                            || ok_type.contains("Map")
-                            || is_struct_type
-                        {
-                            ok_value_ptr.into()
-                        } else if ok_type.contains("Float") {
-                            let i64_val = self
-                                .builder
-                                .build_ptr_to_int(
-                                    ok_value_ptr,
-                                    self.context.i64_type(),
-                                    "ptr_to_i64",
-                                )
-                                .unwrap();
-                            let alloca = self
-                                .builder
-                                .build_alloca(self.context.i64_type(), "i64_tmp")
-                                .unwrap();
-                            self.builder.build_store(alloca, i64_val).unwrap();
-                            let f64_ptr = self
-                                .builder
-                                .build_pointer_cast(
-                                    alloca,
-                                    self.context.ptr_type(inkwell::AddressSpace::default()),
-                                    "f64_ptr",
-                                )
-                                .unwrap();
-                            self.builder
-                                .build_load(self.context.f64_type(), f64_ptr, "f64_val")
-                                .unwrap()
+                        // Handle Void type specially - no value to extract
+                        if ok_type.contains("Void") {
+                            // For Void, push a dummy i32 value (0) since we need something
+                            // but it will never be used
+                            ok_values_from_ok_path
+                                .push(self.context.i32_type().const_int(0, false).into());
                         } else {
-                            let i64_val = self
-                                .builder
-                                .build_ptr_to_int(
-                                    ok_value_ptr,
-                                    self.context.i64_type(),
-                                    "ptr_to_i64",
-                                )
-                                .unwrap();
-                            self.builder
-                                .build_int_truncate(i64_val, self.context.i32_type(), "ptr_to_i32")
-                                .unwrap()
-                                .into()
-                        };
+                            let actual_value =
+                                if ok_type.contains("Str") || ok_type.contains("String") {
+                                    // For strings from FFI: ok_value_ptr IS the C string pointer (void* cast)
+                                    // The FFI stores the string pointer directly as void*, not pointer-to-pointer
+                                    ok_value_ptr.into()
+                                } else if ok_type.contains("Array")
+                                    || ok_type.contains("Map")
+                                    || is_struct_type
+                                {
+                                    // For arrays, maps, and structs, the pointer is directly usable
+                                    ok_value_ptr.into()
+                                } else if ok_type.contains("Float") {
+                                    let i64_val = self
+                                        .builder
+                                        .build_ptr_to_int(
+                                            ok_value_ptr,
+                                            self.context.i64_type(),
+                                            "ptr_to_i64",
+                                        )
+                                        .unwrap();
+                                    let alloca = self
+                                        .builder
+                                        .build_alloca(self.context.i64_type(), "i64_tmp")
+                                        .unwrap();
+                                    self.builder.build_store(alloca, i64_val).unwrap();
+                                    let f64_ptr = self
+                                        .builder
+                                        .build_pointer_cast(
+                                            alloca,
+                                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                                            "f64_ptr",
+                                        )
+                                        .unwrap();
+                                    self.builder
+                                        .build_load(self.context.f64_type(), f64_ptr, "f64_val")
+                                        .unwrap()
+                                } else if ok_type.contains("Int") {
+                                    // For Int, the pointer stores the actual int value
+                                    let i64_val = self
+                                        .builder
+                                        .build_ptr_to_int(
+                                            ok_value_ptr,
+                                            self.context.i64_type(),
+                                            "ptr_to_i64",
+                                        )
+                                        .unwrap();
+                                    self.builder
+                                        .build_int_truncate(
+                                            i64_val,
+                                            self.context.i32_type(),
+                                            "ptr_to_i32",
+                                        )
+                                        .unwrap()
+                                        .into()
+                                } else {
+                                    // Default: convert pointer to int
+                                    let i64_val = self
+                                        .builder
+                                        .build_ptr_to_int(
+                                            ok_value_ptr,
+                                            self.context.i64_type(),
+                                            "ptr_to_i64",
+                                        )
+                                        .unwrap();
+                                    self.builder
+                                        .build_int_truncate(
+                                            i64_val,
+                                            self.context.i32_type(),
+                                            "ptr_to_i32",
+                                        )
+                                        .unwrap()
+                                        .into()
+                                };
 
-                        ok_values_from_ok_path.push(actual_value);
+                            ok_values_from_ok_path.push(actual_value);
+                        }
                     }
 
                     // Error variable from Ok path (nil/default value based on error type)
@@ -2683,7 +2772,8 @@ impl<'ctx> CodeGen<'ctx> {
 
                         // Convert pointer back to the actual error type
                         if err_type.contains("Str") || err_type.contains("String") {
-                            // String errors are already pointers
+                            // String errors: err_value_ptr IS the C string pointer (void* cast)
+                            // The FFI stores the string pointer directly as void*, not pointer-to-pointer
                             err_value_ptr.into()
                         } else if err_type.contains("Array") || err_type.contains("Map") {
                             // Array and Map errors are pointers
@@ -3132,7 +3222,6 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         (0, "Int".to_string())
                     };
-
                 // Use the canonical struct type if available
                 let struct_type =
                     if let Some(canonical_type) = self.canonical_struct_types.get(struct_name) {
@@ -3142,15 +3231,23 @@ impl<'ctx> CodeGen<'ctx> {
                         let field_llvm_types: Vec<inkwell::types::BasicTypeEnum> = metadata
                             .field_types
                             .iter()
-                            .map(|type_name| match type_name.as_str() {
-                                "Int" => self.context.i32_type().into(),
-                                "Float" => self.context.f64_type().into(),
-                                "Bool" => self.context.bool_type().into(),
-                                "Str" | "String" => self
-                                    .context
-                                    .ptr_type(inkwell::AddressSpace::default())
-                                    .into(),
-                                _ => self.context.i32_type().into(),
+                            .map(|type_name| {
+                                match type_name.as_str() {
+                                    "Int" => self.context.i32_type().into(),
+                                    "Float" => self.context.f64_type().into(),
+                                    "Bool" => self.context.bool_type().into(),
+                                    "Str" | "String" => self
+                                        .context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                    _ if self.struct_metadata.contains_key(type_name) => {
+                                        // Nested struct - use pointer to the struct
+                                        self.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into()
+                                    }
+                                    _ => self.context.i32_type().into(),
+                                }
                             })
                             .collect();
                         self.context.struct_type(&field_llvm_types, false)
@@ -3159,7 +3256,6 @@ impl<'ctx> CodeGen<'ctx> {
                         self.context
                             .struct_type(&[self.context.i32_type().into()], false)
                     };
-
                 // Get the field LLVM type from the struct type
                 let field_llvm_type = struct_type
                     .get_field_type_at_index(field_index as u32)
@@ -3176,13 +3272,26 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .unwrap();
 
-                let field_val = self
-                    .builder
-                    .build_load(field_llvm_type, field_ptr, &format!("{}_load", name))
-                    .unwrap();
+                // Check if the field type is a nested struct
+                // If so, load the pointer value (since nested structs are stored as pointers)
+                let is_nested_struct = self.struct_metadata.contains_key(&field_type_name);
+
+                let field_val = if is_nested_struct {
+                    // For nested structs, the field is a pointer to the struct
+                    // We need to load that pointer value
+                    self.builder
+                        .build_load(field_llvm_type, field_ptr, &format!("{}_load", name))
+                        .unwrap()
+                } else {
+                    // For non-struct types, load the value
+                    self.builder
+                        .build_load(field_llvm_type, field_ptr, &format!("{}_load", name))
+                        .unwrap()
+                };
 
                 self.temp_values.insert(name.clone(), field_val);
-                self.variable_types.insert(name.clone(), field_type_name);
+                self.variable_types
+                    .insert(name.clone(), field_type_name.clone());
 
                 Some(field_val)
             }

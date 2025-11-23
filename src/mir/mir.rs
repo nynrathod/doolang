@@ -20,6 +20,8 @@ pub struct MirFunction {
     pub return_type: Option<String>,
     pub error_type: Option<String>, // Error type for functions that can fail
     pub blocks: Vec<MirBlock>,
+    pub ffi_lib: Option<String>, // FFI library name from @ffi("libname")
+    pub ffi_symbol: Option<String>, // FFI symbol name from @extern("symbol_name")
 }
 
 /// A basic block - sequence of instructions with single entry/exit

@@ -27,15 +27,23 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         // Resolve alias to actual function name if this is an aliased import
-        let actual_func_name = self
-            .function_aliases
-            .get(func)
-            .cloned()
-            .unwrap_or_else(|| func.to_string());
+        // Chain alias lookups: File::Write -> Write -> doo_file_write
+        let mut actual_func_name = func.to_string();
+        loop {
+            if let Some(resolved) = self.function_aliases.get(&actual_func_name) {
+                let next_name = resolved.clone();
+                if next_name == actual_func_name {
+                    break; // Prevent infinite loop
+                }
+                actual_func_name = next_name;
+            } else {
+                break;
+            }
+        }
 
         let callee = self.module.get_function(&actual_func_name).expect(&format!(
-            "Function '{}' not found. Make sure it's declared before calling.",
-            actual_func_name
+            "Function '{}' not found. Make sure it's declared before calling. (Original: '{}')",
+            actual_func_name, func
         ));
 
         let arg_values: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = args
@@ -50,11 +58,48 @@ impl<'ctx> CodeGen<'ctx> {
 
         if let Some(result) = call_result.try_as_basic_value().left() {
             if !dest.is_empty() {
-                // Check if this is a Result type by checking struct signature
-                // Result structs have { i32 tag, <any_type> value }
+                // Check if this is an FFI function with error type</parameter>
+                // FFI functions return a pointer to Result struct, not struct by value
+                let is_ffi_result = {
+                    // Check both the original Doo function name and the resolved C symbol name</parameter>
+                    // Also check without namespace prefix (File::Write -> Write)
+                    let func_without_namespace = func.split("::").last().unwrap_or(func);
+                    let has_error_type = self.function_error_types.contains_key(&actual_func_name)
+                        || self.function_error_types.contains_key(func)
+                        || self
+                            .function_error_types
+                            .contains_key(func_without_namespace);
+
+                    // Check if this is FFI by looking for the function in our aliases or checking linkage
+                    let is_ffi = self
+                        .function_aliases
+                        .values()
+                        .any(|v| v == &actual_func_name)
+                        || self.function_aliases.contains_key(func)
+                        || callee.get_linkage() == inkwell::module::Linkage::External;
+
+                    has_error_type && is_ffi && result.is_pointer_value()
+                };
+
+                // If FFI returned a pointer to Result, load the struct</parameter>
+                let actual_result = if is_ffi_result {
+                    let result_ptr = result.into_pointer_value();
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let result_struct_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                    self.builder
+                        .build_load(result_struct_type, result_ptr, "ffi_result_load")
+                        .unwrap()
+                } else {
+                    result
+                };
+
+                // Check if this is a Result type by checking struct signature</parameter>
+                // Result structs have { i32 tag, ptr value }
                 // We detect by: struct with 2 fields, first field is i32
-                let is_result_type = if result.is_struct_value() {
-                    let struct_type = result.get_type();
+                let is_result_type = if actual_result.is_struct_value() {
+                    let struct_type = actual_result.get_type();
                     if let BasicTypeEnum::StructType(st) = struct_type {
                         if st.count_fields() == 2 {
                             // Check if first field is i32 (Result tag field)
@@ -77,11 +122,11 @@ impl<'ctx> CodeGen<'ctx> {
                     false
                 };
 
-                // If we have multiple destinations and result is Result type, keep Result in temp_values
+                // If we have multiple destinations and result is Result type, keep Result in temp_values</parameter>
                 if is_result_type && dest.len() > 1 {
                     // Multi-value Result return - keep the Result struct and set up metadata for TupleExtract
                     // The Result struct is { i32 tag, ptr value } where ptr points to a heap tuple
-                    let result_struct = result.into_struct_value();
+                    let result_struct = actual_result.into_struct_value();
                     let tuple_ptr_value = self
                         .builder
                         .build_extract_value(result_struct, 1, "unwrapped_ptr")
@@ -165,23 +210,26 @@ impl<'ctx> CodeGen<'ctx> {
                     }
 
                     // Return the full Result struct so it can be stored if needed
-                    self.temp_values.insert(dest[0].clone(), result);
-                    return Some(result);
+                    self.temp_values.insert(dest[0].clone(), actual_result);
+                    return Some(actual_result);
                 }
 
                 let dest_name = &dest[0];
 
                 // CRITICAL FIX: For Result types, store the FULL struct (with tag)
                 // Don't unwrap it here - let print and other operations handle the tag checking
-                let final_result = result;
+                let final_result = actual_result;
 
                 // Track that this is a Result type so downstream operations know to handle it specially
                 if is_result_type {
                     // Get the Ok type from function_return_types
+                    // Handle namespaced names (File::Write -> Write)
+                    let func_without_namespace = func.split("::").last().unwrap_or(func);
                     let ok_type = self
                         .function_return_types
                         .get(&actual_func_name)
                         .or_else(|| self.function_return_types.get(func))
+                        .or_else(|| self.function_return_types.get(func_without_namespace))
                         .cloned()
                         .unwrap_or_else(|| "Unknown".to_string());
 
@@ -190,11 +238,21 @@ impl<'ctx> CodeGen<'ctx> {
                         .function_error_types
                         .get(&actual_func_name)
                         .or_else(|| self.function_error_types.get(func))
+                        .or_else(|| self.function_error_types.get(func_without_namespace))
                         .cloned()
                         .unwrap_or_else(|| "Str".to_string());
 
+                    // CRITICAL: Store result_types under BOTH the temp name and dest name
+                    // ManualErrorExtract looks up by temp name (e.g., "%19")
+                    // Other code looks up by dest name (e.g., "size")
                     self.result_types
                         .insert(dest_name.clone(), (ok_type.clone(), err_type.clone()));
+
+                    // Also store under all dest names if there are multiple
+                    for dn in dest.iter() {
+                        self.result_types
+                            .insert(dn.clone(), (ok_type.clone(), err_type.clone()));
+                    }
 
                     // Check if ok_type is a tuple/multi-value type
                     // If so, set up tuple_types so TupleExtract can work properly
@@ -231,6 +289,28 @@ impl<'ctx> CodeGen<'ctx> {
                     // This ensures both resolve_value and print can access it properly
                     self.temp_values.insert(dest_name.clone(), final_result);
 
+                    // CRITICAL: Store result_types for the actual temp variable name too
+                    // The call instruction stores the result in a temp like "%19"
+                    // We need to be able to look up result_types by that temp name
+                    // Look through temp_values to find which temp holds this result
+                    for (temp_name, temp_val) in self.temp_values.iter() {
+                        if temp_name.starts_with('%') {
+                            // Check if this temp value is the same as our result
+                            if temp_val.is_struct_value() && final_result.is_struct_value() {
+                                let temp_struct = temp_val.into_struct_value();
+                                let final_struct = final_result.into_struct_value();
+                                // If they're the same pointer/value, this is our temp
+                                if temp_struct.as_instruction() == final_struct.as_instruction() {
+                                    self.result_types.insert(
+                                        temp_name.clone(),
+                                        (ok_type.clone(), err_type.clone()),
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     // Also store the Result struct on the stack for proper resolution
                     // This ensures that resolve_value can load it as a struct from memory
                     let result_struct_val = final_result.into_struct_value();
@@ -255,7 +335,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .insert(dest_name.clone(), "Result".to_string());
 
                     // Return early - do NOT continue with normal single-value handling
-                    return Some(result);
+                    return Some(actual_result);
                 } else {
                     // Non-Result type - store normally
                     self.temp_values.insert(dest_name.clone(), final_result);

@@ -134,19 +134,91 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         return_type,
         error_type,
         body,
+        decorators,
+        receiver_type,
         ..
     } = node
     {
-        let func = MirFunction {
-            name: name.clone(),
-            params: params.iter().map(|(n, _)| n.clone()).collect(),
-            param_types: params
+        // If this is a method declaration, use mangled name (Type::method)
+        let func_name = if let Some(type_name) = receiver_type {
+            format!("{}::{}", type_name, name)
+        } else {
+            name.clone()
+        };
+        // Extract FFI information from decorators
+        let mut ffi_lib: Option<String> = None;
+        let mut ffi_symbol: Option<String> = None;
+
+        for decorator in decorators {
+            match decorator.name.as_str() {
+                "ffi" => {
+                    // @ffi("libname") - extract library name
+                    if let Some(AstNode::StringLiteral(lib_name)) = decorator.args.first() {
+                        ffi_lib = Some(lib_name.clone());
+                    }
+                }
+                "extern" => {
+                    // @extern("symbol_name") - extract symbol name
+                    if let Some(AstNode::StringLiteral(symbol_name)) = decorator.args.first() {
+                        ffi_symbol = Some(symbol_name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // For methods, first parameter is the receiver with inferred type
+        // For regular functions, just use all parameters as-is
+        let (all_params, all_param_types) = if let Some(type_name) = receiver_type {
+            // This is a method - first param is receiver
+            let mut method_params: Vec<String> = Vec::new();
+            let mut method_param_types: Vec<Option<String>> = Vec::new();
+
+            // Add first parameter (receiver) with inferred type
+            if let Some((receiver_name, _)) = params.first() {
+                method_params.push(receiver_name.clone());
+
+                // Determine the receiver type
+                let receiver_type_string = match type_name.as_str() {
+                    "Int" => Some("Int".to_string()),
+                    "Float" => Some("Float".to_string()),
+                    "Str" => Some("Str".to_string()),
+                    "Bool" => Some("Bool".to_string()),
+                    other => Some(other.to_string()),
+                };
+                method_param_types.push(receiver_type_string);
+            }
+
+            // Add remaining parameters
+            method_params.extend(params.iter().skip(1).map(|(n, _)| n.clone()));
+            method_param_types.extend(
+                params
+                    .iter()
+                    .skip(1)
+                    .map(|(_, t)| t.as_ref().map(|ty| ty.format_type_string())),
+            );
+
+            (method_params, method_param_types)
+        } else {
+            // Regular function - use all parameters
+            let func_params: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+            let func_param_types: Vec<Option<String>> = params
                 .iter()
                 .map(|(_, t)| t.as_ref().map(|ty| ty.format_type_string()))
-                .collect(),
+                .collect();
+
+            (func_params, func_param_types)
+        };
+
+        let func = MirFunction {
+            name: func_name.clone(),
+            params: all_params,
+            param_types: all_param_types,
             return_type: return_type.as_ref().map(|t| t.format_type_string()),
             error_type: error_type.as_ref().map(|t| t.format_type_string()),
             blocks: vec![],
+            ffi_lib,
+            ffi_symbol,
         };
 
         // Add function to program BEFORE processing body
@@ -171,7 +243,20 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         // Parameters are handled directly by codegen (allocated and stored from function args)
         // No need for Arg instructions or intermediate temps
         // Just track which parameters need RC for potential future use
-        for (param_name, param_type) in params {
+
+        // Handle receiver parameter if method (first param)
+        // Process all parameters from the function signature
+        let params_to_check = if receiver_type.is_some() {
+            // Method: first param is receiver, doesn't need RC tracking
+            if let Some((receiver_name, _)) = params.first() {
+                param_rc_types.push((receiver_name.clone(), false));
+            }
+            params.iter().skip(1)
+        } else {
+            params.iter().skip(0)
+        };
+
+        for (param_name, param_type) in params_to_check {
             // Check if parameter is RC type (String, Array, Map)
             let is_rc = match param_type {
                 Some(TypeNode::String) => true,

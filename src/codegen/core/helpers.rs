@@ -78,9 +78,8 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Check if this is a struct by looking at variable_types
             // Structs can be stored as "Struct(Name)" or just "Name" (if it's in struct_metadata)
-            let is_struct = self
-                .variable_types
-                .get(name)
+            let var_type = self.variable_types.get(name);
+            let is_struct = var_type
                 .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
                 .unwrap_or(false);
 

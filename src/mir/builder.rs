@@ -275,6 +275,8 @@ impl MirBuilder {
                         return_type: None,
                         error_type: None,
                         blocks: vec![],
+                        ffi_lib: None,
+                        ffi_symbol: None,
                     };
 
                     let block_label = self.next_block();
@@ -299,13 +301,15 @@ impl MirBuilder {
                 AstNode::ForLoopStmt { .. } => {
                     // Wrap the loop in a temporary function for isolation.
                     let loop_func_name = self.create_temp_function("loop");
-                    let mut temp_func = MirFunction {
+                    let mut loop_func = MirFunction {
                         name: loop_func_name.clone(),
                         params: vec![],
                         param_types: vec![],
                         return_type: None,
                         error_type: None,
                         blocks: vec![],
+                        ffi_lib: None,
+                        ffi_symbol: None,
                     };
 
                     let block_label = self.next_block();
@@ -318,8 +322,8 @@ impl MirBuilder {
 
                     // Build the for loop in the temporary function.
                     build_statement(self, node, &mut block);
-                    temp_func.blocks.push(block);
-                    self.program.functions.push(temp_func);
+                    loop_func.blocks.push(block);
+                    self.program.functions.push(loop_func);
                     let call_tmp = self.next_tmp();
                     self.program.globals.push(MirInstr::Call {
                         dest: vec![call_tmp],

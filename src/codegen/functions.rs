@@ -117,6 +117,10 @@ impl<'ctx> CodeGen<'ctx> {
             return;
         }
 
+        // Check if this is an FFI function
+        let is_ffi = func.ffi_lib.is_some();
+        let symbol_name = func.ffi_symbol.as_ref().unwrap_or(&func.name);
+
         // Build parameter types
         let param_types: Vec<BasicMetadataTypeEnum> = func
             .param_types
@@ -139,16 +143,21 @@ impl<'ctx> CodeGen<'ctx> {
             self.context.i32_type().fn_type(&param_types, false)
         } else if let Some(base_type) = base_return_type {
             if func.error_type.is_some() {
-                // CRITICAL FIX: For Result types, ALWAYS use ptr for field 1
-                // This allows both Ok and Err to store their values uniformly:
-                // - Ok values: boxed/allocated, pointer stored
-                // - Err values: already pointers (strings)
-                // This fixes the type mismatch where Ok used i32 but Err used ptr
+                // CRITICAL: FFI functions with error types return a POINTER to Result struct
+                // (not struct by value) to avoid ABI/calling convention issues
+                // Non-FFI functions still return Result struct by value
                 let ptr_type = self.context.ptr_type(AddressSpace::default());
                 let result_struct = self
                     .context
                     .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
-                result_struct.fn_type(&param_types, false)
+
+                if is_ffi {
+                    // FFI: return pointer to Result struct
+                    ptr_type.fn_type(&param_types, false)
+                } else {
+                    // Non-FFI: return Result struct by value
+                    result_struct.fn_type(&param_types, false)
+                }
             } else {
                 // Convert BasicTypeEnum to a function type
                 match base_type {
@@ -165,8 +174,21 @@ impl<'ctx> CodeGen<'ctx> {
             self.context.void_type().fn_type(&param_types, false)
         };
 
-        // Declare function
-        self.module.add_function(&func.name, fn_type, None);
+        // Declare function (use external symbol name for FFI)
+        let llvm_func = self.module.add_function(symbol_name, fn_type, None);
+
+        // For FFI functions, set external linkage
+        if is_ffi {
+            llvm_func.set_linkage(inkwell::module::Linkage::External);
+
+            // If FFI function has a different symbol name, create alias mapping
+            // so that calls using the Doo function name can find the FFI symbol
+            if symbol_name != &func.name {
+                self.function_aliases
+                    .insert(func.name.clone(), symbol_name.clone());
+            }
+        }
+
         self.declared_functions.insert(func.name.clone());
     }
 
@@ -236,17 +258,21 @@ impl<'ctx> CodeGen<'ctx> {
             let is_struct =
                 type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
 
-            if type_str.contains("String") || type_str.contains("Str") {
+            // Primitives (Int, Float, Bool) are passed by value
+            // Strings, Arrays, Maps, and Structs are passed by pointer
+            if type_str == "Int" {
+                self.context.i32_type().into()
+            } else if type_str == "Float" {
+                self.context.f64_type().into()
+            } else if type_str == "Bool" {
+                self.context.bool_type().into()
+            } else if type_str.contains("String") || type_str.contains("Str") {
                 self.context.ptr_type(AddressSpace::default()).into()
             } else if type_str.contains("Array") || type_str.contains("Map") {
                 self.context.ptr_type(AddressSpace::default()).into()
             } else if is_struct {
                 // Struct parameters are passed as pointers
                 self.context.ptr_type(AddressSpace::default()).into()
-            } else if type_str.contains("Float") {
-                self.context.f64_type().into()
-            } else if type_str.contains("Bool") {
-                self.context.bool_type().into()
             } else {
                 self.context.i32_type().into()
             }
@@ -325,6 +351,10 @@ impl<'ctx> CodeGen<'ctx> {
                 // Fallback to pointer for forward-declared structs
                 self.context.ptr_type(AddressSpace::default()).into()
             }
+        } else if self.struct_metadata.contains_key(type_str) {
+            // Handle bare struct names (without "Struct()" wrapper) - nested structs
+            // For nested structs, we store them as pointers
+            self.context.ptr_type(AddressSpace::default()).into()
         } else {
             // Default fallback
             self.context.i32_type().into()
@@ -443,6 +473,15 @@ impl<'ctx> CodeGen<'ctx> {
     /// - Handles block terminators (return, jump, conditional jump).
     /// Returns the LLVM FunctionValue for further manipulation or optimization.
     pub fn generate_function(&mut self, func: &MirFunction) -> FunctionValue<'ctx> {
+        // FFI functions are external - don't generate body
+        if func.ffi_lib.is_some() {
+            let symbol_name = func.ffi_symbol.as_ref().unwrap_or(&func.name);
+            return self.module.get_function(symbol_name).expect(&format!(
+                "FFI function '{}' should have been predeclared",
+                func.name
+            ));
+        }
+
         // Reset recursion depth for this function to prevent accumulation across functions
         self.recursion_depth = 0;
 
@@ -552,7 +591,15 @@ impl<'ctx> CodeGen<'ctx> {
                     type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
 
                 // Map MIR type strings to LLVM types
-                if type_str.contains("String") || type_str.contains("Str") {
+                // Primitives (Int, Float, Bool) are passed by value
+                // Strings, Arrays, Maps, and Structs are passed by pointer
+                if type_str == "Int" {
+                    self.context.i32_type().into()
+                } else if type_str == "Float" {
+                    self.context.f64_type().into()
+                } else if type_str == "Bool" {
+                    self.context.bool_type().into()
+                } else if type_str.contains("String") || type_str.contains("Str") {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Array") {
                     self.context.ptr_type(AddressSpace::default()).into()
@@ -561,10 +608,6 @@ impl<'ctx> CodeGen<'ctx> {
                 } else if is_struct {
                     // Struct parameters are passed as pointers
                     self.context.ptr_type(AddressSpace::default()).into()
-                } else if type_str.contains("Float") {
-                    self.context.f64_type().into()
-                } else if type_str.contains("Bool") {
-                    self.context.bool_type().into()
                 } else {
                     self.context.i32_type().into()
                 }
@@ -640,20 +683,43 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Also store the parameter value so it can be resolved
                     self.temp_values.insert(param.clone(), param_val);
+                } else if type_str == "Int" || type_str == "Float" || type_str == "Bool" {
+                    // Store primitive parameters in temp_values for direct resolution
+                    self.temp_values.insert(param.clone(), param_val);
                 } else if is_struct {
-                    // Normalize the type string to "Struct(Name)" format
-                    let normalized_type = if type_str.contains("Struct(") {
-                        type_str.clone()
+                    // Extract the actual struct name from type string
+                    let struct_name = if type_str.starts_with("Struct(") && type_str.ends_with(")")
+                    {
+                        // Extract name from "Struct(Name)" format
+                        &type_str[7..type_str.len() - 1]
                     } else {
-                        format!("Struct({})", type_str)
+                        // It's already just the struct name
+                        type_str.as_str()
                     };
+
+                    // Normalize the type string to "Struct(Name)" format
+                    let normalized_type = format!("Struct({})", struct_name);
 
                     // Store struct type metadata and temp value for struct parameters
                     self.variable_types.insert(param.clone(), normalized_type);
                     self.temp_values.insert(param.clone(), param_val);
 
-                    // Track as heap-allocated for RC purposes
-                    self.heap_arrays.insert(param.clone());
+                    // Track struct instance type for method lookup (with multiple name variations)
+                    self.struct_instance_types
+                        .insert(param.clone(), struct_name.to_string());
+                    if param.starts_with('%') {
+                        self.struct_instance_types.insert(
+                            param.trim_start_matches('%').to_string(),
+                            struct_name.to_string(),
+                        );
+                    }
+                    if !param.starts_with('%') {
+                        self.struct_instance_types
+                            .insert(format!("%{}", param), struct_name.to_string());
+                    }
+
+                    // Don't track structs in heap_arrays - that's only for actual arrays
+                    // Structs have their own tracking via struct_instance_types
                 }
             }
         }
@@ -1634,8 +1700,43 @@ impl<'ctx> CodeGen<'ctx> {
                     if fn_name == "main" {
                         let zero = self.context.i32_type().const_int(0, false);
                         self.builder.build_return(Some(&zero)).unwrap();
+                    } else if self.current_error_type.is_some() {
+                        // Void return with error type - wrap in Ok Result with null pointer
+                        let ptr_type = self.context.ptr_type(AddressSpace::default());
+                        let result_struct_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                        let ok_tag = self.context.i32_type().const_int(0, false); // 0 = Ok
+                        let null_ptr = ptr_type.const_null();
+
+                        let result_alloca = self
+                            .builder
+                            .build_alloca(result_struct_type, "void_ok_result")
+                            .unwrap();
+
+                        // Set tag field
+                        let tag_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
+                            .unwrap();
+                        self.builder.build_store(tag_ptr, ok_tag).unwrap();
+
+                        // Set value field (null for Void)
+                        let value_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
+                            .unwrap();
+                        self.builder.build_store(value_ptr, null_ptr).unwrap();
+
+                        // Load and return the Result struct
+                        let result_val = self
+                            .builder
+                            .build_load(result_struct_type, result_alloca, "void_ok_result_val")
+                            .unwrap();
+                        self.builder.build_return(Some(&result_val)).unwrap();
                     } else {
-                        // Void return - no value
+                        // Void return - no value, no error type
                         self.builder.build_return(None).unwrap();
                     }
                 } else if values.len() == 1 {
@@ -1707,7 +1808,96 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }
 
-                    self.builder.build_return(Some(&val)).unwrap();
+                    // If this function returns a Result type (has error_type), wrap the value in Ok Result
+                    if self.current_error_type.is_some() {
+                        // Create Result struct: { i32 tag = 0 (Ok), ptr value }
+                        let ptr_type = self.context.ptr_type(AddressSpace::default());
+                        let result_struct_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                        // Convert the value to a pointer for storage in Result
+                        let value_as_ptr = if val.is_pointer_value() {
+                            // Already a pointer (String, Array, Map, Struct)
+                            val.into_pointer_value()
+                        } else if val.is_int_value() {
+                            // Convert i32 to pointer
+                            let int_val = val.into_int_value();
+                            let i64_val = self
+                                .builder
+                                .build_int_z_extend(int_val, self.context.i64_type(), "i32_to_i64")
+                                .unwrap();
+                            self.builder
+                                .build_int_to_ptr(
+                                    i64_val,
+                                    self.context.ptr_type(AddressSpace::default()),
+                                    "i32_to_ptr",
+                                )
+                                .unwrap()
+                        } else if val.is_float_value() {
+                            // Convert f64 to pointer
+                            let float_val = val.into_float_value();
+                            let alloca = self
+                                .builder
+                                .build_alloca(self.context.f64_type(), "f64_tmp")
+                                .unwrap();
+                            self.builder.build_store(alloca, float_val).unwrap();
+                            let i64_ptr = self
+                                .builder
+                                .build_pointer_cast(
+                                    alloca,
+                                    self.context.ptr_type(AddressSpace::default()),
+                                    "f64_ptr_cast",
+                                )
+                                .unwrap();
+                            let i64_val = self
+                                .builder
+                                .build_load(self.context.i64_type(), i64_ptr, "f64_as_i64")
+                                .unwrap()
+                                .into_int_value();
+                            self.builder
+                                .build_int_to_ptr(
+                                    i64_val,
+                                    self.context.ptr_type(AddressSpace::default()),
+                                    "f64_to_ptr",
+                                )
+                                .unwrap()
+                        } else {
+                            // Fallback: null pointer
+                            ptr_type.const_null()
+                        };
+
+                        // Build the Ok Result struct
+                        let ok_tag = self.context.i32_type().const_int(0, false); // 0 = Ok
+                        let result_alloca = self
+                            .builder
+                            .build_alloca(result_struct_type, "ok_result")
+                            .unwrap();
+
+                        // Set tag field
+                        let tag_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
+                            .unwrap();
+                        self.builder.build_store(tag_ptr, ok_tag).unwrap();
+
+                        // Set value field
+                        let value_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
+                            .unwrap();
+                        self.builder.build_store(value_ptr, value_as_ptr).unwrap();
+
+                        // Load and return the Result struct
+                        let result_val = self
+                            .builder
+                            .build_load(result_struct_type, result_alloca, "ok_result_val")
+                            .unwrap();
+                        self.builder.build_return(Some(&result_val)).unwrap();
+                    } else {
+                        // Normal return (no error type)
+                        self.builder.build_return(Some(&val)).unwrap();
+                    }
                 } else {
                     // Multiple return values - build a struct
                     let return_values: Vec<BasicValueEnum> =
@@ -1738,7 +1928,57 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_load(struct_type, struct_alloca, "ret_tuple_val")
                         .unwrap();
 
-                    self.builder.build_return(Some(&tuple_val)).unwrap();
+                    // If this function returns a Result type (has error_type), wrap the tuple in Ok Result
+                    if self.current_error_type.is_some() {
+                        // Create Result struct: { i32 tag = 0 (Ok), ptr value }
+                        let ptr_type = self.context.ptr_type(AddressSpace::default());
+                        let result_struct_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                        // Allocate space for the tuple on heap and store pointer in Result
+                        let tuple_heap = self
+                            .builder
+                            .build_alloca(struct_type, "tuple_heap")
+                            .unwrap();
+                        self.builder.build_store(tuple_heap, tuple_val).unwrap();
+
+                        let tuple_ptr = self
+                            .builder
+                            .build_pointer_cast(tuple_heap, ptr_type, "tuple_as_ptr")
+                            .unwrap();
+
+                        // Build the Ok Result struct
+                        let ok_tag = self.context.i32_type().const_int(0, false); // 0 = Ok
+                        let result_alloca = self
+                            .builder
+                            .build_alloca(result_struct_type, "tuple_ok_result")
+                            .unwrap();
+
+                        // Set tag field
+                        let tag_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
+                            .unwrap();
+                        self.builder.build_store(tag_ptr, ok_tag).unwrap();
+
+                        // Set value field
+                        let value_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
+                            .unwrap();
+                        self.builder.build_store(value_ptr, tuple_ptr).unwrap();
+
+                        // Load and return the Result struct
+                        let result_val = self
+                            .builder
+                            .build_load(result_struct_type, result_alloca, "tuple_ok_result_val")
+                            .unwrap();
+                        self.builder.build_return(Some(&result_val)).unwrap();
+                    } else {
+                        // Normal multi-value return (no error type)
+                        self.builder.build_return(Some(&tuple_val)).unwrap();
+                    }
                 }
             }
             // Handles unconditional jump (goto).

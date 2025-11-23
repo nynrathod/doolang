@@ -10,18 +10,102 @@ impl<'ctx> CodeGen<'ctx> {
         method: &str,
         args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
-        // Check for json builtin first
+        // First, check if this is a custom user-defined method
+        // Try to determine the type name from the object
+        let object_val = self.resolve_value(object);
+
+        // Determine type name for method lookup
+        // IMPORTANT: Check struct_instance_types FIRST before heap_arrays
+        // because heap_arrays is reused to track both arrays AND structs for RC
+        let type_name = if let Some(struct_type) =
+            self.struct_instance_types.get(object).cloned().or_else(|| {
+                // Try without % prefix
+                if object.starts_with('%') {
+                    self.struct_instance_types
+                        .get(&object.trim_start_matches('%').to_string())
+                        .cloned()
+                } else {
+                    // Try with % prefix
+                    self.struct_instance_types
+                        .get(&format!("%{}", object))
+                        .cloned()
+                }
+            }) {
+            // Found in struct_instance_types - this is a struct
+            Some(struct_type)
+        } else if self.array_metadata.contains_key(object) {
+            // Has array metadata - definitely an array
+            if let Some(metadata) = self.array_metadata.get(object) {
+                Some(format!("Array({})", metadata.element_type))
+            } else {
+                Some("Array".to_string())
+            }
+        } else if self.map_metadata.contains_key(object) {
+            // Has map metadata - definitely a map
+            if let Some(metadata) = self.map_metadata.get(object) {
+                Some(format!(
+                    "Map({},{})",
+                    metadata.key_type, metadata.value_type
+                ))
+            } else {
+                Some("Map".to_string())
+            }
+        } else if self.heap_strings.contains(object) || self.temp_strings.contains_key(object) {
+            Some("Str".to_string())
+        } else if object_val.is_int_value() {
+            Some("Int".to_string())
+        } else if object_val.is_float_value() {
+            Some("Float".to_string())
+        } else if object_val.is_pointer_value() {
+            // Generic pointer - could be string or unknown struct
+            Some("Str".to_string())
+        } else {
+            None
+        };
+
+        // Check if there's a custom method defined (format: Type::method)
+        if let Some(ref type_str) = type_name {
+            let mangled_method_name = format!("{}::{}", type_str, method);
+            if let Some(_func) = self.module.get_function(&mangled_method_name) {
+                // This is a custom user-defined method
+                // Call it as a regular function with object as first argument
+                let mut all_args = vec![object.to_string()];
+                all_args.extend_from_slice(args);
+                let dest_vec = vec![dest.to_string()];
+                return self.generate_call(&dest_vec, &mangled_method_name, all_args.as_slice());
+            } else {
+                // Method was expected but not found - this is likely a struct method
+                // Check if it's a struct type and provide helpful error
+                if !type_str.starts_with("Array")
+                    && !type_str.starts_with("Map")
+                    && type_str != "Int"
+                    && type_str != "Float"
+                    && type_str != "Bool"
+                    && type_str != "Str"
+                {
+                    eprintln!(
+                        "ERROR: Method '{}::{}' not found in module",
+                        type_str, method
+                    );
+                    eprintln!("Available functions:");
+                    for func in self.module.get_functions() {
+                        eprintln!("  - {}", func.get_name().to_str().unwrap());
+                    }
+                    panic!(
+                        "Method '{}::{}' was not generated - check MIR generation",
+                        type_str, method
+                    );
+                }
+                // For primitive types, fall through to built-in methods below
+            }
+        }
+
+        // Check for json builtin
         if object == "json" {
             return self.generate_json_method(dest, method, args);
         }
 
-        // Check for file builtin
-        if object == "file" {
-            return self.generate_file_method(dest, method, args);
-        }
-
-        let object_val = self.resolve_value(object);
-
+        // Fall back to built-in methods
         // Check arrays and maps BEFORE strings, since they are also pointer types
         if self.heap_arrays.contains(object) || self.array_metadata.contains_key(object) {
             self.generate_array_method(dest, object, object_val, method, args)
