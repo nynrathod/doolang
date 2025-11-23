@@ -49,11 +49,17 @@ impl<'a> Parser<'a> {
                     path.push(ident_str);
                     // Continue the loop to process the next ::
                 } else if self.peek_is(TokenType::Semi) {
-                    // End of import - this identifier is the symbol
+                    // End of import after ::
+                    // This could be either:
+                    // 1. Specific symbol import: import std::File::Write;
+                    // 2. Namespace import: import std::File;
+                    // We treat the last component as part of the path for namespace import
                     self.advance(); // consume ;
+                    path.push(ident_str);
+                    // Return namespace import (empty items means import the module itself)
                     return Ok(AstNode::Import {
                         path,
-                        items: vec![ImportItem::Symbol(ident_str)],
+                        items: vec![],
                     });
                 } else if self.peek_is(TokenType::As) {
                     // Aliased import
@@ -81,10 +87,19 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // If we get here, we have just path components with no :: at the end
-        // This shouldn't happen in valid syntax
+        // If we get here, we have just one identifier with no ::
+        // This is a namespace import of a top-level module: import File;
+        if self.peek_is(TokenType::Semi) {
+            self.advance(); // consume ;
+            return Ok(AstNode::Import {
+                path,
+                items: vec![],
+            });
+        }
+
+        // Otherwise, invalid syntax
         Err(ParseError::UnexpectedTokenAt {
-            msg: "Invalid import syntax".to_string(),
+            msg: "Expected ; or :: after identifier in import".to_string(),
             line: self.peek().map(|t| t.line).unwrap_or(0),
             col: self.peek().map(|t| t.col).unwrap_or(0),
         })

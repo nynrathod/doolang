@@ -235,12 +235,30 @@ impl<'a> Parser<'a> {
                         });
                     }
 
-                    // If followed by '::', parse as enum variant
+                    // If followed by '::', parse as enum variant OR namespace-qualified function call
                     if self.peek_is(TokenType::ColonColon) {
                         self.advance(); // consume '::'
-                        let variant_tok = self.expect(TokenType::Identifier)?;
-                        let variant = variant_tok.value.to_string();
+                        let second_tok = self.expect(TokenType::Identifier)?;
+                        let second_name = second_tok.value.to_string();
 
+                        // Check if it's a function call: File::Write(...)
+                        if self.peek_is(TokenType::OpenParen) {
+                            self.advance(); // consume '('
+                            let args = self.parse_comma_separated(
+                                |p| p.parse_expression(),
+                                TokenType::CloseParen,
+                            )?;
+                            self.expect(TokenType::CloseParen)?;
+
+                            // Create a namespace-qualified identifier
+                            let qualified_name = format!("{}::{}", name, second_name);
+                            return Ok(AstNode::FunctionCall {
+                                func: Box::new(AstNode::Identifier(qualified_name)),
+                                args,
+                            });
+                        }
+
+                        // Otherwise, it's an enum variant
                         // Check for payload
                         let payload = if self.peek_is(TokenType::OpenParen) {
                             self.advance(); // consume '('
@@ -253,7 +271,7 @@ impl<'a> Parser<'a> {
 
                         return Ok(AstNode::EnumVariant {
                             enum_name: name,
-                            variant,
+                            variant: second_name,
                             payload,
                         });
                     }

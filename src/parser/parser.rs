@@ -107,6 +107,26 @@ impl<'a> Parser<'a> {
     pub fn parse_statement(&mut self) -> ParseResult<AstNode> {
         match self.peek() {
             Some(tok) => match tok.kind {
+                // Decorators (for FFI functions, etc.)
+                TokenType::At => {
+                    // Parse decorators and then the following function
+                    let mut decorators = Vec::new();
+                    while self.peek_is(TokenType::At) {
+                        self.advance(); // consume '@'
+                        let decorator = self.parse_decorator()?;
+                        decorators.push(decorator);
+                    }
+
+                    // After decorators, we expect a function declaration
+                    if self.peek_is(TokenType::Function) {
+                        return self.parse_functional_decl_with_decorators(decorators);
+                    } else {
+                        return Err(ParseError::UnexpectedToken(
+                            "Decorators are currently only supported on functions".into(),
+                        ));
+                    }
+                }
+
                 // Declarations
                 TokenType::Let => self.parse_let_decl(),
                 TokenType::Function => self.parse_functional_decl(),

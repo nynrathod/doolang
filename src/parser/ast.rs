@@ -241,6 +241,8 @@ pub enum AstNode {
         return_type: Option<TypeNode>,
         error_type: Option<TypeNode>, // Error type after ! in function signature
         body: Vec<AstNode>,
+        decorators: Vec<Decorator>,    // @ffi, @extern, etc.
+        receiver_type: Option<String>, // For method declarations: fn TypeName.methodName(self)
     },
     FunctionCall {
         func: Box<AstNode>,
