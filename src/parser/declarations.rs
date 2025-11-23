@@ -94,13 +94,37 @@ impl<'a> Parser<'a> {
     /// optional return type, optional error type (with !), and body block.
     /// Example: `fn foo(a: Int, b: Str) -> Str ! Str { ... }`
     pub fn parse_functional_decl(&mut self) -> ParseResult<AstNode> {
+        self.parse_functional_decl_with_decorators(Vec::new())
+    }
+
+    /// Function decl with decorators (for FFI support) and method syntax support
+    /// Example: `@ffi("libname") @extern("c_func") fn foo(a: Int) -> Int { ... }`
+    /// Example: `fn User.isAdult(self) -> Bool { ... }`
+    pub fn parse_functional_decl_with_decorators(
+        &mut self,
+        decorators: Vec<crate::parser::ast::Decorator>,
+    ) -> ParseResult<AstNode> {
         self.expect(TokenType::Function)?; // consume 'fn'
 
         // Parse function name (identifier)
         let func_name = self.expect_ident()?;
 
+        // Check if this is a method declaration (Type.method syntax)
+        let (receiver_type, actual_func_name) = if self.peek_is(TokenType::Dot) {
+            self.advance(); // consume '.'
+            let method_name = self.expect_ident()?;
+            (Some(func_name), method_name)
+        } else {
+            (None, func_name)
+        };
+
         // Determine visibility based on naming convention (uppercase = public)
-        let visibility = if func_name.chars().next().unwrap_or('a').is_uppercase() {
+        let visibility = if actual_func_name
+            .chars()
+            .next()
+            .unwrap_or('a')
+            .is_uppercase()
+        {
             "Public".to_string()
         } else {
             "Private".to_string()
@@ -109,10 +133,21 @@ impl<'a> Parser<'a> {
         self.expect(TokenType::OpenParen)?; // consume '('
 
         // Parse function parameters until ')' is found
+        // Track if we've seen the first parameter (for methods)
+        let mut is_first_param = true;
         let params = self.parse_comma_separated(
             |p| {
                 let param_name = p.expect_ident()?;
-                // Enforce mandatory type annotation for each parameter
+
+                // Special case: first parameter in methods doesn't need type annotation (receiver)
+                if is_first_param && receiver_type.is_some() {
+                    is_first_param = false;
+                    // Receiver parameter - no type annotation needed, type is inferred from receiver
+                    return Ok((param_name, None));
+                }
+                is_first_param = false;
+
+                // Enforce mandatory type annotation for each parameter (except receiver)
                 let tok = p.peek().ok_or(ParseError::EndOfInput)?;
                 if tok.kind != TokenType::Colon {
                     return Err(ParseError::UnexpectedTokenAt {
@@ -165,12 +200,14 @@ impl<'a> Parser<'a> {
         let body_block = self.parse_braced_block()?; // parse function body
 
         Ok(AstNode::FunctionDecl {
-            name: func_name,
+            name: actual_func_name,
             visibility,
             params,
             return_type,
             error_type,
             body: body_block,
+            decorators,
+            receiver_type,
         })
     }
 
@@ -260,7 +297,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a decorator like @email or @min(8) or @hash
-    fn parse_decorator(&mut self) -> ParseResult<crate::parser::ast::Decorator> {
+    pub fn parse_decorator(&mut self) -> ParseResult<crate::parser::ast::Decorator> {
         use crate::parser::ast::Decorator;
 
         let decorator_name = self.expect_ident()?;
