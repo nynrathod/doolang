@@ -1,0 +1,15 @@
+[package]
+name = "libdoo_file"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "doo_file"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
