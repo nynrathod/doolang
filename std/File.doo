@@ -1,0 +1,58 @@
+// File operations via FFI
+// All file operations are implemented as native functions using Rust's std::fs
+
+@ffi("doo_file")
+@extern("doo_file_read")
+fn Read(path: Str) -> Str ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_write")
+fn Write(path: Str, content: Str) -> Void ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_append")
+fn Append(path: Str, content: Str) -> Void ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_exists")
+fn Exists(path: Str) -> Bool {}
+
+@ffi("doo_file")
+@extern("doo_file_delete")
+fn Delete(path: Str) -> Void ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_size")
+fn Size(path: Str) -> Int ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_mkdir")
+fn MkDir(path: Str) -> Void ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_is_dir")
+fn IsDir(path: Str) -> Bool {}
+
+@ffi("doo_file")
+@extern("doo_file_list_dir")
+fn ListDir(path: Str) -> Str ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_copy")
+fn Copy(src: Str, dst: Str) -> Void ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_move")
+fn Move(src: Str, dst: Str) -> Void ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_read_lines")
+fn ReadLines(path: Str) -> Str ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_rmdir")
+fn RmDir(path: Str) -> Void ! Str {}
+
+@ffi("doo_file")
+@extern("doo_file_rmdir_all")
+fn RmDirAll(path: Str) -> Void ! Str {}
