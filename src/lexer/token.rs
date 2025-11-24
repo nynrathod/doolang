@@ -3,24 +3,25 @@ pub enum TokenType {
     Unknown, // For invalid or unrecognized characters
     Eof,
     // --- Keywords ---
-    Let,       // let
-    Mut,       // mutable keyword for let
-    Function,  // function
-    Import,    // import
-    As,        // as (for aliasing imports)
-    Struct,    // struct
-    Enum,      // enum
-    If,        // if
-    Else,      // else
-    For,       // for
-    In,        // in
-    Return,    // return
-    Break,     // break
-    Continue,  // continue
-    Print,     // print
-    Ok,        // Ok (for Result type)
-    Err,       // Err (for Result type)
-    Nil,       // nil (null value)
+    Let,      // let
+    Mut,      // mutable keyword for let
+    Function, // function
+    Import,   // import
+    As,       // as (for aliasing imports)
+    Struct,   // struct
+    Enum,     // enum
+    If,       // if
+    Else,     // else
+    For,      // for
+    In,       // in
+    Return,   // return
+    Break,    // break
+    Continue, // continue
+    Print,    // print
+    Ok,       // Ok (for Result type)
+    Err,      // Err (for Result type)
+    Nil,      // nil (null value)
+    Match,    // match
 
     // --- Literals ---
     Number,
@@ -91,6 +92,7 @@ pub enum TokenType {
     DoubleQuestion, // ??
     Dollar,         // $
     Underscore,     // _
+    Spread,         // ...
 }
 
 #[derive(Debug, Clone)]

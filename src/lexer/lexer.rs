@@ -31,6 +31,7 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
     keywords.insert("as", TokenType::As);
     keywords.insert("struct", TokenType::Struct);
     keywords.insert("enum", TokenType::Enum);
+    keywords.insert("match", TokenType::Match);
 
     // Control flow statements
     keywords.insert("if", TokenType::If);
@@ -232,6 +233,20 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
                 let op_str = arena.alloc_str("..=");
                 tokens.push(Token {
                     kind: TokenType::RangeInc, // inclusive
+                    value: op_str,
+                    line,
+                    col,
+                });
+                i += 3;
+                col += 3;
+                continue;
+            }
+            // Check for ... (spread operator)
+            let op: String = chars[i..i + 3].iter().collect();
+            if op == "..." {
+                let op_str = arena.alloc_str("...");
+                tokens.push(Token {
+                    kind: TokenType::Spread,
                     value: op_str,
                     line,
                     col,
