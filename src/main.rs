@@ -8,6 +8,17 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 fn main() {
+    // Enable UTF-8 console output on Windows
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetConsoleOutputCP(code_page: u32) -> i32;
+        }
+        unsafe {
+            SetConsoleOutputCP(65001); // 65001 is UTF-8
+        }
+    }
     // If no subcommand is provided, default to dev-mode compilation and run (for cargo run)
     let cli = Cli::parse();
 
