@@ -561,6 +561,44 @@ impl SemanticAnalyzer {
                 iterable,
                 body,
             } => self.analyze_for_stmt(pattern, iterable.as_deref_mut(), body),
+            AstNode::MatchExpr { value, arms } => {
+                // Type check the match value if present
+                if let Some(v) = value {
+                    self.infer_type(v)?;
+                }
+
+                // Type check all match arms
+                for arm in arms {
+                    // Type check pattern
+                    match &arm.pattern {
+                        crate::parser::ast::MatchPattern::Literal(expr) => {
+                            self.infer_type(expr)?;
+                        }
+                        crate::parser::ast::MatchPattern::Condition(expr) => {
+                            self.infer_type(expr)?;
+                        }
+                        crate::parser::ast::MatchPattern::Wildcard => {}
+                        crate::parser::ast::MatchPattern::EnumVariant { enum_name, variant } => {
+                            // Type check enum variant exists
+                            // TODO: Add enum validation when enum type system is enhanced
+                            let _ = (enum_name, variant);
+                        }
+                        crate::parser::ast::MatchPattern::EnumVariantWithPayload {
+                            enum_name,
+                            variant,
+                            binding,
+                        } => {
+                            // Type check enum variant with payload
+                            // TODO: Add enum validation and binding type inference
+                            let _ = (enum_name, variant, binding);
+                        }
+                    }
+
+                    // Type check body
+                    self.infer_type(&arm.body)?;
+                }
+                Ok(())
+            }
             AstNode::Block(nodes) => {
                 // Save the current symbol table to restore after block
                 let parent_scope = self.symbol_table.clone();
@@ -596,12 +634,36 @@ impl SemanticAnalyzer {
                         });
                     };
 
-                    let (param_types, _return_type, _error_type) =
-                        self.function_table.get(func_name).ok_or_else(|| {
-                            SemanticError::UndeclaredFunction(NamedError {
-                                name: func_name.clone(),
-                            })
-                        })?;
+                    // Check if this is actually an enum variant with data (Status::Pending(25))
+                    // Parser can't distinguish between enum variant and namespace function call
+                    // Must check this BEFORE looking up in function_table
+                    if func_name.contains("::") {
+                        let parts: Vec<&str> = func_name.split("::").collect();
+                        if parts.len() == 2 {
+                            let enum_name = parts[0];
+                            let variant_name = parts[1];
+
+                            // Check if the first part is an enum type
+                            if let Some(enum_variants) = self.enum_table.get(enum_name) {
+                                // Check if the variant exists
+                                if enum_variants.contains_key(variant_name) {
+                                    // This is an enum variant, not a function call
+                                    // Type check it through infer_type and return
+                                    self.infer_type(node)?;
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+
+                    // Not an enum variant, so look up as function call
+                    let lookup_result = self.function_table.get(func_name);
+                    if lookup_result.is_none() {
+                        return Err(SemanticError::UndeclaredFunction(NamedError {
+                            name: func_name.clone(),
+                        }));
+                    }
+                    let (param_types, _return_type, _error_type) = lookup_result.unwrap();
 
                     // Skip argument checking for variadic built-in functions
                     if func_name != "print"
@@ -709,8 +771,9 @@ impl SemanticAnalyzer {
 
         // Determine import mode:
         // 1. Wildcard import: import std::File::*; (items contains Wildcard)
-        // 2. Specific symbols: import std::File::{Write, Read}; (items contains symbols)
-        // 3. Namespace import: import std::File; (items is empty - import the module itself)
+        // 2. Wildcard with alias: import std::File::* as F; (items contains WildcardWithAlias)
+        // 3. Specific symbols: import std::File::{Write, Read}; (items contains symbols)
+        // 4. Namespace import: import std::File; (items is empty - import the module itself)
         let has_wildcard = items
             .iter()
             .any(|item| matches!(item, crate::parser::ast::ImportItem::Wildcard));
@@ -845,11 +908,33 @@ impl SemanticAnalyzer {
             .collect();
 
         // Get namespace for namespace-qualified imports (import std::File;)
+        // Or get alias for namespace alias imports (import std::File as F;)
         let namespace_prefix = if is_namespace_import && !path.is_empty() {
             Some(path.last().unwrap().clone())
         } else {
             None
         };
+
+        // Check if this is a namespace alias import (import module as Alias;)
+        let namespace_alias = if !is_namespace_import && specific_imports.len() == 1 {
+            if let Some(crate::parser::ast::ImportItem::SymbolWithAlias(module_name, alias)) =
+                specific_imports.first()
+            {
+                // Check if the module name matches the last path component
+                if path.last().map(|p| p == module_name).unwrap_or(false) {
+                    Some(alias.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Treat namespace alias like namespace import (import all functions)
+        let is_namespace_import_or_alias = is_namespace_import || namespace_alias.is_some();
 
         for node in nodes {
             match &node {
@@ -860,8 +945,8 @@ impl SemanticAnalyzer {
                         let should_expose = if should_import_wildcard {
                             // Wildcard: expose all public functions
                             true
-                        } else if is_namespace_import {
-                            // Namespace import: expose all with namespace prefix
+                        } else if is_namespace_import_or_alias {
+                            // Namespace import or namespace alias: expose all with namespace prefix
                             true
                         } else if specific_imports.is_empty() {
                             // No specific imports and no wildcard - shouldn't happen but handle it
@@ -871,7 +956,8 @@ impl SemanticAnalyzer {
                             specific_imports.iter().any(|item| match item {
                                 crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
                                 crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
-                                    sym == name
+                                    // Only match if it's not a namespace alias
+                                    sym == name && namespace_alias.is_none()
                                 }
                                 crate::parser::ast::ImportItem::Wildcard => false,
                             })
@@ -907,7 +993,10 @@ impl SemanticAnalyzer {
                                 imported_analyzer.function_table.get(name)
                             {
                                 // Determine the key to register in function table
-                                let fn_table_key = if let Some(ns) = &namespace_prefix {
+                                let fn_table_key = if let Some(alias) = &namespace_alias {
+                                    // Namespace alias: register as Alias::FunctionName
+                                    format!("{}::{}", alias, name)
+                                } else if let Some(ns) = &namespace_prefix {
                                     // Namespace import: register as Namespace::FunctionName
                                     format!("{}::{}", ns, name)
                                 } else {
@@ -924,8 +1013,12 @@ impl SemanticAnalyzer {
                                 if let Some(alias) = registered_name {
                                     self.function_aliases.insert(alias, name.clone());
                                 }
+                                // For namespace alias, store the mapping from qualified name to original
+                                else if namespace_alias.is_some() {
+                                    self.function_aliases.insert(fn_table_key, name.clone());
+                                }
                                 // For namespace imports, store the mapping from qualified name to original
-                                else if let Some(ns) = &namespace_prefix {
+                                else if namespace_prefix.is_some() {
                                     self.function_aliases.insert(fn_table_key, name.clone());
                                 }
                             }
@@ -1049,7 +1142,8 @@ impl SemanticAnalyzer {
         }
 
         // Verify that all requested specific symbols exist
-        if !should_import_wildcard && !specific_imports.is_empty() {
+        // Skip verification for namespace alias imports
+        if !should_import_wildcard && namespace_alias.is_none() && !specific_imports.is_empty() {
             for item in specific_imports {
                 match item {
                     crate::parser::ast::ImportItem::Symbol(sym) => {

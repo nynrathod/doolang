@@ -37,19 +37,60 @@ impl SemanticAnalyzer {
             // Float literal: always Float type
             AstNode::FloatLiteral(_) => Ok(TypeNode::Float),
             // String literal: always String type
-            AstNode::StringLiteral(s) => {
-                // Reject string interpolation syntax ${...}
-                if s.contains("${") {
-                    return Err(SemanticError::UndeclaredFunction(NamedError {
-                        name: "String interpolation with ${...} is not supported".to_string(),
-                    }));
-                }
+            AstNode::StringLiteral(_s) => {
+                // String literals support interpolation via ${...}
+                // The parser will expand these into string concatenation
                 Ok(TypeNode::String)
             }
             // Boolean literal: always Bool type
             AstNode::BoolLiteral(_name) => Ok(TypeNode::Bool),
             // Nil literal: polymorphic null value - compatible with any pointer/optional type
             AstNode::NilLiteral => Ok(TypeNode::Nil),
+
+            // Range literal: start..end or start..=end
+            AstNode::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                let start_type = self.infer_type(start)?;
+                let end_type = self.infer_type(end)?;
+
+                // Both start and end must be Int
+                if start_type != TypeNode::Int {
+                    let (line, col) = get_node_location(start);
+                    return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                        expected: TypeNode::Int,
+                        found: start_type,
+                        value: None,
+                        line,
+                        col,
+                    }));
+                }
+                if end_type != TypeNode::Int {
+                    let (line, col) = get_node_location(end);
+                    return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                        expected: TypeNode::Int,
+                        found: end_type,
+                        value: None,
+                        line,
+                        col,
+                    }));
+                }
+
+                Ok(TypeNode::Range(
+                    Box::new(TypeNode::Int),
+                    Box::new(TypeNode::Int),
+                    *inclusive,
+                ))
+            }
+
+            // Spread element - should not be analyzed standalone, only within array/map literals
+            AstNode::SpreadElement(inner) => {
+                let inner_type = self.infer_type(inner)?;
+                // Return the inner type as-is for analysis
+                Ok(inner_type)
+            }
             // Identifier (variable name): look up in symbol table (with shadowing support)
             AstNode::Identifier(name) => {
                 // Check for builtin identifiers first
@@ -84,6 +125,48 @@ impl SemanticAnalyzer {
                 let right_type = self.infer_type(right)?;
 
                 match op {
+                    // "in" operator for checking key existence in maps
+                    TokenType::In => {
+                        // Left side should be the key type, right side should be a map
+                        match &right_type {
+                            TypeNode::Map(key_type, _) => {
+                                // Check if left type matches the map's key type
+                                if !super::analyzer::types_compatible(
+                                    &left_type,
+                                    key_type,
+                                    &self.struct_table,
+                                    &self.enum_table,
+                                ) {
+                                    let (line, col) = get_node_location(node);
+                                    return Err(SemanticError::OperatorTypeMismatch(
+                                        TypeMismatch {
+                                            expected: (**key_type).clone(),
+                                            found: left_type,
+                                            value: None,
+                                            line,
+                                            col,
+                                        },
+                                    ));
+                                }
+                                // "in" operator returns Bool
+                                Ok(TypeNode::Bool)
+                            }
+                            _ => {
+                                let (line, col) = get_node_location(node);
+                                Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                                    expected: TypeNode::Map(
+                                        Box::new(TypeNode::String),
+                                        Box::new(TypeNode::Int),
+                                    ),
+                                    found: right_type,
+                                    value: None,
+                                    line,
+                                    col,
+                                }))
+                            }
+                        }
+                    }
+
                     // Comparison operators (==, !=, >, <, etc.)
                     TokenType::EqEq
                     | TokenType::NotEq
@@ -326,7 +409,7 @@ impl SemanticAnalyzer {
 
             // Function call: infer return type from function signature
             // Ex., let result = myFunction(1, "abc");
-            AstNode::FunctionCall { func, args: _ } => {
+            AstNode::FunctionCall { func, args } => {
                 // Function must be an identifier
                 // - Allowed: `myFunction(1, 2)`
                 // - Not allowed: `(some_expr)(1, 2)` or `foo.bar(1, 2)`
@@ -337,6 +420,49 @@ impl SemanticAnalyzer {
                         func: format!("{:?}", func),
                     });
                 };
+
+                // Check if this is actually an enum variant with data (Status::Pending(25))
+                // Parser can't distinguish between enum variant and namespace function call
+                if name.contains("::") {
+                    let parts: Vec<&str> = name.split("::").collect();
+                    if parts.len() == 2 {
+                        let enum_name = parts[0];
+                        let variant_name = parts[1];
+
+                        // Check if the first part is an enum type
+                        if let Some(enum_variants) = self.enum_table.get(enum_name) {
+                            // Check if the variant exists
+                            if let Some(variant_type) = enum_variants.get(variant_name) {
+                                // This is an enum variant, not a function call
+                                // Verify payload: should have exactly 1 argument
+                                if args.len() == 1 {
+                                    if let Some(_expected_type) = variant_type {
+                                        // TODO: Type check the argument
+                                        let _actual_type = self.infer_type(&args[0])?;
+                                        return Ok(TypeNode::Enum(
+                                            enum_name.to_string(),
+                                            enum_variants.clone(),
+                                        ));
+                                    } else {
+                                        return Err(SemanticError::UndeclaredVariable(
+                                            NamedError {
+                                                name: format!(
+                                                    "Variant '{}::{}' does not take a payload",
+                                                    enum_name, variant_name
+                                                ),
+                                            },
+                                        ));
+                                    }
+                                } else {
+                                    return Err(SemanticError::UndeclaredVariable(NamedError {
+                                        name: format!("Variant '{}::{}' requires exactly one argument, got {}", enum_name, variant_name, args.len()),
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Look up function in function table
                 if let Some((_param_types, ret_ty, err_ty)) = self.function_table.get(name) {
                     // If the function has an error type, wrap the return type in Result
@@ -381,25 +507,68 @@ impl SemanticAnalyzer {
                     return Ok(TypeNode::Array(Box::new(TypeNode::Int)));
                 }
 
-                // Infer type from first element
-                // This check type of element insides
-                let first_type = self.infer_type(&elements[0])?;
-                // Check all elements for type consistency
+                // Find first non-spread element to determine array type
+                let mut first_type: Option<TypeNode> = None;
                 for el in elements.iter() {
-                    let t = self.infer_type(el)?;
-                    if t != first_type {
-                        let (line, col) = get_node_location(el);
-                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
-                            expected: first_type.clone(),
-                            found: t,
-                            value: None,
-                            line,
-                            col,
-                        }));
+                    match el {
+                        AstNode::SpreadElement(inner) => {
+                            // Spread element: ensure it's an array type
+                            let spread_type = self.infer_type(inner)?;
+                            match &spread_type {
+                                TypeNode::Array(elem_type) => {
+                                    if first_type.is_none() {
+                                        first_type = Some((**elem_type).clone());
+                                    } else if let Some(ref ft) = first_type {
+                                        if **elem_type != *ft {
+                                            let (line, col) = get_node_location(el);
+                                            return Err(SemanticError::VarTypeMismatch(
+                                                TypeMismatch {
+                                                    expected: TypeNode::Array(Box::new(ft.clone())),
+                                                    found: spread_type.clone(),
+                                                    value: None,
+                                                    line,
+                                                    col,
+                                                },
+                                            ));
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let (line, col) = get_node_location(el);
+                                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                        expected: TypeNode::Array(Box::new(TypeNode::Int)),
+                                        found: spread_type.clone(),
+                                        value: None,
+                                        line,
+                                        col,
+                                    }));
+                                }
+                            }
+                        }
+                        _ => {
+                            let t = self.infer_type(el)?;
+                            if first_type.is_none() {
+                                first_type = Some(t.clone());
+                            } else if let Some(ref ft) = first_type {
+                                if t != *ft {
+                                    let (line, col) = get_node_location(el);
+                                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                        expected: ft.clone(),
+                                        found: t,
+                                        value: None,
+                                        line,
+                                        col,
+                                    }));
+                                }
+                            }
+                        }
                     }
                 }
+
                 // All elements are the same type: return Array of that type
-                Ok(TypeNode::Array(Box::new(first_type)))
+                Ok(TypeNode::Array(Box::new(
+                    first_type.unwrap_or(TypeNode::Int),
+                )))
             }
 
             // Map literal: infer type of keys and values
@@ -414,17 +583,106 @@ impl SemanticAnalyzer {
                     ));
                 }
 
-                // Infer key and value types from first pair
-                let key_type = self.infer_type(&pairs[0].0)?;
-                let value_type = self.infer_type(&pairs[0].1)?;
+                // Find first non-spread pair to determine map types
+                let mut key_type: Option<TypeNode> = None;
+                let mut value_type: Option<TypeNode> = None;
+
+                for (k, v) in pairs.iter() {
+                    match k {
+                        AstNode::SpreadElement(inner) => {
+                            // Spread element: ensure it's a map type
+                            let spread_type = self.infer_type(inner)?;
+                            match &spread_type {
+                                TypeNode::Map(kt, vt) => {
+                                    if key_type.is_none() {
+                                        key_type = Some((**kt).clone());
+                                        value_type = Some((**vt).clone());
+                                    } else {
+                                        // Verify types match
+                                        if let (Some(ref expected_kt), Some(ref expected_vt)) =
+                                            (&key_type, &value_type)
+                                        {
+                                            if **kt != *expected_kt || **vt != *expected_vt {
+                                                let (line, col) = get_node_location(k);
+                                                return Err(SemanticError::VarTypeMismatch(
+                                                    TypeMismatch {
+                                                        expected: TypeNode::Map(
+                                                            Box::new(expected_kt.clone()),
+                                                            Box::new(expected_vt.clone()),
+                                                        ),
+                                                        found: spread_type.clone(),
+                                                        value: None,
+                                                        line,
+                                                        col,
+                                                    },
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let (line, col) = get_node_location(k);
+                                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                        expected: TypeNode::Map(
+                                            Box::new(TypeNode::String),
+                                            Box::new(TypeNode::Int),
+                                        ),
+                                        found: spread_type.clone(),
+                                        value: None,
+                                        line,
+                                        col,
+                                    }));
+                                }
+                            }
+                        }
+                        _ => {
+                            let kt = self.infer_type(k)?;
+                            let vt = self.infer_type(v)?;
+
+                            if key_type.is_none() {
+                                key_type = Some(kt.clone());
+                                value_type = Some(vt.clone());
+                            } else {
+                                // Verify types match
+                                if let (Some(ref expected_kt), Some(ref expected_vt)) =
+                                    (&key_type, &value_type)
+                                {
+                                    if kt != *expected_kt {
+                                        let (line, col) = get_node_location(k);
+                                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                            expected: expected_kt.clone(),
+                                            found: kt,
+                                            value: None,
+                                            line,
+                                            col,
+                                        }));
+                                    }
+                                    if vt != *expected_vt {
+                                        let (line, col) = get_node_location(v);
+                                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                            expected: expected_vt.clone(),
+                                            found: vt,
+                                            value: None,
+                                            line,
+                                            col,
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let final_key_type = key_type.unwrap_or(TypeNode::String);
+                let final_value_type = value_type.unwrap_or(TypeNode::Int);
 
                 // Only allow Int, String, Float, or Bool as map keys
                 // TODO: check codegen if implemented or not
-                match key_type {
+                match final_key_type {
                     TypeNode::Int | TypeNode::String | TypeNode::Float | TypeNode::Bool => {}
                     _ => {
                         return Err(SemanticError::InvalidMapKeyType {
-                            found: key_type.clone(),
+                            found: final_key_type.clone(),
                             expected: TypeNode::Map(
                                 Box::new(TypeNode::Int),
                                 Box::new(TypeNode::String),
@@ -434,40 +692,40 @@ impl SemanticAnalyzer {
                 }
 
                 // Check all pairs for type consistency
-                for (k, v) in pairs.iter() {
-                    let kt = self.infer_type(k)?;
-                    let vt = self.infer_type(v)?;
-                    if kt != key_type {
-                        let (line, col) = get_node_location(k);
-                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
-                            expected: key_type.clone(),
-                            found: kt,
-                            value: None,
-                            line,
-                            col,
-                        }));
-                    }
-                    if vt != value_type {
-                        let (line, col) = get_node_location(v);
-                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
-                            expected: value_type.clone(),
-                            found: vt,
-                            value: None,
-                            line,
-                            col,
-                        }));
-                    }
-                }
-
-                // All keys and values are consistent: return Map type
-                Ok(TypeNode::Map(Box::new(key_type), Box::new(value_type)))
+                // All key-value pairs have consistent types
+                Ok(TypeNode::Map(
+                    Box::new(final_key_type),
+                    Box::new(final_value_type),
+                ))
             }
 
-            // Element access: arr[index] or map[key]
+            // Element access: arr[index] or map[key] or arr[start..end]
             // Infer type of the array/map and the index/key
             AstNode::ElementAccess { array, index } => {
                 let array_type = self.infer_type(array)?;
                 let index_type = self.infer_type(index)?;
+
+                // Check if this is a range/slice operation
+                match &index_type {
+                    TypeNode::Range(_, _, _) => {
+                        // Slicing returns the same array/string type
+                        match &array_type {
+                            TypeNode::Array(_) => return Ok(array_type),
+                            TypeNode::String => return Ok(TypeNode::String),
+                            _ => {
+                                let (line, col) = get_node_location(array);
+                                return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                    expected: TypeNode::Array(Box::new(TypeNode::Int)),
+                                    found: array_type,
+                                    value: None,
+                                    line,
+                                    col,
+                                }));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
 
                 // Reject negative indices for arrays
                 if let AstNode::UnaryExpr {
@@ -703,33 +961,85 @@ impl SemanticAnalyzer {
                 }
             }
 
+            // Match expression
+            AstNode::MatchExpr { value, arms } => {
+                // Type check the match value if present
+                if let Some(v) = value {
+                    self.infer_type(v)?;
+                }
+
+                // Infer the type from the first arm's body
+                // All arms should return the same type
+                if let Some(first_arm) = arms.first() {
+                    let first_type = self.infer_type(&first_arm.body)?;
+
+                    // Verify all other arms return the same type
+                    for arm in arms.iter().skip(1) {
+                        let arm_type = self.infer_type(&arm.body)?;
+                        if !super::analyzer::types_compatible(
+                            &arm_type,
+                            &first_type,
+                            &self.struct_table,
+                            &self.enum_table,
+                        ) {
+                            return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                expected: first_type.clone(),
+                                found: arm_type,
+                                value: None,
+                                line: None,
+                                col: None,
+                            }));
+                        }
+                    }
+
+                    Ok(first_type)
+                } else {
+                    // Empty match should not happen, but return Void as fallback
+                    Ok(TypeNode::Void)
+                }
+            }
+
             // Enum variant: Direction::North or Status::Active(value)
+            // OR namespaced function call: File::Write(...)
             AstNode::EnumVariant {
                 enum_name,
                 variant,
                 payload,
             } => {
-                // Check if enum type exists
+                // First, check if enum type exists
                 if let Some(enum_variants) = self.enum_table.get(enum_name) {
                     // Check if variant exists
                     if let Some(variant_type) = enum_variants.get(variant) {
                         // Verify payload matches
-                        match (payload, variant_type) {
-                            (Some(payload_expr), Some(expected_type)) => {
-                                let actual_type = self.infer_type(payload_expr)?;
-                                // TODO: Type compatibility check
+                        match (payload.is_empty(), variant_type) {
+                            (false, Some(_expected_type)) => {
+                                // Enum variant with payload - should have exactly 1 argument
+                                if payload.len() == 1 {
+                                    let _actual_type = self.infer_type(&payload[0])?;
+                                    // TODO: Type compatibility check
+                                    Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))
+                                } else {
+                                    Err(SemanticError::UndeclaredVariable(NamedError {
+                                        name: format!(
+                                            "Variant '{}::{}' expects 1 argument, got {}",
+                                            enum_name,
+                                            variant,
+                                            payload.len()
+                                        ),
+                                    }))
+                                }
+                            }
+                            (true, None) => {
+                                // Unit variant with no payload
                                 Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))
                             }
-                            (None, None) => {
-                                Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))
-                            }
-                            (Some(_), None) => Err(SemanticError::UndeclaredVariable(NamedError {
+                            (false, None) => Err(SemanticError::UndeclaredVariable(NamedError {
                                 name: format!(
                                     "Variant '{}::{}' does not take a payload",
                                     enum_name, variant
                                 ),
                             })),
-                            (None, Some(_)) => Err(SemanticError::UndeclaredVariable(NamedError {
+                            (true, Some(_)) => Err(SemanticError::UndeclaredVariable(NamedError {
                                 name: format!(
                                     "Variant '{}::{}' requires a payload",
                                     enum_name, variant
@@ -742,10 +1052,104 @@ impl SemanticAnalyzer {
                         }))
                     }
                 } else {
-                    Err(SemanticError::UndeclaredVariable(NamedError {
-                        name: format!("Undefined enum type '{}'", enum_name),
-                    }))
+                    // Enum not found - check if it's a namespaced function call (e.g., File::Write)
+                    let qualified_name = format!("{}::{}", enum_name, variant);
+
+                    if let Some((_param_types, ret_ty, err_ty)) =
+                        self.function_table.get(&qualified_name)
+                    {
+                        // It's a function call - type check all arguments
+                        for arg in payload {
+                            self.infer_type(arg)?;
+                        }
+
+                        // If the function has an error type, wrap the return type in Result
+                        if let Some(error_type) = err_ty {
+                            Ok(TypeNode::Result(
+                                Box::new(ret_ty.clone()),
+                                Box::new(error_type.clone()),
+                            ))
+                        } else {
+                            Ok(ret_ty.clone())
+                        }
+                    } else {
+                        // Neither enum nor function found
+                        Err(SemanticError::UndeclaredVariable(NamedError {
+                            name: format!("Undefined enum type or function '{}'", qualified_name),
+                        }))
+                    }
                 }
+            }
+
+            // Conditional expressions (inline if-else and ternary)
+            AstNode::ConditionalExpr {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                // Type check condition (must be Bool)
+                let cond_type = self.infer_type(condition)?;
+                if !matches!(cond_type, TypeNode::Bool) {
+                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                        expected: TypeNode::Bool,
+                        found: cond_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+
+                // Type check both branches and ensure they have compatible types
+                let then_type = self.infer_type(then_expr)?;
+                let else_type = self.infer_type(else_expr)?;
+
+                // Both branches must have the same type
+                if then_type != else_type {
+                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                        expected: then_type,
+                        found: else_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+
+                Ok(then_type)
+            }
+
+            AstNode::TernaryExpr {
+                condition,
+                true_expr,
+                false_expr,
+            } => {
+                // Type check condition (must be Bool)
+                let cond_type = self.infer_type(condition)?;
+                if !matches!(cond_type, TypeNode::Bool) {
+                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                        expected: TypeNode::Bool,
+                        found: cond_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+
+                // Type check both branches and ensure they have compatible types
+                let true_type = self.infer_type(true_expr)?;
+                let false_type = self.infer_type(false_expr)?;
+
+                // Both branches must have the same type
+                if true_type != false_type {
+                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                        expected: true_type,
+                        found: false_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+
+                Ok(true_type)
             }
 
             // Any other AST node (usually statements): return Void type.

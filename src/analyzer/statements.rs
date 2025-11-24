@@ -497,16 +497,23 @@ impl SemanticAnalyzer {
 
             match iter_type {
                 TypeNode::Array(elem_type) => {
-                    // For arrays, only a single variable pattern is allowed.
+                    // For arrays, allow either single variable or tuple (index, value) pattern
                     if let Pattern::Tuple(patterns) = pattern {
-                        if patterns.len() != 1 {
+                        if patterns.len() == 2 {
+                            // Tuple pattern (index, value) - first is Int (index), second is element type
+                            self.bind_pattern_to_type(&mut patterns[0], &TypeNode::Int)?;
+                            self.bind_pattern_to_type(&mut patterns[1], &*elem_type)?;
+                        } else if patterns.len() == 1 {
+                            // Single element tuple - just the value
+                            self.bind_pattern_to_type(&mut patterns[0], &*elem_type)?;
+                        } else {
                             return Err(SemanticError::InvalidAssignmentTarget {
-                                target: "Cannot use tuple pattern when iterating an array"
+                                target: "Array iteration expects either a single variable or tuple (index, value)"
                                     .to_string(),
                             });
                         }
-                        self.bind_pattern_to_type(&mut patterns[0], &*elem_type)?;
                     } else {
+                        // Single variable pattern - just the element
                         self.bind_pattern_to_type(pattern, &*elem_type)?;
                     }
                 }
