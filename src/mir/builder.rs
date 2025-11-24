@@ -4,9 +4,10 @@ use crate::mir::{
     expresssions::build_expression, statements::build_statement, MirBlock, MirFunction, MirInstr,
     MirProgram,
 };
-use crate::parser::ast::{AstNode, Pattern};
-use std::collections::HashSet;
+use crate::parser::ast::{AstNode, Pattern, TypeNode};
+use std::collections::{HashMap, HashSet};
 use std::mem::discriminant;
+use std::sync::Arc;
 
 /// This struct is responsible for translating parsed AST nodes into MIR instructions.
 /// It manages temporary variable generation, block labeling, loop context for break/continue,
@@ -19,6 +20,8 @@ pub struct MirBuilder {
     pub rc_tracked_vars: Vec<Vec<String>>, // Stack of scopes with reference-counted variables
     pub mir_symbol_table: std::collections::HashMap<String, crate::parser::ast::TypeNode>, // Track variable types for MIR
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
+    pub enum_table: Arc<HashMap<String, HashMap<String, Option<TypeNode>>>>, // Shared enum table for enum variant resolution
+    pub function_table: Arc<HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Shared function table for namespace resolution
 }
 
 /// Context for tracking loop break/continue targets
@@ -44,6 +47,8 @@ impl MirBuilder {
             rc_tracked_vars: vec![vec![]],
             mir_symbol_table: std::collections::HashMap::new(),
             recursion_depth: 0,
+            enum_table: Arc::new(HashMap::new()),
+            function_table: Arc::new(HashMap::new()),
         }
     }
 
@@ -410,7 +415,7 @@ impl MirBuilder {
             for block in &func.blocks {
                 if let Some(term) = &block.terminator {
                     match term {
-                        MirInstr::Jump { target } => {
+                        MirInstr::Jump { label: target } => {
                             referenced_blocks.insert(target.clone());
                         }
                         MirInstr::CondJump {

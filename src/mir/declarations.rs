@@ -307,7 +307,7 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
                         if let Some(prev_block) = current_func.blocks.last_mut() {
                             if prev_block.label == old_block.label {
                                 prev_block.terminator = Some(MirInstr::Jump {
-                                    target: next_label.clone(),
+                                    label: next_label.clone(),
                                 });
                             }
                         }
@@ -340,7 +340,7 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
                     if let Some(current_func) = builder.program.functions.last_mut() {
                         for prev_block in current_func.blocks.iter_mut().rev() {
                             if prev_block.terminator.is_none() && prev_block.label != next_label {
-                                prev_block.terminator = Some(MirInstr::Jump { target: next_label });
+                                prev_block.terminator = Some(MirInstr::Jump { label: next_label });
                                 break;
                             }
                         }

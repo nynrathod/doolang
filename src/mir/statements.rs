@@ -313,7 +313,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             // Add jump to end if then block doesn't have a terminator
             if then_mir_block.terminator.is_none() {
                 then_mir_block.terminator = Some(MirInstr::Jump {
-                    target: end_label.clone(),
+                    label: end_label.clone(),
                 });
             }
 
@@ -344,7 +344,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 // Only add jump to end if block doesn't already have a terminator (like Return)
                 if else_mir_block.terminator.is_none() {
                     else_mir_block.terminator = Some(MirInstr::Jump {
-                        target: end_label.clone(),
+                        label: end_label.clone(),
                     });
                 }
 
@@ -411,7 +411,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
         AstNode::Break => {
             if let Some(loop_ctx) = builder.current_loop() {
                 block.terminator = Some(MirInstr::Jump {
-                    target: loop_ctx.break_target.clone(),
+                    label: loop_ctx.break_target.clone(),
                 });
             } else {
                 debug_assert!(
@@ -425,7 +425,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
         AstNode::Continue => {
             if let Some(loop_ctx) = builder.current_loop() {
                 block.terminator = Some(MirInstr::Jump {
-                    target: loop_ctx.continue_target.clone(),
+                    label: loop_ctx.continue_target.clone(),
                 });
             } else {
                 debug_assert!(
@@ -453,7 +453,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 // Only set terminator if block doesn't already have one
                 if block.terminator.is_none() {
                     block.terminator = Some(MirInstr::Jump {
-                        target: loop_header.clone(),
+                        label: loop_header.clone(),
                     });
                 } else {
                     // Sequential loops: connect previous loop's exit to this loop's header
@@ -461,7 +461,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                         for prev_block in current_func.blocks.iter_mut().rev() {
                             if prev_block.terminator.is_none() {
                                 prev_block.terminator = Some(MirInstr::Jump {
-                                    target: loop_header.clone(),
+                                    label: loop_header.clone(),
                                 });
                                 break;
                             }
@@ -474,7 +474,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     label: loop_header.clone(),
                     instrs: vec![],
                     terminator: Some(MirInstr::Jump {
-                        target: loop_body.clone(),
+                        label: loop_body.clone(),
                     }),
                 };
 
@@ -488,9 +488,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     build_statement(builder, stmt, &mut body_block);
                 }
                 if body_block.terminator.is_none() {
-                    body_block.terminator = Some(MirInstr::Jump {
-                        target: loop_header,
-                    });
+                    body_block.terminator = Some(MirInstr::Jump { label: loop_header });
                 }
 
                 if let Some(func) = builder.program.functions.last_mut() {
@@ -580,7 +578,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                         // The previous loop's exit block should already be handled below
                         if block.terminator.is_none() {
                             block.terminator = Some(MirInstr::Jump {
-                                target: loop_header.clone(),
+                                label: loop_header.clone(),
                             });
                         } else {
                             // Sequential loops: connect previous loop's exit to this loop's header
@@ -589,7 +587,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                 for prev_block in current_func.blocks.iter_mut().rev() {
                                     if prev_block.terminator.is_none() {
                                         prev_block.terminator = Some(MirInstr::Jump {
-                                            target: loop_header.clone(),
+                                            label: loop_header.clone(),
                                         });
                                         break;
                                     }
@@ -641,7 +639,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                         // If no break/continue, jump to increment
                         if body_block.terminator.is_none() {
                             body_block.terminator = Some(MirInstr::Jump {
-                                target: loop_increment.clone(),
+                                label: loop_increment.clone(),
                             });
                         }
 
@@ -675,7 +673,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                         });
 
                         increment_block.terminator = Some(MirInstr::Jump {
-                            target: loop_header.clone(),
+                            label: loop_header.clone(),
                         });
 
                         blocks_to_add.push(increment_block);
@@ -731,7 +729,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
                                 if block.terminator.is_none() {
                                     block.terminator = Some(MirInstr::Jump {
-                                        target: loop_header.clone(),
+                                        label: loop_header.clone(),
                                     });
                                 } else {
                                     // Sequential loops: connect previous loop's exit to this loop's header
@@ -740,7 +738,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                         for prev_block in current_func.blocks.iter_mut().rev() {
                                             if prev_block.terminator.is_none() {
                                                 prev_block.terminator = Some(MirInstr::Jump {
-                                                    target: loop_header.clone(),
+                                                    label: loop_header.clone(),
                                                 });
                                                 break;
                                             }
@@ -813,7 +811,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
                                 if body_block.terminator.is_none() {
                                     body_block.terminator = Some(MirInstr::Jump {
-                                        target: loop_increment.clone(),
+                                        label: loop_increment.clone(),
                                     });
                                 }
 
@@ -847,7 +845,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                 });
 
                                 increment_block.terminator = Some(MirInstr::Jump {
-                                    target: loop_header.clone(),
+                                    label: loop_header.clone(),
                                 });
 
                                 blocks_to_add.push(increment_block);
@@ -870,7 +868,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                         for prev_block in current_func.blocks.iter_mut().rev() {
                                             if prev_block.terminator.is_none() {
                                                 prev_block.terminator = Some(MirInstr::Jump {
-                                                    target: loop_header.clone(),
+                                                    label: loop_header.clone(),
                                                 });
                                                 break;
                                             }
@@ -883,7 +881,166 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
                     // Array literal iteration: for i in [1, 2, 3]
                     AstNode::ArrayLiteral(_) => {
-                        if let Some(loop_var) = &loop_var {
+                        // Check if this is a tuple pattern for array iteration with index
+                        if is_tuple_pattern {
+                            if let (Some(index_var), Some(value_var)) = (&key_var, &value_var) {
+                                let iter_tmp = build_expression(builder, iter_expr, block);
+
+                                // Store array in a variable
+                                let array_var = format!("{}_{}_array", index_var, value_var);
+                                block.instrs.push(MirInstr::Assign {
+                                    name: array_var.clone(),
+                                    value: iter_tmp,
+                                    mutable: false,
+                                });
+
+                                let loop_index_var =
+                                    format!("{}_{}__loopindex", index_var, value_var);
+
+                                // Initialize loop index
+                                let zero_tmp = builder.next_tmp();
+                                block.instrs.push(MirInstr::ConstInt {
+                                    name: zero_tmp.clone(),
+                                    value: 0,
+                                });
+                                block.instrs.push(MirInstr::Assign {
+                                    name: loop_index_var.clone(),
+                                    value: zero_tmp,
+                                    mutable: true,
+                                });
+
+                                if block.terminator.is_none() {
+                                    block.terminator = Some(MirInstr::Jump {
+                                        label: loop_header.clone(),
+                                    });
+                                } else {
+                                    if let Some(current_func) = builder.program.functions.last_mut()
+                                    {
+                                        for prev_block in current_func.blocks.iter_mut().rev() {
+                                            if prev_block.terminator.is_none() {
+                                                prev_block.terminator = Some(MirInstr::Jump {
+                                                    label: loop_header.clone(),
+                                                });
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Header: bounds check
+                                let mut header_block = MirBlock {
+                                    label: loop_header.clone(),
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                let len_tmp = builder.next_tmp();
+                                header_block.instrs.push(MirInstr::ArrayLen {
+                                    name: len_tmp.clone(),
+                                    array: array_var.clone(),
+                                });
+
+                                let cmp_tmp = builder.next_tmp();
+                                header_block.instrs.push(MirInstr::BinaryOp(
+                                    "lt".to_string(),
+                                    cmp_tmp.clone(),
+                                    loop_index_var.clone(),
+                                    len_tmp,
+                                ));
+
+                                header_block.terminator = Some(MirInstr::CondJump {
+                                    cond: cmp_tmp,
+                                    then_block: loop_body.clone(),
+                                    else_block: loop_end.clone(),
+                                });
+
+                                blocks_to_add.push(header_block);
+
+                                // Body: extract element and assign index and value
+                                let mut body_block = MirBlock {
+                                    label: loop_body.clone(),
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                // Assign index variable
+                                body_block.instrs.push(MirInstr::Assign {
+                                    name: index_var.clone(),
+                                    value: loop_index_var.clone(),
+                                    mutable: false,
+                                });
+
+                                // Get array element
+                                let elem_tmp = builder.next_tmp();
+                                body_block.instrs.push(MirInstr::ArrayGet {
+                                    name: elem_tmp.clone(),
+                                    array: array_var.clone(),
+                                    index: loop_index_var.clone(),
+                                });
+
+                                // Assign element to value variable
+                                body_block.instrs.push(MirInstr::Assign {
+                                    name: value_var.clone(),
+                                    value: elem_tmp,
+                                    mutable: false,
+                                });
+
+                                // Build body statements
+                                for stmt in body {
+                                    build_statement(builder, stmt, &mut body_block);
+                                }
+
+                                if body_block.terminator.is_none() {
+                                    body_block.terminator = Some(MirInstr::Jump {
+                                        label: loop_increment.clone(),
+                                    });
+                                }
+
+                                blocks_to_add.push(body_block);
+
+                                // Increment: index++
+                                let mut increment_block = MirBlock {
+                                    label: loop_increment,
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                let one_tmp = builder.next_tmp();
+                                increment_block.instrs.push(MirInstr::ConstInt {
+                                    name: one_tmp.clone(),
+                                    value: 1,
+                                });
+
+                                let new_index_tmp = builder.next_tmp();
+                                increment_block.instrs.push(MirInstr::BinaryOp(
+                                    "add".to_string(),
+                                    new_index_tmp.clone(),
+                                    loop_index_var.clone(),
+                                    one_tmp,
+                                ));
+
+                                increment_block.instrs.push(MirInstr::Assign {
+                                    name: loop_index_var,
+                                    value: new_index_tmp,
+                                    mutable: true,
+                                });
+
+                                increment_block.terminator = Some(MirInstr::Jump {
+                                    label: loop_header.clone(),
+                                });
+
+                                blocks_to_add.push(increment_block);
+
+                                // End block
+                                let end_block = MirBlock {
+                                    label: loop_end,
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                blocks_to_add.push(end_block);
+                            }
+                        } else if let Some(loop_var) = &loop_var {
                             let iter_tmp = build_expression(builder, iter_expr, block);
 
                             // Store array in a variable so it's accessible in header block
@@ -911,7 +1068,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                             // Only set terminator if block doesn't already have one
                             if block.terminator.is_none() {
                                 block.terminator = Some(MirInstr::Jump {
-                                    target: loop_header.clone(),
+                                    label: loop_header.clone(),
                                 });
                             } else {
                                 // Sequential loops: connect previous loop's exit to this loop's header
@@ -919,7 +1076,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                     for prev_block in current_func.blocks.iter_mut().rev() {
                                         if prev_block.terminator.is_none() {
                                             prev_block.terminator = Some(MirInstr::Jump {
-                                                target: loop_header.clone(),
+                                                label: loop_header.clone(),
                                             });
                                             break;
                                         }
@@ -984,7 +1141,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
                             if body_block.terminator.is_none() {
                                 body_block.terminator = Some(MirInstr::Jump {
-                                    target: loop_increment.clone(),
+                                    label: loop_increment.clone(),
                                 });
                             }
 
@@ -1018,7 +1175,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                             });
 
                             increment_block.terminator = Some(MirInstr::Jump {
-                                target: loop_header.clone(),
+                                label: loop_header.clone(),
                             });
 
                             blocks_to_add.push(increment_block);
@@ -1036,7 +1193,166 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
                     // Array iteration with break/continue support
                     AstNode::Identifier(_) => {
-                        if let Some(loop_var) = &loop_var {
+                        // Check if this is a tuple pattern for array iteration with index
+                        if is_tuple_pattern {
+                            if let (Some(index_var), Some(value_var)) = (&key_var, &value_var) {
+                                let iter_tmp = build_expression(builder, iter_expr, block);
+
+                                // Store array in a variable
+                                let array_var = format!("{}_{}_array", index_var, value_var);
+                                block.instrs.push(MirInstr::Assign {
+                                    name: array_var.clone(),
+                                    value: iter_tmp,
+                                    mutable: false,
+                                });
+
+                                let loop_index_var =
+                                    format!("{}_{}__loopindex", index_var, value_var);
+
+                                // Initialize loop index
+                                let zero_tmp = builder.next_tmp();
+                                block.instrs.push(MirInstr::ConstInt {
+                                    name: zero_tmp.clone(),
+                                    value: 0,
+                                });
+                                block.instrs.push(MirInstr::Assign {
+                                    name: loop_index_var.clone(),
+                                    value: zero_tmp,
+                                    mutable: true,
+                                });
+
+                                if block.terminator.is_none() {
+                                    block.terminator = Some(MirInstr::Jump {
+                                        label: loop_header.clone(),
+                                    });
+                                } else {
+                                    if let Some(current_func) = builder.program.functions.last_mut()
+                                    {
+                                        for prev_block in current_func.blocks.iter_mut().rev() {
+                                            if prev_block.terminator.is_none() {
+                                                prev_block.terminator = Some(MirInstr::Jump {
+                                                    label: loop_header.clone(),
+                                                });
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Header: bounds check
+                                let mut header_block = MirBlock {
+                                    label: loop_header.clone(),
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                let len_tmp = builder.next_tmp();
+                                header_block.instrs.push(MirInstr::ArrayLen {
+                                    name: len_tmp.clone(),
+                                    array: array_var.clone(),
+                                });
+
+                                let cmp_tmp = builder.next_tmp();
+                                header_block.instrs.push(MirInstr::BinaryOp(
+                                    "lt".to_string(),
+                                    cmp_tmp.clone(),
+                                    loop_index_var.clone(),
+                                    len_tmp,
+                                ));
+
+                                header_block.terminator = Some(MirInstr::CondJump {
+                                    cond: cmp_tmp,
+                                    then_block: loop_body.clone(),
+                                    else_block: loop_end.clone(),
+                                });
+
+                                blocks_to_add.push(header_block);
+
+                                // Body: extract element and assign index and value
+                                let mut body_block = MirBlock {
+                                    label: loop_body.clone(),
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                // Assign index variable
+                                body_block.instrs.push(MirInstr::Assign {
+                                    name: index_var.clone(),
+                                    value: loop_index_var.clone(),
+                                    mutable: false,
+                                });
+
+                                // Get array element
+                                let elem_tmp = builder.next_tmp();
+                                body_block.instrs.push(MirInstr::ArrayGet {
+                                    name: elem_tmp.clone(),
+                                    array: array_var.clone(),
+                                    index: loop_index_var.clone(),
+                                });
+
+                                // Assign element to value variable
+                                body_block.instrs.push(MirInstr::Assign {
+                                    name: value_var.clone(),
+                                    value: elem_tmp,
+                                    mutable: false,
+                                });
+
+                                // Build body statements
+                                for stmt in body {
+                                    build_statement(builder, stmt, &mut body_block);
+                                }
+
+                                if body_block.terminator.is_none() {
+                                    body_block.terminator = Some(MirInstr::Jump {
+                                        label: loop_increment.clone(),
+                                    });
+                                }
+
+                                blocks_to_add.push(body_block);
+
+                                // Increment: index++
+                                let mut increment_block = MirBlock {
+                                    label: loop_increment,
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                let one_tmp = builder.next_tmp();
+                                increment_block.instrs.push(MirInstr::ConstInt {
+                                    name: one_tmp.clone(),
+                                    value: 1,
+                                });
+
+                                let new_index_tmp = builder.next_tmp();
+                                increment_block.instrs.push(MirInstr::BinaryOp(
+                                    "add".to_string(),
+                                    new_index_tmp.clone(),
+                                    loop_index_var.clone(),
+                                    one_tmp,
+                                ));
+
+                                increment_block.instrs.push(MirInstr::Assign {
+                                    name: loop_index_var,
+                                    value: new_index_tmp,
+                                    mutable: true,
+                                });
+
+                                increment_block.terminator = Some(MirInstr::Jump {
+                                    label: loop_header.clone(),
+                                });
+
+                                blocks_to_add.push(increment_block);
+
+                                // End block
+                                let end_block = MirBlock {
+                                    label: loop_end,
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                blocks_to_add.push(end_block);
+                            }
+                        } else if let Some(loop_var) = &loop_var {
                             let iter_tmp = build_expression(builder, iter_expr, block);
 
                             // Store array in a variable so it's accessible in header block
@@ -1064,7 +1380,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                             // Only set terminator if block doesn't already have one
                             if block.terminator.is_none() {
                                 block.terminator = Some(MirInstr::Jump {
-                                    target: loop_header.clone(),
+                                    label: loop_header.clone(),
                                 });
                             } else {
                                 // Sequential loops: connect previous loop's exit to this loop's header
@@ -1072,7 +1388,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                     for prev_block in current_func.blocks.iter_mut().rev() {
                                         if prev_block.terminator.is_none() {
                                             prev_block.terminator = Some(MirInstr::Jump {
-                                                target: loop_header.clone(),
+                                                label: loop_header.clone(),
                                             });
                                             break;
                                         }
@@ -1157,7 +1473,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
                             if body_block.terminator.is_none() {
                                 body_block.terminator = Some(MirInstr::Jump {
-                                    target: loop_increment.clone(),
+                                    label: loop_increment.clone(),
                                 });
                             }
 
@@ -1191,7 +1507,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                             });
 
                             increment_block.terminator = Some(MirInstr::Jump {
-                                target: loop_header.clone(),
+                                label: loop_header.clone(),
                             });
 
                             blocks_to_add.push(increment_block);
@@ -1243,7 +1559,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                             .find(|b| b.terminator.is_none())
                         {
                             end_block.terminator = Some(MirInstr::Jump {
-                                target: parent_continue,
+                                label: parent_continue,
                             });
                         }
                     }
@@ -1261,7 +1577,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 for exit_block in current_func.blocks.iter_mut().rev() {
                     if exit_block.terminator.is_none() {
                         exit_block.terminator = Some(MirInstr::Jump {
-                            target: continuation_label.clone(),
+                            label: continuation_label.clone(),
                         });
                         break;
                     }

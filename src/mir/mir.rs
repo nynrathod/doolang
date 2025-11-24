@@ -106,6 +106,13 @@ pub enum MirInstr {
         array: String,
         index: String,
     },
+    ArraySlice {
+        name: String,
+        array: String,
+        start: String,
+        end: String,
+        inclusive: bool,
+    },
     ArraySet {
         array: String,
         index: String,
@@ -129,6 +136,11 @@ pub enum MirInstr {
         map: String,
         key: String,
         value: String,
+    },
+    MapContains {
+        name: String,
+        map: String,
+        key: String,
     },
 
     // Arithmetic operations
@@ -202,7 +214,7 @@ pub enum MirInstr {
 
     // Control flow
     Jump {
-        target: String,
+        label: String,
     },
     CondJump {
         cond: String,
