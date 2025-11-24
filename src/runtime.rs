@@ -25,6 +25,31 @@ pub extern "C" fn panic_runtime(msg: *const u8) {
     std::process::exit(1);
 }
 
+// ===== MAP/HASH FUNCTIONS =====
+
+/// Simple hash function for strings
+/// Returns a hash value (i32) for use as map index
+#[no_mangle]
+pub extern "C" fn hash_string(str_ptr: *const c_char) -> i32 {
+    if str_ptr.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let c_str = CStr::from_ptr(str_ptr);
+        let bytes = c_str.to_bytes();
+
+        // Simple DJB2 hash algorithm
+        let mut hash: u32 = 5381;
+        for byte in bytes {
+            hash = hash.wrapping_mul(33).wrapping_add(*byte as u32);
+        }
+
+        // Return as positive i32
+        (hash & 0x7FFFFFFF) as i32
+    }
+}
+
 // ===== JSON BUILTIN FUNCTIONS =====
 
 /// Parse JSON string and return a pointer to the parsed data
