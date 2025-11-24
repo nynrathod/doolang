@@ -88,12 +88,28 @@ impl<'a> Parser<'a> {
         }
 
         // If we get here, we have just one identifier with no ::
-        // This is a namespace import of a top-level module: import File;
+        // This could be:
+        // 1. Namespace import: import File;
+        // 2. Namespace import with alias: import File as F;
         if self.peek_is(TokenType::Semi) {
             self.advance(); // consume ;
             return Ok(AstNode::Import {
                 path,
                 items: vec![],
+            });
+        } else if self.peek_is(TokenType::As) {
+            // Namespace import with alias: import module as Alias;
+            self.advance(); // consume 'as'
+            let alias_tok = self.expect(TokenType::Identifier)?;
+            let alias = alias_tok.value.to_string();
+            self.expect(TokenType::Semi)?;
+
+            // Store the original module name and create an alias
+            // We'll use a special item to indicate this is a namespace alias
+            let module_name = path.last().unwrap().clone();
+            return Ok(AstNode::Import {
+                path,
+                items: vec![ImportItem::SymbolWithAlias(module_name, alias)],
             });
         }
 

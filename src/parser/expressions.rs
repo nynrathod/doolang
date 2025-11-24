@@ -61,6 +61,36 @@ impl<'a> Parser<'a> {
             };
         }
 
+        // Handle ternary and try-propagate at lowest precedence (after all binary operators)
+        // Only parse when at minimum precedence level (0) to ensure correct precedence
+        // This ensures: x > y ? a : b parses as (x > y) ? a : b
+        if min_prec == 0 && self.peek_is(TokenType::Question) {
+            self.advance(); // consume '?'
+
+            // Distinguish between ternary and try-propagate by looking ahead
+            if self.peek_is(TokenType::Semi)
+                || self.peek_is(TokenType::CloseParen)
+                || self.peek_is(TokenType::CloseBracket)
+                || self.peek_is(TokenType::CloseBrace)
+                || self.peek_is(TokenType::Comma)
+            {
+                // This is try propagate: expr?
+                left = AstNode::TryPropagate {
+                    expr: Box::new(left),
+                };
+            } else {
+                // This is ternary: condition ? true_expr : false_expr
+                let true_expr = self.parse_expression_prec(0)?;
+                self.expect(TokenType::Colon)?;
+                let false_expr = self.parse_expression_prec(0)?;
+                left = AstNode::TernaryExpr {
+                    condition: Box::new(left),
+                    true_expr: Box::new(true_expr),
+                    false_expr: Box::new(false_expr),
+                };
+            }
+        }
+
         Ok(left)
     }
 
@@ -103,8 +133,27 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 self.advance(); // consume '['
+
+                // Check for slicing: [start..end] or [..end] or [start..]
+                // Also handle negative indexing: [-1], [-2]
                 let index = self.parse_expression()?;
+
                 self.expect(TokenType::CloseBracket)?;
+
+                // Convert BinaryExpr with range operators to Range node for slicing
+                let index = match index {
+                    AstNode::BinaryExpr { op, left, right }
+                        if op == TokenType::RangeExc || op == TokenType::RangeInc =>
+                    {
+                        AstNode::Range {
+                            start: left,
+                            end: right,
+                            inclusive: op == TokenType::RangeInc,
+                        }
+                    }
+                    other => other,
+                };
+
                 expr = AstNode::ElementAccess {
                     array: Box::new(expr),
                     index: Box::new(index),
@@ -174,12 +223,6 @@ impl<'a> Parser<'a> {
                         "Only single-variable increment/decrement is allowed".into(),
                     ));
                 }
-            } else if self.peek_is(TokenType::Question) {
-                // Handle ? operator (try propagate): expr?
-                self.advance(); // consume '?'
-                expr = AstNode::TryPropagate {
-                    expr: Box::new(expr),
-                };
             } else {
                 break;
             }
@@ -221,6 +264,39 @@ impl<'a> Parser<'a> {
                     let tok = self.advance().unwrap();
                     let name = tok.value.to_string();
 
+                    // If followed by '::', parse as EnumVariant (could be enum variant or namespaced function)
+                    // The analyzer will determine if it's actually an enum or a function call
+                    // This allows both Status::Pending(25) and File::Write(...) to work correctly
+                    if self.peek_is(TokenType::ColonColon) {
+                        self.advance(); // consume '::'
+                        let second_tok = self.expect(TokenType::Identifier)?;
+                        let second_name = second_tok.value.to_string();
+
+                        // Check for payload/arguments in parentheses
+                        let payload = if self.peek_is(TokenType::OpenParen) {
+                            self.advance(); // consume '('
+                            let args = if !self.peek_is(TokenType::CloseParen) {
+                                self.parse_comma_separated(
+                                    |p| p.parse_expression(),
+                                    TokenType::CloseParen,
+                                )?
+                            } else {
+                                vec![]
+                            };
+                            self.expect(TokenType::CloseParen)?;
+                            args
+                        } else {
+                            vec![]
+                        };
+
+                        // Return as EnumVariant - analyzer will check if it's enum or function
+                        return Ok(AstNode::EnumVariant {
+                            enum_name: name,
+                            variant: second_name,
+                            payload,
+                        });
+                    }
+
                     // If followed by '(', parse as function call
                     if self.peek_is(TokenType::OpenParen) {
                         self.advance(); // consume '('
@@ -232,47 +308,6 @@ impl<'a> Parser<'a> {
                         return Ok(AstNode::FunctionCall {
                             func: Box::new(AstNode::Identifier(name)),
                             args,
-                        });
-                    }
-
-                    // If followed by '::', parse as enum variant OR namespace-qualified function call
-                    if self.peek_is(TokenType::ColonColon) {
-                        self.advance(); // consume '::'
-                        let second_tok = self.expect(TokenType::Identifier)?;
-                        let second_name = second_tok.value.to_string();
-
-                        // Check if it's a function call: File::Write(...)
-                        if self.peek_is(TokenType::OpenParen) {
-                            self.advance(); // consume '('
-                            let args = self.parse_comma_separated(
-                                |p| p.parse_expression(),
-                                TokenType::CloseParen,
-                            )?;
-                            self.expect(TokenType::CloseParen)?;
-
-                            // Create a namespace-qualified identifier
-                            let qualified_name = format!("{}::{}", name, second_name);
-                            return Ok(AstNode::FunctionCall {
-                                func: Box::new(AstNode::Identifier(qualified_name)),
-                                args,
-                            });
-                        }
-
-                        // Otherwise, it's an enum variant
-                        // Check for payload
-                        let payload = if self.peek_is(TokenType::OpenParen) {
-                            self.advance(); // consume '('
-                            let expr = self.parse_expression()?;
-                            self.expect(TokenType::CloseParen)?;
-                            Some(Box::new(expr))
-                        } else {
-                            None
-                        };
-
-                        return Ok(AstNode::EnumVariant {
-                            enum_name: name,
-                            variant: second_name,
-                            payload,
                         });
                     }
 
@@ -289,13 +324,33 @@ impl<'a> Parser<'a> {
                         self.advance(); // consume '{'
                         let mut fields = Vec::new();
 
-                        // Parse field: value pairs
+                        // Parse field: value pairs, supporting shorthand syntax
                         while !self.peek_is(TokenType::CloseBrace) {
                             let field_tok = self.expect(TokenType::Identifier)?;
                             let field_name = field_tok.value.to_string();
-                            self.expect(TokenType::Colon)?;
-                            let value = self.parse_expression()?;
-                            fields.push((field_name, Box::new(value)));
+
+                            // Check for shorthand: {name, age} instead of {name: name, age: age}
+                            if self.peek_is(TokenType::Comma) || self.peek_is(TokenType::CloseBrace)
+                            {
+                                // Shorthand syntax - field name is also variable name
+                                fields.push((
+                                    field_name.clone(),
+                                    Box::new(AstNode::Identifier(field_name)),
+                                ));
+                            } else if self.peek_is(TokenType::Colon) {
+                                // Explicit field: value syntax
+                                self.advance(); // consume ':'
+                                let value = self.parse_expression()?;
+                                fields.push((field_name, Box::new(value)));
+                            } else {
+                                return Err(ParseError::UnexpectedTokenAt {
+                                    msg: format!(
+                                        "Expected ':' or ',' after field name in struct literal"
+                                    ),
+                                    line: self.peek().map(|t| t.line).unwrap_or(0),
+                                    col: self.peek().map(|t| t.col).unwrap_or(0),
+                                });
+                            }
 
                             if !self.peek_is(TokenType::CloseBrace) {
                                 self.expect(TokenType::Comma)?;
@@ -309,7 +364,15 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::String => {
                     let tok = self.advance().unwrap();
-                    Ok(AstNode::StringLiteral(tok.value.to_string()))
+                    let string_value = tok.value.to_string();
+
+                    // Check for string interpolation ${...}
+                    if string_value.contains("${") {
+                        // Parse string interpolation and convert to concatenation
+                        Ok(self.parse_string_interpolation(&string_value)?)
+                    } else {
+                        Ok(AstNode::StringLiteral(string_value))
+                    }
                 }
                 TokenType::Boolean => {
                     let tok = self.advance().unwrap();
@@ -322,6 +385,28 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::OpenBracket => self.parse_array_literal(),
                 TokenType::OpenBrace => self.parse_map_literal(),
+                TokenType::If => {
+                    // Inline if-else expression: if condition { expr } else { expr }
+                    self.advance(); // consume 'if'
+                    let condition = self.parse_expression()?;
+
+                    // Parse then expression in braces
+                    self.expect(TokenType::OpenBrace)?;
+                    let then_expr = self.parse_expression()?;
+                    self.expect(TokenType::CloseBrace)?;
+
+                    // Parse else branch
+                    self.expect(TokenType::Else)?;
+                    self.expect(TokenType::OpenBrace)?;
+                    let else_expr = self.parse_expression()?;
+                    self.expect(TokenType::CloseBrace)?;
+
+                    Ok(AstNode::ConditionalExpr {
+                        condition: Box::new(condition),
+                        then_expr: Box::new(then_expr),
+                        else_expr: Box::new(else_expr),
+                    })
+                }
                 TokenType::OpenParen => {
                     // Check if this is an arrow function () => or (x) =>
                     if self.is_arrow_function() {
@@ -381,6 +466,10 @@ impl<'a> Parser<'a> {
                         value: Box::new(value),
                     })
                 }
+                TokenType::Match => {
+                    // Parse match expression
+                    self.parse_match_expr()
+                }
                 _ => Err(ParseError::UnexpectedTokenAt {
                     msg: format!("Expected primary expression, got {:?}", tok_kind),
                     line: tok_line,
@@ -392,13 +481,29 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Example: `[1, 2, 3]`
+    /// Example: `[1, 2, 3]` or `[...arr1, 4, 5]`
     /// Uses parse_comma_separated to parse elements until ']'.
+    /// Supports spread operator: [...arr]
     fn parse_array_literal(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::OpenBracket)?;
 
-        let elements = self
-            .parse_comma_separated(|parser| parser.parse_expression(), TokenType::CloseBracket)?;
+        let mut elements = Vec::new();
+
+        // Parse elements, checking for spread operator
+        while !self.peek_is(TokenType::CloseBracket) {
+            if self.peek_is(TokenType::Spread) {
+                // Spread operator: ...expr
+                self.advance(); // consume '...'
+                let spread_expr = self.parse_expression()?;
+                elements.push(AstNode::SpreadElement(Box::new(spread_expr)));
+            } else {
+                elements.push(self.parse_expression()?);
+            }
+
+            if !self.peek_is(TokenType::CloseBracket) {
+                self.expect(TokenType::Comma)?;
+            }
+        }
 
         // Validate array size doesn't exceed limit
         if elements.len() > PARSER_MAX_ARRAY_SIZE {
@@ -417,20 +522,36 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a map/dictionary literal.
-    /// Example: `{ "a": 1, "b": 2 }`
+    /// Example: `{ "a": 1, "b": 2 }` or `{...obj, "c": 3}`
     /// Each entry is a key-value pair separated by ':' and entries separated by ','.
+    /// Supports spread operator: {...map}
     fn parse_map_literal(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::OpenBrace)?;
 
-        let entries = self.parse_comma_separated(
-            |p| {
-                let key = p.parse_expression()?; // parse key
-                p.expect(TokenType::Colon)?; // expect ':'
-                let value = p.parse_expression()?; // parse value
-                Ok((key, value))
-            },
-            TokenType::CloseBrace,
-        )?;
+        let mut entries = Vec::new();
+
+        // Parse entries, checking for spread operator
+        while !self.peek_is(TokenType::CloseBrace) {
+            if self.peek_is(TokenType::Spread) {
+                // Spread operator: ...expr
+                self.advance(); // consume '...'
+                let spread_expr = self.parse_expression()?;
+                // Store spread as a special entry with SpreadElement as key
+                entries.push((
+                    AstNode::SpreadElement(Box::new(spread_expr)),
+                    AstNode::NilLiteral,
+                ));
+            } else {
+                let key = self.parse_expression()?;
+                self.expect(TokenType::Colon)?;
+                let value = self.parse_expression()?;
+                entries.push((key, value));
+            }
+
+            if !self.peek_is(TokenType::CloseBrace) {
+                self.expect(TokenType::Comma)?;
+            }
+        }
 
         // Validate map size doesn't exceed limit
         if entries.len() > PARSER_MAX_MAP_SIZE {
@@ -456,7 +577,7 @@ impl<'a> Parser<'a> {
             TokenType::OrOr => 1,
             TokenType::AndAnd => 2,
             TokenType::EqEq | TokenType::NotEq => 3,
-            TokenType::Lt | TokenType::Gt | TokenType::LtEq | TokenType::GtEq => 4,
+            TokenType::Lt | TokenType::Gt | TokenType::LtEq | TokenType::GtEq | TokenType::In => 4,
             TokenType::Plus | TokenType::Minus => 5,
             TokenType::Star | TokenType::Slash | TokenType::Percent => 6,
             TokenType::RangeExc | TokenType::RangeInc => 7, // Add range operators with lowest precedence
@@ -555,5 +676,102 @@ impl<'a> Parser<'a> {
             body,
             return_type,
         })
+    }
+
+    /// Parse string interpolation: "Hello ${name}!" -> "Hello " + name + "!"
+    fn parse_string_interpolation(&mut self, template: &str) -> ParseResult<AstNode> {
+        let mut result: Option<AstNode> = None;
+        let chars: Vec<char> = template.chars().collect();
+        let mut current_pos = 0;
+
+        while current_pos < chars.len() {
+            // Find next ${ using character positions
+            let remaining: String = chars[current_pos..].iter().collect();
+            if let Some(start) = remaining.find("${") {
+                // Convert byte position to character position
+                let byte_start = start;
+                let char_start = remaining[..byte_start].chars().count();
+                let abs_start = current_pos + char_start;
+
+                // Add the literal part before ${
+                if char_start > 0 {
+                    let literal = chars[current_pos..abs_start].iter().collect::<String>();
+                    let literal_node = AstNode::StringLiteral(literal);
+                    result = Some(if let Some(prev) = result {
+                        AstNode::BinaryExpr {
+                            op: crate::lexer::token::TokenType::Plus,
+                            left: Box::new(prev),
+                            right: Box::new(literal_node),
+                        }
+                    } else {
+                        literal_node
+                    });
+                }
+
+                // Find matching }
+                let expr_start = abs_start + 2;
+                let mut brace_count = 1;
+                let mut expr_end = expr_start;
+
+                while expr_end < chars.len() && brace_count > 0 {
+                    if chars[expr_end] == '{' {
+                        brace_count += 1;
+                    } else if chars[expr_end] == '}' {
+                        brace_count -= 1;
+                    }
+                    if brace_count > 0 {
+                        expr_end += 1;
+                    }
+                }
+
+                if brace_count != 0 {
+                    return Err(ParseError::UnexpectedToken(
+                        "Unclosed ${} in string interpolation".to_string(),
+                    ));
+                }
+
+                // Parse the expression inside ${}
+                let expr_str: String = chars[expr_start..expr_end].iter().collect();
+
+                // Create a temporary parser for the expression
+                let arena = bumpalo::Bump::new();
+                let expr_tokens = crate::lexer::lexer::lex(&expr_str, &arena);
+                let mut expr_parser = Parser::new(&expr_tokens);
+                let expr_node = expr_parser.parse_expression()?;
+
+                // Add the expression to result
+                result = Some(if let Some(prev) = result {
+                    AstNode::BinaryExpr {
+                        op: crate::lexer::token::TokenType::Plus,
+                        left: Box::new(prev),
+                        right: Box::new(expr_node),
+                    }
+                } else {
+                    expr_node
+                });
+
+                current_pos = expr_end + 1;
+            } else {
+                // No more ${}, add remaining literal
+                let literal: String = chars[current_pos..].iter().collect();
+                if !literal.is_empty() {
+                    let literal_node = AstNode::StringLiteral(literal);
+                    result = Some(if let Some(prev) = result {
+                        AstNode::BinaryExpr {
+                            op: crate::lexer::token::TokenType::Plus,
+                            left: Box::new(prev),
+                            right: Box::new(literal_node),
+                        }
+                    } else {
+                        literal_node
+                    });
+                }
+                break;
+            }
+        }
+
+        result.ok_or(ParseError::UnexpectedToken(
+            "Empty string interpolation".to_string(),
+        ))
     }
 }

@@ -174,6 +174,7 @@ pub enum AstNode {
     NilLiteral,
     ArrayLiteral(Vec<AstNode>),
     MapLiteral(Vec<(AstNode, AstNode)>),
+    SpreadElement(Box<AstNode>), // ...expr for spreading arrays/objects
 
     UnaryExpr {
         op: TokenType,
@@ -315,8 +316,48 @@ pub enum AstNode {
         field: String,        // Field name
     },
     EnumVariant {
-        enum_name: String,             // Enum type name
-        variant: String,               // Variant name
-        payload: Option<Box<AstNode>>, // Optional payload value
+        enum_name: String,     // Enum type name
+        variant: String,       // Variant name
+        payload: Vec<AstNode>, // Arguments/payload (0 for unit variants, 1+ for data variants or function calls)
+    },
+
+    // Conditional expressions (inline if-else and ternary)
+    ConditionalExpr {
+        condition: Box<AstNode>,
+        then_expr: Box<AstNode>,
+        else_expr: Box<AstNode>,
+    },
+    TernaryExpr {
+        condition: Box<AstNode>,
+        true_expr: Box<AstNode>,
+        false_expr: Box<AstNode>,
+    },
+
+    // Match expression
+    MatchExpr {
+        value: Option<Box<AstNode>>, // None for condition-based match
+        arms: Vec<MatchArm>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: Box<AstNode>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    Literal(Box<AstNode>),   // 200, "OK", true, etc.
+    Condition(Box<AstNode>), // age < 13, x > 100, etc.
+    Wildcard,                // _
+    EnumVariant {
+        enum_name: String, // Status
+        variant: String,   // Active
+    },
+    EnumVariantWithPayload {
+        enum_name: String, // HttpCode
+        variant: String,   // Success
+        binding: String,   // code (variable to bind payload to)
     },
 }

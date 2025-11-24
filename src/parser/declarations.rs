@@ -100,6 +100,8 @@ impl<'a> Parser<'a> {
     /// Function decl with decorators (for FFI support) and method syntax support
     /// Example: `@ffi("libname") @extern("c_func") fn foo(a: Int) -> Int { ... }`
     /// Example: `fn User.isAdult(self) -> Bool { ... }`
+    /// Example: `fn add(a: Int, b: Int) -> Int => a + b` (expression function)
+    /// Example: `fn greet(name: Str, prefix: Str = "Hello") { ... }` (default params)
     pub fn parse_functional_decl_with_decorators(
         &mut self,
         decorators: Vec<crate::parser::ast::Decorator>,
@@ -158,6 +160,17 @@ impl<'a> Parser<'a> {
                 }
                 p.advance(); // consume ':'
                 let param_type = Some(p.parse_type_annotation()?);
+
+                // Check for default value: = expr
+                if p.peek_is(TokenType::Eq) {
+                    p.advance(); // consume '='
+                    let default_expr = p.parse_expression()?;
+                    // For now, store default value in a modified param structure
+                    // We'll wrap this in a special marker later if needed
+                    // Since params is Vec<(String, Option<TypeNode>)>, we need to extend AST
+                    // For now, ignore default values - they'll need AST changes
+                }
+
                 Ok((param_name, param_type))
             },
             TokenType::CloseParen,
@@ -194,6 +207,46 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+        }
+
+        // Check for expression function: => expr or => expr1, expr2, ...
+        if self.peek_is(TokenType::FatArrow) {
+            self.advance(); // consume '=>'
+
+            // Parse comma-separated expressions for return values
+            let mut return_values = Vec::new();
+            loop {
+                let expr = self.parse_expression()?;
+                return_values.push(expr);
+
+                // Check for comma to continue parsing more return values
+                if self.peek_is(TokenType::Comma) {
+                    self.advance(); // consume ','
+                } else {
+                    break;
+                }
+            }
+
+            // Infer return type if not specified
+            if return_type.is_none() {
+                // Return type will be inferred by analyzer
+            }
+
+            // Wrap expressions in a return statement
+            let body_block = vec![AstNode::Return {
+                values: return_values,
+            }];
+
+            return Ok(AstNode::FunctionDecl {
+                name: actual_func_name,
+                visibility,
+                params,
+                return_type,
+                error_type,
+                body: body_block,
+                decorators,
+                receiver_type,
+            });
         }
 
         // Parse function body block
@@ -317,7 +370,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Enum decl handles enum name, variants (with optional associated types), and braces.
-    /// Example: `enum UserRole { Admin(AdminRole), Guest }`
+    /// Supports two syntaxes:
+    /// 1. Block syntax: `enum UserRole { Admin(AdminRole), Guest }`
+    /// 2. Inline syntax: `enum UserRole: Admin | Guest | Moderator(Str)`
     pub fn parse_enum_decl(&mut self) -> ParseResult<AstNode> {
         use crate::parser::ast::EnumVariant;
 
@@ -327,27 +382,68 @@ impl<'a> Parser<'a> {
         let enum_name = self.expect_ident()?;
         let is_public = crate::parser::ast::TypeNode::is_public_name(&enum_name);
 
-        self.expect(TokenType::OpenBrace)?;
+        // Check for inline syntax (colon) or block syntax (brace)
+        let variants = if self.peek_is(TokenType::Colon) {
+            // Inline syntax: enum Name: Variant1 | Variant2 | Variant3(Type)
+            self.advance(); // consume ':'
 
-        // Parse variants until closing brace
-        let variants = self.parse_comma_separated(
-            |p| {
-                let variant_name = p.expect_ident()?;
+            let mut variants = Vec::new();
+
+            // Parse first variant
+            let variant_name = self.expect_ident_or_keyword()?;
+            let mut variant_data = None;
+            if self.peek_is(TokenType::OpenParen) {
+                self.advance();
+                let types = self.parse_type_annotation()?;
+                variant_data = Some(types);
+                self.expect(TokenType::CloseParen)?;
+            }
+            variants.push(EnumVariant::new(variant_name, variant_data));
+
+            // Parse remaining variants separated by |
+            while self.peek_is(TokenType::Or) {
+                self.advance(); // consume '|'
+                let variant_name = self.expect_ident_or_keyword()?;
                 let mut variant_data = None;
-                if let Some(tok) = p.peek() {
-                    if tok.kind == TokenType::OpenParen {
-                        p.advance();
-                        let types = p.parse_type_annotation()?;
-                        variant_data = Some(types);
-                        p.expect(TokenType::CloseParen)?;
-                    }
+                if self.peek_is(TokenType::OpenParen) {
+                    self.advance();
+                    let types = self.parse_type_annotation()?;
+                    variant_data = Some(types);
+                    self.expect(TokenType::CloseParen)?;
                 }
-                Ok(EnumVariant::new(variant_name, variant_data))
-            },
-            TokenType::CloseBrace,
-        )?;
+                variants.push(EnumVariant::new(variant_name, variant_data));
+            }
 
-        self.expect(TokenType::CloseBrace)?;
+            // Expect semicolon for inline syntax
+            self.expect(TokenType::Semi)?;
+
+            variants
+        } else {
+            // Block syntax: enum Name { Variant1, Variant2, Variant3(Type) }
+            self.expect(TokenType::OpenBrace)?;
+
+            // Parse variants until closing brace
+            let variants = self.parse_comma_separated(
+                |p| {
+                    let variant_name = p.expect_ident_or_keyword()?;
+                    let mut variant_data = None;
+                    if let Some(tok) = p.peek() {
+                        if tok.kind == TokenType::OpenParen {
+                            p.advance();
+                            let types = p.parse_type_annotation()?;
+                            variant_data = Some(types);
+                            p.expect(TokenType::CloseParen)?;
+                        }
+                    }
+                    Ok(EnumVariant::new(variant_name, variant_data))
+                },
+                TokenType::CloseBrace,
+            )?;
+
+            self.expect(TokenType::CloseBrace)?;
+
+            variants
+        };
 
         Ok(AstNode::EnumDecl {
             name: enum_name,

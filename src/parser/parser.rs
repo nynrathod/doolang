@@ -61,6 +61,12 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.current)
     }
 
+    /// Peek ahead N tokens without advancing.
+    /// Used to look ahead for patterns like :: in enum matching.
+    pub fn peek_ahead(&self, n: usize) -> Option<&Token<'a>> {
+        self.tokens.get(self.current + n)
+    }
+
     /// Checks if the current token matches a given kind.
     pub(crate) fn peek_is(&self, kind: TokenType) -> bool {
         self.peek().map(|tok| tok.kind == kind).unwrap_or(false)
@@ -97,6 +103,23 @@ impl<'a> Parser<'a> {
                 line: tok.line,
                 col: tok.col,
             }),
+            None => Err(ParseError::EndOfInput),
+        }
+    }
+
+    /// Expect an identifier or allow keywords like Ok/Err for enum variants
+    pub(crate) fn expect_ident_or_keyword(&mut self) -> ParseResult<String> {
+        match self.advance() {
+            Some(tok) => match tok.kind {
+                TokenType::Identifier => Ok(tok.value.to_string()),
+                TokenType::Ok => Ok("Ok".to_string()),
+                TokenType::Err => Ok("Err".to_string()),
+                _ => Err(ParseError::UnexpectedTokenAt {
+                    msg: format!("Expected Identifier, got {:?} ({:?})", tok.kind, tok.value),
+                    line: tok.line,
+                    col: tok.col,
+                }),
+            },
             None => Err(ParseError::EndOfInput),
         }
     }
@@ -139,6 +162,10 @@ impl<'a> Parser<'a> {
                 // Statements
                 TokenType::If => self.parse_conditional_stmt(),
                 TokenType::For => self.parse_for_stmt(),
+                TokenType::Match => {
+                    // Parse match expression - no semicolon required after }
+                    self.parse_match_expr()
+                }
                 TokenType::Return => self.parse_return(),
                 TokenType::Break => self.parse_break(),
                 TokenType::Continue => self.parse_continue(),

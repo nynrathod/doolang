@@ -1,5 +1,5 @@
 use crate::lexer::token::TokenType;
-use crate::parser::ast::{AstNode, Pattern};
+use crate::parser::ast::{AstNode, MatchArm, MatchPattern, Pattern};
 use crate::parser::{ParseError, ParseResult, Parser};
 
 impl<'a> Parser<'a> {
@@ -89,6 +89,112 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse match expression
+    /// Syntax:
+    ///   - `match value { pattern => expr, ... }`
+    ///   - `match { condition => expr, ... }`
+    pub fn parse_match_expr(&mut self) -> ParseResult<AstNode> {
+        self.expect(TokenType::Match)?;
+
+        // Check if we have a value or condition-based match
+        let value = if self.peek_is(TokenType::OpenBrace) {
+            None // condition-based match
+        } else {
+            Some(Box::new(self.parse_expression()?))
+        };
+
+        self.expect(TokenType::OpenBrace)?;
+
+        let mut arms = Vec::new();
+
+        while !self.peek_is(TokenType::CloseBrace) {
+            // Parse pattern
+            let pattern = if self.peek_is(TokenType::Underscore) {
+                self.advance();
+                MatchPattern::Wildcard
+            } else if value.is_none() {
+                // Condition-based match: parse expression as condition
+                let condition = self.parse_expression()?;
+                MatchPattern::Condition(Box::new(condition))
+            } else {
+                // Check if it's an enum pattern (e.g., Status::Active or HttpCode::Success(code))
+                if let Some(first_tok) = self.peek() {
+                    if first_tok.kind == TokenType::Identifier {
+                        // Look ahead for :: to detect enum pattern
+                        if self.peek_ahead(1).map(|t| t.kind) == Some(TokenType::ColonColon) {
+                            // Parse enum pattern
+                            let enum_name = self.advance().unwrap().value.to_string();
+                            self.expect(TokenType::ColonColon)?;
+                            let variant = self.expect(TokenType::Identifier)?.value.to_string();
+
+                            // Check if there's a payload with binding
+                            if self.peek_is(TokenType::OpenParen) {
+                                self.advance(); // consume '('
+                                let binding = self.expect(TokenType::Identifier)?.value.to_string();
+                                self.expect(TokenType::CloseParen)?;
+                                MatchPattern::EnumVariantWithPayload {
+                                    enum_name,
+                                    variant,
+                                    binding,
+                                }
+                            } else {
+                                MatchPattern::EnumVariant { enum_name, variant }
+                            }
+                        } else {
+                            // Regular literal pattern
+                            let literal = self.parse_expression()?;
+                            MatchPattern::Literal(Box::new(literal))
+                        }
+                    } else {
+                        // Value-based match: parse literal pattern
+                        let literal = self.parse_expression()?;
+                        MatchPattern::Literal(Box::new(literal))
+                    }
+                } else {
+                    return Err(ParseError::EndOfInput);
+                }
+            };
+
+            self.expect(TokenType::FatArrow)?;
+
+            // Parse body - handle both expressions and statements like print
+            let body = if let Some(tok) = self.peek() {
+                match tok.kind {
+                    TokenType::Print => {
+                        // Parse print statement as body
+                        Box::new(self.parse_print()?)
+                    }
+                    TokenType::OpenBrace => {
+                        // Parse block as body
+                        let block = self.parse_braced_block()?;
+                        Box::new(AstNode::Block(block))
+                    }
+                    _ => {
+                        // Parse regular expression
+                        Box::new(self.parse_expression()?)
+                    }
+                }
+            } else {
+                return Err(ParseError::EndOfInput);
+            };
+
+            arms.push(MatchArm { pattern, body });
+
+            // Optional comma
+            if self.peek_is(TokenType::Comma) {
+                self.advance();
+            } else if !self.peek_is(TokenType::CloseBrace) {
+                return Err(ParseError::UnexpectedToken(
+                    "Expected ',' or '}' after match arm".to_string(),
+                ));
+            }
+        }
+
+        self.expect(TokenType::CloseBrace)?;
+
+        Ok(AstNode::MatchExpr { value, arms })
+    }
+
     /// Parses a return statement.
     /// Syntax: `return expr1, expr2, ...;`
     /// Consumes 'return', then parses one or more expressions separated by commas, ending with a semicolon.
@@ -163,7 +269,12 @@ impl<'a> Parser<'a> {
             exprs
         };
 
-        self.expect(TokenType::Semi)?;
+        // Semicolon is optional in match arms (followed by comma or close brace)
+        if let Some(tok) = self.peek() {
+            if tok.kind == TokenType::Semi {
+                self.advance();
+            }
+        }
 
         Ok(AstNode::Print { exprs: args })
     }
