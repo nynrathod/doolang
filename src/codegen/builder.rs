@@ -129,6 +129,7 @@ impl<'ctx> CodeGen<'ctx> {
             ),
             MirInstr::ArrayLen { name, array } => self.generate_array_len(name, array),
             MirInstr::MapLen { name, map } => self.generate_array_len(name, map),
+            MirInstr::MapContains { name, map, key } => self.generate_map_contains(name, map, key),
 
             // ===== LOOP INSTRUCTIONS =====
             MirInstr::ForRange { .. }
@@ -634,9 +635,229 @@ impl<'ctx> CodeGen<'ctx> {
                 None
             }
 
-            MirInstr::ArrayGet { name, array, index } => {
+            MirInstr::ArraySlice {
+                name,
+                array,
+                start,
+                end,
+                inclusive,
+            } => {
+                // Array/string slicing: arr[start..end] or arr[start..=end]
                 let array_val = self.resolve_value(array);
-                let array_ptr = array_val.into_pointer_value();
+                let start_val = self.resolve_value(start).into_int_value();
+                let end_val_raw = self.resolve_value(end).into_int_value();
+
+                // Adjust end for inclusive ranges: end = end + 1
+                let end_val = if *inclusive {
+                    self.builder
+                        .build_int_add(
+                            end_val_raw,
+                            self.context.i32_type().const_int(1, false),
+                            "end_inclusive",
+                        )
+                        .unwrap()
+                } else {
+                    end_val_raw
+                };
+
+                // Calculate slice length: end - start
+                let slice_len = self
+                    .builder
+                    .build_int_sub(end_val, start_val, "slice_len")
+                    .unwrap();
+
+                // Get array metadata to determine element type
+                let metadata = self.array_metadata.get(array).cloned();
+
+                if let Some(meta) = metadata {
+                    // Get element type
+                    let elem_type = match meta.element_type.as_str() {
+                        "Int" => self.context.i32_type().as_basic_type_enum(),
+                        "Float" => self.context.f64_type().as_basic_type_enum(),
+                        "Bool" => self.context.bool_type().as_basic_type_enum(),
+                        "Str" => self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .as_basic_type_enum(),
+                        _ => self.context.i32_type().as_basic_type_enum(),
+                    };
+
+                    // Check if slice length is zero (empty slice)
+                    let is_zero = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            slice_len,
+                            self.context.i32_type().const_int(0, false),
+                            "is_zero_len",
+                        )
+                        .unwrap();
+
+                    let current_fn = self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let alloc_bb = self.context.append_basic_block(current_fn, "slice_alloc");
+                    let empty_bb = self.context.append_basic_block(current_fn, "slice_empty");
+                    let merge_bb = self.context.append_basic_block(current_fn, "slice_merge");
+
+                    // Create a PHI node placeholder for the result
+                    self.builder
+                        .build_conditional_branch(is_zero, empty_bb, alloc_bb)
+                        .unwrap();
+
+                    // Empty slice case
+                    self.builder.position_at_end(empty_bb);
+                    let null_ptr = self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null();
+                    self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+                    // Non-empty slice case
+                    self.builder.position_at_end(alloc_bb);
+
+                    // Allocate new array for slice using malloc
+                    let elem_size = elem_type.size_of().unwrap();
+                    let total_size = self
+                        .builder
+                        .build_int_mul(slice_len, elem_size, "total_size")
+                        .unwrap();
+
+                    let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
+                        let fn_type = self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .fn_type(&[self.context.i32_type().into()], false);
+                        self.module.add_function("malloc", fn_type, None)
+                    });
+
+                    let new_array = self
+                        .builder
+                        .build_call(malloc_fn, &[total_size.into()], "slice_malloc")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Copy elements using memcpy for better performance
+                    let array_ptr = array_val.into_pointer_value();
+
+                    // Calculate source pointer with offset
+                    let src_ptr = unsafe {
+                        self.builder
+                            .build_gep(elem_type, array_ptr, &[start_val], "src_start")
+                            .unwrap()
+                    };
+
+                    // Use memcpy to copy the slice
+                    let memcpy_fn = self
+                        .module
+                        .get_function("llvm.memcpy.p0.p0.i32")
+                        .unwrap_or_else(|| {
+                            let fn_type = self.context.void_type().fn_type(
+                                &[
+                                    self.context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                    self.context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                    self.context.i32_type().into(),
+                                    self.context.bool_type().into(),
+                                ],
+                                false,
+                            );
+                            self.module
+                                .add_function("llvm.memcpy.p0.p0.i32", fn_type, None)
+                        });
+
+                    self.builder
+                        .build_call(
+                            memcpy_fn,
+                            &[
+                                new_array.into(),
+                                src_ptr.into(),
+                                total_size.into(),
+                                self.context.bool_type().const_zero().into(),
+                            ],
+                            "memcpy_slice",
+                        )
+                        .unwrap();
+
+                    self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+                    // Merge block with PHI node
+                    self.builder.position_at_end(merge_bb);
+                    let phi = self
+                        .builder
+                        .build_phi(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "slice_result",
+                        )
+                        .unwrap();
+                    phi.add_incoming(&[(&null_ptr, empty_bb), (&new_array, alloc_bb)]);
+                    let result_ptr = phi.as_basic_value().into_pointer_value();
+
+                    // Store metadata and register the slice
+                    self.temp_values.insert(name.clone(), result_ptr.into());
+
+                    // Store metadata for slices so ArrayGet can find the element type
+                    self.array_metadata.insert(
+                        name.clone(),
+                        crate::codegen::ArrayMetadata {
+                            element_type: meta.element_type.clone(),
+                            length: 0, // Dynamic length - not tracked
+                            contains_strings: meta.contains_strings,
+                        },
+                    );
+
+                    // Mark as a slice (malloc'd but no RC header) so cleanup doesn't try to decref it
+                    // Store in slice_arrays instead of heap_arrays to avoid RC deref on cleanup
+                    self.slice_arrays.insert(name.clone());
+                    self.variable_types
+                        .insert(name.clone(), "Array".to_string());
+
+                    Some(result_ptr.into())
+                } else {
+                    // Fallback for unknown type - return dummy value
+                    let dummy = self.context.i32_type().const_int(0, false);
+                    self.temp_values.insert(name.clone(), dummy.into());
+                    Some(dummy.into())
+                }
+            }
+
+            MirInstr::ArrayGet { name, array, index } => {
+                // eprintln!(
+                //     "[DEBUG] ArrayGet: name={}, array={}, index={}",
+                //     name, array, index
+                // );
+                let array_val = self.resolve_value(array);
+
+                // Handle case where array might be loaded from a symbol (e.g., a slice assigned to a variable)
+                let array_ptr = if array_val.is_pointer_value() {
+                    array_val.into_pointer_value()
+                } else {
+                    // If it's not a pointer, it might be loaded from a symbol
+                    // Try to get it from symbols
+                    if let Some(sym) = self.symbols.get(array) {
+                        self.builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                sym.ptr,
+                                &format!("{}_load", array),
+                            )
+                            .unwrap()
+                            .into_pointer_value()
+                    } else {
+                        // Fallback: assume it's a pointer that was incorrectly typed
+                        panic!("Found {} but expected PointerValue variant", array_val);
+                    }
+                };
+
                 let index_val = self.resolve_value(index).into_int_value();
 
                 // Track that this ArrayGet result came from this source array
@@ -675,6 +896,10 @@ impl<'ctx> CodeGen<'ctx> {
                 // Normal array element access
                 // Try multiple name variations to find metadata for array iteration
                 let elem_type = if let Some(metadata) = self.array_metadata.get(array) {
+                    // eprintln!(
+                    //     "[DEBUG] Found array metadata for {}: element_type={}",
+                    //     array, metadata.element_type
+                    // );
                     match metadata.element_type.as_str() {
                         "Int" => self.context.i32_type().into(),
                         "Float" => self.context.f64_type().into(),
@@ -686,6 +911,10 @@ impl<'ctx> CodeGen<'ctx> {
                         _ => self.context.i32_type().into(),
                     }
                 } else {
+                    // eprintln!(
+                    //     "[DEBUG] No array metadata found for {}, trying variations",
+                    //     array
+                    // );
                     // Try array name variations (without _array suffix, with % prefix, etc)
                     let base_name = array.trim_start_matches('%').trim_end_matches("_array");
                     let variations = vec![
@@ -698,6 +927,10 @@ impl<'ctx> CodeGen<'ctx> {
                     let mut found_type = self.context.i32_type().as_basic_type_enum();
                     for var in variations {
                         if let Some(metadata) = self.array_metadata.get(&var) {
+                            // eprintln!(
+                            //     "[DEBUG] Found metadata for variation {}: element_type={}",
+                            //     var, metadata.element_type
+                            // );
                             found_type = match metadata.element_type.as_str() {
                                 "Int" => self.context.i32_type().into(),
                                 "Float" => self.context.f64_type().into(),
@@ -711,6 +944,10 @@ impl<'ctx> CodeGen<'ctx> {
                             break;
                         }
                     }
+                    // if found_type.is_int_type() && found_type.into_int_type().get_bit_width() == 32
+                    // {
+                    //     eprintln!("[DEBUG] Using default Int type for array {}", array);
+                    // }
                     found_type
                 };
 
@@ -730,6 +967,25 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // Store in temp_values for immediate use
                 self.temp_values.insert(name.clone(), elem_val);
+
+                // Track the type of this result
+                if elem_type.is_pointer_type() {
+                    self.variable_types.insert(name.clone(), "Str".to_string());
+                    // eprintln!("[DEBUG] ArrayGet result {} is Str", name);
+                } else if elem_type.is_float_type() {
+                    self.variable_types
+                        .insert(name.clone(), "Float".to_string());
+                    // eprintln!("[DEBUG] ArrayGet result {} is Float", name);
+                } else if elem_type.is_int_type() {
+                    let int_type = elem_type.into_int_type();
+                    if int_type.get_bit_width() == 1 {
+                        self.variable_types.insert(name.clone(), "Bool".to_string());
+                        // eprintln!("[DEBUG] ArrayGet result {} is Bool", name);
+                    } else {
+                        self.variable_types.insert(name.clone(), "Int".to_string());
+                        // eprintln!("[DEBUG] ArrayGet result {} is Int", name);
+                    }
+                }
 
                 // If this temp was pre-allocated as a symbol (cross-block usage), store it there too
                 if let Some(sym) = self.symbols.get(name) {
@@ -1725,13 +1981,19 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             MirInstr::MapGet { name, map, key } => {
+                // eprintln!("[DEBUG] MapGet: name={}, map={}, key={}", name, map, key);
                 let map_ptr = self.resolve_value(map).into_pointer_value();
                 let key_val = self.resolve_value(key);
 
                 // Get map metadata to determine key and value types
                 if let Some(map_metadata_clone) = self.map_metadata.get(map).cloned() {
+                    let key_type_str = map_metadata_clone.key_type.clone();
                     let value_type_str = map_metadata_clone.value_type.clone();
+                    let key_is_string = map_metadata_clone.key_is_string;
                     let value_is_string = map_metadata_clone.value_is_string;
+
+                    // eprintln!("[DEBUG] Map metadata: key_type={}, value_type={}, key_is_string={}, value_is_string={}",
+                    //           key_type_str, value_type_str, key_is_string, value_is_string);
 
                     let value_type: BasicTypeEnum = match value_type_str.as_str() {
                         "Str" => self
@@ -1740,52 +2002,617 @@ impl<'ctx> CodeGen<'ctx> {
                             .into(),
                         "Int" => self.context.i32_type().into(),
                         "Bool" => self.context.bool_type().into(),
+                        "Float" => self.context.f64_type().into(),
                         _ => self.context.i32_type().into(),
                     };
 
-                    // For now, simplified implementation: use the key_val as an index into the values array
-                    // This assumes integer keys for simplicity
-                    let index_val = key_val.into_int_value();
+                    // Calculate key_type_llvm and pair_type once for consistency
+                    let key_type_llvm: BasicTypeEnum = if key_is_string {
+                        self.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into()
+                    } else if key_type_str == "Float" {
+                        self.context.f64_type().into()
+                    } else if key_type_str == "Bool" {
+                        self.context.bool_type().into()
+                    } else {
+                        self.context.i32_type().into()
+                    };
 
-                    // Direct indexing into map values array
-                    // For integer-keyed maps, we can directly use the index
-                    let elem_ptr = unsafe {
+                    let pair_type = self
+                        .context
+                        .struct_type(&[key_type_llvm, value_type], false);
+
+                    // Handle different key types
+                    let index_val = if key_is_string {
+                        // String key: use linear search with strcmp
+                        // Maps are stored as arrays of (key, value) pairs
+                        // eprintln!("[DEBUG] String-keyed map search starting for map={}, key_val type={:?}", map, key_val.get_type());
+
+                        let key_ptr = key_val.into_pointer_value();
+                        // eprintln!("[DEBUG] key_ptr obtained");
+
+                        // Get strcmp function
+                        let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
+                            let i8_ptr_type =
+                                self.context.ptr_type(inkwell::AddressSpace::default());
+                            let fn_type = self
+                                .context
+                                .i32_type()
+                                .fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
+                            self.module.add_function("strcmp", fn_type, None)
+                        });
+
+                        // Get map metadata for length
+                        let map_length = map_metadata_clone.length;
+                        // eprintln!("[DEBUG] Map length: {}", map_length);
+
+                        // Create blocks for the search loop
+                        // eprintln!("[DEBUG] Creating search blocks...");
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        // eprintln!("[DEBUG] Got current function");
+                        let loop_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_search_loop");
+                        let found_block = self.context.append_basic_block(current_fn, "map_found");
+                        let not_found_block =
+                            self.context.append_basic_block(current_fn, "map_not_found");
+                        let continue_block =
+                            self.context.append_basic_block(current_fn, "map_continue");
+
+                        // Allocate index variable in current block
+                        let index_alloca = self
+                            .builder
+                            .build_alloca(self.context.i32_type(), "search_index")
+                            .unwrap();
+
+                        // Initialize index to 0
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        // Loop block: check if index < length
+                        self.builder.position_at_end(loop_block);
+                        let current_index = self
+                            .builder
+                            .build_load(self.context.i32_type(), index_alloca, "current_index")
+                            .unwrap()
+                            .into_int_value();
+                        let length_val =
+                            self.context.i32_type().const_int(map_length as u64, false);
+                        let is_in_bounds = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                current_index,
+                                length_val,
+                                "is_in_bounds",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(is_in_bounds, found_block, not_found_block)
+                            .unwrap();
+
+                        // Found block: get the key at current index and compare
+                        self.builder.position_at_end(found_block);
+
+                        // Get the key from the pair at current_index
+                        // Map is stored as array of {key, value} structs
+                        // Use the pair_type calculated earlier
+
+                        let pair_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    pair_type,
+                                    map_ptr,
+                                    &[current_index],
+                                    "pair_ptr",
+                                )
+                                .unwrap()
+                        };
+
+                        // Extract key from pair (index 0 of struct)
+                        let stored_key_ptr = self
+                            .builder
+                            .build_struct_gep(pair_type, pair_ptr, 0, "stored_key_ptr")
+                            .unwrap();
+
+                        let stored_key = self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                stored_key_ptr,
+                                "stored_key",
+                            )
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Compare with strcmp
+                        let cmp_result = self
+                            .builder
+                            .build_call(
+                                strcmp_fn,
+                                &[stored_key.into(), key_ptr.into()],
+                                "strcmp_result",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_int_value();
+
+                        let zero = self.context.i32_type().const_int(0, false);
+                        let keys_match = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                cmp_result,
+                                zero,
+                                "keys_match",
+                            )
+                            .unwrap();
+
+                        // If match, break and use current_index; else increment and continue
+                        let increment_block =
+                            self.context.append_basic_block(current_fn, "map_increment");
+                        self.builder
+                            .build_conditional_branch(keys_match, continue_block, increment_block)
+                            .unwrap();
+
+                        // Increment block
+                        self.builder.position_at_end(increment_block);
+                        let next_index = self
+                            .builder
+                            .build_int_add(
+                                current_index,
+                                self.context.i32_type().const_int(1, false),
+                                "next_index",
+                            )
+                            .unwrap();
+                        self.builder.build_store(index_alloca, next_index).unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        // Not found block: use index 0 as fallback
+                        self.builder.position_at_end(not_found_block);
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
+
+                        // Continue block: load final index
+                        self.builder.position_at_end(continue_block);
+                        // eprintln!("[DEBUG] Loading final index from search");
+                        self.builder
+                            .build_load(self.context.i32_type(), index_alloca, "final_index")
+                            .unwrap()
+                            .into_int_value()
+                    } else if key_type_str == "Float" {
+                        // Float key: linear search comparing float values
+                        let key_float = key_val.into_float_value();
+                        let map_length = map_metadata_clone.length;
+
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let loop_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_search_loop_float");
+                        let check_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_check_float");
+                        let not_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_not_found_float");
+                        let continue_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_continue_float");
+
+                        let index_alloca = self
+                            .builder
+                            .build_alloca(self.context.i32_type(), "search_index_float")
+                            .unwrap();
+
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        self.builder.position_at_end(loop_block);
+                        let current_index = self
+                            .builder
+                            .build_load(self.context.i32_type(), index_alloca, "current_index")
+                            .unwrap()
+                            .into_int_value();
+                        let length_val =
+                            self.context.i32_type().const_int(map_length as u64, false);
+                        let is_in_bounds = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                current_index,
+                                length_val,
+                                "is_in_bounds",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(is_in_bounds, check_block, not_found_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(check_block);
+                        let pair_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    pair_type,
+                                    map_ptr,
+                                    &[current_index],
+                                    "pair_ptr_float",
+                                )
+                                .unwrap()
+                        };
+
+                        let stored_key_ptr = self
+                            .builder
+                            .build_struct_gep(pair_type, pair_ptr, 0, "stored_key_ptr_float")
+                            .unwrap();
+
+                        let stored_key = self
+                            .builder
+                            .build_load(self.context.f64_type(), stored_key_ptr, "stored_key_float")
+                            .unwrap()
+                            .into_float_value();
+
+                        let keys_match = self
+                            .builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::OEQ,
+                                stored_key,
+                                key_float,
+                                "keys_match_float",
+                            )
+                            .unwrap();
+
+                        let increment_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_increment_float");
+                        self.builder
+                            .build_conditional_branch(keys_match, continue_block, increment_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(increment_block);
+                        let next_index = self
+                            .builder
+                            .build_int_add(
+                                current_index,
+                                self.context.i32_type().const_int(1, false),
+                                "next_index",
+                            )
+                            .unwrap();
+                        self.builder.build_store(index_alloca, next_index).unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        self.builder.position_at_end(not_found_block);
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(continue_block);
+                        self.builder
+                            .build_load(self.context.i32_type(), index_alloca, "final_index_float")
+                            .unwrap()
+                            .into_int_value()
+                    } else if key_type_str == "Bool" {
+                        // Bool key: linear search comparing bool values
+                        let key_bool = key_val.into_int_value();
+                        let map_length = map_metadata_clone.length;
+
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let loop_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_search_loop_bool");
+                        let check_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_check_bool");
+                        let not_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_not_found_bool");
+                        let continue_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_continue_bool");
+
+                        let index_alloca = self
+                            .builder
+                            .build_alloca(self.context.i32_type(), "search_index_bool")
+                            .unwrap();
+
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        self.builder.position_at_end(loop_block);
+                        let current_index = self
+                            .builder
+                            .build_load(self.context.i32_type(), index_alloca, "current_index")
+                            .unwrap()
+                            .into_int_value();
+                        let length_val =
+                            self.context.i32_type().const_int(map_length as u64, false);
+                        let is_in_bounds = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                current_index,
+                                length_val,
+                                "is_in_bounds",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(is_in_bounds, check_block, not_found_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(check_block);
+                        let pair_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    pair_type,
+                                    map_ptr,
+                                    &[current_index],
+                                    "pair_ptr_bool",
+                                )
+                                .unwrap()
+                        };
+
+                        let stored_key_ptr = self
+                            .builder
+                            .build_struct_gep(pair_type, pair_ptr, 0, "stored_key_ptr_bool")
+                            .unwrap();
+
+                        let stored_key = self
+                            .builder
+                            .build_load(self.context.bool_type(), stored_key_ptr, "stored_key_bool")
+                            .unwrap()
+                            .into_int_value();
+
+                        let keys_match = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                stored_key,
+                                key_bool,
+                                "keys_match_bool",
+                            )
+                            .unwrap();
+
+                        let increment_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_increment_bool");
+                        self.builder
+                            .build_conditional_branch(keys_match, continue_block, increment_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(increment_block);
+                        let next_index = self
+                            .builder
+                            .build_int_add(
+                                current_index,
+                                self.context.i32_type().const_int(1, false),
+                                "next_index",
+                            )
+                            .unwrap();
+                        self.builder.build_store(index_alloca, next_index).unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        self.builder.position_at_end(not_found_block);
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(continue_block);
+                        self.builder
+                            .build_load(self.context.i32_type(), index_alloca, "final_index_bool")
+                            .unwrap()
+                            .into_int_value()
+                    } else {
+                        // Integer key: linear search comparing int values
+                        let key_int = key_val.into_int_value();
+                        let map_length = map_metadata_clone.length;
+
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let loop_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_search_loop_int");
+                        let check_block =
+                            self.context.append_basic_block(current_fn, "map_check_int");
+                        let not_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_not_found_int");
+                        let continue_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_continue_int");
+
+                        let index_alloca = self
+                            .builder
+                            .build_alloca(self.context.i32_type(), "search_index_int")
+                            .unwrap();
+
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        self.builder.position_at_end(loop_block);
+                        let current_index = self
+                            .builder
+                            .build_load(self.context.i32_type(), index_alloca, "current_index")
+                            .unwrap()
+                            .into_int_value();
+                        let length_val =
+                            self.context.i32_type().const_int(map_length as u64, false);
+                        let is_in_bounds = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                current_index,
+                                length_val,
+                                "is_in_bounds",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(is_in_bounds, check_block, not_found_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(check_block);
+                        let pair_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    pair_type,
+                                    map_ptr,
+                                    &[current_index],
+                                    "pair_ptr_int",
+                                )
+                                .unwrap()
+                        };
+
+                        let stored_key_ptr = self
+                            .builder
+                            .build_struct_gep(pair_type, pair_ptr, 0, "stored_key_ptr_int")
+                            .unwrap();
+
+                        let stored_key = self
+                            .builder
+                            .build_load(self.context.i32_type(), stored_key_ptr, "stored_key_int")
+                            .unwrap()
+                            .into_int_value();
+
+                        let keys_match = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                stored_key,
+                                key_int,
+                                "keys_match_int",
+                            )
+                            .unwrap();
+
+                        let increment_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_increment_int");
+                        self.builder
+                            .build_conditional_branch(keys_match, continue_block, increment_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(increment_block);
+                        let next_index = self
+                            .builder
+                            .build_int_add(
+                                current_index,
+                                self.context.i32_type().const_int(1, false),
+                                "next_index",
+                            )
+                            .unwrap();
+                        self.builder.build_store(index_alloca, next_index).unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        self.builder.position_at_end(not_found_block);
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(continue_block);
+                        self.builder
+                            .build_load(self.context.i32_type(), index_alloca, "final_index_int")
+                            .unwrap()
+                            .into_int_value()
+                    };
+
+                    // Maps are stored as arrays of (key, value) pairs
+                    // We need to access the pair at index_val and extract the value
+                    // pair_type was already calculated earlier, so we can use it directly
+
+                    // Get pointer to the pair at index_val
+                    let pair_ptr = unsafe {
                         self.builder.build_in_bounds_gep(
-                            value_type,
+                            pair_type,
                             map_ptr,
                             &[index_val],
-                            "elem_ptr",
+                            "pair_ptr",
                         )
                     }
                     .unwrap();
 
+                    // Extract the value field (index 1) from the pair
+                    let value_ptr = self
+                        .builder
+                        .build_struct_gep(pair_type, pair_ptr, 1, "value_ptr")
+                        .unwrap();
+
                     let elem_val = self
                         .builder
-                        .build_load(value_type, elem_ptr, "elem_val")
+                        .build_load(value_type, value_ptr, "elem_val")
                         .unwrap();
 
                     let result_val = elem_val;
 
-                    // Handle RC for string values
-                    if value_is_string && value_type.is_pointer_type() {
-                        self.heap_strings.insert(name.clone());
-                        let str_ptr = result_val.into_pointer_value();
-                        let rc_header = unsafe {
-                            self.builder.build_in_bounds_gep(
-                                self.context.i8_type(),
-                                str_ptr,
-                                &[self.context.i32_type().const_int((-8_i32) as u64, true)],
-                                "rc_header",
-                            )
-                        }
-                        .unwrap();
+                    // Track the type of this result
+                    self.variable_types
+                        .insert(name.clone(), value_type_str.clone());
 
-                        if let Some(incref_fn) = self.incref_fn {
-                            self.builder
-                                .build_call(incref_fn, &[rc_header.into()], "")
-                                .unwrap();
-                        }
+                    // Track if this is a string value
+                    if value_is_string {
+                        self.heap_strings.insert(name.clone());
                     }
+
+                    // Handle RC for string values
+                    // NOTE: Map string values might be constants without RC headers, so skip RC operations
+                    // The strings are owned by the map itself and will be cleaned up with the map
+                    // if value_is_string && value_type.is_pointer_type() {
+                    //     let str_ptr = result_val.into_pointer_value();
+                    //     let rc_header = unsafe {
+                    //         self.builder.build_in_bounds_gep(
+                    //             self.context.i8_type(),
+                    //             str_ptr,
+                    //             &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                    //             "rc_header",
+                    //         )
+                    //     }
+                    //     .unwrap();
+
+                    //     if let Some(incref_fn) = self.incref_fn {
+                    //         self.builder
+                    //             .build_call(incref_fn, &[rc_header.into()], "")
+                    //             .unwrap();
+                    //     }
+                    // }
 
                     // Store in temp_values
                     self.temp_values.insert(name.clone(), result_val);
@@ -1794,8 +2621,10 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder.build_store(sym.ptr, result_val).unwrap();
                     }
 
+                    // eprintln!("[DEBUG] MapGet result stored for {}", name);
                     Some(result_val)
                 } else {
+                    // eprintln!("[DEBUG] MapGet: No metadata found for map {}", map);
                     // Fallback: return 0
                     let default = self.context.i32_type().const_int(0, false);
                     self.temp_values.insert(name.clone(), default.into());

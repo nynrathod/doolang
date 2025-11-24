@@ -89,6 +89,7 @@ pub struct CodeGen<'ctx> {
     pub heap_strings: std::collections::HashSet<String>,
 
     pub heap_arrays: std::collections::HashSet<String>,
+    pub slice_arrays: std::collections::HashSet<String>, // Sliced arrays (malloc'd but no RC header)
     pub heap_maps: std::collections::HashSet<String>,
 
     pub composite_strings: HashMap<String, Vec<String>>,
@@ -158,6 +159,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             heap_strings: std::collections::HashSet::new(),
             heap_arrays: std::collections::HashSet::new(),
+            slice_arrays: std::collections::HashSet::new(),
             heap_maps: std::collections::HashSet::new(),
 
             composite_strings: HashMap::new(),

@@ -9,8 +9,78 @@ impl<'ctx> CodeGen<'ctx> {
         name: &str,
         elements: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
-        let element_values: Vec<BasicValueEnum<'ctx>> =
-            elements.iter().map(|el| self.resolve_value(el)).collect();
+        // Handle spread elements by expanding them
+        let mut expanded_elements: Vec<String> = Vec::new();
+        for el in elements {
+            if el.starts_with("SPREAD:") {
+                // Extract the array to spread
+                let array_name = &el[7..]; // Remove "SPREAD:" prefix
+                                           // Get the array metadata to know how many elements to expand
+                if let Some(meta) = self.array_metadata.get(array_name).cloned() {
+                    // Generate ArrayGet instructions for each element
+                    for i in 0..meta.length {
+                        let elem_tmp = format!("{}[{}]", array_name, i);
+                        expanded_elements.push(elem_tmp);
+                    }
+                }
+            } else {
+                expanded_elements.push(el.clone());
+            }
+        }
+
+        let element_values: Vec<BasicValueEnum<'ctx>> = expanded_elements
+            .iter()
+            .map(|el| {
+                // Handle indexed access notation for spread expansion
+                if el.contains("[") && el.contains("]") {
+                    let parts: Vec<&str> = el.split('[').collect();
+                    if parts.len() == 2 {
+                        let array_name = parts[0];
+                        let index_str = parts[1].trim_end_matches(']');
+                        if let Ok(index) = index_str.parse::<usize>() {
+                            // Perform array access
+                            let array_val = self.resolve_value(array_name);
+                            if array_val.is_pointer_value() {
+                                let array_ptr = array_val.into_pointer_value();
+                                let index_val =
+                                    self.context.i32_type().const_int(index as u64, false);
+
+                                // Get element type from metadata
+                                if let Some(meta) = self.array_metadata.get(array_name) {
+                                    let elem_type = match meta.element_type.as_str() {
+                                        "Int" => self.context.i32_type().as_basic_type_enum(),
+                                        "Float" => self.context.f64_type().as_basic_type_enum(),
+                                        "Bool" => self.context.bool_type().as_basic_type_enum(),
+                                        "Str" => self
+                                            .context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .as_basic_type_enum(),
+                                        _ => self.context.i32_type().as_basic_type_enum(),
+                                    };
+
+                                    let elem_ptr = unsafe {
+                                        self.builder
+                                            .build_gep(
+                                                elem_type,
+                                                array_ptr,
+                                                &[index_val],
+                                                "spread_elem",
+                                            )
+                                            .unwrap()
+                                    };
+                                    let elem_val = self
+                                        .builder
+                                        .build_load(elem_type, elem_ptr, "spread_load")
+                                        .unwrap();
+                                    return elem_val;
+                                }
+                            }
+                        }
+                    }
+                }
+                self.resolve_value(el)
+            })
+            .collect();
 
         // Allow empty arrays: default element type to Int if elements is empty
         let elem_type = if element_values.is_empty() {
@@ -19,13 +89,15 @@ impl<'ctx> CodeGen<'ctx> {
             element_values[0].get_type()
         };
 
-        let array_type = elem_type.array_type(elements.len() as u32);
+        let array_type = elem_type.array_type(expanded_elements.len() as u32);
 
         // Track string pointers
         let str_ptrs: Vec<BasicValueEnum<'ctx>> = element_values
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.heap_strings.contains(&elements[*i]))
+            .filter(|(i, _)| {
+                *i < expanded_elements.len() && self.heap_strings.contains(&expanded_elements[*i])
+            })
             .map(|(_, val)| *val)
             .collect();
 
@@ -62,7 +134,7 @@ impl<'ctx> CodeGen<'ctx> {
         };
 
         let metadata = crate::codegen::ArrayMetadata {
-            length: elements.len(),
+            length: expanded_elements.len(),
             element_type: element_type_name.to_string(),
             contains_strings,
         };

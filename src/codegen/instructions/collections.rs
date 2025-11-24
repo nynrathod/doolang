@@ -218,4 +218,334 @@ impl<'ctx> CodeGen<'ctx> {
 
         None
     }
+
+    pub fn generate_map_contains(
+        &mut self,
+        name: &str,
+        map: &str,
+        key: &str,
+    ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
+        let map_ptr = self.resolve_value(map).into_pointer_value();
+        let key_val = self.resolve_value(key);
+
+        // Get map metadata to determine key type
+        if let Some(map_metadata_clone) = self.map_metadata.get(map).cloned() {
+            let key_type_str = map_metadata_clone.key_type.clone();
+            let key_is_string = map_metadata_clone.key_is_string;
+            let map_length = map_metadata_clone.length;
+
+            let key_type_llvm: inkwell::types::BasicTypeEnum = if key_is_string {
+                self.context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into()
+            } else if key_type_str == "Float" {
+                self.context.f64_type().into()
+            } else if key_type_str == "Bool" {
+                self.context.bool_type().into()
+            } else {
+                self.context.i32_type().into()
+            };
+
+            let value_type_str = map_metadata_clone.value_type.clone();
+            let value_is_string = map_metadata_clone.value_is_string;
+            let value_type: inkwell::types::BasicTypeEnum = match value_type_str.as_str() {
+                "Str" => self
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+                "Int" => self.context.i32_type().into(),
+                "Bool" => self.context.bool_type().into(),
+                "Float" => self.context.f64_type().into(),
+                _ => self.context.i32_type().into(),
+            };
+
+            let pair_type = self
+                .context
+                .struct_type(&[key_type_llvm, value_type], false);
+
+            // Handle different key types
+            if key_is_string {
+                // String key: use linear search with strcmp
+                let key_ptr = key_val.into_pointer_value();
+
+                // Get strcmp function
+                let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
+                    let i8_ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let fn_type = self
+                        .context
+                        .i32_type()
+                        .fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
+                    self.module.add_function("strcmp", fn_type, None)
+                });
+
+                // Create blocks for the search loop
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let loop_block = self.context.append_basic_block(current_fn, "contains_loop");
+                let found_block = self
+                    .context
+                    .append_basic_block(current_fn, "contains_found");
+                let not_found_block = self
+                    .context
+                    .append_basic_block(current_fn, "contains_not_found");
+                let continue_block = self
+                    .context
+                    .append_basic_block(current_fn, "contains_continue");
+
+                // Create index variable
+                let index_alloca = self
+                    .builder
+                    .build_alloca(self.context.i32_type(), "contains_index")
+                    .unwrap();
+                self.builder
+                    .build_store(index_alloca, self.context.i32_type().const_zero())
+                    .unwrap();
+
+                // Jump to loop
+                self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                // Loop block: check if index < length
+                self.builder.position_at_end(loop_block);
+                let current_index = self
+                    .builder
+                    .build_load(self.context.i32_type(), index_alloca, "idx")
+                    .unwrap()
+                    .into_int_value();
+                let length_val = self.context.i32_type().const_int(map_length as u64, false);
+                let cmp = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::ULT, current_index, length_val, "cmp")
+                    .unwrap();
+
+                let check_key_block = self.context.append_basic_block(current_fn, "check_key");
+                self.builder
+                    .build_conditional_branch(cmp, check_key_block, not_found_block)
+                    .unwrap();
+
+                // Check key block: compare current key with search key
+                self.builder.position_at_end(check_key_block);
+                let pair_ptr = unsafe {
+                    self.builder
+                        .build_gep(pair_type, map_ptr, &[current_index], "pair_ptr")
+                }
+                .unwrap();
+
+                let key_ptr_in_map = self
+                    .builder
+                    .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
+                    .unwrap();
+                let key_in_map = self
+                    .builder
+                    .build_load(key_type_llvm, key_ptr_in_map, "key_in_map")
+                    .unwrap()
+                    .into_pointer_value();
+
+                let cmp_result = self
+                    .builder
+                    .build_call(strcmp_fn, &[key_in_map.into(), key_ptr.into()], "strcmp")
+                    .unwrap();
+                let cmp_val = cmp_result
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+                let is_equal = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        cmp_val,
+                        self.context.i32_type().const_zero(),
+                        "is_equal",
+                    )
+                    .unwrap();
+
+                let inc_block = self.context.append_basic_block(current_fn, "inc_idx");
+                // If equal, jump to found; otherwise increment and loop
+                self.builder
+                    .build_conditional_branch(is_equal, found_block, inc_block)
+                    .unwrap();
+
+                // Increment block: increment index and loop back
+                self.builder.position_at_end(inc_block);
+                let next_index = self
+                    .builder
+                    .build_int_add(
+                        current_index,
+                        self.context.i32_type().const_int(1, false),
+                        "next_idx",
+                    )
+                    .unwrap();
+                self.builder.build_store(index_alloca, next_index).unwrap();
+                self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                // Found block: jump to continue
+                self.builder.position_at_end(found_block);
+                self.builder
+                    .build_unconditional_branch(continue_block)
+                    .unwrap();
+
+                // Not found block: jump to continue
+                self.builder.position_at_end(not_found_block);
+                self.builder
+                    .build_unconditional_branch(continue_block)
+                    .unwrap();
+
+                // Continue block: merge results with phi node
+                self.builder.position_at_end(continue_block);
+                let phi = self
+                    .builder
+                    .build_phi(self.context.bool_type(), name)
+                    .unwrap();
+                phi.add_incoming(&[
+                    (&self.context.bool_type().const_int(1, false), found_block),
+                    (&self.context.bool_type().const_zero(), not_found_block),
+                ]);
+
+                let result_val = phi.as_basic_value();
+                self.temp_values.insert(name.to_string(), result_val);
+                return Some(result_val);
+            } else {
+                // Non-string key: direct comparison
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let loop_block = self.context.append_basic_block(current_fn, "contains_loop");
+                let check_block = self
+                    .context
+                    .append_basic_block(current_fn, "contains_check");
+                let found_block = self
+                    .context
+                    .append_basic_block(current_fn, "contains_found");
+                let not_found_block = self
+                    .context
+                    .append_basic_block(current_fn, "contains_not_found");
+                let continue_block = self
+                    .context
+                    .append_basic_block(current_fn, "contains_continue");
+
+                // Create index variable
+                let index_alloca = self
+                    .builder
+                    .build_alloca(self.context.i32_type(), "contains_index")
+                    .unwrap();
+                self.builder
+                    .build_store(index_alloca, self.context.i32_type().const_zero())
+                    .unwrap();
+
+                // Jump to loop
+                self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                // Loop block: check if index < length
+                self.builder.position_at_end(loop_block);
+                let current_index = self
+                    .builder
+                    .build_load(self.context.i32_type(), index_alloca, "idx")
+                    .unwrap()
+                    .into_int_value();
+                let length_val = self.context.i32_type().const_int(map_length as u64, false);
+                let cmp = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::ULT, current_index, length_val, "cmp")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(cmp, check_block, not_found_block)
+                    .unwrap();
+
+                // Check block: compare key
+                self.builder.position_at_end(check_block);
+                let pair_ptr = unsafe {
+                    self.builder
+                        .build_gep(pair_type, map_ptr, &[current_index], "pair_ptr")
+                }
+                .unwrap();
+
+                let key_ptr_in_map = self
+                    .builder
+                    .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
+                    .unwrap();
+                let key_in_map = self
+                    .builder
+                    .build_load(key_type_llvm, key_ptr_in_map, "key_in_map")
+                    .unwrap();
+
+                let is_equal = if key_type_str == "Float" {
+                    self.builder
+                        .build_float_compare(
+                            inkwell::FloatPredicate::OEQ,
+                            key_in_map.into_float_value(),
+                            key_val.into_float_value(),
+                            "is_equal",
+                        )
+                        .unwrap()
+                } else {
+                    self.builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            key_in_map.into_int_value(),
+                            key_val.into_int_value(),
+                            "is_equal",
+                        )
+                        .unwrap()
+                };
+
+                // If equal, jump to found; otherwise increment and continue loop
+                let inc_block = self.context.append_basic_block(current_fn, "contains_inc");
+                self.builder
+                    .build_conditional_branch(is_equal, found_block, inc_block)
+                    .unwrap();
+
+                // Increment block
+                self.builder.position_at_end(inc_block);
+                let next_index = self
+                    .builder
+                    .build_int_add(
+                        current_index,
+                        self.context.i32_type().const_int(1, false),
+                        "next_idx",
+                    )
+                    .unwrap();
+                self.builder.build_store(index_alloca, next_index).unwrap();
+                self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                // Found block: return true
+                self.builder.position_at_end(found_block);
+                self.builder
+                    .build_unconditional_branch(continue_block)
+                    .unwrap();
+
+                // Not found block: return false
+                self.builder.position_at_end(not_found_block);
+                self.builder
+                    .build_unconditional_branch(continue_block)
+                    .unwrap();
+
+                // Continue block: merge results with phi node
+                self.builder.position_at_end(continue_block);
+                let phi = self
+                    .builder
+                    .build_phi(self.context.bool_type(), name)
+                    .unwrap();
+                phi.add_incoming(&[
+                    (&self.context.bool_type().const_int(1, false), found_block),
+                    (&self.context.bool_type().const_zero(), not_found_block),
+                ]);
+
+                let result_val = phi.as_basic_value();
+                self.temp_values.insert(name.to_string(), result_val);
+                return Some(result_val);
+            }
+        }
+
+        // Fallback: return false if metadata not found
+        let false_val = self.context.bool_type().const_zero();
+        self.temp_values.insert(name.to_string(), false_val.into());
+        Some(false_val.into())
+    }
 }

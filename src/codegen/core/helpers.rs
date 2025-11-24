@@ -83,11 +83,32 @@ impl<'ctx> CodeGen<'ctx> {
                 .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
                 .unwrap_or(false);
 
+            // Check if this is a string value (from map, array, etc.)
+            let is_string =
+                self.heap_strings.contains(name) || var_type.map(|t| t == "Str").unwrap_or(false);
+
             let load_type = if is_array_or_map || is_struct {
                 // Arrays, maps, and structs are always pointers, regardless of how they were stored
                 self.context
                     .ptr_type(inkwell::AddressSpace::default())
                     .into()
+            } else if is_string {
+                // String values are pointers
+                self.context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into()
+            } else if let Some(type_str) = var_type {
+                // Use variable_types to determine correct load type
+                match type_str.as_str() {
+                    "Int" => self.context.i32_type().into(),
+                    "Float" => self.context.f64_type().into(),
+                    "Bool" => self.context.i32_type().into(),
+                    "Str" => self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .into(),
+                    _ => sym.ty,
+                }
             } else {
                 sym.ty
             };
@@ -120,6 +141,8 @@ impl<'ctx> CodeGen<'ctx> {
             "Available in symbols: {:?}",
             self.symbols.keys().collect::<Vec<_>>()
         );
+        eprintln!("BACKTRACE:");
+        eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
         panic!(
             "Unknown variable or literal: {} - check your MIR generation",
             name

@@ -433,6 +433,27 @@ impl<'ctx> CodeGen<'ctx> {
         let entry_bb = self.context.append_basic_block(main_func, "entry");
         self.builder.position_at_end(entry_bb);
 
+        // Enable UTF-8 console output on Windows
+        // Call SetConsoleOutputCP(65001) to enable UTF-8
+        // This is always generated in LLVM IR; on non-Windows platforms it will be a no-op
+        let set_console_cp_type = self
+            .context
+            .i32_type()
+            .fn_type(&[self.context.i32_type().into()], false);
+        let set_console_cp_fn = self
+            .module
+            .get_function("SetConsoleOutputCP")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("SetConsoleOutputCP", set_console_cp_type, None)
+            });
+
+        // 65001 is UTF-8 code page
+        let utf8_codepage = self.context.i32_type().const_int(65001, false);
+        self.builder
+            .build_call(set_console_cp_fn, &[utf8_codepage.into()], "set_utf8")
+            .unwrap();
+
         // Execute any runtime instructions from global scope (like Print, BinaryOp for runtime values)
         // NOTE: Skip ConstString instructions - they are already processed in generate_global
         // and stored as static constants. Processing them here would cause duplicate heap allocations.
@@ -1122,7 +1143,7 @@ impl<'ctx> CodeGen<'ctx> {
                     Some(MirInstr::Return { values }) => Some(MirTerminator::Return {
                         values: values.clone(),
                     }),
-                    Some(MirInstr::Jump { target }) => Some(MirTerminator::Jump {
+                    Some(MirInstr::Jump { label: target }) => Some(MirTerminator::Jump {
                         target: target.clone(),
                     }),
                     Some(MirInstr::CondJump {
@@ -1249,9 +1270,87 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // Cleanup arrays
+        // Cleanup arrays (RC-managed)
         for var_name in heap_arrays {
             self.emit_decref(&var_name);
+        }
+
+        // Cleanup sliced arrays (malloc'd without RC header - use free directly)
+        let mut slice_arrays: Vec<String> = self
+            .slice_arrays
+            .iter()
+            .filter(|name| {
+                !self.loop_local_vars.contains(*name)
+                    && !is_compiler_temp(name)
+                    && self.symbols.contains_key(*name)
+            })
+            .cloned()
+            .collect();
+        slice_arrays.reverse();
+
+        let free_fn = self.module.get_function("free").unwrap_or_else(|| {
+            let fn_type = self.context.void_type().fn_type(
+                &[self
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into()],
+                false,
+            );
+            self.module.add_function("free", fn_type, None)
+        });
+
+        for var_name in slice_arrays {
+            if let Some(sym) = self.symbols.get(&var_name) {
+                let ptr_val = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        sym.ptr,
+                        &format!("{}_load", var_name),
+                    )
+                    .unwrap();
+
+                // Check if pointer is not null before freeing
+                let null_ptr = self
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .const_null();
+                let is_not_null = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        ptr_val.into_pointer_value(),
+                        null_ptr,
+                        "is_not_null",
+                    )
+                    .unwrap();
+
+                // Only free if not null
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let free_bb = self.context.append_basic_block(current_fn, "free_slice");
+                let skip_bb = self.context.append_basic_block(current_fn, "skip_free");
+                let merge_bb = self.context.append_basic_block(current_fn, "merge_free");
+
+                self.builder
+                    .build_conditional_branch(is_not_null, free_bb, skip_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(free_bb);
+                self.builder
+                    .build_call(free_fn, &[ptr_val.into()], &format!("{}_free", var_name))
+                    .unwrap();
+                self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+                self.builder.position_at_end(skip_bb);
+                self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+                self.builder.position_at_end(merge_bb);
+            }
         }
 
         // Cleanup maps
@@ -1519,7 +1618,7 @@ impl<'ctx> CodeGen<'ctx> {
                 MirInstr::Return { values } => MirTerminator::Return {
                     values: values.clone(),
                 },
-                MirInstr::Jump { target } => MirTerminator::Jump {
+                MirInstr::Jump { label: target } => MirTerminator::Jump {
                     target: target.clone(),
                 },
                 MirInstr::CondJump {
@@ -2173,7 +2272,7 @@ impl<'ctx> CodeGen<'ctx> {
                 MirInstr::Return { values } => crate::mir::mir::MirTerminator::Return {
                     values: values.clone(),
                 },
-                MirInstr::Jump { target } => crate::mir::mir::MirTerminator::Jump {
+                MirInstr::Jump { label: target } => crate::mir::mir::MirTerminator::Jump {
                     target: target.clone(),
                 },
                 MirInstr::CondJump {
