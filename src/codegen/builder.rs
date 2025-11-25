@@ -1029,60 +1029,73 @@ impl<'ctx> CodeGen<'ctx> {
                         let struct_type = result_struct.get_type();
 
                         // Check if this looks like a Result struct (2 fields: i32 tag, ptr value)
+                        // Also verify field 1 is actually a pointer (not another int from plain tuple)
                         if struct_type.count_fields() == 2 {
                             if let Some(field0_type) = struct_type.get_field_type_at_index(0) {
                                 if let BasicTypeEnum::IntType(int_type) = field0_type {
                                     if int_type.get_bit_width() == 32 {
-                                        // This is a Result struct - extract the Ok value pointer
-                                        let ok_value_ptr = self
-                                            .builder
-                                            .build_extract_value(result_struct, 1, "ok_tuple_ptr")
-                                            .unwrap()
-                                            .into_pointer_value();
-
-                                        // Now use the tuple pointer to extract the field
-                                        if let Some(tuple_type_str) =
-                                            self.tuple_types.get(source).cloned()
+                                        // Check if field 1 is a pointer (Result) or not (plain tuple)
+                                        if let Some(field1_type) =
+                                            struct_type.get_field_type_at_index(1)
                                         {
-                                            if let Some(struct_type) =
-                                                self.tuple_struct_types.get(&tuple_type_str)
-                                            {
-                                                // Use struct_gep to get field pointer from heap tuple
-                                                let field_ptr = self
+                                            if let BasicTypeEnum::PointerType(_) = field1_type {
+                                                // This is a Result struct - extract the Ok value pointer
+                                                let ok_value_ptr = self
                                                     .builder
-                                                    .build_struct_gep(
-                                                        *struct_type,
-                                                        ok_value_ptr,
-                                                        *index as u32,
-                                                        &format!("{}_field", name),
+                                                    .build_extract_value(
+                                                        result_struct,
+                                                        1,
+                                                        "ok_tuple_ptr",
                                                     )
-                                                    .unwrap();
+                                                    .unwrap()
+                                                    .into_pointer_value();
 
-                                                // Load the field value
-                                                let field_type = struct_type
-                                                    .get_field_type_at_index(*index as u32)
-                                                    .unwrap();
-                                                let field_val = self
-                                                    .builder
-                                                    .build_load(field_type, field_ptr, name)
-                                                    .unwrap();
+                                                // Now use the tuple pointer to extract the field
+                                                if let Some(tuple_type_str) =
+                                                    self.tuple_types.get(source).cloned()
+                                                {
+                                                    if let Some(struct_type) =
+                                                        self.tuple_struct_types.get(&tuple_type_str)
+                                                    {
+                                                        // Use struct_gep to get field pointer from heap tuple
+                                                        let field_ptr = self
+                                                            .builder
+                                                            .build_struct_gep(
+                                                                *struct_type,
+                                                                ok_value_ptr,
+                                                                *index as u32,
+                                                                &format!("{}_field", name),
+                                                            )
+                                                            .unwrap();
 
-                                                // Track metadata for this field
-                                                let inner = tuple_type_str
-                                                    .strip_prefix("Tuple(")
-                                                    .and_then(|s| s.strip_suffix(")"))
-                                                    .unwrap_or("");
-                                                let types = crate::codegen::core::helpers::parse_tuple_types(inner);
-                                                if let Some(type_str) = types.get(*index) {
-                                                    let type_str = type_str.as_str();
+                                                        // Load the field value
+                                                        let field_type = struct_type
+                                                            .get_field_type_at_index(*index as u32)
+                                                            .unwrap();
+                                                        let field_val = self
+                                                            .builder
+                                                            .build_load(field_type, field_ptr, name)
+                                                            .unwrap();
 
-                                                    if type_str.starts_with("Array") {
-                                                        self.heap_arrays.insert(name.clone());
-                                                        if let Some(elem_type) = type_str
-                                                            .strip_prefix("Array(")
+                                                        // Track metadata for this field
+                                                        let inner = tuple_type_str
+                                                            .strip_prefix("Tuple(")
                                                             .and_then(|s| s.strip_suffix(")"))
-                                                        {
-                                                            self.array_metadata.insert(
+                                                            .unwrap_or("");
+                                                        let types = crate::codegen::core::helpers::parse_tuple_types(inner);
+                                                        if let Some(type_str) = types.get(*index) {
+                                                            let type_str = type_str.as_str();
+
+                                                            if type_str.starts_with("Array") {
+                                                                self.heap_arrays
+                                                                    .insert(name.clone());
+                                                                if let Some(elem_type) = type_str
+                                                                    .strip_prefix("Array(")
+                                                                    .and_then(|s| {
+                                                                        s.strip_suffix(")")
+                                                                    })
+                                                                {
+                                                                    self.array_metadata.insert(
                                                                 name.clone(),
                                                                 crate::codegen::ArrayMetadata {
                                                                     length: 0,
@@ -1092,21 +1105,25 @@ impl<'ctx> CodeGen<'ctx> {
                                                                         == "Str",
                                                                 },
                                                             );
-                                                        }
-                                                    } else if type_str.starts_with("Map") {
-                                                        self.heap_maps.insert(name.clone());
-                                                        if let Some(inner) = type_str
-                                                            .strip_prefix("Map(")
-                                                            .and_then(|s| s.strip_suffix(")"))
-                                                        {
-                                                            let parts: Vec<&str> =
-                                                                inner.split(',').collect();
-                                                            if parts.len() == 2 {
-                                                                let key_type =
-                                                                    parts[0].trim().to_string();
-                                                                let value_type =
-                                                                    parts[1].trim().to_string();
-                                                                self.map_metadata.insert(
+                                                                }
+                                                            } else if type_str.starts_with("Map") {
+                                                                self.heap_maps.insert(name.clone());
+                                                                if let Some(inner) = type_str
+                                                                    .strip_prefix("Map(")
+                                                                    .and_then(|s| {
+                                                                        s.strip_suffix(")")
+                                                                    })
+                                                                {
+                                                                    let parts: Vec<&str> =
+                                                                        inner.split(',').collect();
+                                                                    if parts.len() == 2 {
+                                                                        let key_type = parts[0]
+                                                                            .trim()
+                                                                            .to_string();
+                                                                        let value_type = parts[1]
+                                                                            .trim()
+                                                                            .to_string();
+                                                                        self.map_metadata.insert(
                                                                     name.clone(),
                                                                     crate::codegen::MapMetadata {
                                                                         length: 0,
@@ -1123,44 +1140,138 @@ impl<'ctx> CodeGen<'ctx> {
                                                                             == "Str",
                                                                     },
                                                                 );
+                                                                    }
+                                                                }
+                                                            } else if type_str == "Bool" {
+                                                                self.boolean_temps
+                                                                    .insert(name.clone());
+                                                            } else if type_str
+                                                                .starts_with("Struct(")
+                                                                || self
+                                                                    .struct_metadata
+                                                                    .contains_key(type_str)
+                                                            {
+                                                                // Handle struct types in tuple extraction
+                                                                // Normalize to "Struct(Name)" format
+                                                                let normalized_type = if type_str
+                                                                    .starts_with("Struct(")
+                                                                {
+                                                                    type_str.to_string()
+                                                                } else {
+                                                                    format!("Struct({})", type_str)
+                                                                };
+
+                                                                self.variable_types.insert(
+                                                                    name.clone(),
+                                                                    normalized_type,
+                                                                );
+                                                                self.heap_arrays
+                                                                    .insert(name.clone());
+                                                                // Track for RC
+                                                            } else {
+                                                                // For non-struct types, store the type string
+                                                                self.variable_types.insert(
+                                                                    name.clone(),
+                                                                    type_str.to_string(),
+                                                                );
                                                             }
                                                         }
-                                                    } else if type_str == "Bool" {
-                                                        self.boolean_temps.insert(name.clone());
-                                                    } else if type_str.starts_with("Struct(")
-                                                        || self
-                                                            .struct_metadata
-                                                            .contains_key(type_str)
-                                                    {
-                                                        // Handle struct types in tuple extraction
-                                                        // Normalize to "Struct(Name)" format
-                                                        let normalized_type =
-                                                            if type_str.starts_with("Struct(") {
-                                                                type_str.to_string()
-                                                            } else {
-                                                                format!("Struct({})", type_str)
-                                                            };
 
-                                                        self.variable_types
-                                                            .insert(name.clone(), normalized_type);
-                                                        self.heap_arrays.insert(name.clone());
-                                                        // Track for RC
-                                                    } else {
-                                                        // For non-struct types, store the type string
-                                                        self.variable_types.insert(
-                                                            name.clone(),
-                                                            type_str.to_string(),
-                                                        );
+                                                        self.temp_values
+                                                            .insert(name.clone(), field_val);
+                                                        return Some(field_val);
                                                     }
                                                 }
-
-                                                self.temp_values.insert(name.clone(), field_val);
-                                                return Some(field_val);
+                                            } else {
+                                                // Field 1 is not a pointer - this is a plain tuple, not Result
+                                                // Fall through to plain tuple handling below
                                             }
                                         }
                                     }
                                 }
                             }
+                        }
+
+                        // Plain tuple (not Result-wrapped) - extract directly from struct
+                        if struct_type.count_fields() > *index as u32 {
+                            let field_val = self
+                                .builder
+                                .build_extract_value(result_struct, *index as u32, name)
+                                .unwrap();
+
+                            // Track metadata for this field
+                            if let Some(tuple_type_str) = self.tuple_types.get(source).cloned() {
+                                let inner = tuple_type_str
+                                    .strip_prefix("Tuple(")
+                                    .and_then(|s| s.strip_suffix(")"))
+                                    .unwrap_or("");
+                                let types = crate::codegen::core::helpers::parse_tuple_types(inner);
+                                if let Some(type_str) = types.get(*index) {
+                                    let type_str = type_str.as_str();
+
+                                    if type_str.starts_with("Array") {
+                                        self.heap_arrays.insert(name.clone());
+                                        if let Some(elem_type) = type_str
+                                            .strip_prefix("Array(")
+                                            .and_then(|s| s.strip_suffix(")"))
+                                        {
+                                            self.array_metadata.insert(
+                                                name.clone(),
+                                                crate::codegen::ArrayMetadata {
+                                                    length: 0,
+                                                    element_type: elem_type.to_string(),
+                                                    contains_strings: elem_type == "Str",
+                                                },
+                                            );
+                                        }
+                                    } else if type_str.starts_with("Map") {
+                                        self.heap_maps.insert(name.clone());
+                                        if let Some(inner) = type_str
+                                            .strip_prefix("Map(")
+                                            .and_then(|s| s.strip_suffix(")"))
+                                        {
+                                            let parts: Vec<&str> = inner.split(',').collect();
+                                            if parts.len() == 2 {
+                                                let key_type = parts[0].trim().to_string();
+                                                let value_type = parts[1].trim().to_string();
+                                                self.map_metadata.insert(
+                                                    name.clone(),
+                                                    crate::codegen::MapMetadata {
+                                                        length: 0,
+                                                        key_type: key_type.clone(),
+                                                        value_type: value_type.clone(),
+                                                        key_is_string: key_type == "Str",
+                                                        value_is_string: value_type == "Str",
+                                                        key_needs_rc: key_type == "Str",
+                                                        value_needs_rc: value_type == "Str",
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    } else if type_str == "Bool" {
+                                        self.boolean_temps.insert(name.clone());
+                                    } else if type_str == "Str" || type_str.contains("String") {
+                                        self.heap_strings.insert(name.clone());
+                                        self.variable_types.insert(name.clone(), "Str".to_string());
+                                    } else if type_str.starts_with("Struct(")
+                                        || self.struct_metadata.contains_key(type_str)
+                                    {
+                                        let normalized_type = if type_str.starts_with("Struct(") {
+                                            type_str.to_string()
+                                        } else {
+                                            format!("Struct({})", type_str)
+                                        };
+                                        self.variable_types.insert(name.clone(), normalized_type);
+                                        self.heap_arrays.insert(name.clone());
+                                    } else {
+                                        self.variable_types
+                                            .insert(name.clone(), type_str.to_string());
+                                    }
+                                }
+                            }
+
+                            self.temp_values.insert(name.clone(), field_val);
+                            return Some(field_val);
                         }
                     } else if source_val.is_pointer_value() {
                         // Direct pointer to tuple (non-Result case)
@@ -1238,6 +1349,9 @@ impl<'ctx> CodeGen<'ctx> {
                                         }
                                     } else if type_str == "Bool" {
                                         self.boolean_temps.insert(name.clone());
+                                    } else if type_str == "Str" || type_str.contains("String") {
+                                        self.heap_strings.insert(name.clone());
+                                        self.variable_types.insert(name.clone(), "Str".to_string());
                                     } else if type_str.starts_with("Struct(")
                                         || self.struct_metadata.contains_key(type_str)
                                     {

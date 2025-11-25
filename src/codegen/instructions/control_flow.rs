@@ -95,10 +95,17 @@ impl<'ctx> CodeGen<'ctx> {
                     result
                 };
 
-                // Check if this is a Result type by checking struct signature</parameter>
-                // Result structs have { i32 tag, ptr value }
-                // We detect by: struct with 2 fields, first field is i32
-                let is_result_type = if actual_result.is_struct_value() {
+                // Check if this is a Result type by checking BOTH struct signature AND error type
+                // Result structs have { i32 tag, ptr value } AND the function must have error_type
+                // Plain tuples can also be { i32, ptr } but don't have error_type
+                let func_without_namespace = func.split("::").last().unwrap_or(func);
+                let has_error_type = self.function_error_types.contains_key(&actual_func_name)
+                    || self.function_error_types.contains_key(func)
+                    || self
+                        .function_error_types
+                        .contains_key(func_without_namespace);
+
+                let is_result_type = has_error_type && actual_result.is_struct_value() && {
                     let struct_type = actual_result.get_type();
                     if let BasicTypeEnum::StructType(st) = struct_type {
                         if st.count_fields() == 2 {
@@ -118,8 +125,6 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         false
                     }
-                } else {
-                    false
                 };
 
                 // If we have multiple destinations and result is Result type, keep Result in temp_values</parameter>
@@ -337,15 +342,30 @@ impl<'ctx> CodeGen<'ctx> {
                     // Return early - do NOT continue with normal single-value handling
                     return Some(actual_result);
                 } else {
-                    // Non-Result type - store normally
-                    self.temp_values.insert(dest_name.clone(), final_result);
-
+                    // Non-Result type - check if tuple before storing
                     // IMPORTANT: Check for struct return type FIRST and track it
                     // This must happen before tuple checks or any other logic
                     let return_type_str = self
                         .function_return_types
                         .get(&actual_func_name)
                         .or_else(|| self.function_return_types.get(func));
+
+                    // Check if this is a tuple return EARLY so we don't store struct in temp_values
+                    let is_tuple_return = if let Some(ret_type_str) = return_type_str {
+                        if ret_type_str.starts_with("Tuple(") {
+                            true
+                        } else {
+                            let parsed = parse_tuple_types(ret_type_str);
+                            parsed.len() > 1
+                        }
+                    } else {
+                        false
+                    };
+
+                    // Only store in temp_values if NOT a tuple (tuples will be stored as alloca pointer later)
+                    if !is_tuple_return {
+                        self.temp_values.insert(dest_name.clone(), final_result);
+                    }
 
                     if let Some(return_type_str) = return_type_str {
                         // Check if this is a struct type - handle both "Struct(Name)" and bare "Name" formats
