@@ -111,6 +111,7 @@ pub struct CodeGen<'ctx> {
     pub canonical_struct_types: HashMap<String, inkwell::types::StructType<'ctx>>, // Canonical LLVM struct types by name
     pub tuple_struct_types: HashMap<String, inkwell::types::StructType<'ctx>>, // Cache for tuple struct types
     pub tuple_types: HashMap<String, String>, // Maps temporary values to their tuple type strings (e.g., "Tuple(Int,Str,Float)")
+    pub tuple_field_types: HashMap<String, Vec<inkwell::types::BasicTypeEnum<'ctx>>>, // Store LLVM types for tuple fields for reconstruction
 
     pub declared_functions: std::collections::HashSet<String>,
     pub external_modules: HashMap<String, Vec<String>>,
@@ -182,6 +183,7 @@ impl<'ctx> CodeGen<'ctx> {
             canonical_struct_types: HashMap::new(),
             tuple_struct_types: HashMap::new(),
             tuple_types: HashMap::new(),
+            tuple_field_types: HashMap::new(),
 
             declared_functions: std::collections::HashSet::new(),
             external_modules: HashMap::new(),

@@ -66,10 +66,24 @@ impl<'ctx> CodeGen<'ctx> {
     /// Used for looking up values in the symbol table or temporary values.
     pub fn resolve_value(&self, name: &str) -> BasicValueEnum<'ctx> {
         if let Some(val) = self.temp_values.get(name) {
+            // if name.starts_with('e') && (name.len() == 3 || name.len() == 4) {
+            //     eprintln!(
+            //         "DEBUG: resolve_value('{}') from temp_values, type={:?}, is_pointer={}",
+            //         name,
+            //         val.get_type(),
+            //         val.is_pointer_value()
+            //     );
+            // }
             return *val;
         }
 
         if let Some(sym) = self.symbols.get(name) {
+            // if name.starts_with('e') && (name.len() == 3 || name.len() == 4) {
+            //     eprintln!(
+            //         "DEBUG: resolve_value('{}') from symbols, sym.ty={:?}, sym.ptr={:?}",
+            //         name, sym.ty, sym.ptr
+            //     );
+            // }
             // Special handling for array/map/struct variables - they should always be pointers
             // Check both naming convention and heap tracking sets
             let is_array_or_map = (name.contains("_array") || name.contains("_map"))
@@ -113,10 +127,15 @@ impl<'ctx> CodeGen<'ctx> {
                 sym.ty
             };
 
-            return self
+            let loaded = self
                 .builder
                 .build_load(load_type, sym.ptr, name)
                 .expect("Failed to load value");
+            // if name.starts_with('e') && (name.len() == 3 || name.len() == 4) {
+            //     eprintln!("DEBUG: resolve_value('{}') loaded from symbols, load_type={:?}, result type={:?}, is_pointer={}",
+            //         name, load_type, loaded.get_type(), loaded.is_pointer_value());
+            // }
+            return loaded;
         }
 
         if let Ok(val) = name.parse::<i32>() {

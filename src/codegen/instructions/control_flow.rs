@@ -127,96 +127,133 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 };
 
-                // If we have multiple destinations and result is Result type, keep Result in temp_values</parameter>
-                if is_result_type && dest.len() > 1 {
-                    // Multi-value Result return - keep the Result struct and set up metadata for TupleExtract
-                    // The Result struct is { i32 tag, ptr value } where ptr points to a heap tuple
-                    let result_struct = actual_result.into_struct_value();
-                    let tuple_ptr_value = self
-                        .builder
-                        .build_extract_value(result_struct, 1, "unwrapped_ptr")
-                        .unwrap();
-
-                    // The extracted value should be a pointer
-                    let tuple_ptr = if tuple_ptr_value.is_pointer_value() {
-                        tuple_ptr_value.into_pointer_value()
-                    } else {
-                        // Shouldn't happen, but handle gracefully
-                        return None;
-                    };
-
-                    // Set up tuple type metadata for TupleExtract to use
-                    if let Some(return_type_str) = self
+                // If result is Result type and function returns multiple values, set up tuple metadata
+                // This handles both:
+                // 1. let a, b, err = GetPair() - with explicit error extraction (dest.len() > 1)
+                // 2. let a, b = GetPair() - without error extraction (dest.len() == 1, needs unwrapping)
+                if is_result_type {
+                    let return_type_str_opt = self
                         .function_return_types
                         .get(&actual_func_name)
                         .or_else(|| self.function_return_types.get(func))
-                    {
-                        let types = parse_tuple_types(return_type_str);
-                        let tuple_type_str = format!("Tuple({})", return_type_str);
+                        .cloned();
 
-                        // Build tuple struct type
-                        let tuple_field_types: Vec<inkwell::types::BasicTypeEnum> =
-                            types.iter().map(|t| self.map_type_str_to_llvm(t)).collect();
-                        let tuple_type = self.context.struct_type(&tuple_field_types, false);
+                    // Check if the function returns multiple values (tuple inside Result)
+                    let is_multi_value_return = return_type_str_opt
+                        .as_ref()
+                        .map_or(false, |s| s.contains(','));
 
-                        // Store tuple metadata
-                        self.tuple_struct_types
-                            .insert(tuple_type_str.clone(), tuple_type);
-
-                        // Get error type for result_types
-                        let err_type = self
-                            .function_error_types
-                            .get(&actual_func_name)
-                            .or_else(|| self.function_error_types.get(func))
-                            .cloned()
-                            .unwrap_or_else(|| "Str".to_string());
-
-                        // Store the tuple pointer with the first dest name, and tuple metadata
-                        // so TupleExtract can find it
-                        let tuple_holder_name = format!("{}_tuple_ptr", dest[0]);
-                        self.temp_values
-                            .insert(tuple_holder_name.clone(), tuple_ptr.into());
-                        self.tuple_types
-                            .insert(tuple_holder_name.clone(), tuple_type_str.clone());
-
-                        // Also store in symbols with pointer type
-                        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
-                        let ptr_alloca = self
+                    if is_multi_value_return && dest.len() >= 1 {
+                        // Multi-value Result return - set up metadata for TupleExtract
+                        // The Result struct is { i32 tag, ptr value } where ptr points to a heap tuple
+                        let result_struct = actual_result.into_struct_value();
+                        let tuple_ptr_value = self
                             .builder
-                            .build_alloca(ptr_type, &format!("{}_ptr_storage", dest[0]))
+                            .build_extract_value(result_struct, 1, "unwrapped_ptr")
                             .unwrap();
-                        self.builder.build_store(ptr_alloca, tuple_ptr).unwrap();
-                        self.symbols.insert(
-                            tuple_holder_name.clone(),
-                            crate::codegen::Symbol {
-                                ptr: ptr_alloca,
-                                ty: ptr_type.into(),
-                            },
-                        );
 
-                        // CRITICAL: Store result_types for the call result temp
-                        // This is used by TupleExtract to know the field types
-                        self.result_types
-                            .insert(dest[0].clone(), (return_type_str.clone(), err_type.clone()));
+                        // The extracted value should be a pointer
+                        let tuple_ptr = if tuple_ptr_value.is_pointer_value() {
+                            tuple_ptr_value.into_pointer_value()
+                        } else {
+                            // Shouldn't happen, but handle gracefully
+                            return None;
+                        };
 
-                        // For each dest, set up an alias that points to the tuple holder
-                        // This way TupleExtract can find the tuple via any dest name
-                        for dest_name in dest.iter() {
-                            // Create a mapping from dest_name to the tuple holder
+                        // Set up tuple type metadata for TupleExtract to use
+                        if let Some(return_type_str) = return_type_str_opt {
+                            // Strip "Tuple()" wrapper if present before parsing
+                            let inner_types = if return_type_str.starts_with("Tuple(")
+                                && return_type_str.ends_with(")")
+                            {
+                                &return_type_str[6..return_type_str.len() - 1]
+                            } else {
+                                &return_type_str[..]
+                            };
+
+                            let types = parse_tuple_types(inner_types);
+                            // Don't double-wrap if return_type_str already starts with "Tuple("
+                            let tuple_type_str = if return_type_str.starts_with("Tuple(") {
+                                return_type_str.clone()
+                            } else {
+                                format!("Tuple({})", return_type_str)
+                            };
+
+                            // Build tuple struct type
+                            let tuple_field_types: Vec<inkwell::types::BasicTypeEnum> =
+                                types.iter().map(|t| self.map_type_str_to_llvm(t)).collect();
+                            let tuple_type = self.context.struct_type(&tuple_field_types, false);
+
+                            // Store tuple metadata
+                            self.tuple_struct_types
+                                .insert(tuple_type_str.clone(), tuple_type);
+
+                            // CRITICAL: Also store tuple_field_types for reconstruction
+                            self.tuple_field_types
+                                .insert(dest[0].clone(), tuple_field_types.clone());
+
+                            // Get error type for result_types
+                            let err_type = self
+                                .function_error_types
+                                .get(&actual_func_name)
+                                .or_else(|| self.function_error_types.get(func))
+                                .cloned()
+                                .unwrap_or_else(|| "Str".to_string());
+
+                            // Store the tuple pointer with the first dest name, and tuple metadata
+                            // so TupleExtract can find it
+                            let tuple_holder_name = format!("{}_tuple_ptr", dest[0]);
+                            self.temp_values
+                                .insert(tuple_holder_name.clone(), tuple_ptr.into());
                             self.tuple_types
-                                .insert(dest_name.clone(), tuple_type_str.clone());
-                            self.temp_values.insert(dest_name.clone(), tuple_ptr.into());
-                            // Also store result_types for each dest
+                                .insert(tuple_holder_name.clone(), tuple_type_str.clone());
+
+                            // Also store in symbols with pointer type
+                            let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                            let ptr_alloca = self
+                                .builder
+                                .build_alloca(ptr_type, &format!("{}_ptr_storage", dest[0]))
+                                .unwrap();
+                            self.builder.build_store(ptr_alloca, tuple_ptr).unwrap();
+                            self.symbols.insert(
+                                tuple_holder_name.clone(),
+                                crate::codegen::Symbol {
+                                    ptr: ptr_alloca,
+                                    ty: ptr_type.into(),
+                                },
+                            );
+
+                            // CRITICAL: Store result_types and tuple metadata for the dest[0] temp
+                            // This is used by TupleExtract to know the field types
                             self.result_types.insert(
-                                dest_name.clone(),
+                                dest[0].clone(),
                                 (return_type_str.clone(), err_type.clone()),
                             );
-                        }
-                    }
+                            self.tuple_types
+                                .insert(dest[0].clone(), tuple_type_str.clone());
 
-                    // Return the full Result struct so it can be stored if needed
-                    self.temp_values.insert(dest[0].clone(), actual_result);
-                    return Some(actual_result);
+                            // Store the Result struct itself in temp_values for the dest
+                            self.temp_values.insert(dest[0].clone(), actual_result);
+
+                            // For multi-dest case, set up aliases for each dest name
+                            if dest.len() > 1 {
+                                for dest_name in dest.iter() {
+                                    // Create a mapping from dest_name to the tuple holder
+                                    self.tuple_types
+                                        .insert(dest_name.clone(), tuple_type_str.clone());
+                                    self.temp_values.insert(dest_name.clone(), tuple_ptr.into());
+                                    // Also store result_types for each dest
+                                    self.result_types.insert(
+                                        dest_name.clone(),
+                                        (return_type_str.clone(), err_type.clone()),
+                                    );
+                                }
+                            }
+                        }
+
+                        // Return the full Result struct so it can be stored if needed
+                        return Some(actual_result);
+                    }
                 }
 
                 let dest_name = &dest[0];
@@ -1403,6 +1440,71 @@ impl<'ctx> CodeGen<'ctx> {
                         )
                         .unwrap();
                 } else if val.is_pointer_value() {
+                    // Check if pointer is null and print "null" instead of "(null)"
+                    let ptr_val = val.into_pointer_value();
+
+                    // Check if pointer is null
+                    let null_ptr = self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null();
+
+                    let ptr_as_int = self
+                        .builder
+                        .build_ptr_to_int(ptr_val, self.context.i64_type(), "ptr_as_int")
+                        .unwrap();
+                    let null_as_int = self
+                        .builder
+                        .build_ptr_to_int(null_ptr, self.context.i64_type(), "null_as_int")
+                        .unwrap();
+
+                    let is_null = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            ptr_as_int,
+                            null_as_int,
+                            "is_null_ptr",
+                        )
+                        .unwrap();
+
+                    // Create blocks for null and non-null cases
+                    let func = self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let null_block = self.context.append_basic_block(func, "print_null");
+                    let non_null_block = self.context.append_basic_block(func, "print_non_null");
+                    let cont_block = self.context.append_basic_block(func, "print_ptr_cont");
+
+                    self.builder
+                        .build_conditional_branch(is_null, null_block, non_null_block)
+                        .unwrap();
+
+                    // Null block: print "null"
+                    self.builder.position_at_end(null_block);
+                    let null_str = if idx < values.len() - 1 {
+                        "null "
+                    } else {
+                        "null"
+                    };
+                    let null_global = self
+                        .builder
+                        .build_global_string_ptr(null_str, "null_str")
+                        .unwrap();
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[null_global.as_pointer_value().into()],
+                            "print_null",
+                        )
+                        .unwrap();
+                    self.builder.build_unconditional_branch(cont_block).unwrap();
+
+                    // Non-null block: print pointer as string
+                    self.builder.position_at_end(non_null_block);
                     let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
                     let format_global = self
                         .builder
@@ -1412,10 +1514,14 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder
                         .build_call(
                             printf_fn,
-                            &[format_global.as_pointer_value().into(), val.into()],
+                            &[format_global.as_pointer_value().into(), ptr_val.into()],
                             "print_call",
                         )
                         .unwrap();
+                    self.builder.build_unconditional_branch(cont_block).unwrap();
+
+                    // Continue block
+                    self.builder.position_at_end(cont_block);
                 }
             }
         }

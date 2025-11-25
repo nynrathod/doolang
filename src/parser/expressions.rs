@@ -387,19 +387,23 @@ impl<'a> Parser<'a> {
                 TokenType::OpenBrace => self.parse_map_literal(),
                 TokenType::If => {
                     // Inline if-else expression: if condition { expr } else { expr }
+                    // Also supports else-if chains: if cond { expr } else if cond { expr } else { expr }
+                    // Supports both expressions (no semicolon) and statements (with semicolon)
                     self.advance(); // consume 'if'
                     let condition = self.parse_expression()?;
 
-                    // Parse then expression in braces
+                    // Parse then expression/statement in braces
                     self.expect(TokenType::OpenBrace)?;
                     let then_expr = self.parse_expression()?;
+                    // Optional semicolon after expression/statement
+                    if self.peek_is(TokenType::Semi) {
+                        self.advance();
+                    }
                     self.expect(TokenType::CloseBrace)?;
 
-                    // Parse else branch
+                    // Parse else branch (or else-if chain)
                     self.expect(TokenType::Else)?;
-                    self.expect(TokenType::OpenBrace)?;
-                    let else_expr = self.parse_expression()?;
-                    self.expect(TokenType::CloseBrace)?;
+                    let else_expr = self.parse_inline_else_branch()?;
 
                     Ok(AstNode::ConditionalExpr {
                         condition: Box::new(condition),
@@ -773,5 +777,46 @@ impl<'a> Parser<'a> {
         result.ok_or(ParseError::UnexpectedToken(
             "Empty string interpolation".to_string(),
         ))
+    }
+
+    /// Helper method to parse the else branch of an inline if-else expression.
+    /// Handles both `else { expr }` and `else if ...` chains.
+    /// Supports both expressions (no semicolon) and statements (with semicolon).
+    /// Returns the else expression AST node.
+    fn parse_inline_else_branch(&mut self) -> ParseResult<AstNode> {
+        if self.peek_is(TokenType::If) {
+            // else if: recursively parse another conditional expression
+            self.advance(); // consume 'if'
+            let condition = self.parse_expression()?;
+
+            // Parse then expression/statement in braces
+            self.expect(TokenType::OpenBrace)?;
+            let then_expr = self.parse_expression()?;
+            // Optional semicolon after expression/statement
+            if self.peek_is(TokenType::Semi) {
+                self.advance();
+            }
+            self.expect(TokenType::CloseBrace)?;
+
+            // Recursively parse the else branch (might be else if or else)
+            self.expect(TokenType::Else)?;
+            let else_expr = self.parse_inline_else_branch()?;
+
+            Ok(AstNode::ConditionalExpr {
+                condition: Box::new(condition),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
+            })
+        } else {
+            // else: parse the final block
+            self.expect(TokenType::OpenBrace)?;
+            let expr = self.parse_expression()?;
+            // Optional semicolon after expression/statement
+            if self.peek_is(TokenType::Semi) {
+                self.advance();
+            }
+            self.expect(TokenType::CloseBrace)?;
+            Ok(expr)
+        }
     }
 }

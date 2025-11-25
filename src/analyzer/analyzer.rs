@@ -439,10 +439,16 @@ impl SemanticAnalyzer {
                 Ok(())
             }
             AstNode::OkExpr { values } => {
-                // Check that Ok is inside a function with error type
+                // Check that Ok is inside a function
                 if self.function_depth == 0 {
                     return Err(SemanticError::UnexpectedNode {
                         expected: "Ok expression inside function with error type".to_string(),
+                    });
+                }
+                // Check that current function has an error return type
+                if self.current_function_error_type.is_none() {
+                    return Err(SemanticError::UnexpectedNode {
+                        expected: "Ok can only be used in functions with error return type (e.g., -> T ! E)".to_string(),
                     });
                 }
                 // Type check values
@@ -452,10 +458,16 @@ impl SemanticAnalyzer {
                 Ok(())
             }
             AstNode::ErrExpr { value } => {
-                // Check that Err is inside a function with error type
+                // Check that Err is inside a function
                 if self.function_depth == 0 {
                     return Err(SemanticError::UnexpectedNode {
                         expected: "Err expression inside function with error type".to_string(),
+                    });
+                }
+                // Check that current function has an error return type
+                if self.current_function_error_type.is_none() {
+                    return Err(SemanticError::UnexpectedNode {
+                        expected: "Err can only be used in functions with error return type (e.g., -> T ! E)".to_string(),
                     });
                 }
                 // Type check error value

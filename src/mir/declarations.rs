@@ -4,6 +4,7 @@ use crate::mir::statements::build_statement;
 use crate::mir::{MirBlock, MirFunction, MirInstr};
 use crate::parser::ast::TypeNode;
 use crate::parser::ast::{AstNode, Pattern};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Build MIR instructions for a variable declaration (`let` statement).
 /// - Handles single variable and tuple destructuring patterns.
@@ -414,12 +415,131 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
                 }
             }
         }
+
+        // Reorder blocks to ensure proper control flow
+        // This fixes issues with nested if/else where blocks are added in wrong order
+        if let Some(func) = builder.program.functions.last_mut() {
+            reorder_blocks(func);
+        }
     } else {
         debug_assert!(
             false,
             "Expected FunctionDecl node - should be guaranteed by caller"
         );
     }
+}
+
+/// Reorder MIR blocks to ensure proper control flow.
+/// Uses BFS to order blocks in the order they are reachable from Block0 (the true entry point).
+fn reorder_blocks(func: &mut MirFunction) {
+    if func.blocks.is_empty() {
+        return;
+    }
+
+    // Build adjacency list of block transitions
+    let mut successors: HashMap<String, Vec<String>> = HashMap::new();
+
+    for block in &func.blocks {
+        let mut succs = Vec::new();
+
+        // Check terminator for successors
+        if let Some(term) = &block.terminator {
+            match term {
+                MirInstr::Jump { label } => {
+                    succs.push(label.clone());
+                }
+                MirInstr::CondJump {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    succs.push(then_block.clone());
+                    succs.push(else_block.clone());
+                }
+                MirInstr::Return { .. } => {
+                    // No successors
+                }
+                _ => {}
+            }
+        }
+
+        successors.insert(block.label.clone(), succs);
+    }
+
+    // Find the actual first block (Block0) - not the first in the list
+    // The first block is the one created by build_function_decl, which should be Block0
+    let mut first_label = None;
+
+    // Look for Block0 specifically
+    for block in &func.blocks {
+        if block.label == "Block0" {
+            first_label = Some(block.label.clone());
+            break;
+        }
+    }
+
+    // If Block0 doesn't exist, try to find the lowest numbered block
+    if first_label.is_none() {
+        let mut min_num = usize::MAX;
+        for block in &func.blocks {
+            if let Some(num_str) = block.label.strip_prefix("Block") {
+                if let Ok(num) = num_str.parse::<usize>() {
+                    if num < min_num {
+                        min_num = num;
+                        first_label = Some(block.label.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // If still no first label found, use the first block in the list
+    if first_label.is_none() {
+        first_label = Some(func.blocks[0].label.clone());
+    }
+
+    let first_label = first_label.unwrap();
+
+    // BFS from the actual first block to determine reachability order
+    let mut visited = HashSet::new();
+    let mut ordered_labels = Vec::new();
+    let mut queue = VecDeque::new();
+
+    queue.push_back(first_label.clone());
+    visited.insert(first_label.clone());
+
+    while let Some(label) = queue.pop_front() {
+        ordered_labels.push(label.clone());
+
+        if let Some(succs) = successors.get(&label) {
+            for succ in succs {
+                if !visited.contains(succ) {
+                    visited.insert(succ.clone());
+                    queue.push_back(succ.clone());
+                }
+            }
+        }
+    }
+
+    // Add any unreachable blocks at the end (shouldn't happen, but be safe)
+    for block in &func.blocks {
+        if !visited.contains(&block.label) {
+            ordered_labels.push(block.label.clone());
+        }
+    }
+
+    // Create a map of label -> block for quick lookup
+    let block_map: HashMap<String, MirBlock> = func
+        .blocks
+        .iter()
+        .map(|b| (b.label.clone(), b.clone()))
+        .collect();
+
+    // Rebuild blocks vector in the correct order
+    func.blocks = ordered_labels
+        .into_iter()
+        .filter_map(|label| block_map.get(&label).cloned())
+        .collect();
 }
 
 /// Helper function to build MIR instructions for nested collections.

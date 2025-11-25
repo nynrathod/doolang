@@ -385,9 +385,8 @@ pub enum MirInstr {
         error_block: String, // Block to jump to if Err
     },
 
-    /// Manual error extraction with ?? operator
     /// Extracts Ok values and error into separate variables
-    /// let a, b ?? err = expr;
+    /// let a, b , err = expr;
     ManualErrorExtract {
         ok_names: Vec<String>, // Names for Ok values (single or tuple)
         error_name: String,    // Name for error variable (or "_" to ignore)

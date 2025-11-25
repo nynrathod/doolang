@@ -1908,91 +1908,111 @@ impl<'ctx> CodeGen<'ctx> {
                     }
 
                     // If this function returns a Result type (has error_type), wrap the value in Ok Result
+                    // UNLESS the value is already a Result struct (from ResultOk/ResultErr)
                     if self.current_error_type.is_some() {
-                        // Create Result struct: { i32 tag = 0 (Ok), ptr value }
-                        let ptr_type = self.context.ptr_type(AddressSpace::default());
-                        let result_struct_type = self
-                            .context
-                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                        // Check if the value is already a Result struct
+                        let is_already_result = val.is_struct_value()
+                            && self.result_types.contains_key(return_value_name)
+                            || self
+                                .variable_types
+                                .get(return_value_name)
+                                .map_or(false, |t| t == "Result");
 
-                        // Convert the value to a pointer for storage in Result
-                        let value_as_ptr = if val.is_pointer_value() {
-                            // Already a pointer (String, Array, Map, Struct)
-                            val.into_pointer_value()
-                        } else if val.is_int_value() {
-                            // Convert i32 to pointer
-                            let int_val = val.into_int_value();
-                            let i64_val = self
-                                .builder
-                                .build_int_z_extend(int_val, self.context.i64_type(), "i32_to_i64")
-                                .unwrap();
-                            self.builder
-                                .build_int_to_ptr(
-                                    i64_val,
-                                    self.context.ptr_type(AddressSpace::default()),
-                                    "i32_to_ptr",
-                                )
-                                .unwrap()
-                        } else if val.is_float_value() {
-                            // Convert f64 to pointer
-                            let float_val = val.into_float_value();
-                            let alloca = self
-                                .builder
-                                .build_alloca(self.context.f64_type(), "f64_tmp")
-                                .unwrap();
-                            self.builder.build_store(alloca, float_val).unwrap();
-                            let i64_ptr = self
-                                .builder
-                                .build_pointer_cast(
-                                    alloca,
-                                    self.context.ptr_type(AddressSpace::default()),
-                                    "f64_ptr_cast",
-                                )
-                                .unwrap();
-                            let i64_val = self
-                                .builder
-                                .build_load(self.context.i64_type(), i64_ptr, "f64_as_i64")
-                                .unwrap()
-                                .into_int_value();
-                            self.builder
-                                .build_int_to_ptr(
-                                    i64_val,
-                                    self.context.ptr_type(AddressSpace::default()),
-                                    "f64_to_ptr",
-                                )
-                                .unwrap()
+                        if is_already_result {
+                            // Value is already a Result struct from ResultOk/ResultErr - return as-is
+                            self.builder.build_return(Some(&val)).unwrap();
                         } else {
-                            // Fallback: null pointer
-                            ptr_type.const_null()
-                        };
+                            // Value needs to be wrapped in Result struct
+                            // Create Result struct: { i32 tag = 0 (Ok), ptr value }
+                            let ptr_type = self.context.ptr_type(AddressSpace::default());
+                            let result_struct_type = self.context.struct_type(
+                                &[self.context.i32_type().into(), ptr_type.into()],
+                                false,
+                            );
 
-                        // Build the Ok Result struct
-                        let ok_tag = self.context.i32_type().const_int(0, false); // 0 = Ok
-                        let result_alloca = self
-                            .builder
-                            .build_alloca(result_struct_type, "ok_result")
-                            .unwrap();
+                            // Convert the value to a pointer for storage in Result
+                            let value_as_ptr = if val.is_pointer_value() {
+                                // Already a pointer (String, Array, Map, Struct)
+                                val.into_pointer_value()
+                            } else if val.is_int_value() {
+                                // Convert i32 to pointer
+                                let int_val = val.into_int_value();
+                                let i64_val = self
+                                    .builder
+                                    .build_int_z_extend(
+                                        int_val,
+                                        self.context.i64_type(),
+                                        "i32_to_i64",
+                                    )
+                                    .unwrap();
+                                self.builder
+                                    .build_int_to_ptr(
+                                        i64_val,
+                                        self.context.ptr_type(AddressSpace::default()),
+                                        "i32_to_ptr",
+                                    )
+                                    .unwrap()
+                            } else if val.is_float_value() {
+                                // Convert f64 to pointer
+                                let float_val = val.into_float_value();
+                                let alloca = self
+                                    .builder
+                                    .build_alloca(self.context.f64_type(), "f64_tmp")
+                                    .unwrap();
+                                self.builder.build_store(alloca, float_val).unwrap();
+                                let i64_ptr = self
+                                    .builder
+                                    .build_pointer_cast(
+                                        alloca,
+                                        self.context.ptr_type(AddressSpace::default()),
+                                        "f64_ptr_cast",
+                                    )
+                                    .unwrap();
+                                let i64_val = self
+                                    .builder
+                                    .build_load(self.context.i64_type(), i64_ptr, "f64_as_i64")
+                                    .unwrap()
+                                    .into_int_value();
+                                self.builder
+                                    .build_int_to_ptr(
+                                        i64_val,
+                                        self.context.ptr_type(AddressSpace::default()),
+                                        "f64_to_ptr",
+                                    )
+                                    .unwrap()
+                            } else {
+                                // Fallback: null pointer
+                                ptr_type.const_null()
+                            };
 
-                        // Set tag field
-                        let tag_ptr = self
-                            .builder
-                            .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
-                            .unwrap();
-                        self.builder.build_store(tag_ptr, ok_tag).unwrap();
+                            // Build the Ok Result struct
+                            let ok_tag = self.context.i32_type().const_int(0, false); // 0 = Ok
+                            let result_alloca = self
+                                .builder
+                                .build_alloca(result_struct_type, "ok_result")
+                                .unwrap();
 
-                        // Set value field
-                        let value_ptr = self
-                            .builder
-                            .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
-                            .unwrap();
-                        self.builder.build_store(value_ptr, value_as_ptr).unwrap();
+                            // Set tag field
+                            let tag_ptr = self
+                                .builder
+                                .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
+                                .unwrap();
+                            self.builder.build_store(tag_ptr, ok_tag).unwrap();
 
-                        // Load and return the Result struct
-                        let result_val = self
-                            .builder
-                            .build_load(result_struct_type, result_alloca, "ok_result_val")
-                            .unwrap();
-                        self.builder.build_return(Some(&result_val)).unwrap();
+                            // Set value field
+                            let value_ptr = self
+                                .builder
+                                .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
+                                .unwrap();
+                            self.builder.build_store(value_ptr, value_as_ptr).unwrap();
+
+                            // Load and return the Result struct
+                            let result_val = self
+                                .builder
+                                .build_load(result_struct_type, result_alloca, "ok_result_val")
+                                .unwrap();
+                            self.builder.build_return(Some(&result_val)).unwrap();
+                        }
                     } else {
                         // Normal return (no error type)
                         self.builder.build_return(Some(&val)).unwrap();

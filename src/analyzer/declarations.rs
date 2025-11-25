@@ -135,16 +135,40 @@ impl SemanticAnalyzer {
                 // Otherwise, treat RHS as a single-element list.
                 let rhs_types = match &rhs_type {
                     TypeNode::Tuple(types) => types.clone(),
-                    TypeNode::Result(ok_type, _error_type) => {
-                        // Result types can be unpacked if inner type is tuple and user uses tuple destructuring
-                        match &**ok_type {
-                            TypeNode::Tuple(inner_types) if targets.len() > 1 => {
-                                // User is destructuring and inner is tuple - unpack both layers
-                                inner_types.clone()
-                            }
-                            _ => {
-                                // Either not a tuple inside, or user is not destructuring
-                                vec![rhs_type.clone()]
+                    TypeNode::Result(ok_type, error_type) => {
+                        // Check if this is manual error extraction with comma syntax
+                        // Pattern: let result, err = Func() where Func returns Result(ok_type, error_type)
+                        // In this case, targets.len() should be ok_count + 1 (for the error variable)
+
+                        let ok_count = match &**ok_type {
+                            TypeNode::Tuple(inner_types) => inner_types.len(),
+                            TypeNode::Void => 0, // Void has no ok values
+                            _ => 1,              // Single ok value
+                        };
+
+                        // If targets.len() == ok_count + 1, this is manual error extraction
+                        if targets.len() == ok_count + 1 {
+                            // Manual error extraction: last target is error variable
+                            // Return ok types + error type
+                            let mut types = match &**ok_type {
+                                TypeNode::Tuple(inner_types) => inner_types.clone(),
+                                TypeNode::Void => vec![],
+                                _ => vec![(**ok_type).clone()],
+                            };
+                            types.push((**error_type).clone());
+                            types
+                        } else {
+                            // Not manual error extraction - treat as before
+                            // Result types can be unpacked if inner type is tuple and user uses tuple destructuring
+                            match &**ok_type {
+                                TypeNode::Tuple(inner_types) if targets.len() > 1 => {
+                                    // User is destructuring and inner is tuple - unpack both layers
+                                    inner_types.clone()
+                                }
+                                _ => {
+                                    // Either not a tuple inside, or user is not destructuring
+                                    vec![rhs_type.clone()]
+                                }
                             }
                         }
                     }

@@ -5,7 +5,7 @@ use crate::parser::{ParseError, ParseResult, Parser};
 impl<'a> Parser<'a> {
     /// Let decl handles optional 'mut', pattern, optional type annotation, assignment, and semicolon.
     /// Example: `let mut x: Int = 42;`
-    /// Also supports manual error extraction: `let a, b ?? err = expr;`
+    /// Also supports manual error extraction: `let a, b , err = expr;`
     pub fn parse_let_decl(&mut self) -> ParseResult<AstNode> {
         // Consume the 'let' keyword
         let first_tok = self.advance().ok_or(ParseError::EndOfInput)?;
@@ -29,7 +29,7 @@ impl<'a> Parser<'a> {
         // Parse the pattern (single or tuple of variables)
         let pattern = self.parse_let_pattern()?;
 
-        // Check for ?? operator (manual error extraction)
+        // Check for , operator (manual error extraction)
         if let Some(tok) = self.peek() {
             if tok.kind == TokenType::DoubleQuestion {
                 self.advance(); // consume '??'

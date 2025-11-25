@@ -44,6 +44,34 @@ impl<'ctx> CodeGen<'ctx> {
                         .into();
                 }
             }
+            // Handle bool (i1) to nil comparisons
+            // Bool error types are i1, and need to be compared with nil (i32 0)
+            else if lhs_val.is_int_value() && rhs_val.is_int_value() {
+                let lhs_int = lhs_val.into_int_value();
+                let rhs_int = rhs_val.into_int_value();
+
+                // Check if one is i1 (bool) and the other is i32 (nil)
+                let lhs_is_bool = lhs_int.get_type().get_bit_width() == 1;
+                let rhs_is_bool = rhs_int.get_type().get_bit_width() == 1;
+                let lhs_is_i32 = lhs_int.get_type().get_bit_width() == 32;
+                let rhs_is_i32 = rhs_int.get_type().get_bit_width() == 32;
+
+                if lhs_is_bool && rhs_is_i32 {
+                    // Extend i1 to i32 for comparison
+                    lhs_val = self
+                        .builder
+                        .build_int_z_extend(lhs_int, self.context.i32_type(), "bool_to_i32")
+                        .unwrap()
+                        .into();
+                } else if rhs_is_bool && lhs_is_i32 {
+                    // Extend i1 to i32 for comparison
+                    rhs_val = self
+                        .builder
+                        .build_int_z_extend(rhs_int, self.context.i32_type(), "bool_to_i32")
+                        .unwrap()
+                        .into();
+                }
+            }
         }
 
         // If both are pointers and operation is "add", treat as string concatenation

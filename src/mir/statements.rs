@@ -5,6 +5,96 @@ use crate::mir::expresssions::build_expression;
 use crate::mir::{MirBlock, MirInstr};
 use crate::parser::ast::{AstNode, Pattern};
 
+/// Helper function to check if an expression is a function call that returns an error type
+fn check_if_error_returning(builder: &MirBuilder, expr: &AstNode) -> bool {
+    match expr {
+        AstNode::FunctionCall { func, .. } => {
+            // Extract function name from the func expression
+            if let AstNode::Identifier(func_name) = func.as_ref() {
+                // Look up the function in the function table
+                if let Some((_params, _return_type, error_type)) =
+                    builder.function_table.get(func_name)
+                {
+                    return error_type.is_some();
+                }
+            }
+            false
+        }
+        AstNode::MethodCall { method, .. } => {
+            // For method calls, we need to look up the method with its receiver type
+            // For now, we'll just check if the method name exists in the function table
+            // This is a simplified check - proper method resolution would need the receiver type
+            if let Some((_params, _return_type, error_type)) = builder.function_table.get(method) {
+                return error_type.is_some();
+            }
+            false
+        }
+        AstNode::TryPropagate { .. } => {
+            // The ? operator unwraps the Result, so the expression itself does NOT return an error
+            // The error has already been propagated, leaving only the Ok value
+            false
+        }
+        _ => false,
+    }
+}
+
+// Check if a function returns multiple Ok values (tuple return type)
+fn check_if_multi_value_ok_return(builder: &MirBuilder, expr: &AstNode) -> bool {
+    match expr {
+        AstNode::FunctionCall { func, .. } => {
+            if let AstNode::Identifier(func_name) = func.as_ref() {
+                if let Some((_params, return_type, _error_type)) =
+                    builder.function_table.get(func_name)
+                {
+                    // Check if return type is a tuple (contains comma) or is explicitly a Tuple
+                    // return_type is &TypeNode
+                    // Convert TypeNode to string representation
+                    let type_str = format!("{:?}", return_type);
+                    return type_str.contains(',')
+                        || (type_str.starts_with("Tuple(") && type_str.ends_with(")"));
+                }
+            }
+            false
+        }
+        AstNode::TryPropagate { expr } => {
+            // For ? operator, check if the inner expression returns multiple Ok values
+            check_if_multi_value_ok_return(builder, expr)
+        }
+        _ => false,
+    }
+}
+
+// Count the number of Ok values returned by a function
+fn count_ok_values(builder: &MirBuilder, expr: &AstNode) -> usize {
+    match expr {
+        AstNode::FunctionCall { func, .. } => {
+            if let AstNode::Identifier(func_name) = func.as_ref() {
+                if let Some((_params, return_type, _error_type)) =
+                    builder.function_table.get(func_name)
+                {
+                    let type_str = format!("{:?}", return_type);
+                    // Count commas in the return type to determine number of values
+                    // If it's a tuple like "Tuple([Int, Str])", count the commas inside
+                    if type_str.contains(',') {
+                        // Count commas to determine number of elements
+                        let comma_count = type_str.matches(',').count();
+                        return comma_count + 1;
+                    } else {
+                        // Single return value
+                        return 1;
+                    }
+                }
+            }
+            1 // Default to single value
+        }
+        AstNode::TryPropagate { expr } => {
+            // For ? operator, count the Ok values from the inner expression
+            count_ok_values(builder, expr)
+        }
+        _ => 1,
+    }
+}
+
 pub fn build_statement(builder: &mut MirBuilder, stmt: &AstNode, block: &mut MirBlock) {
     // Check recursion depth to prevent stack overflow
     builder.recursion_depth += 1;
@@ -27,6 +117,78 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             mutable,
             ..
         } => {
+            // Check if the RHS is a function call that returns an error type
+            // If so, and we have a tuple pattern, treat the last variable as the error variable
+            let is_error_returning = check_if_error_returning(builder, value);
+
+            // If it's an error-returning function with a tuple pattern,
+            // check if the pattern count matches ok_values + 1 (for the error variable)
+            if is_error_returning {
+                if let Pattern::Tuple(patterns) = pattern {
+                    if patterns.len() >= 2 {
+                        let ok_count = count_ok_values(builder, value);
+
+                        // If patterns.len() == ok_count + 1, then last pattern is error variable
+                        // Example: GetUserData() returns Int, Str ! Str (2 ok values)
+                        //          let id, name , err = GetUserData() (3 patterns)
+                        //          patterns.len() (3) == ok_count (2) + 1 → ManualErrorExtract
+                        if patterns.len() == ok_count + 1 {
+                            // Last pattern is the error variable, rest are ok values
+                            let error_var =
+                                if let Pattern::Identifier(name) = &patterns[patterns.len() - 1] {
+                                    name.clone()
+                                } else {
+                                    "_".to_string()
+                                };
+
+                            let ok_patterns: Vec<Pattern> =
+                                patterns.iter().take(patterns.len() - 1).cloned().collect();
+
+                            let ok_pattern = if ok_patterns.len() == 1 {
+                                ok_patterns[0].clone()
+                            } else {
+                                Pattern::Tuple(ok_patterns)
+                            };
+
+                            // Build MIR for the expression that returns Result
+                            let result_tmp = build_expression(builder, value, block);
+
+                            // Collect Ok value names from the pattern
+                            let ok_names = match &ok_pattern {
+                                Pattern::Identifier(name) => vec![name.clone()],
+                                Pattern::Tuple(patterns) => patterns
+                                    .iter()
+                                    .filter_map(|p| {
+                                        if let Pattern::Identifier(name) = p {
+                                            Some(name.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect(),
+                                Pattern::Wildcard => vec![],
+                            };
+
+                            // Generate ManualErrorExtract instruction
+                            block.instrs.push(MirInstr::ManualErrorExtract {
+                                ok_names,
+                                error_name: error_var,
+                                result: result_tmp,
+                            });
+
+                            return; // Early return to skip normal let handling
+                        }
+                        // Otherwise, fall through to normal tuple destructuring
+                    }
+                } else if let Pattern::Identifier(_) = pattern {
+                    // Single variable with error-returning function
+                    // This is also manual error extraction: let result, err = Func() where result is implicit
+                    // But since it's a single identifier, we need to check if user meant to handle error
+                    // For now, fall through to normal handling
+                }
+            }
+
+            // Normal let declaration handling (non-error or not in the right pattern)
             // Build MIR for the right-hand side expression.
             let value_tmp = build_expression(builder, value, block);
 
@@ -69,7 +231,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             }
         }
 
-        // Handle manual error extraction with ?? operator (e.g., let a, b ?? err = expr;)
+        // Handle manual error extraction (e.g., let a, b , err = expr;)
         AstNode::ManualErrorExtract {
             expr,
             ok_pattern,

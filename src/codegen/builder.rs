@@ -1051,22 +1051,133 @@ impl<'ctx> CodeGen<'ctx> {
                                                     .into_pointer_value();
 
                                                 // Now use the tuple pointer to extract the field
-                                                if let Some(tuple_type_str) =
-                                                    self.tuple_types.get(source).cloned()
-                                                {
-                                                    if let Some(struct_type) =
-                                                        self.tuple_struct_types.get(&tuple_type_str)
+                                                // Try to get tuple metadata - check multiple sources
+                                                let tuple_type_str_opt =
+                                                    if let Some(stored_tuple_type) =
+                                                        self.tuple_types.get(source)
                                                     {
+                                                        Some(stored_tuple_type.clone())
+                                                    } else {
+                                                        // Fallback: try to get from result_types (ok_type)
+                                                        if let Some((ok_type, _)) =
+                                                            self.result_types.get(source)
+                                                        {
+                                                            if ok_type.contains(',') {
+                                                                let wrapped =
+                                                                    format!("Tuple({})", ok_type);
+                                                                Some(wrapped)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        } else {
+                                                            None
+                                                        }
+                                                    };
+
+                                                if let Some(tuple_type_str) = tuple_type_str_opt {
+                                                    // Try to get struct_type from tuple_struct_types
+                                                    // If not found, try to reconstruct from tuple_field_types
+                                                    let struct_type_opt = self
+                                                        .tuple_struct_types
+                                                        .get(&tuple_type_str)
+                                                        .cloned()
+                                                        .or_else(|| {
+                                                            // Fallback: reconstruct from tuple_field_types
+                                                            if let Some(field_types) =
+                                                                self.tuple_field_types.get(source)
+                                                            {
+                                                                let reconstructed =
+                                                                    self.context.struct_type(
+                                                                        field_types,
+                                                                        false,
+                                                                    );
+                                                                self.tuple_struct_types.insert(
+                                                                    tuple_type_str.clone(),
+                                                                    reconstructed,
+                                                                );
+                                                                Some(reconstructed)
+                                                            } else {
+                                                                // Last resort: parse tuple_type_str and reconstruct
+                                                                if tuple_type_str.starts_with("Tuple(") && tuple_type_str.ends_with(")") {
+                                                                    let inner = &tuple_type_str[6..tuple_type_str.len()-1];
+                                                                    let type_strs = crate::codegen::core::helpers::parse_tuple_types(inner);
+                                                                    let field_types: Vec<inkwell::types::BasicTypeEnum> = type_strs.iter()
+                                                                        .map(|t| {
+                                                                            // Simple type mapping
+                                                                            if t == "Int" {
+                                                                                self.context.i32_type().into()
+                                                                            } else if t == "Float" {
+                                                                                self.context.f64_type().into()
+                                                                            } else if t == "Bool" {
+                                                                                self.context.i32_type().into()
+                                                                            } else {
+                                                                                self.context.ptr_type(inkwell::AddressSpace::default()).into()
+                                                                            }
+                                                                        })
+                                                                        .collect();
+                                                                    let reconstructed = self.context.struct_type(&field_types, false);
+                                                                    self.tuple_struct_types.insert(tuple_type_str.clone(), reconstructed);
+                                                                    Some(reconstructed)
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            }
+                                                        });
+
+                                                    if let Some(struct_type) = struct_type_opt {
                                                         // Use struct_gep to get field pointer from heap tuple
-                                                        let field_ptr = self
-                                                            .builder
-                                                            .build_struct_gep(
-                                                                *struct_type,
+                                                        // Add safety check for field index
+                                                        if (*index as u32)
+                                                            >= struct_type.count_fields()
+                                                        {
+                                                            eprintln!("ERROR: TupleExtract index {} out of bounds for struct with {} fields", index, struct_type.count_fields());
+                                                            eprintln!(
+                                                                "  Source: {}, Tuple type: {}",
+                                                                source, tuple_type_str
+                                                            );
+                                                            eprintln!(
+                                                                "  Struct fields: {}",
+                                                                struct_type.count_fields()
+                                                            );
+                                                            // Return a dummy value instead of panicking
+                                                            let dummy = self
+                                                                .context
+                                                                .i32_type()
+                                                                .const_int(0, false)
+                                                                .into();
+                                                            self.temp_values
+                                                                .insert(name.clone(), dummy);
+                                                            return Some(dummy);
+                                                        }
+
+                                                        let field_ptr_result =
+                                                            self.builder.build_struct_gep(
+                                                                struct_type,
                                                                 ok_value_ptr,
                                                                 *index as u32,
                                                                 &format!("{}_field", name),
-                                                            )
-                                                            .unwrap();
+                                                            );
+
+                                                        let field_ptr = match field_ptr_result {
+                                                            Ok(ptr) => ptr,
+                                                            Err(e) => {
+                                                                eprintln!("ERROR: Failed to build_struct_gep: {:?}", e);
+                                                                eprintln!("  Source: {}, Index: {}, Tuple type: {}", source, index, tuple_type_str);
+                                                                eprintln!(
+                                                                    "  Struct type fields: {}",
+                                                                    struct_type.count_fields()
+                                                                );
+                                                                // Return a dummy value
+                                                                let dummy = self
+                                                                    .context
+                                                                    .i32_type()
+                                                                    .const_int(0, false)
+                                                                    .into();
+                                                                self.temp_values
+                                                                    .insert(name.clone(), dummy);
+                                                                return Some(dummy);
+                                                            }
+                                                        };
 
                                                         // Load the field value
                                                         let field_type = struct_type
@@ -1180,6 +1291,7 @@ impl<'ctx> CodeGen<'ctx> {
                                                         self.temp_values
                                                             .insert(name.clone(), field_val);
                                                         return Some(field_val);
+                                                    } else {
                                                     }
                                                 }
                                             } else {
@@ -3012,9 +3124,17 @@ impl<'ctx> CodeGen<'ctx> {
 
                     let tuple_type = self.context.struct_type(&value_types, false);
 
-                    // NOTE: Don't store tuple_types here - the function call handler
-                    // (control_flow.rs) already sets up tuple metadata from function_return_types
-                    // ResultOk just creates the actual tuple data structure
+                    // CRITICAL FIX: Store tuple metadata for multi-value Ok results
+                    // This is needed for ManualErrorExtract to properly extract tuple fields
+                    let tuple_type_str = format!("Tuple({})", ok_types.join(","));
+                    self.tuple_types
+                        .insert(name.clone(), tuple_type_str.clone());
+                    self.tuple_struct_types
+                        .insert(tuple_type_str.clone(), tuple_type);
+
+                    // Also store the actual LLVM types for reconstruction if needed
+                    self.tuple_field_types
+                        .insert(name.clone(), value_types.clone());
 
                     // Allocate tuple on heap using malloc
                     let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
@@ -3411,9 +3531,55 @@ impl<'ctx> CodeGen<'ctx> {
                             }
 
                             // Propagate tuple_types mapping
-                            if let Some(tuple_type_str) = self.tuple_types.get(result_tmp).cloned()
+                            let tuple_type_str = if let Some(existing) =
+                                self.tuple_types.get(result_tmp).cloned()
                             {
-                                self.tuple_types.insert(name.clone(), tuple_type_str);
+                                existing
+                            } else if let Some((ok_type, _)) = self.result_types.get(result_tmp) {
+                                // Construct tuple type string from ok_type
+                                if ok_type.starts_with("Tuple(") {
+                                    ok_type.clone()
+                                } else if ok_type.contains(',') {
+                                    format!("Tuple({})", ok_type)
+                                } else {
+                                    ok_type.clone()
+                                }
+                            } else {
+                                "".to_string()
+                            };
+
+                            if !tuple_type_str.is_empty() {
+                                self.tuple_types
+                                    .insert(name.clone(), tuple_type_str.clone());
+
+                                // Also ensure tuple_struct_types is populated
+                                if !self.tuple_struct_types.contains_key(&tuple_type_str) {
+                                    // Build the struct type from ok_type
+                                    if let Some((ok_type, _)) = self.result_types.get(result_tmp) {
+                                        let inner = if ok_type.starts_with("Tuple(")
+                                            && ok_type.ends_with(")")
+                                        {
+                                            &ok_type[6..ok_type.len() - 1]
+                                        } else {
+                                            ok_type.as_str()
+                                        };
+                                        let types =
+                                            crate::codegen::core::helpers::parse_tuple_types(inner);
+                                        let tuple_field_types: Vec<inkwell::types::BasicTypeEnum> =
+                                            types
+                                                .iter()
+                                                .map(|t| self.map_type_str_to_llvm(t))
+                                                .collect();
+                                        let tuple_struct_type =
+                                            self.context.struct_type(&tuple_field_types, false);
+                                        self.tuple_struct_types
+                                            .insert(tuple_type_str.clone(), tuple_struct_type);
+
+                                        // Also store tuple_field_types for reconstruction
+                                        self.tuple_field_types
+                                            .insert(name.clone(), tuple_field_types);
+                                    }
+                                }
                             }
                         }
 
@@ -3433,8 +3599,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
 
-            // Manual error extraction with ?? operator
-            // let a, b ?? err = expr;
+            // let a, b , err = expr;
             MirInstr::ManualErrorExtract {
                 ok_names,
                 error_name,
@@ -3548,32 +3713,101 @@ impl<'ctx> CodeGen<'ctx> {
 
                     if is_tuple && ok_names.len() > 1 {
                         // Extract tuple fields
-                        if let Some(tuple_type_str) = self.tuple_types.get(result_tmp).cloned() {
-                            if let Some(struct_type) = self.tuple_struct_types.get(&tuple_type_str)
-                            {
+                        // Try to find tuple metadata from multiple sources
+                        let tuple_type_str_opt =
+                            self.tuple_types.get(result_tmp).cloned().or_else(|| {
+                                // Try to extract from ok_type string
+                                if ok_type.starts_with("Tuple(") {
+                                    Some(ok_type.clone())
+                                } else if ok_type.contains(',') {
+                                    // ok_type is like "Int,Int" - wrap it in Tuple()
+                                    Some(format!("Tuple({})", ok_type))
+                                } else {
+                                    None
+                                }
+                            });
+
+                        if let Some(tuple_type_str) = tuple_type_str_opt {
+                            let struct_type_opt =
+                                self.tuple_struct_types.get(&tuple_type_str).cloned();
+
+                            if let Some(struct_type) = struct_type_opt {
+                                // In LLVM 15+, pointers are opaque and don't need casting
+                                // Just use the pointer directly with struct_gep
                                 for (idx, _ok_name) in ok_names.iter().enumerate() {
-                                    let field_ptr = self
-                                        .builder
-                                        .build_struct_gep(
-                                            *struct_type,
-                                            ok_value_ptr,
-                                            idx as u32,
-                                            &format!("ok_field_{}", idx),
-                                        )
-                                        .unwrap();
+                                    if (idx as u32) < struct_type.count_fields() {
+                                        let field_ptr = self
+                                            .builder
+                                            .build_struct_gep(
+                                                struct_type,
+                                                ok_value_ptr,
+                                                idx as u32,
+                                                &format!("ok_field_{}", idx),
+                                            )
+                                            .expect(&format!("Failed to GEP tuple field {} with struct type having {} fields", idx, struct_type.count_fields()));
 
-                                    let field_type =
-                                        struct_type.get_field_type_at_index(idx as u32).unwrap();
-                                    let field_val = self
-                                        .builder
-                                        .build_load(
-                                            field_type,
-                                            field_ptr,
-                                            &format!("ok_val_{}", idx),
-                                        )
-                                        .unwrap();
+                                        let field_type = struct_type
+                                            .get_field_type_at_index(idx as u32)
+                                            .unwrap();
+                                        let field_val = self
+                                            .builder
+                                            .build_load(
+                                                field_type,
+                                                field_ptr,
+                                                &format!("ok_val_{}", idx),
+                                            )
+                                            .unwrap();
 
-                                    ok_values_from_ok_path.push(field_val);
+                                        ok_values_from_ok_path.push(field_val);
+                                    }
+                                }
+                            } else if let Some(field_types) =
+                                self.tuple_field_types.get(result_tmp).cloned()
+                            {
+                                // Fallback: Use stored field types to reconstruct struct type
+                                let reconstructed_tuple_type =
+                                    self.context.struct_type(&field_types, false);
+
+                                // Store for future use
+                                self.tuple_struct_types
+                                    .insert(tuple_type_str.clone(), reconstructed_tuple_type);
+
+                                // In LLVM 15+, pointers are opaque and don't need casting
+                                // Just use the pointer directly with struct_gep
+                                for (idx, _ok_name) in ok_names.iter().enumerate() {
+                                    if (idx as u32) < reconstructed_tuple_type.count_fields() {
+                                        let field_ptr = self
+                                            .builder
+                                            .build_struct_gep(
+                                                reconstructed_tuple_type,
+                                                ok_value_ptr,
+                                                idx as u32,
+                                                &format!("ok_field_{}", idx),
+                                            )
+                                            .expect(&format!("Failed to GEP reconstructed tuple field {} with struct type having {} fields", idx, reconstructed_tuple_type.count_fields()));
+
+                                        let field_type = reconstructed_tuple_type
+                                            .get_field_type_at_index(idx as u32)
+                                            .unwrap();
+                                        let field_val = self
+                                            .builder
+                                            .build_load(
+                                                field_type,
+                                                field_ptr,
+                                                &format!("ok_val_{}", idx),
+                                            )
+                                            .unwrap();
+
+                                        ok_values_from_ok_path.push(field_val);
+                                    }
+                                }
+                            } else {
+                                // Last resort: If no tuple metadata found, the ok_value_ptr might not be a tuple at all
+                                // This happens when tuple metadata wasn't set up properly
+                                // Just push dummy values to prevent extraction failure
+                                for _idx in 0..ok_names.len() {
+                                    ok_values_from_ok_path
+                                        .push(self.context.i32_type().const_int(0, false).into());
                                 }
                             }
                         }
@@ -3676,15 +3910,41 @@ impl<'ctx> CodeGen<'ctx> {
                             .map(|(_, e)| e.clone())
                             .unwrap_or_else(|| "Str".to_string());
 
+                        // CRITICAL: Check for struct/complex types FIRST before checking primitive types
+                        // This prevents false matches like "IntError" matching "Int"
+                        let is_struct_error = if err_type.starts_with("Struct(") {
+                            true
+                        } else {
+                            self.struct_metadata.contains_key(&err_type)
+                        };
+
                         // Create appropriate nil/default value for error type
-                        if err_type.contains("Int") {
+                        if is_struct_error {
+                            // Struct errors - use null pointer
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null()
+                                .into()
+                        } else if err_type.starts_with("Array") || err_type.starts_with("Map") {
+                            // Array and Map errors - use null pointer
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null()
+                                .into()
+                        } else if err_type == "Str" || err_type == "String" {
+                            // String errors - use null pointer
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null()
+                                .into()
+                        } else if err_type == "Int" {
                             self.context.i32_type().const_int(0, false).into()
-                        } else if err_type.contains("Float") {
+                        } else if err_type == "Float" {
                             self.context.f64_type().const_float(0.0).into()
-                        } else if err_type.contains("Bool") {
+                        } else if err_type == "Bool" {
                             self.context.bool_type().const_int(0, false).into()
                         } else {
-                            // Str, Array, Map, Struct - use null pointer
+                            // Default: use null pointer for unknown types
                             self.context
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .const_null()
@@ -3713,6 +3973,17 @@ impl<'ctx> CodeGen<'ctx> {
                             .map(|(_, e)| e.clone())
                             .unwrap_or_else(|| "Str".to_string());
 
+                        // Extract struct name if it's a struct type (either "Struct(Name)" or just "Name")
+                        let is_struct_error =
+                            if err_type.starts_with("Struct(") && err_type.ends_with(")") {
+                                // Format: "Struct(IntError)"
+                                let struct_name = &err_type[7..err_type.len() - 1];
+                                self.struct_metadata.contains_key(struct_name)
+                            } else {
+                                // Format: "IntError" (TypeRef)
+                                self.struct_metadata.contains_key(&err_type)
+                            };
+
                         // Convert pointer back to the actual error type
                         if err_type.contains("Str") || err_type.contains("String") {
                             // String errors: err_value_ptr IS the C string pointer (void* cast)
@@ -3721,10 +3992,8 @@ impl<'ctx> CodeGen<'ctx> {
                         } else if err_type.contains("Array") || err_type.contains("Map") {
                             // Array and Map errors are pointers
                             err_value_ptr.into()
-                        } else if err_type.contains("Struct(")
-                            || self.struct_metadata.contains_key(&err_type)
-                        {
-                            // Struct errors are pointers
+                        } else if is_struct_error {
+                            // Struct errors are pointers - keep them as pointers!
                             err_value_ptr.into()
                         } else if err_type.contains("Int") {
                             // Int errors: convert pointer to int
@@ -3847,15 +4116,55 @@ impl<'ctx> CodeGen<'ctx> {
                             .map(|(_, e)| e.clone())
                             .unwrap_or_else(|| "Str".to_string());
 
+                        // eprintln!(
+                        //     "DEBUG: ManualErrorExtract phi - error_name='{}', err_type='{}'",
+                        //     error_name, err_type
+                        // );
+                        // eprintln!("  err_from_ok_path type: {:?}", err_from_ok_path.get_type());
+                        // eprintln!(
+                        //     "  err_from_err_path type: {:?}",
+                        //     err_from_err_path.get_type()
+                        // );
+
+                        // CRITICAL: Check for struct/complex types FIRST before checking primitive types
+                        // This prevents false matches like "IntError" matching "Int"
+                        let is_struct_error = if err_type.starts_with("Struct(") {
+                            true
+                        } else {
+                            self.struct_metadata.contains_key(&err_type)
+                        };
+
                         // Determine the LLVM type for the phi node based on error type
-                        let phi_type: inkwell::types::BasicTypeEnum = if err_type.contains("Int") {
+                        let phi_type: inkwell::types::BasicTypeEnum = if is_struct_error {
+                            // Struct errors are pointers
+                            // eprintln!("  Phi type: pointer (struct error)");
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into()
+                        } else if err_type.starts_with("Array") || err_type.starts_with("Map") {
+                            // Array and Map errors are pointers
+                            // eprintln!("  Phi type: pointer (array/map error)");
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into()
+                        } else if err_type == "Str" || err_type == "String" {
+                            // String errors are pointers
+                            // eprintln!("  Phi type: pointer (string error)");
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into()
+                        } else if err_type == "Int" {
+                            // eprintln!("  Phi type: i32 (int error)");
                             self.context.i32_type().into()
-                        } else if err_type.contains("Float") {
+                        } else if err_type == "Float" {
+                            // eprintln!("  Phi type: f64 (float error)");
                             self.context.f64_type().into()
-                        } else if err_type.contains("Bool") {
+                        } else if err_type == "Bool" {
+                            // eprintln!("  Phi type: bool (bool error)");
                             self.context.bool_type().into()
                         } else {
-                            // Str, Array, Map, Struct - all are pointers
+                            // Default: pointer
+                            // eprintln!("  Phi type: pointer (default/unknown)");
                             self.context
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into()
@@ -3867,8 +4176,110 @@ impl<'ctx> CodeGen<'ctx> {
                             (&err_from_err_path, err_block),
                         ]);
                         let phi_val = phi.as_basic_value();
+                        // eprintln!("  Final phi_val type: {:?}", phi_val.get_type());
+                        // eprintln!("  Is pointer: {}", phi_val.is_pointer_value());
+
                         self.temp_values.insert(error_name.clone(), phi_val);
-                        self.variable_types.insert(error_name.clone(), err_type);
+
+                        // CRITICAL: If error type is a struct, track struct metadata for field access
+                        if is_struct_error {
+                            // Normalize struct type name
+                            let struct_name = if err_type.starts_with("Struct(") {
+                                err_type
+                                    .strip_prefix("Struct(")
+                                    .and_then(|s| s.strip_suffix(")"))
+                                    .unwrap_or(&err_type)
+                                    .to_string()
+                            } else {
+                                // It's already just the struct name
+                                err_type.clone()
+                            };
+
+                            // Mark as heap-allocated (pointers are heap-allocated)
+                            self.heap_arrays.insert(error_name.clone());
+
+                            // Store the normalized struct type in BOTH formats for compatibility
+                            let normalized = format!("Struct({})", struct_name);
+                            self.variable_types.insert(error_name.clone(), normalized);
+
+                            // eprintln!("DEBUG: ManualErrorExtract - stored error '{}' as struct type '{}' (original: '{}')",
+                            //     error_name, struct_name, err_type);
+                        } else if err_type.starts_with("Array(") || err_type.starts_with("[") {
+                            // Array error type - extract element type and set metadata
+                            self.heap_arrays.insert(error_name.clone());
+                            self.variable_types
+                                .insert(error_name.clone(), err_type.clone());
+
+                            // Try to extract element type from error type string
+                            // Format could be "Array(Int)" or "[Int]"
+                            let element_type_str =
+                                if err_type.starts_with("Array(") && err_type.ends_with(")") {
+                                    err_type[6..err_type.len() - 1].to_string()
+                                } else if err_type.starts_with("[") && err_type.ends_with("]") {
+                                    err_type[1..err_type.len() - 1].to_string()
+                                } else {
+                                    "Int".to_string() // fallback
+                                };
+
+                            // Try to get length from the actual array if possible
+                            // For now, use a placeholder length since we don't have access to the actual array data
+                            // The print function will read the actual length from the heap header
+                            let contains_strings =
+                                element_type_str == "Str" || element_type_str == "String";
+                            let metadata = crate::codegen::ArrayMetadata {
+                                element_type: element_type_str,
+                                length: 0, // Will be read from heap at runtime
+                                contains_strings,
+                            };
+                            self.array_metadata.insert(error_name.clone(), metadata);
+                        } else if err_type.starts_with("Map(") || err_type.contains(":") {
+                            // Map error type - extract key and value types and set metadata
+                            self.heap_maps.insert(error_name.clone());
+                            self.variable_types
+                                .insert(error_name.clone(), err_type.clone());
+
+                            // Try to extract key and value types from error type string
+                            // Format could be "Map(Str,Int)" or "{Str: Int}"
+                            let (key_type_str, value_type_str) =
+                                if err_type.starts_with("Map(") && err_type.ends_with(")") {
+                                    let inner = &err_type[4..err_type.len() - 1];
+                                    let parts: Vec<&str> = inner.split(',').collect();
+                                    if parts.len() == 2 {
+                                        (parts[0].to_string(), parts[1].to_string())
+                                    } else {
+                                        ("Str".to_string(), "Int".to_string())
+                                    }
+                                } else if err_type.starts_with("{") && err_type.ends_with("}") {
+                                    let inner = &err_type[1..err_type.len() - 1];
+                                    let parts: Vec<&str> = inner.split(':').collect();
+                                    if parts.len() == 2 {
+                                        (parts[0].trim().to_string(), parts[1].trim().to_string())
+                                    } else {
+                                        ("Str".to_string(), "Int".to_string())
+                                    }
+                                } else {
+                                    ("Str".to_string(), "Int".to_string())
+                                };
+
+                            let key_is_string = key_type_str == "Str" || key_type_str == "String";
+                            let value_is_string =
+                                value_type_str == "Str" || value_type_str == "String";
+
+                            let metadata = crate::codegen::MapMetadata {
+                                key_type: key_type_str,
+                                value_type: value_type_str,
+                                key_is_string,
+                                value_is_string,
+                                key_needs_rc: key_is_string,
+                                value_needs_rc: value_is_string,
+                                length: 0, // Will be read from heap at runtime
+                            };
+                            self.map_metadata.insert(error_name.clone(), metadata);
+                        } else {
+                            // Non-struct error types
+                            self.variable_types
+                                .insert(error_name.clone(), err_type.clone());
+                        }
                     }
                 }
 
@@ -4116,6 +4527,10 @@ impl<'ctx> CodeGen<'ctx> {
                 let struct_ptr = self.resolve_value(struct_instance);
 
                 if !struct_ptr.is_pointer_value() {
+                    // eprintln!(
+                    //     "DEBUG: StructGet - struct_instance '{}' is not a pointer value",
+                    //     struct_instance
+                    // );
                     return None;
                 }
 
@@ -4126,7 +4541,22 @@ impl<'ctx> CodeGen<'ctx> {
                     .variable_types
                     .get(struct_instance)
                     .cloned()
-                    .unwrap_or_else(|| "Unknown".to_string());
+                    .unwrap_or_else(|| {
+                        // eprintln!(
+                        //     "DEBUG: StructGet - struct_instance '{}' not found in variable_types",
+                        //     struct_instance
+                        // );
+                        // eprintln!(
+                        //     "  Available variable_types: {:?}",
+                        //     self.variable_types.keys().collect::<Vec<_>>()
+                        // );
+                        "Unknown".to_string()
+                    });
+
+                // eprintln!(
+                //     "DEBUG: StructGet - struct_instance='{}', type_str='{}', field='{}'",
+                //     struct_instance, struct_type_str, field
+                // );
 
                 // Extract struct name from type string "Struct(StructName)" or just "StructName"
                 let struct_name =
@@ -4148,6 +4578,12 @@ impl<'ctx> CodeGen<'ctx> {
                         ""
                     };
 
+                // eprintln!("DEBUG: StructGet - extracted struct_name='{}'", struct_name);
+                // eprintln!(
+                //     "  Available struct_metadata: {:?}",
+                //     self.struct_metadata.keys().collect::<Vec<_>>()
+                // );
+
                 // Look up field index from metadata
                 let (field_index, field_type_name) =
                     if let Some(metadata) = self.struct_metadata.get(struct_name) {
@@ -4155,21 +4591,41 @@ impl<'ctx> CodeGen<'ctx> {
                             .field_names
                             .iter()
                             .position(|f| f == field)
-                            .unwrap_or(0);
+                            .unwrap_or_else(|| {
+                                // eprintln!("DEBUG: StructGet - field '{}' not found in struct '{}' fields: {:?}", field, struct_name, metadata.field_names);
+                                0
+                            });
                         let type_name = metadata
                             .field_types
                             .get(index)
                             .cloned()
                             .unwrap_or_else(|| "Int".to_string());
+                        // eprintln!(
+                        //     "DEBUG: StructGet - found field '{}' at index {} with type '{}'",
+                        //     field, index, type_name
+                        // );
                         (index, type_name)
                     } else {
+                        // eprintln!(
+                        //     "ERROR: StructGet - struct '{}' not found in metadata!",
+                        //     struct_name
+                        // );
+                        // eprintln!("  This may cause incorrect field access or crash");
                         (0, "Int".to_string())
                     };
                 // Use the canonical struct type if available
                 let struct_type =
                     if let Some(canonical_type) = self.canonical_struct_types.get(struct_name) {
+                        // eprintln!(
+                        //     "DEBUG: StructGet - using canonical struct type for '{}'",
+                        //     struct_name
+                        // );
                         *canonical_type
                     } else if let Some(metadata) = self.struct_metadata.get(struct_name) {
+                        // eprintln!(
+                        //     "DEBUG: StructGet - reconstructing struct type from metadata for '{}'",
+                        //     struct_name
+                        // );
                         // Fallback: reconstruct from metadata
                         let field_llvm_types: Vec<inkwell::types::BasicTypeEnum> = metadata
                             .field_types
@@ -4193,27 +4649,54 @@ impl<'ctx> CodeGen<'ctx> {
                                 }
                             })
                             .collect();
-                        self.context.struct_type(&field_llvm_types, false)
+                        let reconstructed = self.context.struct_type(&field_llvm_types, false);
+                        // Store for future use
+                        self.canonical_struct_types
+                            .insert(struct_name.to_string(), reconstructed);
+                        reconstructed
                     } else {
+                        // eprintln!("ERROR: StructGet - no metadata found for struct '{}'! Using fallback struct type", struct_name);
                         // Last resort fallback: create a simple struct type
                         self.context
                             .struct_type(&[self.context.i32_type().into()], false)
                     };
+
+                // Safety check for field index
+                if (field_index as u32) >= struct_type.count_fields() {
+                    // eprintln!("ERROR: StructGet - field index {} out of bounds for struct '{}' with {} fields", field_index, struct_name, struct_type.count_fields());
+                    // Return a dummy value
+                    let dummy = self.context.i32_type().const_int(0, false).into();
+                    self.temp_values.insert(name.clone(), dummy);
+                    return Some(dummy);
+                }
+
                 // Get the field LLVM type from the struct type
                 let field_llvm_type = struct_type
                     .get_field_type_at_index(field_index as u32)
                     .unwrap_or_else(|| self.context.i32_type().into());
 
                 // Access the field at the correct index
-                let field_ptr = self
-                    .builder
-                    .build_struct_gep(
-                        struct_type,
-                        ptr,
-                        field_index as u32,
-                        &format!("{}_field_ptr", field),
-                    )
-                    .unwrap();
+                let field_ptr_result = self.builder.build_struct_gep(
+                    struct_type,
+                    ptr,
+                    field_index as u32,
+                    &format!("{}_field_ptr", field),
+                );
+
+                let field_ptr = match field_ptr_result {
+                    Ok(ptr) => ptr,
+                    Err(e) => {
+                        // eprintln!("ERROR: StructGet - failed to build_struct_gep: {:?}", e);
+                        // eprintln!(
+                        //     "  struct_name='{}', field='{}', index={}",
+                        //     struct_name, field, field_index
+                        // );
+                        // Return a dummy value
+                        let dummy = self.context.i32_type().const_int(0, false).into();
+                        self.temp_values.insert(name.clone(), dummy);
+                        return Some(dummy);
+                    }
+                };
 
                 // Check if the field type is a nested struct
                 // If so, load the pointer value (since nested structs are stored as pointers)
