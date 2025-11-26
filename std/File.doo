@@ -1,58 +1,158 @@
 // File operations via FFI
 // All file operations are implemented as native functions using Rust's std::fs
+//
+// Error Handling:
+// - All fallible operations return Result types with ! FileError error type
+// - Use ? operator for automatic error propagation in functions with ! FileError
+// - Use manual error extraction (let result, err = ...) for explicit handling
+// - Main function can use ? without declaring ! FileError (special case like Rust)
+//
+// Usage Examples:
+//
+// Auto propagation in regular functions (requires ! FileError):
+//   fn ProcessFile() -> Str ! FileError {
+//       let content = File::Read("data.txt")?;
+//       File::Write("output.txt", content)?;
+//       Ok content;
+//   }
+//
+// Auto propagation in main (no ! FileError needed):
+//   fn main() {
+//       File::Write("test.txt", "Hello")?;
+//       let content = File::Read("test.txt")?;
+//       print(content);
+//   }
+//
+// Manual error handling:
+//   fn main() {
+//       let content, err = File::Read("test.txt");
+//       if err != nil {
+//           print("Error:", err.message);
+//       } else {
+//           print("Content:", content);
+//       }
+//   }
+//
+// Custom function with manual error handling:
+//   fn customFn() -> Str ! FileError {
+//       let data, err = File::Read("config.txt");
+//       if err != nil {
+//           Err FileError { message: "Custom error: failed to read config"; };
+//       }
+//       Ok data;
+//   }
 
+// FileError struct for structured error handling
+struct FileError {
+    message: Str,
+}
+
+// FileMetadata struct containing comprehensive file/folder information
+struct FileMetadata {
+    isFile: Bool,        // true if path is a file
+    isDir: Bool,         // true if path is a directory
+    isSymlink: Bool,     // true if path is a symbolic link
+    size: Int,            // size in bytes (0 for directories)
+    readonly: Bool,       // true if file/dir is read-only
+    created: Int,         // creation time (Unix timestamp in seconds, 0 if unavailable)
+    modified: Int,        // last modification time (Unix timestamp in seconds)
+    accessed: Int,        // last access time (Unix timestamp in seconds)
+}
+
+// Read entire file content as string
+// Returns: Str on success
+// Error: Returns FileError if file doesn't exist, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_read")
-fn Read(path: Str) -> Str ! Str {}
+fn Read(path: Str) -> Str ! FileError {}
 
+// Write content to file (overwrites if exists, creates if not)
+// Returns: Void on success
+// Error: Returns FileError if permission denied, invalid path, or IO error
 @ffi("doo_file")
 @extern("doo_file_write")
-fn Write(path: Str, content: Str) -> Void ! Str {}
+fn Write(path: Str, content: Str) -> Void ! FileError {}
 
+// Append content to file (creates file if doesn't exist)
+// Returns: Void on success
+// Error: Returns FileError if permission denied, invalid path, or IO error
 @ffi("doo_file")
 @extern("doo_file_append")
-fn Append(path: Str, content: Str) -> Void ! Str {}
+fn Append(path: Str, content: Str) -> Void ! FileError {}
 
+// Check if file or directory exists
+// Returns: Bool (true if exists, false if not)
+// Note: This operation never fails - returns false for invalid paths
 @ffi("doo_file")
 @extern("doo_file_exists")
 fn Exists(path: Str) -> Bool {}
 
+// Delete a file
+// Returns: Void on success
+// Error: Returns FileError if file doesn't exist, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_delete")
-fn Delete(path: Str) -> Void ! Str {}
+fn Delete(path: Str) -> Void ! FileError {}
 
+// Get file size in bytes
+// Returns: Int (file size in bytes) on success
+// Error: Returns FileError if file doesn't exist, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_size")
-fn Size(path: Str) -> Int ! Str {}
+fn Size(path: Str) -> Int ! FileError {}
 
+// Create directory (creates parent directories if needed)
+// Returns: Void on success
+// Error: Returns FileError if permission denied, invalid path, or IO error
 @ffi("doo_file")
 @extern("doo_file_mkdir")
-fn MkDir(path: Str) -> Void ! Str {}
+fn MkDir(path: Str) -> Void ! FileError {}
 
+// Get comprehensive metadata for file or directory
+// Returns: FileMetadata struct with all available information
+// Error: Returns FileError if path doesn't exist, permission denied, or IO error
 @ffi("doo_file")
-@extern("doo_file_is_dir")
-fn IsDir(path: Str) -> Bool {}
+@extern("doo_file_metadata")
+fn Metadata(path: Str) -> FileMetadata ! FileError {}
 
+// List directory contents
+// Returns: Str (comma-separated list of file/directory names) on success
+// Error: Returns FileError if directory doesn't exist, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_list_dir")
-fn ListDir(path: Str) -> Str ! Str {}
+fn ListDir(path: Str) -> Str ! FileError {}
 
+// Copy file from source to destination
+// Returns: Void on success
+// Error: Returns FileError if source doesn't exist, destination invalid, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_copy")
-fn Copy(src: Str, dst: Str) -> Void ! Str {}
+fn Copy(src: Str, dst: Str) -> Void ! FileError {}
 
+// Move/rename file from source to destination
+// Returns: Void on success
+// Error: Returns FileError if source doesn't exist, destination invalid, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_move")
-fn Move(src: Str, dst: Str) -> Void ! Str {}
+fn Move(src: Str, dst: Str) -> Void ! FileError {}
 
+// Read file content as string (same as Read, but emphasizes line-oriented reading)
+// Returns: Str (file content with original line breaks) on success
+// Error: Returns FileError if file doesn't exist, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_read_lines")
-fn ReadLines(path: Str) -> Str ! Str {}
+fn ReadLines(path: Str) -> Str ! FileError {}
 
+// Remove empty directory
+// Returns: Void on success
+// Error: Returns FileError if directory doesn't exist, not empty, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_rmdir")
-fn RmDir(path: Str) -> Void ! Str {}
+fn RmDir(path: Str) -> Void ! FileError {}
 
+// Remove directory and all its contents recursively
+// Returns: Void on success
+// Error: Returns FileError if directory doesn't exist, permission denied, or IO error
 @ffi("doo_file")
 @extern("doo_file_rmdir_all")
-fn RmDirAll(path: Str) -> Void ! Str {}
+fn RmDirAll(path: Str) -> Void ! FileError {}
