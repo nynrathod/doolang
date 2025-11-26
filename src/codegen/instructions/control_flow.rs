@@ -1362,7 +1362,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let val = self.resolve_value(value);
 
                 // Struct instances are now handled above, so skip redundant check
-                if self.is_boolean_value(value) {
+                if self.is_boolean_value(value) && val.is_int_value() {
                     // Use a simple approach to avoid crashes
                     let bool_val = self.resolve_value(value);
                     let int_val = bool_val.into_int_value();

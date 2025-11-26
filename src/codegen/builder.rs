@@ -157,11 +157,25 @@ impl<'ctx> CodeGen<'ctx> {
             } => {
                 // Propagate type information from source to destination
                 if let Some(source_type) = self.variable_types.get(value).cloned() {
-                    self.variable_types.insert(name.clone(), source_type);
+                    self.variable_types
+                        .insert(name.clone(), source_type.clone());
+                    // Clean up boolean_temps if assigning a non-boolean value
+                    if source_type != "Bool" {
+                        self.boolean_temps.remove(name);
+                    }
+                }
+                // Propagate loop_local_vars: if the source is a loop variable, the destination should be too
+                // This handles cases like: k = %11_k where %11_k is marked as loop-local
+                if self.loop_local_vars.contains(value) {
+                    self.loop_local_vars.insert(name.clone());
                 }
                 // Propagate boolean tracking
                 if self.boolean_temps.contains(value) {
                     self.boolean_temps.insert(name.clone());
+                } else {
+                    // If source is not a boolean, remove destination from boolean_temps
+                    // This prevents cross-loop pollution when reusing variable names
+                    self.boolean_temps.remove(name);
                 }
                 // Propagate Result type information from source to destination
                 if let Some(result_type) = self.result_types.get(value).cloned() {
@@ -279,7 +293,67 @@ impl<'ctx> CodeGen<'ctx> {
                         self.emit_decref(name);
                     }
 
-                    self.builder.build_store(sym.ptr, val).unwrap();
+                    // CRITICAL: Check if types match before storing
+                    // If types don't match, we MUST recreate the alloca to prevent stack corruption
+                    if sym.ty != val.get_type() {
+                        // Types mismatch - remove old symbol and recreate alloca with correct type
+                        self.symbols.remove(name);
+
+                        // Create new alloca in entry block with correct type
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let func = current_block.get_parent().unwrap();
+                        let entry_block = func.get_first_basic_block().unwrap();
+
+                        if let Some(terminator) = entry_block.get_terminator() {
+                            self.builder.position_before(&terminator);
+                        } else {
+                            self.builder.position_at_end(entry_block);
+                        }
+
+                        // Use unique name for map/array allocas
+                        let is_array = self.heap_arrays.contains(name)
+                            || self.array_metadata.contains_key(name)
+                            || value_is_heap_array;
+                        let is_map = self.heap_maps.contains(name)
+                            || self.map_metadata.contains_key(name)
+                            || value_is_heap_map;
+
+                        let alloca_name = if is_array || is_map {
+                            static REALLOC_COUNTER: std::sync::atomic::AtomicUsize =
+                                std::sync::atomic::AtomicUsize::new(0);
+                            let counter =
+                                REALLOC_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            format!("{}_R{}", name, counter)
+                        } else {
+                            format!("{}_realloc", name)
+                        };
+
+                        let new_alloca = self
+                            .builder
+                            .build_alloca(val.get_type(), &alloca_name)
+                            .unwrap();
+
+                        self.builder.position_at_end(current_block);
+                        self.builder.build_store(new_alloca, val).unwrap();
+
+                        self.symbols.insert(
+                            name.clone(),
+                            Symbol {
+                                ptr: new_alloca,
+                                ty: val.get_type(),
+                            },
+                        );
+                    } else {
+                        // Types match - safe to store to existing alloca
+                        self.builder.build_store(sym.ptr, val).unwrap();
+                    }
+
+                    // Update temp_values to override old values when variable names are reused
+                    // This is critical for loop variables that change types across iterations
+                    // Only update for pointer values (strings, arrays, maps) to avoid breaking other logic
+                    if val.is_pointer_value() {
+                        self.temp_values.insert(name.clone(), val);
+                    }
 
                     self.heap_strings.remove(name);
                     self.heap_arrays.remove(name);
@@ -469,7 +543,20 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         val.get_type()
                     };
-                    let alloca = self.builder.build_alloca(alloc_type, name).unwrap();
+
+                    // CRITICAL: Use unique names for map/array allocas to prevent corruption
+                    // when multiple maps with same variable name are created in sequence
+                    let alloca_name = if is_array || is_map {
+                        static ALLOCA_COUNTER: std::sync::atomic::AtomicUsize =
+                            std::sync::atomic::AtomicUsize::new(0);
+                        let counter =
+                            ALLOCA_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        format!("{}_A{}", name, counter)
+                    } else {
+                        name.to_string()
+                    };
+
+                    let alloca = self.builder.build_alloca(alloc_type, &alloca_name).unwrap();
 
                     // Restore position to current block
                     self.builder.position_at_end(current_block);
@@ -2217,6 +2304,7 @@ impl<'ctx> CodeGen<'ctx> {
                     let value_type_str = map_metadata_clone.value_type.clone();
                     let key_is_string = map_metadata_clone.key_is_string;
                     let value_is_string = map_metadata_clone.value_is_string;
+                    let value_needs_rc = map_metadata_clone.value_needs_rc;
 
                     // eprintln!("[DEBUG] Map metadata: key_type={}, value_type={}, key_is_string={}, value_is_string={}",
                     //           key_type_str, value_type_str, key_is_string, value_is_string);
@@ -2291,11 +2379,21 @@ impl<'ctx> CodeGen<'ctx> {
                         let continue_block =
                             self.context.append_basic_block(current_fn, "map_continue");
 
-                        // Allocate index variable in current block
+                        // CRITICAL: Allocate index variable in entry block to prevent stack corruption
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let entry_block = current_fn.get_first_basic_block().unwrap();
+                        if let Some(terminator) = entry_block.get_terminator() {
+                            self.builder.position_before(&terminator);
+                        } else {
+                            self.builder.position_at_end(entry_block);
+                        }
+
                         let index_alloca = self
                             .builder
                             .build_alloca(self.context.i32_type(), "search_index")
                             .unwrap();
+
+                        self.builder.position_at_end(current_block);
 
                         // Initialize index to 0
                         self.builder
@@ -2444,10 +2542,21 @@ impl<'ctx> CodeGen<'ctx> {
                             .context
                             .append_basic_block(current_fn, "map_continue_float");
 
+                        // CRITICAL: Allocate index variable in entry block to prevent stack corruption
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let entry_block = current_fn.get_first_basic_block().unwrap();
+                        if let Some(terminator) = entry_block.get_terminator() {
+                            self.builder.position_before(&terminator);
+                        } else {
+                            self.builder.position_at_end(entry_block);
+                        }
+
                         let index_alloca = self
                             .builder
                             .build_alloca(self.context.i32_type(), "search_index_float")
                             .unwrap();
+
+                        self.builder.position_at_end(current_block);
 
                         self.builder
                             .build_store(index_alloca, self.context.i32_type().const_int(0, false))
@@ -2564,10 +2673,21 @@ impl<'ctx> CodeGen<'ctx> {
                             .context
                             .append_basic_block(current_fn, "map_continue_bool");
 
+                        // CRITICAL: Allocate index variable in entry block to prevent stack corruption
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let entry_block = current_fn.get_first_basic_block().unwrap();
+                        if let Some(terminator) = entry_block.get_terminator() {
+                            self.builder.position_before(&terminator);
+                        } else {
+                            self.builder.position_at_end(entry_block);
+                        }
+
                         let index_alloca = self
                             .builder
                             .build_alloca(self.context.i32_type(), "search_index_bool")
                             .unwrap();
+
+                        self.builder.position_at_end(current_block);
 
                         self.builder
                             .build_store(index_alloca, self.context.i32_type().const_int(0, false))
@@ -2683,10 +2803,21 @@ impl<'ctx> CodeGen<'ctx> {
                             .context
                             .append_basic_block(current_fn, "map_continue_int");
 
+                        // CRITICAL: Allocate index variable in entry block to prevent stack corruption
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let entry_block = current_fn.get_first_basic_block().unwrap();
+                        if let Some(terminator) = entry_block.get_terminator() {
+                            self.builder.position_before(&terminator);
+                        } else {
+                            self.builder.position_at_end(entry_block);
+                        }
+
                         let index_alloca = self
                             .builder
                             .build_alloca(self.context.i32_type(), "search_index_int")
                             .unwrap();
+
+                        self.builder.position_at_end(current_block);
 
                         self.builder
                             .build_store(index_alloca, self.context.i32_type().const_int(0, false))
@@ -2813,32 +2944,34 @@ impl<'ctx> CodeGen<'ctx> {
                     self.variable_types
                         .insert(name.clone(), value_type_str.clone());
 
-                    // Track if this is a string value
-                    if value_is_string {
+                    // Handle RC for string values
+                    // Only incref if the map metadata indicates values need RC (heap-allocated strings)
+                    // String constants (global strings) don't have RC headers and should not be incref'd
+                    // When extracting a string from a map that needs RC:
+                    // 1. The variable now holds a reference to the string
+                    // 2. The map still owns the original reference
+                    // 3. At cleanup, both will decref - so we need the extra ref
+                    if value_is_string && value_needs_rc && value_type.is_pointer_type() {
+                        let str_ptr = result_val.into_pointer_value();
+                        let rc_header = unsafe {
+                            self.builder.build_in_bounds_gep(
+                                self.context.i8_type(),
+                                str_ptr,
+                                &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                                "rc_header",
+                            )
+                        }
+                        .unwrap();
+
+                        if let Some(incref_fn) = self.incref_fn {
+                            self.builder
+                                .build_call(incref_fn, &[rc_header.into()], "")
+                                .unwrap();
+                        }
+
+                        // Only track as heap_string after we've incref'd it
                         self.heap_strings.insert(name.clone());
                     }
-
-                    // Handle RC for string values
-                    // NOTE: Map string values might be constants without RC headers, so skip RC operations
-                    // The strings are owned by the map itself and will be cleaned up with the map
-                    // if value_is_string && value_type.is_pointer_type() {
-                    //     let str_ptr = result_val.into_pointer_value();
-                    //     let rc_header = unsafe {
-                    //         self.builder.build_in_bounds_gep(
-                    //             self.context.i8_type(),
-                    //             str_ptr,
-                    //             &[self.context.i32_type().const_int((-8_i32) as u64, true)],
-                    //             "rc_header",
-                    //         )
-                    //     }
-                    //     .unwrap();
-
-                    //     if let Some(incref_fn) = self.incref_fn {
-                    //         self.builder
-                    //             .build_call(incref_fn, &[rc_header.into()], "")
-                    //             .unwrap();
-                    //     }
-                    // }
 
                     // Store in temp_values
                     self.temp_values.insert(name.clone(), result_val);

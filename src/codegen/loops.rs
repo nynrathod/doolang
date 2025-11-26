@@ -152,10 +152,20 @@ impl<'ctx> CodeGen<'ctx> {
             self.context.append_basic_block(current_func, exit_block)
         };
 
-        // Build conditional branch
+        // Create cleanup block for natural loop exit
+        let cleanup_bb = self
+            .context
+            .append_basic_block(current_func, "for.range.cleanup");
+
+        // Build conditional branch to body or cleanup
         self.builder
-            .build_conditional_branch(condition, body_bb, exit_bb)
+            .build_conditional_branch(condition, body_bb, cleanup_bb)
             .unwrap();
+
+        // Generate cleanup block that cleans up and jumps to exit
+        self.builder.position_at_end(cleanup_bb);
+        self.generate_loop_exit_cleanup();
+        self.builder.build_unconditional_branch(exit_bb).unwrap();
 
         // Position builder at body block start for processing
         self.builder.position_at_end(body_bb);
@@ -260,10 +270,20 @@ impl<'ctx> CodeGen<'ctx> {
             self.context.append_basic_block(current_func, exit_block)
         };
 
-        // Build conditional branch
+        // Create cleanup block for natural loop exit
+        let cleanup_bb = self
+            .context
+            .append_basic_block(current_func, "for.array.cleanup");
+
+        // Build conditional branch to body or cleanup
         self.builder
-            .build_conditional_branch(condition, body_bb, exit_bb)
+            .build_conditional_branch(condition, body_bb, cleanup_bb)
             .unwrap();
+
+        // Generate cleanup block that cleans up and jumps to exit
+        self.builder.position_at_end(cleanup_bb);
+        self.generate_loop_exit_cleanup();
+        self.builder.build_unconditional_branch(exit_bb).unwrap();
 
         // Position at body block and load array element
         self.builder.position_at_end(body_bb);
@@ -440,26 +460,65 @@ impl<'ctx> CodeGen<'ctx> {
         let entry_block = current_func.get_first_basic_block().unwrap();
         let current_insert_block = self.builder.get_insert_block().unwrap();
 
-        // Position at the END of entry block to create allocas
+        // Get map types and check if they contain strings
+        let (key_type, val_type) = self.get_map_types(map);
+        let (key_is_string, val_is_string) = self.map_contains_strings(map);
+
+        // Get the type names from metadata for tracking
+        let (key_type_name, val_type_name) = if let Some(metadata) = self.map_metadata.get(map) {
+            (metadata.key_type.clone(), metadata.value_type.clone())
+        } else {
+            ("Int".to_string(), "Int".to_string())
+        };
+
+        // CRITICAL FIX: Never reuse allocas across different types to prevent corruption
+        // Always create unique allocas in entry block with type-specific and counter-based names
+        // This prevents stack corruption when iterating maps with different key/value types
+
+        // Generate unique counter for this loop to prevent any name collision
+        static LOOP_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let loop_id = LOOP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Position builder in entry block for alloca creation
         if let Some(terminator) = entry_block.get_terminator() {
             self.builder.position_before(&terminator);
         } else {
             self.builder.position_at_end(entry_block);
         }
 
-        // Initialize index variable in entry block
+        // Always create fresh allocas with unique names based on type and loop counter
+        // Remove old symbols to avoid stale pointers
+        self.symbols.remove(index_var);
+        self.symbols.remove(key_var);
+        self.symbols.remove(value_var);
+
         let index_alloca = self
             .builder
-            .build_alloca(self.context.i32_type(), index_var)
+            .build_alloca(
+                self.context.i32_type(),
+                &format!("{}_idx_L{}", index_var, loop_id),
+            )
             .unwrap();
 
-        // Get map types and check if they contain strings
-        let (key_type, val_type) = self.get_map_types(map);
-        let (key_is_string, val_is_string) = self.map_contains_strings(map);
+        let key_alloca = self
+            .builder
+            .build_alloca(
+                key_type,
+                &format!("{}_{}_L{}", key_var, key_type_name, loop_id),
+            )
+            .unwrap();
 
-        // Create key and value variable allocations in entry block
-        let key_alloca = self.builder.build_alloca(key_type, key_var).unwrap();
-        let val_alloca = self.builder.build_alloca(val_type, value_var).unwrap();
+        let val_alloca = self
+            .builder
+            .build_alloca(
+                val_type,
+                &format!("{}_{}_L{}", value_var, val_type_name, loop_id),
+            )
+            .unwrap();
+
+        // Restore builder position
+        self.builder.position_at_end(current_insert_block);
 
         // Initialize key/value to null/zero to enable cleanup detection
         if key_is_string {
@@ -470,9 +529,6 @@ impl<'ctx> CodeGen<'ctx> {
             let null_ptr = val_type.into_pointer_type().const_null();
             self.builder.build_store(val_alloca, null_ptr).unwrap();
         }
-
-        // Restore builder position to where we were
-        self.builder.position_at_end(current_insert_block);
 
         // Now initialize index to 0 at current position
         self.builder
@@ -551,10 +607,20 @@ impl<'ctx> CodeGen<'ctx> {
             self.context.append_basic_block(current_func, exit_block)
         };
 
-        // Build conditional branch
+        // Create cleanup block for natural loop exit
+        let cleanup_bb = self
+            .context
+            .append_basic_block(current_func, "for.map.cleanup");
+
+        // Build conditional branch to body or cleanup
         self.builder
-            .build_conditional_branch(condition, body_bb, exit_bb)
+            .build_conditional_branch(condition, body_bb, cleanup_bb)
             .unwrap();
+
+        // Generate cleanup block that cleans up and jumps to exit
+        self.builder.position_at_end(cleanup_bb);
+        self.generate_loop_exit_cleanup();
+        self.builder.build_unconditional_branch(exit_bb).unwrap();
 
         // Position at body block and load map pair
         self.builder.position_at_end(body_bb);
@@ -598,6 +664,14 @@ impl<'ctx> CodeGen<'ctx> {
             .build_load(val_type, val_ptr, "val_val")
             .unwrap();
         self.builder.build_store(val_alloca, val_val).unwrap();
+
+        // CRITICAL FIX: Set variable_types for loop variables
+        // This ensures print() and other operations know the correct type
+        // Without this, stale types from previous loops cause type confusion
+        self.variable_types
+            .insert(key_var.to_string(), key_type_name.clone());
+        self.variable_types
+            .insert(value_var.to_string(), val_type_name.clone());
 
         // Handle RC for strings
         if key_is_string {

@@ -142,7 +142,7 @@ fn test_for_loop_over_map() {
     let code = r#"
         fn main() {
             let maps = {"a": 1, "b": 2};
-            for (key, val) in maps {
+            for key, val in maps {
                 print(key);
                 print(val);
             }

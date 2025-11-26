@@ -46,7 +46,7 @@ impl<'a> Parser<'a> {
 
     /// Supports tuple patterns and optional iterable expressions.
     /// Syntax:
-    ///   - `for a, b or (a, b) in iterable { ... }`
+    ///   - `for a, b in iterable { ... }` (tuple destructuring without parens)
     ///   - `for { ... }` (infinite loop)
     /// Returns a ForLoopStmt AST node.
     pub fn parse_for_stmt(&mut self) -> ParseResult<AstNode> {
@@ -56,10 +56,47 @@ impl<'a> Parser<'a> {
         let pattern = if self.peek_is(TokenType::OpenBrace) {
             Pattern::Wildcard // `for { ... }` infinite loop
         } else {
-            // Parse comma-separated patterns for tuple destructuring
+            // Reject parenthesized patterns - only allow comma-separated patterns
+            if self.peek_is(TokenType::OpenParen) {
+                return Err(ParseError::UnexpectedToken(
+                    "Parenthesized patterns in for loops are not allowed. Use 'for key, value in map' instead of 'for (key, value) in map'".to_string(),
+                ));
+            }
+
+            // Parse comma-separated patterns for tuple destructuring (without parens)
             let patterns = self.parse_comma_separated(
-                |p| p.parse_pattern(),
-                TokenType::In, // Stop at 'in' or at the start of the iterable expression
+                |p| {
+                    // Only allow simple identifiers or wildcards, not nested parenthesized patterns
+                    if p.peek_is(TokenType::OpenParen) {
+                        return Err(ParseError::UnexpectedToken(
+                            "Parenthesized patterns in for loops are not allowed".to_string(),
+                        ));
+                    }
+                    if let Some(tok) = p.peek() {
+                        match tok.kind {
+                            TokenType::Identifier => {
+                                let name = tok.value.to_string();
+                                p.advance();
+                                Ok(Pattern::Identifier(name))
+                            }
+                            TokenType::Underscore => {
+                                p.advance();
+                                Ok(Pattern::Wildcard)
+                            }
+                            _ => Err(ParseError::UnexpectedTokenAt {
+                                msg: format!(
+                                    "Expected identifier or '_' in for loop pattern, got {:?}",
+                                    tok.kind
+                                ),
+                                line: tok.line,
+                                col: tok.col,
+                            }),
+                        }
+                    } else {
+                        Err(ParseError::EndOfInput)
+                    }
+                },
+                TokenType::In,
             )?;
 
             if patterns.len() == 1 {

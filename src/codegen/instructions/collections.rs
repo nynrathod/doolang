@@ -101,7 +101,15 @@ impl<'ctx> CodeGen<'ctx> {
         let index_val = self.resolve_value(index).into_int_value();
 
         let (key_is_string, val_is_string) = self.map_contains_strings(map);
+        let (key_needs_rc, val_needs_rc) = self.map_strings_need_rc(map);
         let (key_type, val_type) = self.get_map_types(map);
+
+        // Get the type names from metadata for tracking
+        let (key_type_name, val_type_name) = if let Some(metadata) = self.map_metadata.get(map) {
+            (metadata.key_type.clone(), metadata.value_type.clone())
+        } else {
+            ("Int".to_string(), "Int".to_string())
+        };
         let pair_type = self.context.struct_type(&[key_type, val_type], false);
 
         // Get map length for array type
@@ -139,17 +147,41 @@ impl<'ctx> CodeGen<'ctx> {
             .builder
             .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
             .unwrap();
-        let key_val = self.builder.build_load(key_type, key_ptr, "key").unwrap();
+        let mut key_val = self.builder.build_load(key_type, key_ptr, "key").unwrap();
+
+        // Extend bool key from i1 to i32 if needed
+        if key_type_name == "Bool" && key_val.is_int_value() {
+            let bool_val = key_val.into_int_value();
+            if bool_val.get_type().get_bit_width() == 1 {
+                key_val = self
+                    .builder
+                    .build_int_z_extend(bool_val, self.context.i32_type(), "key_bool_ext")
+                    .unwrap()
+                    .into();
+            }
+        }
 
         // Extract value (field 1)
         let val_ptr = self
             .builder
             .build_struct_gep(pair_type, pair_ptr, 1, "val_ptr")
             .unwrap();
-        let val_val = self.builder.build_load(val_type, val_ptr, "val").unwrap();
+        let mut val_val = self.builder.build_load(val_type, val_ptr, "val").unwrap();
 
-        // Handle RC for key if string
-        if key_is_string && key_val.is_pointer_value() {
+        // Extend bool value from i1 to i32 if needed
+        if val_type_name == "Bool" && val_val.is_int_value() {
+            let bool_val = val_val.into_int_value();
+            if bool_val.get_type().get_bit_width() == 1 {
+                val_val = self
+                    .builder
+                    .build_int_z_extend(bool_val, self.context.i32_type(), "val_bool_ext")
+                    .unwrap()
+                    .into();
+            }
+        }
+
+        // Handle RC for key if string and needs RC (heap-allocated, not constant)
+        if key_needs_rc && key_val.is_pointer_value() {
             let str_ptr = key_val.into_pointer_value();
             let rc_header = unsafe {
                 self.builder.build_in_bounds_gep(
@@ -167,8 +199,8 @@ impl<'ctx> CodeGen<'ctx> {
             self.heap_strings.insert(key_dest.to_string());
         }
 
-        // Handle RC for value if string
-        if val_is_string && val_val.is_pointer_value() {
+        // Handle RC for value if string and needs RC (heap-allocated, not constant)
+        if val_needs_rc && val_val.is_pointer_value() {
             let str_ptr = val_val.into_pointer_value();
             let rc_header = unsafe {
                 self.builder.build_in_bounds_gep(
@@ -186,10 +218,17 @@ impl<'ctx> CodeGen<'ctx> {
             self.heap_strings.insert(val_dest.to_string());
         }
 
-        // Store key
-        if let Some(symbol) = self.symbols.get(key_dest) {
-            self.builder.build_store(symbol.ptr, key_val).unwrap();
+        // Store key - recreate symbol if type has changed (e.g., variable reused across loops)
+        let needs_new_alloca = if let Some(symbol) = self.symbols.get(key_dest) {
+            // Check if the existing symbol has a different type
+            symbol.ty != key_type
         } else {
+            true
+        };
+
+        if needs_new_alloca {
+            // Remove old symbol and create new alloca with correct type
+            self.symbols.remove(key_dest);
             let alloca = self.builder.build_alloca(key_type, key_dest).unwrap();
             self.builder.build_store(alloca, key_val).unwrap();
             self.symbols.insert(
@@ -199,12 +238,48 @@ impl<'ctx> CodeGen<'ctx> {
                     ty: key_type,
                 },
             );
+        } else {
+            // Reuse existing symbol
+            let symbol = self.symbols.get(key_dest).unwrap();
+            self.builder.build_store(symbol.ptr, key_val).unwrap();
         }
 
-        // Store value
-        if let Some(symbol) = self.symbols.get(val_dest) {
-            self.builder.build_store(symbol.ptr, val_val).unwrap();
+        // Track the key type for proper printing - store in temp_values for immediate use
+        // Also store type information so Assign can propagate it correctly
+        self.variable_types
+            .insert(key_dest.to_string(), key_type_name.clone());
+
+        // Mark as loop-local variable so is_loop_var returns true during print codegen
+        self.loop_local_vars.insert(key_dest.to_string());
+
+        // Clean up stale metadata to avoid cross-loop pollution
+        if key_is_string {
+            // For strings, store the actual pointer value in temp_values
+            // This takes precedence in resolve_value
+            self.temp_values.insert(key_dest.to_string(), key_val);
+            // Remove from boolean_temps if it was there from a previous loop
+            self.boolean_temps.remove(key_dest);
+        } else if key_type_name == "Bool" {
+            // For bools, we need to mark them specially for printing
+            // Store the extended i32 value in temp_values
+            self.temp_values.insert(key_dest.to_string(), key_val);
+            self.boolean_temps.insert(key_dest.to_string());
         } else {
+            // For other types (Int, Float), remove from boolean_temps if present
+            self.boolean_temps.remove(key_dest);
+        }
+
+        // Store value - recreate symbol if type has changed (e.g., variable reused across loops)
+        let needs_new_alloca = if let Some(symbol) = self.symbols.get(val_dest) {
+            // Check if the existing symbol has a different type
+            symbol.ty != val_type
+        } else {
+            true
+        };
+
+        if needs_new_alloca {
+            // Remove old symbol and create new alloca with correct type
+            self.symbols.remove(val_dest);
             let alloca = self.builder.build_alloca(val_type, val_dest).unwrap();
             self.builder.build_store(alloca, val_val).unwrap();
             self.symbols.insert(
@@ -214,6 +289,34 @@ impl<'ctx> CodeGen<'ctx> {
                     ty: val_type,
                 },
             );
+        } else {
+            // Reuse existing symbol
+            let symbol = self.symbols.get(val_dest).unwrap();
+            self.builder.build_store(symbol.ptr, val_val).unwrap();
+        }
+
+        // Track the value type for proper printing - store in temp_values for immediate use
+        // Also store type information so Assign can propagate it correctly
+        self.variable_types
+            .insert(val_dest.to_string(), val_type_name.clone());
+
+        // Mark as loop-local variable so is_loop_var returns true during print codegen
+        self.loop_local_vars.insert(val_dest.to_string());
+
+        // Clean up stale metadata to avoid cross-loop pollution
+        if val_is_string {
+            // For strings, store the actual pointer value in temp_values
+            self.temp_values.insert(val_dest.to_string(), val_val);
+            // Remove from boolean_temps if it was there from a previous loop
+            self.boolean_temps.remove(val_dest);
+        } else if val_type_name == "Bool" {
+            // For bools, we need to mark them specially for printing
+            // Store the extended i32 value in temp_values
+            self.temp_values.insert(val_dest.to_string(), val_val);
+            self.boolean_temps.insert(val_dest.to_string());
+        } else {
+            // For other types (Int, Float), remove from boolean_temps if present
+            self.boolean_temps.remove(val_dest);
         }
 
         None
@@ -225,7 +328,6 @@ impl<'ctx> CodeGen<'ctx> {
         map: &str,
         key: &str,
     ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
-        let map_ptr = self.resolve_value(map).into_pointer_value();
         let key_val = self.resolve_value(key);
 
         // Get map metadata to determine key type
@@ -241,20 +343,23 @@ impl<'ctx> CodeGen<'ctx> {
             } else if key_type_str == "Float" {
                 self.context.f64_type().into()
             } else if key_type_str == "Bool" {
-                self.context.bool_type().into()
+                // Use i32 for bool keys to simplify comparisons
+                self.context.i32_type().into()
             } else {
                 self.context.i32_type().into()
             };
 
             let value_type_str = map_metadata_clone.value_type.clone();
             let value_is_string = map_metadata_clone.value_is_string;
+            // IMPORTANT: Use i32 for Bool to match how bools are stored in maps
+            // (bools are resolved as i32 in resolve_value, so map struct uses i32)
             let value_type: inkwell::types::BasicTypeEnum = match value_type_str.as_str() {
                 "Str" => self
                     .context
                     .ptr_type(inkwell::AddressSpace::default())
                     .into(),
                 "Int" => self.context.i32_type().into(),
-                "Bool" => self.context.bool_type().into(),
+                "Bool" => self.context.i32_type().into(),
                 "Float" => self.context.f64_type().into(),
                 _ => self.context.i32_type().into(),
             };
@@ -296,11 +401,20 @@ impl<'ctx> CodeGen<'ctx> {
                     .context
                     .append_basic_block(current_fn, "contains_continue");
 
-                // Create index variable
+                // Create index variable in entry block (LLVM requires allocas in entry block)
+                let current_block = self.builder.get_insert_block().unwrap();
+                let entry_block = current_fn.get_first_basic_block().unwrap();
+                if let Some(terminator) = entry_block.get_terminator() {
+                    self.builder.position_before(&terminator);
+                } else {
+                    self.builder.position_at_end(entry_block);
+                }
                 let index_alloca = self
                     .builder
-                    .build_alloca(self.context.i32_type(), "contains_index")
+                    .build_alloca(self.context.i32_type(), "contains_index_str")
                     .unwrap();
+                self.builder.position_at_end(current_block);
+
                 self.builder
                     .build_store(index_alloca, self.context.i32_type().const_zero())
                     .unwrap();
@@ -328,9 +442,32 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // Check key block: compare current key with search key
                 self.builder.position_at_end(check_key_block);
-                let pair_ptr = unsafe {
+
+                // CRITICAL: Load map_ptr fresh from symbol in this block to ensure SSA dominance
+                // and prevent corruption from stale pointers after many iterations
+                let map_ptr = if let Some(symbol) = self.symbols.get(map) {
                     self.builder
-                        .build_gep(pair_type, map_ptr, &[current_index], "pair_ptr")
+                        .build_load(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            symbol.ptr,
+                            "map_ptr_fresh",
+                        )
+                        .unwrap()
+                        .into_pointer_value()
+                } else {
+                    self.resolve_value(map).into_pointer_value()
+                };
+
+                // Build map array type for proper GEP (same as non-string case)
+                let map_array_type = pair_type.array_type(map_length as u32);
+
+                let pair_ptr = unsafe {
+                    self.builder.build_gep(
+                        map_array_type,
+                        map_ptr,
+                        &[self.context.i32_type().const_zero(), current_index],
+                        "pair_ptr",
+                    )
                 }
                 .unwrap();
 
@@ -338,6 +475,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
                     .unwrap();
+
                 let key_in_map = self
                     .builder
                     .build_load(key_type_llvm, key_ptr_in_map, "key_in_map")
@@ -430,11 +568,20 @@ impl<'ctx> CodeGen<'ctx> {
                     .context
                     .append_basic_block(current_fn, "contains_continue");
 
-                // Create index variable
+                // Create index variable in entry block (LLVM requires allocas in entry block)
+                let current_block = self.builder.get_insert_block().unwrap();
+                let entry_block = current_fn.get_first_basic_block().unwrap();
+                if let Some(terminator) = entry_block.get_terminator() {
+                    self.builder.position_before(&terminator);
+                } else {
+                    self.builder.position_at_end(entry_block);
+                }
                 let index_alloca = self
                     .builder
-                    .build_alloca(self.context.i32_type(), "contains_index")
+                    .build_alloca(self.context.i32_type(), "contains_index_nonstr")
                     .unwrap();
+                self.builder.position_at_end(current_block);
+
                 self.builder
                     .build_store(index_alloca, self.context.i32_type().const_zero())
                     .unwrap();
@@ -460,9 +607,32 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // Check block: compare key
                 self.builder.position_at_end(check_block);
-                let pair_ptr = unsafe {
+
+                // CRITICAL: Load map_ptr fresh from symbol in this block to ensure SSA dominance
+                // and prevent corruption from stale pointers after many iterations
+                let map_ptr = if let Some(symbol) = self.symbols.get(map) {
                     self.builder
-                        .build_gep(pair_type, map_ptr, &[current_index], "pair_ptr")
+                        .build_load(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            symbol.ptr,
+                            "map_ptr_fresh",
+                        )
+                        .unwrap()
+                        .into_pointer_value()
+                } else {
+                    self.resolve_value(map).into_pointer_value()
+                };
+
+                // Build map array type for proper GEP
+                let map_array_type = pair_type.array_type(map_length as u32);
+
+                let pair_ptr = unsafe {
+                    self.builder.build_gep(
+                        map_array_type,
+                        map_ptr,
+                        &[self.context.i32_type().const_zero(), current_index],
+                        "pair_ptr",
+                    )
                 }
                 .unwrap();
 
@@ -481,6 +651,42 @@ impl<'ctx> CodeGen<'ctx> {
                             inkwell::FloatPredicate::OEQ,
                             key_in_map.into_float_value(),
                             key_val.into_float_value(),
+                            "is_equal",
+                        )
+                        .unwrap()
+                } else if key_type_str == "Bool" {
+                    // Handle bool keys: extend i1 to i32 if necessary
+                    let key_in_map_int = if key_in_map.is_int_value() {
+                        let val = key_in_map.into_int_value();
+                        if val.get_type().get_bit_width() == 1 {
+                            self.builder
+                                .build_int_z_extend(val, self.context.i32_type(), "bool_ext_map")
+                                .unwrap()
+                        } else {
+                            val
+                        }
+                    } else {
+                        key_in_map.into_int_value()
+                    };
+
+                    let key_val_int = if key_val.is_int_value() {
+                        let val = key_val.into_int_value();
+                        if val.get_type().get_bit_width() == 1 {
+                            self.builder
+                                .build_int_z_extend(val, self.context.i32_type(), "bool_ext_key")
+                                .unwrap()
+                        } else {
+                            val
+                        }
+                    } else {
+                        key_val.into_int_value()
+                    };
+
+                    self.builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            key_in_map_int,
+                            key_val_int,
                             "is_equal",
                         )
                         .unwrap()

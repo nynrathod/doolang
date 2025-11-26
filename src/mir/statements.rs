@@ -897,15 +897,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                     _ => builder.next_tmp(),
                                 };
 
-                                let iter_tmp = build_expression(builder, iter_expr, block);
-
-                                // Store map directly without creating an array wrapper
-                                let map_var = format!("{}_{}_map", key_var, value_var);
-                                block.instrs.push(MirInstr::Assign {
-                                    name: map_var.clone(),
-                                    value: iter_tmp,
-                                    mutable: false,
-                                });
+                                let map_var = build_expression(builder, iter_expr, block);
 
                                 let index_var = format!("{}_{}__index", key_var, value_var);
 
@@ -985,17 +977,21 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                     index: index_var.clone(),
                                 });
 
-                                // Extract key and value from pair
-                                body_block.instrs.push(MirInstr::TupleGet {
+                                // MapGetPair creates {pair_tmp}_k and {pair_tmp}_v
+                                // Assign them to the actual key and value variables
+                                let key_tmp = format!("{}_k", pair_tmp);
+                                let val_tmp = format!("{}_v", pair_tmp);
+
+                                body_block.instrs.push(MirInstr::Assign {
                                     name: key_var.clone(),
-                                    tuple: pair_tmp.clone(),
-                                    index: 0,
+                                    value: key_tmp,
+                                    mutable: false,
                                 });
 
-                                body_block.instrs.push(MirInstr::TupleGet {
+                                body_block.instrs.push(MirInstr::Assign {
                                     name: value_var.clone(),
-                                    tuple: pair_tmp,
-                                    index: 1,
+                                    value: val_tmp,
+                                    mutable: false,
                                 });
 
                                 // Build body statements
@@ -1385,10 +1381,172 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                         }
                     }
 
-                    // Array iteration with break/continue support
-                    AstNode::Identifier(_) => {
-                        // Check if this is a tuple pattern for array iteration with index
-                        if is_tuple_pattern {
+                    // Identifier iteration - check if it's a map or array
+                    AstNode::Identifier(name) => {
+                        // Check the type of the identifier to determine if it's a map or array
+                        let is_map = if let Some(var_type) = builder.mir_symbol_table.get(name) {
+                            matches!(var_type, crate::parser::ast::TypeNode::Map(_, _))
+                        } else {
+                            false
+                        };
+
+                        if is_map && is_tuple_pattern {
+                            // Map iteration with tuple destructuring
+                            if let (Some(key_var), Some(value_var)) = (&key_var, &value_var) {
+                                let map_var = build_expression(builder, iter_expr, block);
+
+                                let index_var = format!("{}_{}__index", key_var, value_var);
+
+                                // Initialize index
+                                let zero_tmp = builder.next_tmp();
+                                block.instrs.push(MirInstr::ConstInt {
+                                    name: zero_tmp.clone(),
+                                    value: 0,
+                                });
+                                block.instrs.push(MirInstr::Assign {
+                                    name: index_var.clone(),
+                                    value: zero_tmp,
+                                    mutable: true,
+                                });
+
+                                if block.terminator.is_none() {
+                                    block.terminator = Some(MirInstr::Jump {
+                                        label: loop_header.clone(),
+                                    });
+                                } else {
+                                    // Sequential loops: connect previous loop's exit to this loop's header
+                                    if let Some(current_func) = builder.program.functions.last_mut()
+                                    {
+                                        for prev_block in current_func.blocks.iter_mut().rev() {
+                                            if prev_block.terminator.is_none() {
+                                                prev_block.terminator = Some(MirInstr::Jump {
+                                                    label: loop_header.clone(),
+                                                });
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Header: check map bounds
+                                let mut header_block = MirBlock {
+                                    label: loop_header.clone(),
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                // Use MapLen instruction for maps
+                                let len_tmp = builder.next_tmp();
+                                header_block.instrs.push(MirInstr::MapLen {
+                                    name: len_tmp.clone(),
+                                    map: map_var.clone(),
+                                });
+
+                                let cmp_tmp = builder.next_tmp();
+                                header_block.instrs.push(MirInstr::BinaryOp(
+                                    "lt".to_string(),
+                                    cmp_tmp.clone(),
+                                    index_var.clone(),
+                                    len_tmp,
+                                ));
+
+                                header_block.terminator = Some(MirInstr::CondJump {
+                                    cond: cmp_tmp,
+                                    then_block: loop_body.clone(),
+                                    else_block: loop_end.clone(),
+                                });
+
+                                blocks_to_add.push(header_block);
+
+                                // Body: extract key-value pair
+                                let mut body_block = MirBlock {
+                                    label: loop_body.clone(),
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                // Use MapGetPair to extract key-value pair
+                                let pair_tmp = builder.next_tmp();
+                                body_block.instrs.push(MirInstr::MapGetPair {
+                                    name: pair_tmp.clone(),
+                                    map: map_var,
+                                    index: index_var.clone(),
+                                });
+
+                                // MapGetPair creates {pair_tmp}_k and {pair_tmp}_v
+                                // Assign them to the actual key and value variables
+                                let key_tmp = format!("{}_k", pair_tmp);
+                                let val_tmp = format!("{}_v", pair_tmp);
+
+                                body_block.instrs.push(MirInstr::Assign {
+                                    name: key_var.clone(),
+                                    value: key_tmp,
+                                    mutable: false,
+                                });
+
+                                body_block.instrs.push(MirInstr::Assign {
+                                    name: value_var.clone(),
+                                    value: val_tmp,
+                                    mutable: false,
+                                });
+
+                                // Build body statements
+                                for stmt in body {
+                                    build_statement(builder, stmt, &mut body_block);
+                                }
+
+                                if body_block.terminator.is_none() {
+                                    body_block.terminator = Some(MirInstr::Jump {
+                                        label: loop_increment.clone(),
+                                    });
+                                }
+
+                                blocks_to_add.push(body_block);
+
+                                // Increment block
+                                let mut increment_block = MirBlock {
+                                    label: loop_increment,
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                let one_tmp = builder.next_tmp();
+                                increment_block.instrs.push(MirInstr::ConstInt {
+                                    name: one_tmp.clone(),
+                                    value: 1,
+                                });
+
+                                let new_index_tmp = builder.next_tmp();
+                                increment_block.instrs.push(MirInstr::BinaryOp(
+                                    "add".to_string(),
+                                    new_index_tmp.clone(),
+                                    index_var.clone(),
+                                    one_tmp,
+                                ));
+
+                                increment_block.instrs.push(MirInstr::Assign {
+                                    name: index_var,
+                                    value: new_index_tmp,
+                                    mutable: true,
+                                });
+
+                                increment_block.terminator = Some(MirInstr::Jump {
+                                    label: loop_header.clone(),
+                                });
+
+                                blocks_to_add.push(increment_block);
+
+                                // End block
+                                let end_block = MirBlock {
+                                    label: loop_end,
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                blocks_to_add.push(end_block);
+                            }
+                        } else if is_tuple_pattern {
+                            // Array iteration with tuple pattern for index
                             if let (Some(index_var), Some(value_var)) = (&key_var, &value_var) {
                                 let iter_tmp = build_expression(builder, iter_expr, block);
 
@@ -1633,32 +1791,12 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                 index: index_var.clone(),
                             });
 
-                            // If this is a tuple pattern (for map iteration), extract key and value
-                            if is_tuple_pattern && key_var.is_some() && value_var.is_some() {
-                                let key = key_var.as_ref().unwrap();
-                                let val = value_var.as_ref().unwrap();
-
-                                // Extract key (field 0) from the pair
-                                body_block.instrs.push(MirInstr::TupleGet {
-                                    name: key.clone(),
-                                    tuple: elem_tmp.clone(),
-                                    index: 0,
-                                });
-
-                                // Extract value (field 1) from the pair
-                                body_block.instrs.push(MirInstr::TupleGet {
-                                    name: val.clone(),
-                                    tuple: elem_tmp,
-                                    index: 1,
-                                });
-                            } else {
-                                // Regular array iteration - assign element to loop variable
-                                body_block.instrs.push(MirInstr::Assign {
-                                    name: loop_var.clone(),
-                                    value: elem_tmp,
-                                    mutable: false,
-                                });
-                            }
+                            // Regular array iteration - assign element to loop variable
+                            body_block.instrs.push(MirInstr::Assign {
+                                name: loop_var.clone(),
+                                value: elem_tmp,
+                                mutable: false,
+                            });
 
                             // Build body statements
                             for stmt in body {

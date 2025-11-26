@@ -264,8 +264,18 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Check if a variable is a loop iteration variable in any active loop
+    /// Checks both the loop_stack (for active loops) and loop_local_vars (for variables
+    /// that were allocated as loop variables, even if the loop context has been popped)
     pub fn is_loop_var(&self, var: &str) -> bool {
         let var_base = var.trim_start_matches('%').trim_end_matches("_array");
+
+        // First check loop_local_vars - this is the authoritative source
+        // because loop variables are marked here when created and cleaned up later
+        if self.loop_local_vars.contains(var) || self.loop_local_vars.contains(var_base) {
+            return true;
+        }
+
+        // Also check the loop_stack for active loops
         for loop_ctx in &self.loop_stack {
             for loop_var in &loop_ctx.loop_vars {
                 let loop_var_base = loop_var.trim_start_matches('%').trim_end_matches("_array");

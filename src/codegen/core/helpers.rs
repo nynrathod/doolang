@@ -65,8 +65,25 @@ impl<'ctx> CodeGen<'ctx> {
     /// Resolves a variable or constant name to its LLVM value.
     /// Used for looking up values in the symbol table or temporary values.
     pub fn resolve_value(&self, name: &str) -> BasicValueEnum<'ctx> {
+        // For loop variables, prefer loading from symbol to get the current iteration's value
+        // temp_values may contain stale pointers from previous loops
+        let is_loop_var = self.loop_local_vars.contains(name);
+
+        // For maps tracked in heap_maps, we should ALWAYS load from symbol if it exists
+        // because the symbol's alloca contains the authoritative pointer value
+        // temp_values may have a stale LLVM value from initial creation that doesn't
+        // reflect the actual runtime pointer stored in the symbol
+        let is_heap_map = self.heap_maps.contains(name);
+
         if let Some(val) = self.temp_values.get(name) {
-            return *val;
+            // If this is a loop variable AND we have a symbol for it, prefer the symbol
+            // because the symbol's alloca gets updated each iteration, but temp_values doesn't
+            // Also prefer symbol for heap maps to ensure we get the correct runtime pointer
+            if (is_loop_var || is_heap_map) && self.symbols.contains_key(name) {
+                // Fall through to symbol lookup below
+            } else {
+                return *val;
+            }
         }
 
         if let Some(sym) = self.symbols.get(name) {

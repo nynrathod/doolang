@@ -297,10 +297,12 @@ impl<'ctx> CodeGen<'ctx> {
         inkwell::types::BasicTypeEnum<'ctx>,
     ) {
         if let Some(metadata) = self.map_metadata.get(map_name) {
+            // IMPORTANT: Use i32 for Bool to match how bools are stored in maps
+            // (bools are resolved as i32 in resolve_value, so map struct uses i32)
             let key_type = match metadata.key_type.as_str() {
                 "Int" => self.context.i32_type().into(),
                 "Float" => self.context.f64_type().into(),
-                "Bool" => self.context.bool_type().into(),
+                "Bool" => self.context.i32_type().into(),
                 "Str" => self.context.ptr_type(AddressSpace::default()).into(),
                 _ => {
                     eprintln!(
@@ -311,10 +313,11 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             };
 
+            // IMPORTANT: Use i32 for Bool to match how bools are stored in maps
             let val_type = match metadata.value_type.as_str() {
                 "Int" => self.context.i32_type().into(),
                 "Float" => self.context.f64_type().into(),
-                "Bool" => self.context.bool_type().into(),
+                "Bool" => self.context.i32_type().into(),
                 "Str" => self.context.ptr_type(AddressSpace::default()).into(),
                 _ => {
                     eprintln!(
@@ -369,6 +372,15 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn map_contains_strings(&self, map_name: &str) -> (bool, bool) {
         if let Some(metadata) = self.map_metadata.get(map_name) {
             (metadata.key_is_string, metadata.value_is_string)
+        } else {
+            (false, false)
+        }
+    }
+
+    /// Returns true if the map strings need RC (heap-allocated, not constants).
+    pub fn map_strings_need_rc(&self, map_name: &str) -> (bool, bool) {
+        if let Some(metadata) = self.map_metadata.get(map_name) {
+            (metadata.key_needs_rc, metadata.value_needs_rc)
         } else {
             (false, false)
         }

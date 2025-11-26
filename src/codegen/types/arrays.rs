@@ -481,14 +481,16 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Generate cleanup when exiting a loop (called from loops.rs)
+    /// This generates the LLVM IR for cleanup but does NOT pop the loop context.
+    /// The loop context is popped separately after the body block is fully generated.
     pub fn generate_loop_exit_cleanup(&mut self) {
-        // Get current loop context
-        if let Some(loop_ctx) = self.exit_loop() {
-            // Clean up any heap-allocated loop variables
+        // Peek at the current loop context without popping it
+        // We only generate cleanup code here; the actual context pop happens later
+        if let Some(loop_ctx) = self.loop_stack.last().cloned() {
+            // Clean up any heap-allocated loop variables (generate LLVM IR for decref)
             for var in &loop_ctx.loop_vars {
                 if self.heap_strings.contains(var) {
                     self.emit_decref(var);
-                    self.heap_strings.remove(var);
                 }
                 if self.heap_arrays.contains(var) {
                     // Free the array - __decref will handle element cleanup recursively
@@ -522,8 +524,34 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }
                     self.emit_decref(var);
-                    self.heap_maps.remove(var);
                 }
+            }
+            // NOTE: We do NOT remove from heap_strings/heap_arrays/heap_maps here
+            // because that would affect codegen state. Those are cleaned up in finalize_loop_cleanup.
+        }
+    }
+
+    /// Finalize loop cleanup: pop the loop context and remove metadata.
+    /// This should be called AFTER the loop body block has been fully generated.
+    pub fn finalize_loop_cleanup(&mut self) {
+        if let Some(loop_ctx) = self.exit_loop() {
+            for var in &loop_ctx.loop_vars {
+                // Now safe to remove from tracking sets
+                self.heap_strings.remove(var);
+                self.heap_arrays.remove(var);
+                self.heap_maps.remove(var);
+                // Remove metadata
+                self.symbols.remove(var);
+                self.array_metadata.remove(var);
+                self.map_metadata.remove(var);
+                self.temp_values.remove(var);
+                self.variable_types.remove(var);
+                self.struct_instance_types.remove(var);
+                self.arrayget_sources.remove(var);
+                self.loop_local_vars.remove(var);
+                self.heap_pointers.remove(var);
+                self.composite_strings.remove(var);
+                self.composite_string_ptrs.remove(var);
             }
         }
     }

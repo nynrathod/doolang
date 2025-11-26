@@ -2184,6 +2184,26 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_store(rc_ptr, self.context.i32_type().const_int(1, false))
                         .unwrap();
 
+                    // Store length at offset 4
+                    let len_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i32_type(),
+                                heap_ptr,
+                                &[self.context.i32_type().const_int(1, false)],
+                                "len_ptr",
+                            )
+                            .unwrap()
+                    };
+                    self.builder
+                        .build_store(
+                            len_ptr,
+                            self.context
+                                .i32_type()
+                                .const_int(metadata.length as u64, false),
+                        )
+                        .unwrap();
+
                     // Get data pointer
                     let data_ptr = unsafe {
                         self.builder
@@ -2282,8 +2302,11 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Done
                     self.builder.position_at_end(loop_done);
+                    // Store data_ptr for array access, but track heap_ptr for RC operations
                     self.temp_values.insert(dest.to_string(), data_ptr.into());
                     self.heap_arrays.insert(dest.to_string());
+                    // Store the full heap pointer for RC operations
+                    self.heap_pointers.insert(dest.to_string(), heap_ptr);
                     let arr_meta = ArrayMetadata {
                         length: metadata.length,
                         element_type: if metadata.key_is_string {
@@ -2374,6 +2397,26 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     self.builder
                         .build_store(rc_ptr, self.context.i32_type().const_int(1, false))
+                        .unwrap();
+
+                    // Store length at offset 4
+                    let len_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i32_type(),
+                                heap_ptr,
+                                &[self.context.i32_type().const_int(1, false)],
+                                "len_ptr",
+                            )
+                            .unwrap()
+                    };
+                    self.builder
+                        .build_store(
+                            len_ptr,
+                            self.context
+                                .i32_type()
+                                .const_int(metadata.length as u64, false),
+                        )
                         .unwrap();
 
                     // Get data pointer
@@ -2474,8 +2517,11 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Done
                     self.builder.position_at_end(loop_done);
+                    // Store data_ptr for array access, but track heap_ptr for RC operations
                     self.temp_values.insert(dest.to_string(), data_ptr.into());
                     self.heap_arrays.insert(dest.to_string());
+                    // Store the full heap pointer for RC operations
+                    self.heap_pointers.insert(dest.to_string(), heap_ptr);
                     let arr_meta = ArrayMetadata {
                         length: metadata.length,
                         element_type: if metadata.value_is_string {
@@ -2519,7 +2565,8 @@ impl<'ctx> CodeGen<'ctx> {
                         self.context.i32_type().into()
                     };
 
-                    let map_type = self.context.struct_type(&[key_type, val_type], false);
+                    let pair_type = self.context.struct_type(&[key_type, val_type], false);
+                    let map_type = pair_type.array_type(metadata.length as u32);
 
                     let current_fn = self
                         .builder
@@ -2584,7 +2631,7 @@ impl<'ctx> CodeGen<'ctx> {
                     };
                     let key_ptr = self
                         .builder
-                        .build_struct_gep(map_type, pair_ptr, 0, "key_ptr")
+                        .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
                         .unwrap();
                     let stored_key = self
                         .builder
