@@ -360,22 +360,60 @@ impl SemanticAnalyzer {
 
             // Skip body validation for FFI functions
             if !is_ffi {
-                // Ensure no return values are present in Void functions.
-                for node in body.iter() {
-                    match node {
-                        AstNode::Return { values } => {
-                            if !values.is_empty() {
-                                return Err(SemanticError::InvalidReturnInVoidFunction {
-                                    function: name.to_string(),
+                // For functions with no return type and no error type: no Ok, Err, or return with values
+                if error_type.is_none() {
+                    for node in body.iter() {
+                        match node {
+                            AstNode::Return { values } => {
+                                if !values.is_empty() {
+                                    return Err(SemanticError::InvalidReturnInVoidFunction {
+                                        function: name.to_string(),
+                                    });
+                                }
+                            }
+                            AstNode::OkExpr { .. } => {
+                                return Err(SemanticError::UnexpectedNode {
+                                    expected: format!(
+                                        "Ok cannot be used in function '{}' without a return type or error type (! ErrorType)",
+                                        name
+                                    ),
                                 });
                             }
+                            AstNode::ErrExpr { .. } => {
+                                return Err(SemanticError::UnexpectedNode {
+                                    expected: format!(
+                                        "Err cannot be used in function '{}' without error type (! ErrorType)",
+                                        name
+                                    ),
+                                });
+                            }
+                            _ => {}
                         }
-                        AstNode::OkExpr { .. } | AstNode::ErrExpr { .. } => {
-                            return Err(SemanticError::InvalidReturnInVoidFunction {
-                                function: name.to_string(),
-                            });
+                    }
+                } else {
+                    // Function has error type but no success return type (error-only function)
+                    // Don't allow Ok with values, but allow empty Ok for error-only functions
+                    for node in body.iter() {
+                        match node {
+                            AstNode::Return { values } => {
+                                if !values.is_empty() {
+                                    return Err(SemanticError::InvalidReturnInVoidFunction {
+                                        function: name.to_string(),
+                                    });
+                                }
+                            }
+                            AstNode::OkExpr { values } => {
+                                if !values.is_empty() {
+                                    return Err(SemanticError::UnexpectedNode {
+                                        expected: format!(
+                                            "Ok with values cannot be used in error-only function '{}' (no return type specified). Use empty Ok or Err.",
+                                            name
+                                        ),
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
 
@@ -417,8 +455,14 @@ impl SemanticAnalyzer {
         self.function_depth += 1;
 
         // Set current function's error type for ? operator validation
+        // Special case: main() can use ? without declaring error type (like Rust)
         let prev_error_type = self.current_function_error_type.clone();
-        self.current_function_error_type = error_type.clone();
+        if name == "main" && error_type.is_none() {
+            // Allow main to use error handling by setting a default error type
+            self.current_function_error_type = Some(TypeNode::String);
+        } else {
+            self.current_function_error_type = error_type.clone();
+        }
 
         // Analyze function body with isolated scope.
         self.analyze_program(body)?;

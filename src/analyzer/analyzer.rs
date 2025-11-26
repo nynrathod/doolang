@@ -448,7 +448,7 @@ impl SemanticAnalyzer {
                 // Check that current function has an error return type
                 if self.current_function_error_type.is_none() {
                     return Err(SemanticError::UnexpectedNode {
-                        expected: "Ok can only be used in functions with error return type (e.g., -> T ! E)".to_string(),
+                        expected: "Ok can only be used in functions with error return type (e.g., -> T ! E or ! E)".to_string(),
                     });
                 }
                 // Type check values
@@ -467,7 +467,7 @@ impl SemanticAnalyzer {
                 // Check that current function has an error return type
                 if self.current_function_error_type.is_none() {
                     return Err(SemanticError::UnexpectedNode {
-                        expected: "Err can only be used in functions with error return type (e.g., -> T ! E)".to_string(),
+                        expected: "Err can only be used in functions with error return type (e.g., -> T ! E or ! E)".to_string(),
                     });
                 }
                 // Type check error value
@@ -484,7 +484,7 @@ impl SemanticAnalyzer {
                 // Check that current function has an error return type
                 if self.current_function_error_type.is_none() {
                     return Err(SemanticError::UnexpectedNode {
-                        expected: "? operator can only be used in functions with error return type (e.g., -> T ! E)".to_string(),
+                        expected: "? operator can only be used in functions with error return type (e.g., -> T ! E or ! E)".to_string(),
                     });
                 }
                 // Type check the expression
@@ -1046,6 +1046,9 @@ impl SemanticAnalyzer {
                         let should_import = if should_import_wildcard {
                             // Wildcard: import all public structs
                             true
+                        } else if is_namespace_import_or_alias {
+                            // Namespace import or namespace alias: import all public structs
+                            true
                         } else if specific_imports.is_empty() {
                             false
                         } else {
@@ -1085,6 +1088,9 @@ impl SemanticAnalyzer {
                     if *is_public {
                         let should_import = if should_import_wildcard {
                             // Wildcard: import all public enums
+                            true
+                        } else if is_namespace_import_or_alias {
+                            // Namespace import or namespace alias: import all public enums
                             true
                         } else if specific_imports.is_empty() {
                             false

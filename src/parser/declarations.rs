@@ -178,7 +178,7 @@ impl<'a> Parser<'a> {
 
         self.expect(TokenType::CloseParen)?; // consume ')'
 
-        // Parse optional return type (e.g., '-> Type')
+        // Parse optional return type (e.g., '-> Type') and/or error type (e.g., '! Type')
         let mut return_type = None;
         let mut error_type = None;
 
@@ -187,10 +187,10 @@ impl<'a> Parser<'a> {
                 // e.g., '->'
                 self.advance();
 
-                // Check if next token is '!' (error-only function)
+                // Check if next token is '!' (error-only function with ->)
                 if let Some(next_tok) = self.peek() {
                     if next_tok.kind == TokenType::Bang {
-                        // This is -> ! ErrorType (no success return)
+                        // This is -> ! ErrorType (no success return, kept for backward compatibility)
                         self.advance(); // consume '!'
                         error_type = Some(self.parse_type_annotation()?);
                     } else {
@@ -206,6 +206,10 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
+            } else if tok.kind == TokenType::Bang {
+                // Direct error type without -> (e.g., fn foo() ! Str)
+                self.advance(); // consume '!'
+                error_type = Some(self.parse_type_annotation()?);
             }
         }
 

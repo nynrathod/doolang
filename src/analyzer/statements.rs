@@ -243,6 +243,65 @@ impl SemanticAnalyzer {
             // Function call: check validity and return types
             AstNode::FunctionCall { func, args } => self.check_function_call(func, args),
 
+            // EnumVariant: could be enum variant or namespaced function call (e.g., File::Read)
+            // For manual error extraction, we need to handle this case
+            AstNode::EnumVariant {
+                enum_name,
+                variant,
+                payload,
+            } => {
+                // Try to look it up as a namespaced function first
+                let qualified_name = format!("{}::{}", enum_name, variant);
+
+                if let Some((param_types, ret_ty, err_ty)) =
+                    self.function_table.get(&qualified_name)
+                {
+                    // It's a function call with error type - verify arguments
+                    // Type check each argument
+                    if param_types.len() != payload.len() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: qualified_name.clone(),
+                            expected: param_types.len(),
+                            found: payload.len(),
+                        });
+                    }
+
+                    // Type check each argument
+                    for (arg, expected_type) in payload.iter().zip(param_types.iter()) {
+                        let arg_type = self.infer_type(arg)?;
+                        // Basic type checking (simplified for now)
+                        // TODO: Add more comprehensive type checking
+                    }
+
+                    // If the function has an error type, this is a Result
+                    // For manual error extraction (let val, err = ...), we need to return Ok type(s) + error type
+                    if let Some(error_type) = err_ty {
+                        // Build list of types: Ok value(s) + error type
+                        let mut result_types = match ret_ty {
+                            TypeNode::Tuple(types) => types.clone(),
+                            TypeNode::Void => vec![], // No ok value for Void
+                            _ => vec![ret_ty.clone()],
+                        };
+                        result_types.push(error_type.clone());
+                        Ok(result_types)
+                    } else {
+                        // No error type - just return the return type(s)
+                        match ret_ty {
+                            TypeNode::Tuple(types) => Ok(types.clone()),
+                            _ => Ok(vec![ret_ty.clone()]),
+                        }
+                    }
+                } else if self.enum_table.contains_key(enum_name) {
+                    // It's an enum variant - just infer its type normally
+                    Ok(vec![self.infer_type(value)?])
+                } else {
+                    // Neither function nor enum found
+                    Err(SemanticError::UndeclaredVariable(NamedError {
+                        name: format!("Undefined enum type or function '{}'", qualified_name),
+                    }))
+                }
+            }
+
             // Tuple literal: infer each element's type
             AstNode::TupleLiteral(elements) => {
                 elements.iter().map(|e| self.infer_type(e)).collect()
