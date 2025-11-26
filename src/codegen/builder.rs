@@ -3401,9 +3401,258 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_conditional_branch(is_err, err_block, ok_block)
                         .unwrap();
 
-                    // Error path: return the error struct as-is
+                    // Error path: check if we're in main() - if so, print error and exit
                     self.builder.position_at_end(err_block);
-                    self.builder.build_return(Some(&result_struct)).unwrap();
+                    let fn_name = func.get_name().to_str().unwrap();
+                    if fn_name == "main" {
+                        // Extract error value from Result struct (field 1)
+                        let error_ptr = self
+                            .builder
+                            .build_extract_value(result_struct, 1, "error_msg_ptr")
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Get the error type from result_types to determine how to print
+                        let err_type = self
+                            .result_types
+                            .get(result_tmp)
+                            .map(|(_, e)| e.clone())
+                            .unwrap_or_else(|| "Str".to_string());
+
+                        // Check if error is a struct (like FileError)
+                        let is_struct_error = self.struct_metadata.contains_key(&err_type)
+                            || (err_type.starts_with("Struct(") && err_type.ends_with(")"));
+
+                        // Print error message using printf
+                        let printf_type = self.context.i32_type().fn_type(
+                            &[self
+                                .context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into()],
+                            true,
+                        );
+                        let printf_fn = self.module.get_function("printf").unwrap_or_else(|| {
+                            self.module.add_function("printf", printf_type, None)
+                        });
+
+                        if is_struct_error {
+                            // Error is a struct - extract the struct name
+                            let struct_name =
+                                if err_type.starts_with("Struct(") && err_type.ends_with(")") {
+                                    &err_type[7..err_type.len() - 1]
+                                } else {
+                                    &err_type
+                                };
+
+                            // Get struct metadata
+                            if let Some(metadata) = self.struct_metadata.get(struct_name) {
+                                // Print "Error: StructName { "
+                                let error_prefix = format!("Error: {} {{ ", struct_name);
+                                let prefix_global = self
+                                    .builder
+                                    .build_global_string_ptr(&error_prefix, "error_prefix")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[prefix_global.as_pointer_value().into()],
+                                        "print_error_prefix",
+                                    )
+                                    .unwrap();
+
+                                // Get the canonical struct type
+                                let struct_type = if let Some(canonical_type) =
+                                    self.canonical_struct_types.get(struct_name)
+                                {
+                                    *canonical_type
+                                } else {
+                                    // Reconstruct from metadata
+                                    let field_llvm_types: Vec<inkwell::types::BasicTypeEnum> =
+                                        metadata
+                                            .field_types
+                                            .iter()
+                                            .map(|type_name| match type_name.as_str() {
+                                                "Int" => self.context.i32_type().into(),
+                                                "Float" => self.context.f64_type().into(),
+                                                "Bool" => self.context.bool_type().into(),
+                                                "Str" | "String" => self
+                                                    .context
+                                                    .ptr_type(inkwell::AddressSpace::default())
+                                                    .into(),
+                                                _ => self.context.i32_type().into(),
+                                            })
+                                            .collect();
+                                    self.context.struct_type(&field_llvm_types, false)
+                                };
+
+                                // Print each field
+                                for (field_idx, field_name) in
+                                    metadata.field_names.iter().enumerate()
+                                {
+                                    // Print field name
+                                    let field_name_str = format!("{}: ", field_name);
+                                    let field_name_global = self
+                                        .builder
+                                        .build_global_string_ptr(&field_name_str, "field_name")
+                                        .unwrap();
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[field_name_global.as_pointer_value().into()],
+                                            "print_field_name",
+                                        )
+                                        .unwrap();
+
+                                    // Get field type
+                                    let field_type = metadata
+                                        .field_types
+                                        .get(field_idx)
+                                        .map(|s| s.as_str())
+                                        .unwrap_or("");
+
+                                    // Get field LLVM type
+                                    let field_llvm_type = struct_type
+                                        .get_field_type_at_index(field_idx as u32)
+                                        .unwrap_or_else(|| self.context.i32_type().into());
+
+                                    // Access field using GEP
+                                    let field_ptr = self
+                                        .builder
+                                        .build_struct_gep(
+                                            struct_type,
+                                            error_ptr,
+                                            field_idx as u32,
+                                            &format!("error_field_{}_ptr", field_name),
+                                        )
+                                        .unwrap();
+
+                                    // Load field value
+                                    let field_value = self
+                                        .builder
+                                        .build_load(
+                                            field_llvm_type,
+                                            field_ptr,
+                                            &format!("error_field_{}", field_name),
+                                        )
+                                        .unwrap();
+
+                                    // Print field value based on type
+                                    if field_type == "Str" || field_type == "String" {
+                                        let format_str = "%s";
+                                        let format_global = self
+                                            .builder
+                                            .build_global_string_ptr(format_str, "field_str_fmt")
+                                            .unwrap();
+                                        self.builder
+                                            .build_call(
+                                                printf_fn,
+                                                &[
+                                                    format_global.as_pointer_value().into(),
+                                                    field_value.into(),
+                                                ],
+                                                "print_field_str",
+                                            )
+                                            .unwrap();
+                                    } else if field_type == "Int" {
+                                        let format_str = "%d";
+                                        let format_global = self
+                                            .builder
+                                            .build_global_string_ptr(format_str, "field_int_fmt")
+                                            .unwrap();
+                                        self.builder
+                                            .build_call(
+                                                printf_fn,
+                                                &[
+                                                    format_global.as_pointer_value().into(),
+                                                    field_value.into(),
+                                                ],
+                                                "print_field_int",
+                                            )
+                                            .unwrap();
+                                    }
+
+                                    // Print separator or closing brace
+                                    if field_idx < metadata.field_names.len() - 1 {
+                                        let sep_global = self
+                                            .builder
+                                            .build_global_string_ptr(", ", "field_sep")
+                                            .unwrap();
+                                        self.builder
+                                            .build_call(
+                                                printf_fn,
+                                                &[sep_global.as_pointer_value().into()],
+                                                "print_sep",
+                                            )
+                                            .unwrap();
+                                    }
+                                }
+
+                                // Print closing brace and newline
+                                let suffix_global = self
+                                    .builder
+                                    .build_global_string_ptr(" }\n", "error_suffix")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[suffix_global.as_pointer_value().into()],
+                                        "print_error_suffix",
+                                    )
+                                    .unwrap();
+                            } else {
+                                // Fallback: struct metadata not found, print as pointer
+                                let error_prefix = self
+                                    .builder
+                                    .build_global_string_ptr(
+                                        "Error: <unknown struct>\n",
+                                        "error_fmt",
+                                    )
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[error_prefix.as_pointer_value().into()],
+                                        "print_error",
+                                    )
+                                    .unwrap();
+                            }
+                        } else {
+                            // Error is a simple string - print it directly
+                            let error_prefix = self
+                                .builder
+                                .build_global_string_ptr("Error: %s\n", "error_fmt")
+                                .unwrap();
+
+                            self.builder
+                                .build_call(
+                                    printf_fn,
+                                    &[error_prefix.as_pointer_value().into(), error_ptr.into()],
+                                    "print_error",
+                                )
+                                .unwrap();
+                        }
+
+                        // Exit with error code 1
+                        let exit_type = self
+                            .context
+                            .void_type()
+                            .fn_type(&[self.context.i32_type().into()], false);
+                        let exit_fn = self
+                            .module
+                            .get_function("exit")
+                            .unwrap_or_else(|| self.module.add_function("exit", exit_type, None));
+
+                        let exit_code = self.context.i32_type().const_int(1, false);
+                        self.builder
+                            .build_call(exit_fn, &[exit_code.into()], "exit_on_error")
+                            .unwrap();
+
+                        // Unreachable after exit
+                        self.builder.build_unreachable().unwrap();
+                    } else {
+                        // Regular function: return the error struct as-is
+                        self.builder.build_return(Some(&result_struct)).unwrap();
+                    }
 
                     // Ok path: extract value (field 1) which is a pointer
                     self.builder.position_at_end(ok_block);
@@ -4102,8 +4351,53 @@ impl<'ctx> CodeGen<'ctx> {
                             phi.add_incoming(&[(ok_val, ok_block), (err_val, err_block)]);
                             let phi_val = phi.as_basic_value();
                             self.temp_values.insert(ok_name.clone(), phi_val);
+
+                            // CRITICAL FIX: Use the actual Ok type from result_types, not hardcoded "Int"
+                            let actual_ok_type = self
+                                .result_types
+                                .get(result_tmp)
+                                .map(|(t, _)| t.clone())
+                                .unwrap_or_else(|| "Int".to_string());
+
                             self.variable_types
-                                .insert(ok_name.clone(), "Int".to_string());
+                                .insert(ok_name.clone(), actual_ok_type.clone());
+
+                            // CRITICAL: If Ok type is a struct, track it in struct_instance_types
+                            // This is essential for FileMetadata and other struct returns
+                            let is_ok_struct = if actual_ok_type.starts_with("Struct(")
+                                && actual_ok_type.ends_with(")")
+                            {
+                                let struct_name = &actual_ok_type[7..actual_ok_type.len() - 1];
+                                if self.struct_metadata.contains_key(struct_name) {
+                                    self.struct_instance_types
+                                        .insert(ok_name.clone(), struct_name.to_string());
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else if self.struct_metadata.contains_key(&actual_ok_type) {
+                                self.struct_instance_types
+                                    .insert(ok_name.clone(), actual_ok_type.clone());
+                                true
+                            } else {
+                                false
+                            };
+
+                            // Mark as heap-allocated if it's a pointer type (structs, arrays, maps, strings)
+                            if is_ok_struct
+                                || actual_ok_type.starts_with("Array")
+                                || actual_ok_type.starts_with("Map")
+                                || actual_ok_type == "Str"
+                                || actual_ok_type == "String"
+                            {
+                                if phi_val.is_pointer_value() {
+                                    if actual_ok_type.starts_with("Array") {
+                                        self.heap_arrays.insert(ok_name.clone());
+                                    } else if actual_ok_type.starts_with("Map") {
+                                        self.heap_maps.insert(ok_name.clone());
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -4202,8 +4496,15 @@ impl<'ctx> CodeGen<'ctx> {
                             let normalized = format!("Struct({})", struct_name);
                             self.variable_types.insert(error_name.clone(), normalized);
 
-                            // eprintln!("DEBUG: ManualErrorExtract - stored error '{}' as struct type '{}' (original: '{}')",
-                            //     error_name, struct_name, err_type);
+                            // CRITICAL FIX: Also store in struct_instance_types so printing works
+                            self.struct_instance_types
+                                .insert(error_name.clone(), struct_name.clone());
+                            if error_name.starts_with('%') {
+                                self.struct_instance_types.insert(
+                                    error_name.trim_start_matches('%').to_string(),
+                                    struct_name.clone(),
+                                );
+                            }
                         } else if err_type.starts_with("Array(") || err_type.starts_with("[") {
                             // Array error type - extract element type and set metadata
                             self.heap_arrays.insert(error_name.clone());
@@ -4527,10 +4828,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let struct_ptr = self.resolve_value(struct_instance);
 
                 if !struct_ptr.is_pointer_value() {
-                    // eprintln!(
-                    //     "DEBUG: StructGet - struct_instance '{}' is not a pointer value",
-                    //     struct_instance
-                    // );
                     return None;
                 }
 
@@ -4541,22 +4838,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .variable_types
                     .get(struct_instance)
                     .cloned()
-                    .unwrap_or_else(|| {
-                        // eprintln!(
-                        //     "DEBUG: StructGet - struct_instance '{}' not found in variable_types",
-                        //     struct_instance
-                        // );
-                        // eprintln!(
-                        //     "  Available variable_types: {:?}",
-                        //     self.variable_types.keys().collect::<Vec<_>>()
-                        // );
-                        "Unknown".to_string()
-                    });
-
-                // eprintln!(
-                //     "DEBUG: StructGet - struct_instance='{}', type_str='{}', field='{}'",
-                //     struct_instance, struct_type_str, field
-                // );
+                    .unwrap_or_else(|| "Unknown".to_string());
 
                 // Extract struct name from type string "Struct(StructName)" or just "StructName"
                 let struct_name =
@@ -4702,22 +4984,22 @@ impl<'ctx> CodeGen<'ctx> {
                 // If so, load the pointer value (since nested structs are stored as pointers)
                 let is_nested_struct = self.struct_metadata.contains_key(&field_type_name);
 
-                let field_val = if is_nested_struct {
-                    // For nested structs, the field is a pointer to the struct
-                    // We need to load that pointer value
-                    self.builder
-                        .build_load(field_llvm_type, field_ptr, &format!("{}_load", name))
-                        .unwrap()
-                } else {
-                    // For non-struct types, load the value
-                    self.builder
-                        .build_load(field_llvm_type, field_ptr, &format!("{}_load", name))
-                        .unwrap()
-                };
+                // Load the field value
+                let field_val = self
+                    .builder
+                    .build_load(field_llvm_type, field_ptr, &format!("{}_load", name))
+                    .unwrap();
 
                 self.temp_values.insert(name.clone(), field_val);
                 self.variable_types
                     .insert(name.clone(), field_type_name.clone());
+
+                // CRITICAL: If the field is a struct type, also track it in struct_instance_types
+                // so that subsequent field accesses on this field work correctly
+                if is_nested_struct {
+                    self.struct_instance_types
+                        .insert(name.clone(), field_type_name.clone());
+                }
 
                 Some(field_val)
             }

@@ -1006,27 +1006,79 @@ impl<'ctx> CodeGen<'ctx> {
                                     .unwrap();
                             }
                             "Int" => {
-                                let field_val = self
-                                    .builder
-                                    .build_load(
-                                        self.context.i32_type(),
-                                        field_ptr,
-                                        &format!("field_{}_val", field_name),
-                                    )
-                                    .unwrap()
-                                    .into_int_value();
+                                // Check if this is an i64 field (for FileMetadata: size, created, modified, accessed)
+                                let actual_field_type = canonical_type
+                                    .get_field_type_at_index(field_idx as u32)
+                                    .unwrap();
 
-                                let fmt = self
-                                    .builder
-                                    .build_global_string_ptr("%d", "int_field_fmt")
-                                    .unwrap();
-                                self.builder
-                                    .build_call(
-                                        printf_fn,
-                                        &[fmt.as_pointer_value().into(), field_val.into()],
-                                        "print_int_field",
-                                    )
-                                    .unwrap();
+                                if actual_field_type.is_int_type()
+                                    && actual_field_type.into_int_type().get_bit_width() == 64
+                                {
+                                    // i64 field
+                                    let field_val = self
+                                        .builder
+                                        .build_load(
+                                            self.context.i64_type(),
+                                            field_ptr,
+                                            &format!("field_{}_val", field_name),
+                                        )
+                                        .unwrap()
+                                        .into_int_value();
+
+                                    // Special handling for "size" field - print with " bytes" unit
+                                    if field_name == "size" && struct_name == "FileMetadata" {
+                                        let fmt_bytes = self
+                                            .builder
+                                            .build_global_string_ptr("%lld bytes", "fmt_size_bytes")
+                                            .unwrap();
+                                        self.builder
+                                            .build_call(
+                                                printf_fn,
+                                                &[
+                                                    fmt_bytes.as_pointer_value().into(),
+                                                    field_val.into(),
+                                                ],
+                                                "print_size_bytes",
+                                            )
+                                            .unwrap();
+                                    } else {
+                                        // Regular i64 field - just print the number
+                                        let fmt = self
+                                            .builder
+                                            .build_global_string_ptr("%lld", "i64_field_fmt")
+                                            .unwrap();
+                                        self.builder
+                                            .build_call(
+                                                printf_fn,
+                                                &[fmt.as_pointer_value().into(), field_val.into()],
+                                                "print_i64_field",
+                                            )
+                                            .unwrap();
+                                    }
+                                } else {
+                                    // i32 field - use %d format
+                                    let field_val = self
+                                        .builder
+                                        .build_load(
+                                            self.context.i32_type(),
+                                            field_ptr,
+                                            &format!("field_{}_val", field_name),
+                                        )
+                                        .unwrap()
+                                        .into_int_value();
+
+                                    let fmt = self
+                                        .builder
+                                        .build_global_string_ptr("%d", "int_field_fmt")
+                                        .unwrap();
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[fmt.as_pointer_value().into(), field_val.into()],
+                                            "print_int_field",
+                                        )
+                                        .unwrap();
+                                }
                             }
                             "Float" => {
                                 let field_val = self

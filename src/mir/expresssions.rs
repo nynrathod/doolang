@@ -8,6 +8,11 @@ use crate::{
 /// Helper function to determine the type of an operand by looking it up in the symbol table
 /// If not found, tries to infer the type from the operand value (e.g., literals)
 fn get_operand_type(builder: &MirBuilder, operand: &str) -> Option<TypeNode> {
+    // Check for nil first - it's a special pointer value
+    if operand == "nil" {
+        return Some(TypeNode::String); // Using String as a marker for "pointer type"
+    }
+
     // First try to look up in symbol table
     if let Some(ty) = builder.mir_symbol_table.get(operand).cloned() {
         return Some(ty);
@@ -40,6 +45,17 @@ pub fn determine_op_type(builder: &MirBuilder, lhs: &str, rhs: &str) -> Result<S
     let lhs_type = get_operand_type(builder, lhs);
     let rhs_type = get_operand_type(builder, rhs);
 
+    // Handle nil comparisons specially - nil can be compared with any pointer type
+    // nil is represented as String type in get_operand_type
+    let is_nil_comparison = (lhs == "nil" || rhs == "nil")
+        || (lhs.starts_with("%") && rhs == "nil")
+        || (rhs.starts_with("%") && lhs == "nil");
+
+    if is_nil_comparison {
+        // For nil comparisons, use pointer comparison (int type in LLVM)
+        return Ok("int".to_string());
+    }
+
     match (&lhs_type, &rhs_type) {
         (Some(TypeNode::Float), Some(TypeNode::Float)) => Ok("float".to_string()),
         (Some(TypeNode::Float), Some(TypeNode::Int)) => Ok("float".to_string()),
@@ -47,6 +63,13 @@ pub fn determine_op_type(builder: &MirBuilder, lhs: &str, rhs: &str) -> Result<S
         (Some(TypeNode::Int), Some(TypeNode::Int)) => Ok("int".to_string()),
         (Some(TypeNode::Bool), Some(TypeNode::Bool)) => Ok("bool".to_string()),
         (Some(TypeNode::String), Some(TypeNode::String)) => Ok("string".to_string()),
+        // Special case: None + String likely means error variable vs nil comparison
+        // This happens because error variables from ManualErrorExtract aren't in symbol table yet
+        (None, Some(TypeNode::String)) | (Some(TypeNode::String), None) => {
+            // If one operand is unknown (likely an error variable) and the other is String (likely nil),
+            // treat this as a pointer comparison
+            Ok("int".to_string())
+        }
         (Some(TypeNode::String), _) | (_, Some(TypeNode::String)) => {
             Err(format!("Cannot perform arithmetic on string types"))
         }
@@ -77,10 +100,12 @@ pub fn determine_op_type(builder: &MirBuilder, lhs: &str, rhs: &str) -> Result<S
         )),
         (None, None) => {
             // If we don't know both types, assume int (most common case)
+            // This also handles pointer comparisons (struct == nil, etc.)
             Ok("int".to_string())
         }
         _ => {
             // One type is unknown - assume int (most common case)
+            // This handles cases like err != nil where err type is not in symbol table yet
             // If it's actually a float operation, the codegen will handle it
             Ok("int".to_string())
         }

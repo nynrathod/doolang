@@ -1440,88 +1440,142 @@ impl<'ctx> CodeGen<'ctx> {
                         )
                         .unwrap();
                 } else if val.is_pointer_value() {
-                    // Check if pointer is null and print "null" instead of "(null)"
-                    let ptr_val = val.into_pointer_value();
+                    // Check variable_types to determine if this is a string or struct pointer
+                    let var_type = self.variable_types.get(value).cloned();
+                    let is_string_type = var_type
+                        .as_ref()
+                        .map(|t| t == "Str" || t == "String")
+                        .unwrap_or(true); // Default to string if unknown
 
-                    // Check if pointer is null
-                    let null_ptr = self
-                        .context
-                        .ptr_type(inkwell::AddressSpace::default())
-                        .const_null();
+                    // Check if it's a struct pointer (not a string)
+                    let is_struct_ptr = var_type
+                        .as_ref()
+                        .map(|t| self.struct_metadata.contains_key(t))
+                        .unwrap_or(false);
 
-                    let ptr_as_int = self
-                        .builder
-                        .build_ptr_to_int(ptr_val, self.context.i64_type(), "ptr_as_int")
-                        .unwrap();
-                    let null_as_int = self
-                        .builder
-                        .build_ptr_to_int(null_ptr, self.context.i64_type(), "null_as_int")
-                        .unwrap();
+                    if is_struct_ptr {
+                        // This is a struct pointer - print as pointer address (not a string)
+                        let ptr_val = val.into_pointer_value();
+                        let ptr_as_int = self
+                            .builder
+                            .build_ptr_to_int(ptr_val, self.context.i64_type(), "ptr_as_int")
+                            .unwrap();
+                        let format_str = if idx < values.len() - 1 {
+                            "%lld "
+                        } else {
+                            "%lld"
+                        };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_ptr_fmt")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[format_global.as_pointer_value().into(), ptr_as_int.into()],
+                                "print_ptr_call",
+                            )
+                            .unwrap();
+                    } else if is_string_type {
+                        // This is a string pointer - check if null and print accordingly
+                        let ptr_val = val.into_pointer_value();
 
-                    let is_null = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::EQ,
-                            ptr_as_int,
-                            null_as_int,
-                            "is_null_ptr",
-                        )
-                        .unwrap();
+                        // Check if pointer is null
+                        let null_ptr = self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .const_null();
 
-                    // Create blocks for null and non-null cases
-                    let func = self
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_parent()
-                        .unwrap();
-                    let null_block = self.context.append_basic_block(func, "print_null");
-                    let non_null_block = self.context.append_basic_block(func, "print_non_null");
-                    let cont_block = self.context.append_basic_block(func, "print_ptr_cont");
+                        let ptr_as_int = self
+                            .builder
+                            .build_ptr_to_int(ptr_val, self.context.i64_type(), "ptr_as_int")
+                            .unwrap();
+                        let null_as_int = self
+                            .builder
+                            .build_ptr_to_int(null_ptr, self.context.i64_type(), "null_as_int")
+                            .unwrap();
 
-                    self.builder
-                        .build_conditional_branch(is_null, null_block, non_null_block)
-                        .unwrap();
+                        let is_null = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                ptr_as_int,
+                                null_as_int,
+                                "is_null_ptr",
+                            )
+                            .unwrap();
 
-                    // Null block: print "null"
-                    self.builder.position_at_end(null_block);
-                    let null_str = if idx < values.len() - 1 {
-                        "null "
+                        // Create blocks for null and non-null cases
+                        let func = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let null_block = self.context.append_basic_block(func, "print_null");
+                        let non_null_block =
+                            self.context.append_basic_block(func, "print_non_null");
+                        let cont_block = self.context.append_basic_block(func, "print_ptr_cont");
+
+                        self.builder
+                            .build_conditional_branch(is_null, null_block, non_null_block)
+                            .unwrap();
+
+                        // Null block: print "null"
+                        self.builder.position_at_end(null_block);
+                        let null_str = if idx < values.len() - 1 {
+                            "null "
+                        } else {
+                            "null"
+                        };
+                        let null_global = self
+                            .builder
+                            .build_global_string_ptr(null_str, "null_str")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[null_global.as_pointer_value().into()],
+                                "print_null",
+                            )
+                            .unwrap();
+                        self.builder.build_unconditional_branch(cont_block).unwrap();
+
+                        // Non-null block: print pointer as string
+                        self.builder.position_at_end(non_null_block);
+                        let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_fmt")
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[format_global.as_pointer_value().into(), ptr_val.into()],
+                                "print_call",
+                            )
+                            .unwrap();
+                        self.builder.build_unconditional_branch(cont_block).unwrap();
+
+                        // Continue block
+                        self.builder.position_at_end(cont_block);
                     } else {
-                        "null"
-                    };
-                    let null_global = self
-                        .builder
-                        .build_global_string_ptr(null_str, "null_str")
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[null_global.as_pointer_value().into()],
-                            "print_null",
-                        )
-                        .unwrap();
-                    self.builder.build_unconditional_branch(cont_block).unwrap();
-
-                    // Non-null block: print pointer as string
-                    self.builder.position_at_end(non_null_block);
-                    let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
-                    let format_global = self
-                        .builder
-                        .build_global_string_ptr(format_str, "print_fmt")
-                        .unwrap();
-
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[format_global.as_pointer_value().into(), ptr_val.into()],
-                            "print_call",
-                        )
-                        .unwrap();
-                    self.builder.build_unconditional_branch(cont_block).unwrap();
-
-                    // Continue block
-                    self.builder.position_at_end(cont_block);
+                        // Unknown type - print as string (default behavior)
+                        let ptr_val = val.into_pointer_value();
+                        let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "print_fmt")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[format_global.as_pointer_value().into(), ptr_val.into()],
+                                "print_call",
+                            )
+                            .unwrap();
+                    }
                 }
             }
         }

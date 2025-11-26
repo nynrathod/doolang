@@ -20,6 +20,19 @@ fn check_if_error_returning(builder: &MirBuilder, expr: &AstNode) -> bool {
             }
             false
         }
+        AstNode::EnumVariant {
+            enum_name, variant, ..
+        } => {
+            // Handle namespaced function calls like File::Read
+            // These are parsed as EnumVariant but may be functions
+            let qualified_name = format!("{}::{}", enum_name, variant);
+            if let Some((_params, _return_type, error_type)) =
+                builder.function_table.get(&qualified_name)
+            {
+                return error_type.is_some();
+            }
+            false
+        }
         AstNode::MethodCall { method, .. } => {
             // For method calls, we need to look up the method with its receiver type
             // For now, we'll just check if the method name exists in the function table
@@ -80,18 +93,37 @@ fn count_ok_values(builder: &MirBuilder, expr: &AstNode) -> usize {
                         let comma_count = type_str.matches(',').count();
                         return comma_count + 1;
                     } else {
-                        // Single return value
-                        return 1;
+                        return 1; // Single value
                     }
                 }
             }
-            1 // Default to single value
+            0
+        }
+        AstNode::EnumVariant {
+            enum_name, variant, ..
+        } => {
+            // Handle namespaced function calls like File::Read
+            let qualified_name = format!("{}::{}", enum_name, variant);
+            if let Some((_params, return_type, _error_type)) =
+                builder.function_table.get(&qualified_name)
+            {
+                let type_str = format!("{:?}", return_type);
+                if type_str.contains(',') {
+                    let comma_count = type_str.matches(',').count();
+                    return comma_count + 1;
+                } else if type_str.contains("Void") {
+                    return 1; // Void counts as 1 for manual error extraction (represented by _)
+                } else {
+                    return 1; // Single value
+                }
+            }
+            0
         }
         AstNode::TryPropagate { expr } => {
-            // For ? operator, count the Ok values from the inner expression
+            // For ? operator, count the Ok values from inner expression
             count_ok_values(builder, expr)
         }
-        _ => 1,
+        _ => 0,
     }
 }
 

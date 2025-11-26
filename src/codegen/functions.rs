@@ -49,6 +49,70 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
+        // WORKAROUND: Manually add FileError and FileMetadata struct metadata since imported structs
+        // are not included in the MIR globals. This should be fixed by propagating
+        // struct declarations from imported modules.
+        if !self.struct_metadata.contains_key("FileError") {
+            let metadata = crate::codegen::core::context::StructMetadata {
+                field_names: vec!["message".to_string()],
+                field_types: vec!["Str".to_string()],
+            };
+            self.struct_metadata
+                .insert("FileError".to_string(), metadata);
+
+            // Also create the canonical LLVM struct type
+            let llvm_field_types = vec![self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()];
+            let struct_type = self.context.struct_type(&llvm_field_types, false);
+            self.canonical_struct_types
+                .insert("FileError".to_string(), struct_type);
+        }
+
+        if !self.struct_metadata.contains_key("FileMetadata") {
+            let metadata = crate::codegen::core::context::StructMetadata {
+                field_names: vec![
+                    "isFile".to_string(),
+                    "isDir".to_string(),
+                    "isSymlink".to_string(),
+                    "size".to_string(),
+                    "readonly".to_string(),
+                    "created".to_string(),
+                    "modified".to_string(),
+                    "accessed".to_string(),
+                ],
+                field_types: vec![
+                    "Bool".to_string(),
+                    "Bool".to_string(),
+                    "Bool".to_string(),
+                    "Int".to_string(),
+                    "Bool".to_string(),
+                    "Int".to_string(),
+                    "Int".to_string(),
+                    "Int".to_string(),
+                ],
+            };
+            self.struct_metadata
+                .insert("FileMetadata".to_string(), metadata);
+
+            // Also create the canonical LLVM struct type
+            // Bool fields are i32 (0 or 1), Int fields are i32, i64 for size/timestamps
+            let llvm_field_types = vec![
+                self.context.i32_type().into(), // isFile (Bool as i32)
+                self.context.i32_type().into(), // isDir (Bool as i32)
+                self.context.i32_type().into(), // isSymlink (Bool as i32)
+                self.context.i64_type().into(), // size (i64 from FFI)
+                self.context.i32_type().into(), // readonly (Bool as i32)
+                self.context.i64_type().into(), // created (i64 timestamp)
+                self.context.i64_type().into(), // modified (i64 timestamp)
+                self.context.i64_type().into(), // accessed (i64 timestamp)
+            ];
+            let struct_type = self.context.struct_type(&llvm_field_types, false);
+            self.canonical_struct_types
+                .insert("FileMetadata".to_string(), struct_type);
+        }
+
         // Pre-scan and declare all functions for forward references
         // This allows functions to call each other regardless of definition order
         for func in &program.functions {
