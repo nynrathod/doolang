@@ -147,6 +147,7 @@ pub enum MirInstr {
     Array {
         name: String,
         elements: Vec<String>,
+        element_type: Option<String>, // "Int", "Float", "Bool", "Str" - helps distinguish [1] from [true]
     },
     Map {
         name: String,

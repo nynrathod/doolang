@@ -10,6 +10,12 @@ impl<'ctx> CodeGen<'ctx> {
         method: &str,
         args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
+        // Check for JSON builtin FIRST before trying to resolve the object
+        // This prevents panic when "JSON" is passed as the object (it's not a real variable)
+        if object == "JSON" {
+            return self.generate_json_method(dest, method, args);
+        }
+
         // First, check if this is a custom user-defined method
         // Try to determine the type name from the object
         let object_val = self.resolve_value(object);
@@ -100,10 +106,7 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // Check for json builtin
-        if object == "json" {
-            return self.generate_json_method(dest, method, args);
-        }
+        // Note: JSON builtin check is now at the top of this function
 
         // Fall back to built-in methods
         // Check arrays and maps BEFORE strings, since they are also pointer types

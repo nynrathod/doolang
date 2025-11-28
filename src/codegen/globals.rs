@@ -187,7 +187,11 @@ impl<'ctx> CodeGen<'ctx> {
                     .insert(name.clone(), g.as_pointer_value().into());
             }
             // Handles constant array initialization, including nested aggregates.
-            MirInstr::Array { name, elements } => {
+            MirInstr::Array {
+                name,
+                elements,
+                element_type,
+            } => {
                 // Resolve the LLVM constant value for ALL elements.
                 let element_values: Vec<BasicValueEnum<'ctx>> = elements
                     .iter()
@@ -199,8 +203,10 @@ impl<'ctx> CodeGen<'ctx> {
                 let elem_type = first_val.get_type();
                 let _array_type = elem_type.array_type(elements.len() as u32);
 
-                // Determine element type name and if it contains strings
-                let element_type_name = if elem_type.is_int_type() {
+                // Determine element type name - use provided type if available, otherwise infer
+                let element_type_name = if let Some(ref et) = element_type {
+                    et.as_str()
+                } else if elem_type.is_int_type() {
                     "Int"
                 } else if elem_type.is_pointer_type() {
                     "Str"

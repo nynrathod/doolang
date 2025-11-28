@@ -86,6 +86,45 @@ impl<'ctx> CodeGen<'ctx> {
                             result.push('"');
                             chars.next();
                         }
+                        '0' => {
+                            result.push('\0');
+                            chars.next();
+                        }
+                        'u' => {
+                            // Unicode escape sequence: \u{XXXX} or \u{XXXXXX}
+                            chars.next(); // consume 'u'
+                            if chars.peek() == Some(&'{') {
+                                chars.next(); // consume '{'
+                                let mut hex_str = String::new();
+                                while let Some(&c) = chars.peek() {
+                                    if c == '}' {
+                                        chars.next(); // consume '}'
+                                        break;
+                                    }
+                                    hex_str.push(c);
+                                    chars.next();
+                                }
+                                // Parse the hex string to a Unicode code point
+                                if let Ok(code_point) = u32::from_str_radix(&hex_str, 16) {
+                                    if let Some(unicode_char) = char::from_u32(code_point) {
+                                        result.push(unicode_char);
+                                    } else {
+                                        // Invalid code point, keep original
+                                        result.push_str("\\u{");
+                                        result.push_str(&hex_str);
+                                        result.push('}');
+                                    }
+                                } else {
+                                    // Invalid hex, keep original
+                                    result.push_str("\\u{");
+                                    result.push_str(&hex_str);
+                                    result.push('}');
+                                }
+                            } else {
+                                // No brace, keep as literal \u
+                                result.push_str("\\u");
+                            }
+                        }
                         _ => {
                             result.push(ch);
                         }

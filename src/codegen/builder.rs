@@ -38,10 +38,14 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             // Collections
-            MirInstr::Array { name, elements } => {
+            MirInstr::Array {
+                name,
+                elements,
+                element_type,
+            } => {
                 self.variable_types
                     .insert(name.clone(), "Array".to_string());
-                self.generate_array_with_metadata(name, elements)
+                self.generate_array_with_metadata_typed(name, elements, element_type.as_deref())
             }
             MirInstr::Map {
                 name,

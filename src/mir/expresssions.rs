@@ -746,9 +746,18 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             }
 
             let tmp = builder.next_tmp();
+            // Convert TypeNode to string for codegen
+            let element_type_str = match &element_type {
+                TypeNode::Int => Some("Int".to_string()),
+                TypeNode::Float => Some("Float".to_string()),
+                TypeNode::Bool => Some("Bool".to_string()),
+                TypeNode::String => Some("Str".to_string()),
+                _ => None,
+            };
             block.instrs.push(MirInstr::Array {
                 name: tmp.clone(),
                 elements: tmp_elements,
+                element_type: element_type_str,
             });
             // Track type in symbol table with proper element type
             builder
@@ -1542,6 +1551,36 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             block.terminator = None;
 
             result_tmp
+        }
+
+        // Block expression: { statements; result_expr }
+        AstNode::BlockExpr { statements, result } => {
+            // Build all statements first
+            for stmt in statements {
+                build_statement(builder, stmt, block);
+            }
+            // Then build and return the result expression
+            build_expression(builder, result, block)
+        }
+
+        // Block (used as expression) - treat last item as result if it's an expression
+        AstNode::Block(items) => {
+            if items.is_empty() {
+                // Empty block returns nil
+                let tmp = builder.next_tmp();
+                block.instrs.push(MirInstr::ConstInt {
+                    name: tmp.clone(),
+                    value: 0,
+                });
+                tmp
+            } else {
+                // Build all but the last as statements
+                for stmt in items.iter().take(items.len() - 1) {
+                    build_statement(builder, stmt, block);
+                }
+                // Last item is the result expression
+                build_expression(builder, items.last().unwrap(), block)
+            }
         }
 
         _ => {

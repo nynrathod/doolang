@@ -4,10 +4,29 @@ use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
 
 impl<'ctx> CodeGen<'ctx> {
+    /// Generate array with metadata, using explicit element type if provided
+    pub fn generate_array_with_metadata_typed(
+        &mut self,
+        name: &str,
+        elements: &[String],
+        explicit_element_type: Option<&str>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        self.generate_array_with_metadata_inner(name, elements, explicit_element_type)
+    }
+
     pub fn generate_array_with_metadata(
         &mut self,
         name: &str,
         elements: &[String],
+    ) -> Option<BasicValueEnum<'ctx>> {
+        self.generate_array_with_metadata_inner(name, elements, None)
+    }
+
+    fn generate_array_with_metadata_inner(
+        &mut self,
+        name: &str,
+        elements: &[String],
+        explicit_element_type: Option<&str>,
     ) -> Option<BasicValueEnum<'ctx>> {
         // Handle spread elements by expanding them
         let mut expanded_elements: Vec<String> = Vec::new();
@@ -109,20 +128,15 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         // Store metadata
-        // Check if this is a bool array by seeing if all elements are 0 or 1
-        let element_type_name = if elem_type.is_float_type() {
+        // Use explicit element type if provided (from MIR), otherwise infer from LLVM type
+        // This correctly distinguishes [true, false] (Bool) from [1, 0] (Int)
+        let element_type_name = if let Some(et) = explicit_element_type {
+            et
+        } else if elem_type.is_float_type() {
             "Float"
         } else if elem_type.is_int_type() {
-            // Heuristic: if all values are 0 or 1, treat as Bool array
-            let all_bool_like = element_values.iter().all(|v| {
-                if let Some(int_val) = v.into_int_value().get_zero_extended_constant() {
-                    int_val == 0 || int_val == 1
-                } else {
-                    false
-                }
-            });
-
-            if !element_values.is_empty() && all_bool_like {
+            // Check if it's actually a 1-bit integer (i1 = bool)
+            if elem_type.into_int_type().get_bit_width() == 1 {
                 "Bool"
             } else {
                 "Int"
