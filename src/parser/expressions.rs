@@ -386,20 +386,14 @@ impl<'a> Parser<'a> {
                 TokenType::OpenBracket => self.parse_array_literal(),
                 TokenType::OpenBrace => self.parse_map_literal(),
                 TokenType::If => {
-                    // Inline if-else expression: if condition { expr } else { expr }
+                    // Inline if-else expression: if condition { stmts; expr } else { stmts; expr }
                     // Also supports else-if chains: if cond { expr } else if cond { expr } else { expr }
-                    // Supports both expressions (no semicolon) and statements (with semicolon)
+                    // Supports multiple statements (with semicolons) followed by a final expression (no semicolon)
                     self.advance(); // consume 'if'
                     let condition = self.parse_expression()?;
 
-                    // Parse then expression/statement in braces
-                    self.expect(TokenType::OpenBrace)?;
-                    let then_expr = self.parse_expression()?;
-                    // Optional semicolon after expression/statement
-                    if self.peek_is(TokenType::Semi) {
-                        self.advance();
-                    }
-                    self.expect(TokenType::CloseBrace)?;
+                    // Parse then block expression
+                    let then_expr = self.parse_block_expr()?;
 
                     // Parse else branch (or else-if chain)
                     self.expect(TokenType::Else)?;
@@ -789,14 +783,8 @@ impl<'a> Parser<'a> {
             self.advance(); // consume 'if'
             let condition = self.parse_expression()?;
 
-            // Parse then expression/statement in braces
-            self.expect(TokenType::OpenBrace)?;
-            let then_expr = self.parse_expression()?;
-            // Optional semicolon after expression/statement
-            if self.peek_is(TokenType::Semi) {
-                self.advance();
-            }
-            self.expect(TokenType::CloseBrace)?;
+            // Parse then block expression
+            let then_expr = self.parse_block_expr()?;
 
             // Recursively parse the else branch (might be else if or else)
             self.expect(TokenType::Else)?;
@@ -808,15 +796,76 @@ impl<'a> Parser<'a> {
                 else_expr: Box::new(else_expr),
             })
         } else {
-            // else: parse the final block
-            self.expect(TokenType::OpenBrace)?;
-            let expr = self.parse_expression()?;
-            // Optional semicolon after expression/statement
-            if self.peek_is(TokenType::Semi) {
-                self.advance();
+            // else: parse the final block expression
+            self.parse_block_expr()
+        }
+    }
+
+    /// Parse a block expression: { statements; final_expr }
+    /// Supports multiple statements (with semicolons) followed by a final expression (no semicolon).
+    /// Returns either a BlockExpr (if there are statements) or just the expression (if no statements).
+    fn parse_block_expr(&mut self) -> ParseResult<AstNode> {
+        self.expect(TokenType::OpenBrace)?;
+
+        let mut statements = Vec::new();
+
+        // Keep parsing statements until we hit the closing brace
+        loop {
+            // Check for closing brace
+            if self.peek_is(TokenType::CloseBrace) {
+                self.advance(); // consume '}'
+                                // Empty block or block with only statements - return unit/last statement
+                if statements.is_empty() {
+                    // Empty block - return a nil literal as default
+                    return Ok(AstNode::NilLiteral);
+                } else {
+                    // Block ended with semicolon, last statement is not an expression
+                    // Return BlockExpr with nil as result
+                    return Ok(AstNode::BlockExpr {
+                        statements,
+                        result: Box::new(AstNode::NilLiteral),
+                    });
+                }
             }
-            self.expect(TokenType::CloseBrace)?;
-            Ok(expr)
+
+            // Try to parse a statement or expression
+            let item = self.parse_block_item()?;
+
+            // Check if followed by semicolon
+            if self.peek_is(TokenType::Semi) {
+                self.advance(); // consume ';'
+                statements.push(item);
+            } else if self.peek_is(TokenType::CloseBrace) {
+                // No semicolon and closing brace follows - this is the result expression
+                self.advance(); // consume '}'
+                if statements.is_empty() {
+                    // Just a single expression
+                    return Ok(item);
+                } else {
+                    // Multiple statements with a final expression
+                    return Ok(AstNode::BlockExpr {
+                        statements,
+                        result: Box::new(item),
+                    });
+                }
+            } else {
+                // No semicolon and not closing brace - error or multi-line expression
+                // For now, treat as a statement and continue
+                statements.push(item);
+            }
+        }
+    }
+
+    /// Parse a single item in a block (statement or expression)
+    fn parse_block_item(&mut self) -> ParseResult<AstNode> {
+        if self.peek_is(TokenType::Let) {
+            self.parse_let_decl()
+        } else if self.peek_is(TokenType::Print) {
+            self.advance(); // consume 'print'
+            let exprs = self.parse_comma_separated(|p| p.parse_expression(), TokenType::Semi)?;
+            Ok(AstNode::Print { exprs })
+        } else {
+            self.parse_expression()
         }
     }
 }

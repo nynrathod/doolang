@@ -327,6 +327,13 @@ pub enum AstNode {
         then_expr: Box<AstNode>,
         else_expr: Box<AstNode>,
     },
+
+    // Block expression: { statements; final_expr }
+    // Used for inline if-else with multiple statements before the result expression
+    BlockExpr {
+        statements: Vec<AstNode>, // Statements executed before the result (with semicolons)
+        result: Box<AstNode>,     // Final expression value (no semicolon)
+    },
     TernaryExpr {
         condition: Box<AstNode>,
         true_expr: Box<AstNode>,

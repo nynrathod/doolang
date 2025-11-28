@@ -94,8 +94,8 @@ impl SemanticAnalyzer {
             // Identifier (variable name): look up in symbol table (with shadowing support)
             AstNode::Identifier(name) => {
                 // Check for builtin identifiers first
-                if name == "json" {
-                    return Ok(TypeNode::Builtin("json".to_string()));
+                if name == "JSON" {
+                    return Ok(TypeNode::Builtin("JSON".to_string()));
                 }
 
                 if let Some(info) = self.lookup_variable(name) {
@@ -1152,6 +1152,67 @@ impl SemanticAnalyzer {
                 Ok(true_type)
             }
 
+            // Block expression: { statements; result_expr }
+            // Use a temporary analyzer with cloned symbol table for proper scoping
+            AstNode::BlockExpr { statements, result } => {
+                // Create a temporary analyzer with cloned state
+                let mut temp_analyzer = SemanticAnalyzer {
+                    symbol_table: self.symbol_table.clone(),
+                    function_table: self.function_table.clone(),
+                    struct_table: self.struct_table.clone(),
+                    enum_table: self.enum_table.clone(),
+                    method_table: self.method_table.clone(),
+                    function_aliases: self.function_aliases.clone(),
+                    loop_depth: self.loop_depth,
+                    scope_stack: self.scope_stack.clone(),
+                    function_depth: self.function_depth,
+                    scope_sizes_stack: self.scope_sizes_stack.clone(),
+                    outer_symbol_table: self.outer_symbol_table.clone(),
+                    project_root: self.project_root.clone(),
+                    imported_modules: self.imported_modules.clone(),
+                    imported_functions: self.imported_functions.clone(),
+                    collected_errors: Vec::new(),
+                    is_main_module: self.is_main_module,
+                    type_inference_depth: RefCell::new(0),
+                    current_function_error_type: self.current_function_error_type.clone(),
+                };
+
+                // Process statements in the temporary analyzer
+                for stmt in statements {
+                    match stmt {
+                        AstNode::LetDecl {
+                            mutable,
+                            type_annotation: _,
+                            pattern,
+                            value,
+                            is_ref_counted: _,
+                        } => {
+                            // Infer type and add to temp symbol table
+                            if let Ok(ty) = temp_analyzer.infer_type(value) {
+                                if let Pattern::Identifier(name) = pattern {
+                                    temp_analyzer.symbol_table.insert(
+                                        name.clone(),
+                                        SymbolInfo {
+                                            ty,
+                                            mutable: *mutable,
+                                            is_ref_counted: false,
+                                            is_parameter: false,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            // Other statements, just infer type
+                            let _ = temp_analyzer.infer_type(stmt);
+                        }
+                    }
+                }
+
+                // Infer the type of the result expression with the updated symbol table
+                temp_analyzer.infer_type(result)
+            }
+
             // Any other AST node (usually statements): return Void type.
             // Actual semantic checking for statements happens elsewhere.
             _ => Ok(TypeNode::Void),
@@ -1997,16 +2058,16 @@ impl SemanticAnalyzer {
                     correct_type: None,
                 }),
             },
-            TypeNode::Builtin(name) if name == "json" => match method {
+            TypeNode::Builtin(name) if name == "JSON" => match method {
                 "parse" => {
                     if args.len() != 1 {
                         return Err(SemanticError::FunctionArgumentMismatch {
-                            name: format!("json.{}", method),
+                            name: format!("JSON.{}", method),
                             expected: 1,
                             found: args.len(),
                         });
                     }
-                    // json.parse returns a Map<String, Any> - we'll use Map<String, String> for simplicity
+                    // JSON.parse returns a Map<String, Any> - we'll use Map<String, String> for simplicity
                     Ok(TypeNode::Map(
                         Box::new(TypeNode::String),
                         Box::new(TypeNode::String),
@@ -2015,7 +2076,7 @@ impl SemanticAnalyzer {
                 "stringify" => {
                     if args.len() != 1 {
                         return Err(SemanticError::FunctionArgumentMismatch {
-                            name: format!("json.{}", method),
+                            name: format!("JSON.{}", method),
                             expected: 1,
                             found: args.len(),
                         });
@@ -2023,7 +2084,7 @@ impl SemanticAnalyzer {
                     Ok(TypeNode::String)
                 }
                 _ => Err(SemanticError::MethodNotFoundOnType {
-                    object_type: "json".to_string(),
+                    object_type: "JSON".to_string(),
                     method_name: method.to_string(),
                     correct_type: None,
                 }),

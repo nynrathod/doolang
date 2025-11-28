@@ -351,6 +351,52 @@ impl SemanticAnalyzer {
         )
     }
 
+    /// Helper to analyze a BlockExpr or regular expression
+    /// For BlockExpr, creates a scope and analyzes statements before the result
+    /// For other expressions, just infers the type
+    fn analyze_block_or_expr(&mut self, expr: &mut AstNode) -> Result<(), SemanticError> {
+        match expr {
+            AstNode::BlockExpr { statements, result } => {
+                // Save the current symbol table to restore after block
+                let parent_scope = self.symbol_table.clone();
+                let scope_size = self.symbol_table.len();
+                self.scope_stack.push(HashMap::new());
+                self.scope_sizes_stack.push(scope_size);
+
+                // Analyze all statements
+                for stmt in statements {
+                    self.analyze_node(stmt)?;
+                }
+
+                // Analyze the result expression
+                let _ = self.infer_type(result)?;
+
+                // Restore symbol table
+                self.scope_stack.pop();
+                self.scope_sizes_stack.pop();
+                self.symbol_table = parent_scope;
+
+                Ok(())
+            }
+            AstNode::ConditionalExpr {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                // Recursively handle nested conditional expressions
+                let _ = self.infer_type(condition)?;
+                self.analyze_block_or_expr(then_expr)?;
+                self.analyze_block_or_expr(else_expr)?;
+                Ok(())
+            }
+            _ => {
+                // For other expressions, just infer the type
+                let _ = self.infer_type(expr)?;
+                Ok(())
+            }
+        }
+    }
+
     /// Dispatch analysis based on AST node type.
     /// Calls the appropriate analysis function for each AST node variant.
     /// Ensures semantic correctness for declarations, assignments, control flow, etc.
@@ -653,6 +699,46 @@ impl SemanticAnalyzer {
                 self.symbol_table = parent_scope;
 
                 result
+            }
+
+            AstNode::ConditionalExpr {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                // Analyze condition
+                let _ = self.infer_type(condition)?;
+
+                // Analyze then branch (may be BlockExpr)
+                self.analyze_block_or_expr(then_expr)?;
+
+                // Analyze else branch (may be BlockExpr or another ConditionalExpr)
+                self.analyze_block_or_expr(else_expr)?;
+
+                Ok(())
+            }
+
+            AstNode::BlockExpr { statements, result } => {
+                // Save the current symbol table to restore after block
+                let parent_scope = self.symbol_table.clone();
+                let scope_size = self.symbol_table.len();
+                self.scope_stack.push(HashMap::new()); // Marker for block scope
+                self.scope_sizes_stack.push(scope_size);
+
+                // Analyze all statements - variables declared here go into symbol_table
+                for stmt in statements {
+                    self.analyze_node(stmt)?;
+                }
+
+                // Analyze the result expression
+                let _ = self.infer_type(result)?;
+
+                // Restore symbol table to parent scope (removes block variables)
+                self.scope_stack.pop();
+                self.scope_sizes_stack.pop();
+                self.symbol_table = parent_scope;
+
+                Ok(())
             }
 
             // Catch-all for any AST nodes not explicitly handled above.
