@@ -574,15 +574,6 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn print_array(&mut self, array_name: &str) {
         let printf_fn = self.get_or_declare_printf();
 
-        // Print opening bracket
-        let open_bracket = self
-            .builder
-            .build_global_string_ptr("[", "open_bracket")
-            .unwrap();
-        self.builder
-            .build_call(printf_fn, &[open_bracket.as_pointer_value().into()], "")
-            .unwrap();
-
         // Get array metadata - try multiple name variations
         let mut metadata = self.array_metadata.get(array_name).cloned();
 
@@ -621,6 +612,57 @@ impl<'ctx> CodeGen<'ctx> {
                 // For temporary arrays, resolve_value should work
                 self.resolve_value(array_name).into_pointer_value()
             };
+
+            // Check if array pointer is null (empty array case)
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+            let null_block = self
+                .context
+                .append_basic_block(current_fn, "print_null_array");
+            let non_null_block = self
+                .context
+                .append_basic_block(current_fn, "print_non_null_array");
+            let after_print_block = self
+                .context
+                .append_basic_block(current_fn, "after_print_array");
+
+            let is_null = self
+                .builder
+                .build_is_null(array_ptr, "is_null_array")
+                .unwrap();
+            self.builder
+                .build_conditional_branch(is_null, null_block, non_null_block)
+                .unwrap();
+
+            // Null case: just print []
+            self.builder.position_at_end(null_block);
+            let empty_array_str = self
+                .builder
+                .build_global_string_ptr("[]", "empty_array_str")
+                .unwrap();
+            self.builder
+                .build_call(printf_fn, &[empty_array_str.as_pointer_value().into()], "")
+                .unwrap();
+            self.builder
+                .build_unconditional_branch(after_print_block)
+                .unwrap();
+
+            // Non-null case: print array contents
+            self.builder.position_at_end(non_null_block);
+
+            // Print opening bracket
+            let open_bracket = self
+                .builder
+                .build_global_string_ptr("[", "open_bracket")
+                .unwrap();
+            self.builder
+                .build_call(printf_fn, &[open_bracket.as_pointer_value().into()], "")
+                .unwrap();
+
             let elem_type = if metadata.element_type == "Str" {
                 self.context
                     .ptr_type(AddressSpace::default())
@@ -910,16 +952,24 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Loop end - exit the loop
             self.builder.position_at_end(loop_end);
-        }
 
-        // Print closing bracket
-        let close_bracket = self
-            .builder
-            .build_global_string_ptr("]", "close_bracket")
-            .unwrap();
-        self.builder
-            .build_call(printf_fn, &[close_bracket.as_pointer_value().into()], "")
-            .unwrap();
+            // Print closing bracket
+            let close_bracket = self
+                .builder
+                .build_global_string_ptr("]", "close_bracket")
+                .unwrap();
+            self.builder
+                .build_call(printf_fn, &[close_bracket.as_pointer_value().into()], "")
+                .unwrap();
+
+            // Branch to after block
+            self.builder
+                .build_unconditional_branch(after_print_block)
+                .unwrap();
+
+            // Position at after block for continuation
+            self.builder.position_at_end(after_print_block);
+        }
     }
 
     pub fn print_struct_with_fields(

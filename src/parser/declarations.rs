@@ -253,6 +253,7 @@ impl<'a> Parser<'a> {
                 body: body_block,
                 decorators,
                 receiver_type,
+                is_expression: true,
             });
         }
 
@@ -268,6 +269,7 @@ impl<'a> Parser<'a> {
             body: body_block,
             decorators,
             receiver_type,
+            is_expression: false,
         })
     }
 

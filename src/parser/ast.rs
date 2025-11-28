@@ -244,6 +244,7 @@ pub enum AstNode {
         body: Vec<AstNode>,
         decorators: Vec<Decorator>,    // @ffi, @extern, etc.
         receiver_type: Option<String>, // For method declarations: fn TypeName.methodName(self)
+        is_expression: bool,           // true if function uses => syntax (expression function)
     },
     FunctionCall {
         func: Box<AstNode>,

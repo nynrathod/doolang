@@ -423,6 +423,7 @@ impl SemanticAnalyzer {
                 body,
                 decorators,
                 receiver_type,
+                is_expression,
             } => self.analyze_functional_decl(
                 name,
                 visibility,
@@ -432,6 +433,7 @@ impl SemanticAnalyzer {
                 body,
                 decorators,
                 receiver_type,
+                is_expression,
             ),
             AstNode::StructDecl { .. } => self.analyze_struct(node),
             AstNode::EnumDecl { .. } => self.analyze_enum(node),

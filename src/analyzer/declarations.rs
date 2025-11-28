@@ -258,6 +258,7 @@ impl SemanticAnalyzer {
         body: &mut Vec<AstNode>,
         decorators: &Vec<crate::parser::ast::Decorator>,
         receiver_type: &Option<String>,
+        is_expression: &bool,
     ) -> Result<(), SemanticError> {
         // Function signature is already registered in analyze_program's first pass
         // No need to check for redeclaration or add to function_table here
@@ -447,12 +448,15 @@ impl SemanticAnalyzer {
         }
 
         // ENFORCEMENT: If function has return type, it MUST use Ok (not bare Return)
-        if return_type.is_some() && return_type.as_ref() != Some(&TypeNode::Void) {
+        // BUT: Skip this check for expression functions (which are just Return statements)
+        if !*is_expression && return_type.is_some() && return_type.as_ref() != Some(&TypeNode::Void)
+        {
             self.ensure_uses_ok_not_return(body, name, error_type.is_some())?;
         }
 
         // ENFORCEMENT: If function has error type, it MUST have at least one Err path
-        if error_type.is_some() {
+        // BUT: Skip this check for expression functions (they can't have Err in => syntax)
+        if !*is_expression && error_type.is_some() {
             self.ensure_has_error_path(body, name)?;
         }
 

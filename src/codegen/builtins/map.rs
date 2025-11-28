@@ -2109,28 +2109,9 @@ impl<'ctx> CodeGen<'ctx> {
             }
             "keys" => {
                 // Extract all keys from the map into a new array
-                if let Some(metadata) = self.map_metadata.get(object) {
-                    if metadata.length == 0 {
-                        // Empty map, return empty array
-                        let empty_ptr = self
-                            .context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .const_null();
-                        self.temp_values.insert(dest.to_string(), empty_ptr.into());
-                        let empty_meta = ArrayMetadata {
-                            length: 0,
-                            element_type: if metadata.key_is_string {
-                                "Str".to_string()
-                            } else {
-                                "Int".to_string()
-                            },
-                            contains_strings: metadata.key_is_string,
-                        };
-                        self.array_metadata.insert(dest.to_string(), empty_meta);
-                        return Some(empty_ptr.into());
-                    }
-
+                if let Some(metadata) = self.map_metadata.get(object).cloned() {
                     let map_ptr = self.resolve_value(object).into_pointer_value();
+                    let is_heap_allocated = self.heap_maps.contains(object);
 
                     // Determine key type
                     let key_type: inkwell::types::BasicTypeEnum = if metadata.key_is_string {
@@ -2150,21 +2131,125 @@ impl<'ctx> CodeGen<'ctx> {
                     };
 
                     let pair_type = self.context.struct_type(&[key_type, val_type], false);
-                    let map_type = pair_type.array_type(metadata.length as u32);
 
-                    // Allocate array for keys
-                    let malloc_fn = self.get_or_declare_malloc();
-                    let key_array_type = key_type.array_type(metadata.length as u32);
-                    let key_array_size = key_array_type.size_of().unwrap();
+                    // Read runtime length from heap header if heap-allocated
+                    let runtime_length = if is_heap_allocated {
+                        // Compute heap_ptr from data pointer by subtracting 8 bytes
+                        let data_ptr_int = self
+                            .builder
+                            .build_ptr_to_int(map_ptr, self.context.i64_type(), "map_ptr_int_keys")
+                            .unwrap();
+                        let heap_ptr_int = self
+                            .builder
+                            .build_int_sub(
+                                data_ptr_int,
+                                self.context.i64_type().const_int(8, false),
+                                "heap_ptr_int_keys",
+                            )
+                            .unwrap();
+                        let heap_ptr_for_len = self
+                            .builder
+                            .build_int_to_ptr(
+                                heap_ptr_int,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "heap_ptr_for_len_keys",
+                            )
+                            .unwrap();
+
+                        // Read length from offset 4
+                        let len_field = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    heap_ptr_for_len,
+                                    &[self.context.i32_type().const_int(4, false)],
+                                    "len_field_keys",
+                                )
+                                .unwrap()
+                        };
+                        let len_ptr = self
+                            .builder
+                            .build_pointer_cast(
+                                len_field,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "len_ptr_keys",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_load(self.context.i32_type(), len_ptr, "runtime_len_keys")
+                            .unwrap()
+                            .into_int_value()
+                    } else {
+                        // Use static metadata length for non-heap maps
+                        self.context
+                            .i32_type()
+                            .const_int(metadata.length as u64, false)
+                    };
+
+                    // Check if empty at runtime
+                    let current_fn = self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let empty_block = self.context.append_basic_block(current_fn, "keys_empty");
+                    let non_empty_block = self
+                        .context
+                        .append_basic_block(current_fn, "keys_non_empty");
+                    let merge_block = self.context.append_basic_block(current_fn, "keys_merge");
+
+                    let is_empty = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            runtime_length,
+                            self.context.i32_type().const_zero(),
+                            "is_empty_keys",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_conditional_branch(is_empty, empty_block, non_empty_block)
+                        .unwrap();
+
+                    // Empty case: return null pointer
+                    self.builder.position_at_end(empty_block);
+                    let empty_ptr = self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null();
+                    self.builder
+                        .build_unconditional_branch(merge_block)
+                        .unwrap();
+                    let empty_block_end = self.builder.get_insert_block().unwrap();
+
+                    // Non-empty case: allocate and fill keys array
+                    self.builder.position_at_end(non_empty_block);
+
+                    // Calculate size for keys array based on runtime length
+                    let key_elem_size = key_type.size_of().unwrap();
+                    let runtime_len_64 = self
+                        .builder
+                        .build_int_z_extend(
+                            runtime_length,
+                            self.context.i64_type(),
+                            "runtime_len_64_keys",
+                        )
+                        .unwrap();
+                    let key_array_size = self
+                        .builder
+                        .build_int_mul(runtime_len_64, key_elem_size, "key_array_size")
+                        .unwrap();
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
                         .builder
-                        .build_int_add(header_size, key_array_size, "total_size")
+                        .build_int_add(header_size, key_array_size, "total_size_keys")
                         .unwrap();
 
+                    let malloc_fn = self.get_or_declare_malloc();
                     let heap_ptr = self
                         .builder
-                        .build_call(malloc_fn, &[total_size.into()], "heap_ptr")
+                        .build_call(malloc_fn, &[total_size.into()], "heap_ptr_keys")
                         .unwrap()
                         .try_as_basic_value()
                         .left()
@@ -2177,7 +2262,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_pointer_cast(
                             heap_ptr,
                             self.context.ptr_type(inkwell::AddressSpace::default()),
-                            "rc_ptr",
+                            "rc_ptr_keys",
                         )
                         .unwrap();
                     self.builder
@@ -2191,18 +2276,11 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.context.i32_type(),
                                 heap_ptr,
                                 &[self.context.i32_type().const_int(1, false)],
-                                "len_ptr",
+                                "len_ptr_store_keys",
                             )
                             .unwrap()
                     };
-                    self.builder
-                        .build_store(
-                            len_ptr,
-                            self.context
-                                .i32_type()
-                                .const_int(metadata.length as u64, false),
-                        )
-                        .unwrap();
+                    self.builder.build_store(len_ptr, runtime_length).unwrap();
 
                     // Get data pointer
                     let data_ptr = unsafe {
@@ -2211,18 +2289,12 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.context.i8_type(),
                                 heap_ptr,
                                 &[self.context.i32_type().const_int(8, false)],
-                                "data_ptr",
+                                "data_ptr_keys",
                             )
                             .unwrap()
                     };
 
-                    // Loop through map and copy keys
-                    let current_fn = self
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_parent()
-                        .unwrap();
+                    // Loop through map and copy keys using byte-level GEP
                     let loop_block = self.context.append_basic_block(current_fn, "keys_loop");
                     let loop_body = self.context.append_basic_block(current_fn, "keys_body");
                     let loop_done = self.context.append_basic_block(current_fn, "keys_done");
@@ -2236,79 +2308,140 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     self.builder.build_unconditional_branch(loop_block).unwrap();
 
-                    // Loop check
+                    // Loop check - use runtime_length for comparison
                     self.builder.position_at_end(loop_block);
                     let counter = self
                         .builder
-                        .build_load(self.context.i32_type(), counter_ptr, "counter")
+                        .build_load(self.context.i32_type(), counter_ptr, "counter_keys")
                         .unwrap()
                         .into_int_value();
-                    let length = self
-                        .context
-                        .i32_type()
-                        .const_int(metadata.length as u64, false);
                     let cmp = self
                         .builder
-                        .build_int_compare(inkwell::IntPredicate::ULT, counter, length, "cmp")
+                        .build_int_compare(
+                            inkwell::IntPredicate::ULT,
+                            counter,
+                            runtime_length,
+                            "cmp_keys",
+                        )
                         .unwrap();
                     self.builder
                         .build_conditional_branch(cmp, loop_body, loop_done)
                         .unwrap();
 
-                    // Loop body: copy key
+                    // Loop body: copy key using byte-level GEP
                     self.builder.position_at_end(loop_body);
-                    let pair_ptr = unsafe {
+
+                    // Calculate byte offset for pair access
+                    let pair_size = pair_type.size_of().unwrap();
+                    let counter_64 = self
+                        .builder
+                        .build_int_z_extend(counter, self.context.i64_type(), "counter_64_keys")
+                        .unwrap();
+                    let byte_offset = self
+                        .builder
+                        .build_int_mul(counter_64, pair_size, "byte_offset_keys")
+                        .unwrap();
+
+                    let pair_ptr_i8 = unsafe {
                         self.builder
                             .build_gep(
-                                map_type,
+                                self.context.i8_type(),
                                 map_ptr,
-                                &[self.context.i32_type().const_zero(), counter],
-                                "pair_ptr",
+                                &[byte_offset],
+                                "pair_ptr_i8_keys",
                             )
                             .unwrap()
                     };
+                    let pair_ptr = self
+                        .builder
+                        .build_pointer_cast(
+                            pair_ptr_i8,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "pair_ptr_keys",
+                        )
+                        .unwrap();
+
                     let key_ptr = self
                         .builder
-                        .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
+                        .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr_keys")
                         .unwrap();
                     let key_val = self
                         .builder
-                        .build_load(key_type, key_ptr, "key_val")
+                        .build_load(key_type, key_ptr, "key_val_keys")
                         .unwrap();
 
-                    // Store in output array
-                    let out_ptr = self
+                    // Store in output array using byte-level GEP
+                    let out_byte_offset = self
                         .builder
-                        .build_pointer_cast(
-                            data_ptr,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
-                            "out_ptr",
-                        )
+                        .build_int_mul(counter_64, key_elem_size, "out_byte_offset_keys")
                         .unwrap();
                     let elem_ptr = unsafe {
                         self.builder
-                            .build_gep(key_type, out_ptr, &[counter], "elem_ptr")
+                            .build_gep(
+                                self.context.i8_type(),
+                                data_ptr,
+                                &[out_byte_offset],
+                                "elem_ptr_keys",
+                            )
                             .unwrap()
                     };
-                    self.builder.build_store(elem_ptr, key_val).unwrap();
+                    let elem_ptr_typed = self
+                        .builder
+                        .build_pointer_cast(
+                            elem_ptr,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "elem_ptr_typed_keys",
+                        )
+                        .unwrap();
+                    self.builder.build_store(elem_ptr_typed, key_val).unwrap();
 
                     // Increment counter
                     let next = self
                         .builder
-                        .build_int_add(counter, self.context.i32_type().const_int(1, false), "next")
+                        .build_int_add(
+                            counter,
+                            self.context.i32_type().const_int(1, false),
+                            "next_keys",
+                        )
                         .unwrap();
                     self.builder.build_store(counter_ptr, next).unwrap();
                     self.builder.build_unconditional_branch(loop_block).unwrap();
 
-                    // Done
+                    // Done with loop
                     self.builder.position_at_end(loop_done);
-                    // Store data_ptr for array access, but track heap_ptr for RC operations
-                    self.temp_values.insert(dest.to_string(), data_ptr.into());
+                    self.builder
+                        .build_unconditional_branch(merge_block)
+                        .unwrap();
+                    let non_empty_block_end = self.builder.get_insert_block().unwrap();
+
+                    // Merge block: PHI for result pointer
+                    self.builder.position_at_end(merge_block);
+                    let result_phi = self
+                        .builder
+                        .build_phi(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "keys_result",
+                        )
+                        .unwrap();
+                    result_phi.add_incoming(&[
+                        (&empty_ptr, empty_block_end),
+                        (&data_ptr, non_empty_block_end),
+                    ]);
+                    let result_ptr = result_phi.as_basic_value().into_pointer_value();
+
+                    // Store result
+                    self.temp_values.insert(dest.to_string(), result_ptr.into());
                     self.heap_arrays.insert(dest.to_string());
-                    // Store the full heap pointer for RC operations
                     self.heap_pointers.insert(dest.to_string(), heap_ptr);
+
+                    // For array metadata, we use a placeholder length since actual length is runtime
+                    // The print_array function will read from heap header
                     let arr_meta = ArrayMetadata {
-                        length: metadata.length,
+                        length: if is_heap_allocated {
+                            0
+                        } else {
+                            metadata.length
+                        },
                         element_type: if metadata.key_is_string {
                             "Str".to_string()
                         } else {
@@ -2317,35 +2450,16 @@ impl<'ctx> CodeGen<'ctx> {
                         contains_strings: metadata.key_is_string,
                     };
                     self.array_metadata.insert(dest.to_string(), arr_meta);
-                    Some(data_ptr.into())
+                    Some(result_ptr.into())
                 } else {
                     None
                 }
             }
             "values" => {
                 // Extract all values from the map into a new array
-                if let Some(metadata) = self.map_metadata.get(object) {
-                    if metadata.length == 0 {
-                        // Empty map, return empty array
-                        let empty_ptr = self
-                            .context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .const_null();
-                        self.temp_values.insert(dest.to_string(), empty_ptr.into());
-                        let empty_meta = ArrayMetadata {
-                            length: 0,
-                            element_type: if metadata.value_is_string {
-                                "Str".to_string()
-                            } else {
-                                "Int".to_string()
-                            },
-                            contains_strings: metadata.value_is_string,
-                        };
-                        self.array_metadata.insert(dest.to_string(), empty_meta);
-                        return Some(empty_ptr.into());
-                    }
-
+                if let Some(metadata) = self.map_metadata.get(object).cloned() {
                     let map_ptr = self.resolve_value(object).into_pointer_value();
+                    let is_heap_allocated = self.heap_maps.contains(object);
 
                     // Determine types
                     let key_type: inkwell::types::BasicTypeEnum = if metadata.key_is_string {
@@ -2365,21 +2479,129 @@ impl<'ctx> CodeGen<'ctx> {
                     };
 
                     let pair_type = self.context.struct_type(&[key_type, val_type], false);
-                    let map_type = pair_type.array_type(metadata.length as u32);
 
-                    // Allocate array for values
-                    let malloc_fn = self.get_or_declare_malloc();
-                    let val_array_type = val_type.array_type(metadata.length as u32);
-                    let val_array_size = val_array_type.size_of().unwrap();
+                    // Read runtime length from heap header if heap-allocated
+                    let runtime_length = if is_heap_allocated {
+                        // Compute heap_ptr from data pointer by subtracting 8 bytes
+                        let data_ptr_int = self
+                            .builder
+                            .build_ptr_to_int(
+                                map_ptr,
+                                self.context.i64_type(),
+                                "map_ptr_int_values",
+                            )
+                            .unwrap();
+                        let heap_ptr_int = self
+                            .builder
+                            .build_int_sub(
+                                data_ptr_int,
+                                self.context.i64_type().const_int(8, false),
+                                "heap_ptr_int_values",
+                            )
+                            .unwrap();
+                        let heap_ptr_for_len = self
+                            .builder
+                            .build_int_to_ptr(
+                                heap_ptr_int,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "heap_ptr_for_len_values",
+                            )
+                            .unwrap();
+
+                        // Read length from offset 4
+                        let len_field = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    heap_ptr_for_len,
+                                    &[self.context.i32_type().const_int(4, false)],
+                                    "len_field_values",
+                                )
+                                .unwrap()
+                        };
+                        let len_ptr = self
+                            .builder
+                            .build_pointer_cast(
+                                len_field,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "len_ptr_values",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_load(self.context.i32_type(), len_ptr, "runtime_len_values")
+                            .unwrap()
+                            .into_int_value()
+                    } else {
+                        // Use static metadata length for non-heap maps
+                        self.context
+                            .i32_type()
+                            .const_int(metadata.length as u64, false)
+                    };
+
+                    // Check if empty at runtime
+                    let current_fn = self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let empty_block = self.context.append_basic_block(current_fn, "values_empty");
+                    let non_empty_block = self
+                        .context
+                        .append_basic_block(current_fn, "values_non_empty");
+                    let merge_block = self.context.append_basic_block(current_fn, "values_merge");
+
+                    let is_empty = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            runtime_length,
+                            self.context.i32_type().const_zero(),
+                            "is_empty_values",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_conditional_branch(is_empty, empty_block, non_empty_block)
+                        .unwrap();
+
+                    // Empty case: return null pointer
+                    self.builder.position_at_end(empty_block);
+                    let empty_ptr = self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null();
+                    self.builder
+                        .build_unconditional_branch(merge_block)
+                        .unwrap();
+                    let empty_block_end = self.builder.get_insert_block().unwrap();
+
+                    // Non-empty case: allocate and fill values array
+                    self.builder.position_at_end(non_empty_block);
+
+                    // Calculate size for values array based on runtime length
+                    let val_elem_size = val_type.size_of().unwrap();
+                    let runtime_len_64 = self
+                        .builder
+                        .build_int_z_extend(
+                            runtime_length,
+                            self.context.i64_type(),
+                            "runtime_len_64_values",
+                        )
+                        .unwrap();
+                    let val_array_size = self
+                        .builder
+                        .build_int_mul(runtime_len_64, val_elem_size, "val_array_size")
+                        .unwrap();
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
                         .builder
-                        .build_int_add(header_size, val_array_size, "total_size")
+                        .build_int_add(header_size, val_array_size, "total_size_values")
                         .unwrap();
 
+                    let malloc_fn = self.get_or_declare_malloc();
                     let heap_ptr = self
                         .builder
-                        .build_call(malloc_fn, &[total_size.into()], "heap_ptr")
+                        .build_call(malloc_fn, &[total_size.into()], "heap_ptr_values")
                         .unwrap()
                         .try_as_basic_value()
                         .left()
@@ -2392,7 +2614,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_pointer_cast(
                             heap_ptr,
                             self.context.ptr_type(inkwell::AddressSpace::default()),
-                            "rc_ptr",
+                            "rc_ptr_values",
                         )
                         .unwrap();
                     self.builder
@@ -2406,18 +2628,11 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.context.i32_type(),
                                 heap_ptr,
                                 &[self.context.i32_type().const_int(1, false)],
-                                "len_ptr",
+                                "len_ptr_store_values",
                             )
                             .unwrap()
                     };
-                    self.builder
-                        .build_store(
-                            len_ptr,
-                            self.context
-                                .i32_type()
-                                .const_int(metadata.length as u64, false),
-                        )
-                        .unwrap();
+                    self.builder.build_store(len_ptr, runtime_length).unwrap();
 
                     // Get data pointer
                     let data_ptr = unsafe {
@@ -2426,18 +2641,12 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.context.i8_type(),
                                 heap_ptr,
                                 &[self.context.i32_type().const_int(8, false)],
-                                "data_ptr",
+                                "data_ptr_values",
                             )
                             .unwrap()
                     };
 
-                    // Loop through map and copy values
-                    let current_fn = self
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_parent()
-                        .unwrap();
+                    // Loop through map and copy values using byte-level GEP
                     let loop_block = self.context.append_basic_block(current_fn, "values_loop");
                     let loop_body = self.context.append_basic_block(current_fn, "values_body");
                     let loop_done = self.context.append_basic_block(current_fn, "values_done");
@@ -2451,79 +2660,140 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     self.builder.build_unconditional_branch(loop_block).unwrap();
 
-                    // Loop check
+                    // Loop check - use runtime_length for comparison
                     self.builder.position_at_end(loop_block);
                     let counter = self
                         .builder
-                        .build_load(self.context.i32_type(), counter_ptr, "counter")
+                        .build_load(self.context.i32_type(), counter_ptr, "counter_values")
                         .unwrap()
                         .into_int_value();
-                    let length = self
-                        .context
-                        .i32_type()
-                        .const_int(metadata.length as u64, false);
                     let cmp = self
                         .builder
-                        .build_int_compare(inkwell::IntPredicate::ULT, counter, length, "cmp")
+                        .build_int_compare(
+                            inkwell::IntPredicate::ULT,
+                            counter,
+                            runtime_length,
+                            "cmp_values",
+                        )
                         .unwrap();
                     self.builder
                         .build_conditional_branch(cmp, loop_body, loop_done)
                         .unwrap();
 
-                    // Loop body: copy value
+                    // Loop body: copy value using byte-level GEP
                     self.builder.position_at_end(loop_body);
-                    let pair_ptr = unsafe {
+
+                    // Calculate byte offset for pair access
+                    let pair_size = pair_type.size_of().unwrap();
+                    let counter_64 = self
+                        .builder
+                        .build_int_z_extend(counter, self.context.i64_type(), "counter_64_values")
+                        .unwrap();
+                    let byte_offset = self
+                        .builder
+                        .build_int_mul(counter_64, pair_size, "byte_offset_values")
+                        .unwrap();
+
+                    let pair_ptr_i8 = unsafe {
                         self.builder
                             .build_gep(
-                                map_type,
+                                self.context.i8_type(),
                                 map_ptr,
-                                &[self.context.i32_type().const_zero(), counter],
-                                "pair_ptr",
+                                &[byte_offset],
+                                "pair_ptr_i8_values",
                             )
                             .unwrap()
                     };
+                    let pair_ptr = self
+                        .builder
+                        .build_pointer_cast(
+                            pair_ptr_i8,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "pair_ptr_values",
+                        )
+                        .unwrap();
+
                     let val_ptr = self
                         .builder
-                        .build_struct_gep(pair_type, pair_ptr, 1, "val_ptr")
+                        .build_struct_gep(pair_type, pair_ptr, 1, "val_ptr_values")
                         .unwrap();
                     let val_val = self
                         .builder
-                        .build_load(val_type, val_ptr, "val_val")
+                        .build_load(val_type, val_ptr, "val_val_values")
                         .unwrap();
 
-                    // Store in output array
-                    let out_ptr = self
+                    // Store in output array using byte-level GEP
+                    let out_byte_offset = self
                         .builder
-                        .build_pointer_cast(
-                            data_ptr,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
-                            "out_ptr",
-                        )
+                        .build_int_mul(counter_64, val_elem_size, "out_byte_offset_values")
                         .unwrap();
                     let elem_ptr = unsafe {
                         self.builder
-                            .build_gep(val_type, out_ptr, &[counter], "elem_ptr")
+                            .build_gep(
+                                self.context.i8_type(),
+                                data_ptr,
+                                &[out_byte_offset],
+                                "elem_ptr_values",
+                            )
                             .unwrap()
                     };
-                    self.builder.build_store(elem_ptr, val_val).unwrap();
+                    let elem_ptr_typed = self
+                        .builder
+                        .build_pointer_cast(
+                            elem_ptr,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "elem_ptr_typed_values",
+                        )
+                        .unwrap();
+                    self.builder.build_store(elem_ptr_typed, val_val).unwrap();
 
                     // Increment counter
                     let next = self
                         .builder
-                        .build_int_add(counter, self.context.i32_type().const_int(1, false), "next")
+                        .build_int_add(
+                            counter,
+                            self.context.i32_type().const_int(1, false),
+                            "next_values",
+                        )
                         .unwrap();
                     self.builder.build_store(counter_ptr, next).unwrap();
                     self.builder.build_unconditional_branch(loop_block).unwrap();
 
-                    // Done
+                    // Done with loop
                     self.builder.position_at_end(loop_done);
-                    // Store data_ptr for array access, but track heap_ptr for RC operations
-                    self.temp_values.insert(dest.to_string(), data_ptr.into());
+                    self.builder
+                        .build_unconditional_branch(merge_block)
+                        .unwrap();
+                    let non_empty_block_end = self.builder.get_insert_block().unwrap();
+
+                    // Merge block: PHI for result pointer
+                    self.builder.position_at_end(merge_block);
+                    let result_phi = self
+                        .builder
+                        .build_phi(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "values_result",
+                        )
+                        .unwrap();
+                    result_phi.add_incoming(&[
+                        (&empty_ptr, empty_block_end),
+                        (&data_ptr, non_empty_block_end),
+                    ]);
+                    let result_ptr = result_phi.as_basic_value().into_pointer_value();
+
+                    // Store result
+                    self.temp_values.insert(dest.to_string(), result_ptr.into());
                     self.heap_arrays.insert(dest.to_string());
-                    // Store the full heap pointer for RC operations
                     self.heap_pointers.insert(dest.to_string(), heap_ptr);
+
+                    // For array metadata, we use a placeholder length since actual length is runtime
+                    // The print_array function will read from heap header
                     let arr_meta = ArrayMetadata {
-                        length: metadata.length,
+                        length: if is_heap_allocated {
+                            0
+                        } else {
+                            metadata.length
+                        },
                         element_type: if metadata.value_is_string {
                             "Str".to_string()
                         } else {
@@ -2532,7 +2802,7 @@ impl<'ctx> CodeGen<'ctx> {
                         contains_strings: metadata.value_is_string,
                     };
                     self.array_metadata.insert(dest.to_string(), arr_meta);
-                    Some(data_ptr.into())
+                    Some(result_ptr.into())
                 } else {
                     None
                 }
