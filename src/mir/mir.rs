@@ -1,7 +1,8 @@
 /// Mid-level Intermediate Representation for the language
 /// Contains the core data structures used after AST parsing
 /// and before LLVM IR generation
-use crate::parser::ast::AstNode;
+use crate::parser::ast::{AstNode, TypeNode};
+use std::collections::{HashMap, HashSet};
 
 /// Represents a complete MIR program with functions and globals
 #[derive(Debug, Clone)]
@@ -9,6 +10,23 @@ pub struct MirProgram {
     pub functions: Vec<MirFunction>, // All function definitions
     pub globals: Vec<MirInstr>,      // Global variable initializations
     pub is_main_entry: bool,         // Whether this is the main entry point file (requires main())
+    pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
+    pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
+}
+
+impl MirProgram {
+    /// Validate all functions to ensure temporaries are defined before use
+    pub fn validate(&self) -> Result<(), String> {
+        for func in &self.functions {
+            if let Err(e) = func.validate() {
+                return Err(format!(
+                    "MIR validation failed in function '{}': {}",
+                    func.name, e
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A single function in MIR form
@@ -22,6 +40,64 @@ pub struct MirFunction {
     pub blocks: Vec<MirBlock>,
     pub ffi_lib: Option<String>, // FFI library name from @ffi("libname")
     pub ffi_symbol: Option<String>, // FFI symbol name from @extern("symbol_name")
+}
+
+impl MirFunction {
+    /// Validate that all temporaries are defined before use
+    pub fn validate(&self) -> Result<(), String> {
+        let mut defined: HashSet<String> = HashSet::new();
+
+        // Add function parameters as defined
+        for param in &self.params {
+            defined.insert(param.clone());
+        }
+
+        // Process each block in order
+        for block in &self.blocks {
+            // Process instructions
+            for instr in &block.instrs {
+                // Check used values are defined
+                for used in instr.get_used_values() {
+                    if used.starts_with('%') && !defined.contains(&used) {
+                        eprintln!("MIR validation error in function '{}':", self.name);
+                        eprintln!("Block '{}': Undefined temporary '{}'", block.label, used);
+                        eprintln!("Instruction: {:?}", instr);
+                        eprintln!("\nDefined temporaries so far: {:?}", defined);
+                        eprintln!("\nAll blocks:");
+                        for b in &self.blocks {
+                            eprintln!("  Block '{}': {} instrs", b.label, b.instrs.len());
+                            for (i, inst) in b.instrs.iter().enumerate() {
+                                eprintln!("    [{}] {:?}", i, inst);
+                            }
+                        }
+                        return Err(format!(
+                            "Undefined temporary '{}' in block '{}'",
+                            used, block.label
+                        ));
+                    }
+                }
+
+                // Add defined values
+                if let Some(def) = instr.get_defined_value() {
+                    defined.insert(def);
+                }
+            }
+
+            // Check terminator
+            if let Some(term) = &block.terminator {
+                for used in term.get_used_values() {
+                    if used.starts_with('%') && !defined.contains(&used) {
+                        return Err(format!(
+                            "Undefined temporary '{}' in terminator of block '{}'",
+                            used, block.label
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// A basic block - sequence of instructions with single entry/exit
@@ -261,6 +337,21 @@ pub enum MirInstr {
         variant: String,
     },
 
+    /// Extract the tag from an enum for comparison
+    EnumGetTag {
+        name: String,       // Destination for the tag value
+        enum_value: String, // Source enum value
+    },
+
+    /// Extract the payload from an enum variant
+    EnumGetPayload {
+        name: String,                   // Destination for the payload value
+        enum_value: String,             // Source enum value
+        enum_name: String,              // Enum type name (e.g., "HttpCode")
+        variant: String,                // Variant name (e.g., "Success")
+        payload_type: Option<TypeNode>, // Expected payload type
+    },
+
     /// Range-based for loop: for i in 0..10 or for i in 0..=10
     ForRange {
         var: String,        // Loop variable (e.g., "i")
@@ -419,6 +510,218 @@ impl MirInstr {
     pub fn as_string(&self) -> Option<&String> {
         match self {
             MirInstr::ConstString { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Get all values/temporaries used by this instruction
+    pub fn get_used_values(&self) -> Vec<String> {
+        let mut used = Vec::new();
+        match self {
+            MirInstr::IncRef { value } | MirInstr::DecRef { value } => {
+                used.push(value.clone());
+            }
+            MirInstr::Assign { value, .. } => {
+                used.push(value.clone());
+            }
+            MirInstr::Call { args, .. } => {
+                used.extend(args.clone());
+            }
+            MirInstr::Return { values } => {
+                used.extend(values.clone());
+            }
+            MirInstr::CondJump { cond, .. } => {
+                used.push(cond.clone());
+            }
+            MirInstr::Print { values } => {
+                used.extend(values.clone());
+            }
+            MirInstr::Add(_, lhs, rhs)
+            | MirInstr::Sub(_, lhs, rhs)
+            | MirInstr::Mul(_, lhs, rhs)
+            | MirInstr::Div(_, lhs, rhs) => {
+                used.push(lhs.clone());
+                used.push(rhs.clone());
+            }
+            MirInstr::BinaryOp(_, _, lhs, rhs) => {
+                used.push(lhs.clone());
+                used.push(rhs.clone());
+            }
+            MirInstr::StringConcat { left, right, .. } => {
+                used.push(left.clone());
+                used.push(right.clone());
+            }
+            MirInstr::IncrementDecrement { variable, .. } => {
+                used.push(variable.clone());
+            }
+            MirInstr::TupleCreate { elements, .. } => {
+                used.extend(elements.clone());
+            }
+            MirInstr::TupleExtract { source, .. } => {
+                used.push(source.clone());
+            }
+            MirInstr::TupleGet { tuple, .. } => {
+                used.push(tuple.clone());
+            }
+            MirInstr::Array { elements, .. } => {
+                used.extend(elements.clone());
+            }
+            MirInstr::ArrayGet { array, index, .. } => {
+                used.push(array.clone());
+                used.push(index.clone());
+            }
+            MirInstr::ArraySet {
+                array,
+                index,
+                value,
+            } => {
+                used.push(array.clone());
+                used.push(index.clone());
+                used.push(value.clone());
+            }
+            MirInstr::ArraySlice {
+                array, start, end, ..
+            } => {
+                used.push(array.clone());
+                used.push(start.clone());
+                used.push(end.clone());
+            }
+            MirInstr::ArrayLen { array, .. } => {
+                used.push(array.clone());
+            }
+            MirInstr::Map { entries, .. } => {
+                for (k, v) in entries {
+                    used.push(k.clone());
+                    used.push(v.clone());
+                }
+            }
+            MirInstr::MapGet { map, key, .. } => {
+                used.push(map.clone());
+                used.push(key.clone());
+            }
+            MirInstr::MapGetPair { map, index, .. } => {
+                used.push(map.clone());
+                used.push(index.clone());
+            }
+            MirInstr::MapSet { map, key, value } => {
+                used.push(map.clone());
+                used.push(key.clone());
+                used.push(value.clone());
+            }
+            MirInstr::MapContains { map, key, .. } => {
+                used.push(map.clone());
+                used.push(key.clone());
+            }
+            MirInstr::MapLen { map, .. } => {
+                used.push(map.clone());
+            }
+            MirInstr::StructInit { fields, .. } => {
+                for (_, v) in fields {
+                    used.push(v.clone());
+                }
+            }
+            MirInstr::StructGet {
+                struct_instance, ..
+            } => {
+                used.push(struct_instance.clone());
+            }
+            MirInstr::StructSet {
+                struct_instance,
+                value,
+                ..
+            } => {
+                used.push(struct_instance.clone());
+                used.push(value.clone());
+            }
+            MirInstr::EnumInit { value: Some(v), .. } => {
+                used.push(v.clone());
+            }
+            MirInstr::EnumGetTag { enum_value, .. } => {
+                used.push(enum_value.clone());
+            }
+            MirInstr::EnumGetPayload { enum_value, .. } => {
+                used.push(enum_value.clone());
+            }
+            MirInstr::EnumMatch { enum_instance, .. } => {
+                used.push(enum_instance.clone());
+            }
+            MirInstr::Cast { value, .. } => {
+                used.push(value.clone());
+            }
+            MirInstr::TryPropagate { result, .. } => {
+                used.push(result.clone());
+            }
+            MirInstr::RangeCreate { start, end, .. } => {
+                used.push(start.clone());
+                used.push(end.clone());
+            }
+            MirInstr::MethodCall { object, args, .. } => {
+                used.push(object.clone());
+                used.extend(args.clone());
+            }
+            MirInstr::Closure {
+                body_expr,
+                captures,
+                ..
+            } => {
+                used.push(body_expr.clone());
+                used.extend(captures.clone());
+            }
+            MirInstr::ResultOk { values, .. } => {
+                used.extend(values.clone());
+            }
+            MirInstr::ResultErr { error, .. } => {
+                used.push(error.clone());
+            }
+            _ => {}
+        }
+        used
+    }
+
+    /// Get the value/temporary defined by this instruction
+    pub fn get_defined_value(&self) -> Option<String> {
+        match self {
+            MirInstr::Assign { name, .. }
+            | MirInstr::Arg { name }
+            | MirInstr::Add(name, _, _)
+            | MirInstr::Sub(name, _, _)
+            | MirInstr::Mul(name, _, _)
+            | MirInstr::Div(name, _, _)
+            | MirInstr::BinaryOp(_, name, _, _)
+            | MirInstr::StringConcat { name, .. }
+            | MirInstr::TupleCreate { name, .. }
+            | MirInstr::TupleExtract { name, .. }
+            | MirInstr::TupleGet { name, .. }
+            | MirInstr::Array { name, .. }
+            | MirInstr::ArrayGet { name, .. }
+            | MirInstr::ArraySlice { name, .. }
+            | MirInstr::ArrayLen { name, .. }
+            | MirInstr::Map { name, .. }
+            | MirInstr::MapGet { name, .. }
+            | MirInstr::MapGetPair { name, .. }
+            | MirInstr::MapContains { name, .. }
+            | MirInstr::MapLen { name, .. }
+            | MirInstr::StructInit { name, .. }
+            | MirInstr::StructGet { name, .. }
+            | MirInstr::EnumInit { name, .. }
+            | MirInstr::EnumGetTag { name, .. }
+            | MirInstr::EnumGetPayload { name, .. }
+            | MirInstr::EnumMatch { name, .. }
+            | MirInstr::Cast { name, .. }
+            | MirInstr::TryPropagate { name, .. }
+            | MirInstr::RangeCreate { name, .. }
+            | MirInstr::MethodCall { dest: name, .. }
+            | MirInstr::Closure { name, .. }
+            | MirInstr::ResultOk { name, .. }
+            | MirInstr::ResultErr { name, .. }
+            | MirInstr::ConstInt { name, .. }
+            | MirInstr::ConstFloat { name, .. }
+            | MirInstr::ConstString { name, .. }
+            | MirInstr::ConstBool { name, .. } => Some(name.clone()),
+            MirInstr::Call { dest, .. } => {
+                // Call can define multiple values, return the first one if any
+                dest.first().cloned()
+            }
             _ => None,
         }
     }

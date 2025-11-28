@@ -281,6 +281,11 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     mir_builder.build_program(&all_nodes);
     mir_builder.finalize();
 
+    // Validate MIR before codegen
+    if let Err(e) = mir_builder.program.validate() {
+        return Err(format!("MIR validation failed: {}", e));
+    }
+
     // Check that main() function exists before code generation
     let has_main = mir_builder
         .program
