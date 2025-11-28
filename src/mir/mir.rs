@@ -482,6 +482,14 @@ pub enum MirInstr {
         error_block: String, // Block to jump to if Err
     },
 
+    /// Unwrap Result or panic with message
+    /// expr ?? panic("message")
+    UnwrapOrPanic {
+        name: String,      // Destination for Ok value
+        result: String,    // Result to check
+        panic_msg: String, // Panic message if Err
+    },
+
     /// Extracts Ok values and error into separate variables
     /// let a, b , err = expr;
     ManualErrorExtract {
@@ -657,6 +665,12 @@ impl MirInstr {
             MirInstr::TryPropagate { result, .. } => {
                 used.push(result.clone());
             }
+            MirInstr::UnwrapOrPanic {
+                result, panic_msg, ..
+            } => {
+                used.push(result.clone());
+                used.push(panic_msg.clone());
+            }
             MirInstr::RangeCreate { start, end, .. } => {
                 used.push(start.clone());
                 used.push(end.clone());
@@ -715,6 +729,7 @@ impl MirInstr {
             | MirInstr::EnumMatch { name, .. }
             | MirInstr::Cast { name, .. }
             | MirInstr::TryPropagate { name, .. }
+            | MirInstr::UnwrapOrPanic { name, .. }
             | MirInstr::RangeCreate { name, .. }
             | MirInstr::MethodCall { dest: name, .. }
             | MirInstr::Closure { name, .. }

@@ -859,6 +859,20 @@ impl SemanticAnalyzer {
                 }
             }
 
+            // UnwrapOrPanic: ?? panic() operator
+            // Unwraps a Result<T, E> to T, or panics if there's an error
+            AstNode::UnwrapOrPanic { expr, panic_msg } => {
+                // Validate panic message expression
+                self.infer_type(panic_msg)?;
+
+                let expr_type = self.infer_type(expr)?;
+                match expr_type {
+                    TypeNode::Result(ok_type, _err_type) => Ok(*ok_type),
+                    // If not a Result type, just return the type as-is
+                    other => Ok(other),
+                }
+            }
+
             // Block: infer type from the last statement/expression
             AstNode::Block(statements) => {
                 if statements.is_empty() {

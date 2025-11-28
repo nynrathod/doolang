@@ -301,6 +301,10 @@ pub enum AstNode {
     TryPropagate {
         expr: Box<AstNode>, // Expression with ? operator
     },
+    UnwrapOrPanic {
+        expr: Box<AstNode>,      // Expression that returns Result
+        panic_msg: Box<AstNode>, // Panic message expression
+    },
     ManualErrorExtract {
         expr: Box<AstNode>,  // Expression that returns Result
         ok_pattern: Pattern, // Pattern for Ok values (can be tuple)

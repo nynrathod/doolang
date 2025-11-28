@@ -1931,17 +1931,24 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 .map(|v| build_expression(builder, v, block))
                 .collect();
 
-            // Create a Result Ok instruction
-            let result_tmp = builder.next_tmp();
-            block.instrs.push(MirInstr::ResultOk {
-                name: result_tmp.clone(),
-                values: value_tmps,
-            });
+            // Check if current function has error type
+            // If no error type, Ok is just a simple return (not a Result struct)
+            if builder.current_function_error_type.is_some() {
+                // Function has error type - create a Result Ok instruction
+                let result_tmp = builder.next_tmp();
+                block.instrs.push(MirInstr::ResultOk {
+                    name: result_tmp.clone(),
+                    values: value_tmps,
+                });
 
-            // Set terminator to return the Ok result
-            block.terminator = Some(MirInstr::Return {
-                values: vec![result_tmp],
-            });
+                // Set terminator to return the Ok result
+                block.terminator = Some(MirInstr::Return {
+                    values: vec![result_tmp],
+                });
+            } else {
+                // Function has no error type - Ok is just a simple return
+                block.terminator = Some(MirInstr::Return { values: value_tmps });
+            }
         }
 
         // Handle Err expression (implicit return with error value)

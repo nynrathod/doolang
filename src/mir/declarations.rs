@@ -227,6 +227,10 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         // it adds them to THIS function (via last_mut())
         builder.program.functions.push(func);
 
+        // Track if current function has error type for Ok/Err handling
+        let prev_error_type = builder.current_function_error_type.clone();
+        builder.current_function_error_type = error_type.clone();
+
         // Create the first block for the function body
         let first_block_label = builder.next_block();
         let mut block = MirBlock {
@@ -421,6 +425,9 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         if let Some(func) = builder.program.functions.last_mut() {
             reorder_blocks(func);
         }
+
+        // Restore previous error type (for nested function handling if any)
+        builder.current_function_error_type = prev_error_type;
     } else {
         debug_assert!(
             false,

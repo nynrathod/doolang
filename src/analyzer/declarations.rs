@@ -819,6 +819,16 @@ impl SemanticAnalyzer {
         for node in nodes {
             match node {
                 AstNode::Return { values } => {
+                    // Rule 16: Allow `return Ok ...` and `return Err ...` syntax
+                    // Check if the return value is an Ok or Err expression
+                    let is_ok_or_err = values.len() == 1
+                        && matches!(&values[0], AstNode::OkExpr { .. } | AstNode::ErrExpr { .. });
+
+                    if is_ok_or_err {
+                        // `return Ok ...` or `return Err ...` is allowed
+                        continue;
+                    }
+
                     if has_error_type || !values.is_empty() {
                         // If function has error type, Return is not allowed at all
                         // If function has return type + values, Return is not allowed (use Ok)
@@ -864,33 +874,51 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    /// Recursively checks if a function body contains at least one Err expression
+    /// Recursively checks if a function body contains at least one Err expression or TryPropagate (?)
+    /// TryPropagate counts because it can propagate errors from called functions
     fn has_error_statement(&self, nodes: &[AstNode]) -> bool {
         for node in nodes {
-            match node {
-                AstNode::ErrExpr { .. } => return true,
-                AstNode::ConditionalStmt {
-                    then_block,
-                    else_branch,
-                    ..
-                } => {
-                    if self.has_error_statement(then_block) {
-                        return true;
-                    }
-                    if let Some(else_block) = else_branch {
-                        if self.has_error_statement(&vec![*else_block.clone()]) {
-                            return true;
-                        }
-                    }
-                }
-                AstNode::Block(inner_nodes) => {
-                    if self.has_error_statement(inner_nodes) {
-                        return true;
-                    }
-                }
-                _ => {}
+            if self.node_has_error_path(node) {
+                return true;
             }
         }
         false
+    }
+
+    /// Check if a single node contains an error path (Err or TryPropagate)
+    fn node_has_error_path(&self, node: &AstNode) -> bool {
+        match node {
+            AstNode::ErrExpr { .. } => true,
+            // TryPropagate (?) is a valid error path - it propagates errors from child calls
+            AstNode::TryPropagate { .. } => true,
+            // Check inside LetDecl value expression
+            AstNode::LetDecl { value, .. } => self.node_has_error_path(value),
+            // Check inside Return values
+            AstNode::Return { values } => values.iter().any(|v| self.node_has_error_path(v)),
+            // Check inside OkExpr values
+            AstNode::OkExpr { values } => values.iter().any(|v| self.node_has_error_path(v)),
+            // Check conditionals
+            AstNode::ConditionalStmt {
+                then_block,
+                else_branch,
+                ..
+            } => {
+                if self.has_error_statement(then_block) {
+                    return true;
+                }
+                if let Some(else_block) = else_branch {
+                    if self.node_has_error_path(else_block) {
+                        return true;
+                    }
+                }
+                false
+            }
+            AstNode::Block(inner_nodes) => self.has_error_statement(inner_nodes),
+            // Check inside FunctionCall arguments (shouldn't contain errors but be thorough)
+            AstNode::FunctionCall { args, .. } => args.iter().any(|a| self.node_has_error_path(a)),
+            // Check inside ManualErrorExtract
+            AstNode::ManualErrorExtract { .. } => true, // Manual extract is an error path
+            _ => false,
+        }
     }
 }

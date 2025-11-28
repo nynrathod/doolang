@@ -22,6 +22,7 @@ pub struct MirBuilder {
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
     pub enum_table: Arc<HashMap<String, HashMap<String, Option<TypeNode>>>>, // Shared enum table for enum variant resolution
     pub function_table: Arc<HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Shared function table for namespace resolution
+    pub current_function_error_type: Option<TypeNode>, // Track if current function has error type for Ok/Err handling
 }
 
 /// Context for tracking loop break/continue targets
@@ -51,6 +52,7 @@ impl MirBuilder {
             recursion_depth: 0,
             enum_table: Arc::new(HashMap::new()),
             function_table: Arc::new(HashMap::new()),
+            current_function_error_type: None,
         }
     }
 

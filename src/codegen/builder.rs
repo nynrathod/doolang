@@ -4041,6 +4041,224 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
 
+            // UnwrapOrPanic (?? operator): expr ?? panic("message")
+            MirInstr::UnwrapOrPanic {
+                name,
+                result: result_tmp,
+                panic_msg,
+            } => {
+                // Extract the Result struct and check the tag
+                let mut result_val = self.resolve_value(result_tmp);
+
+                // If result_val is a pointer, load the Result struct from it
+                if result_val.is_pointer_value() && !result_val.is_struct_value() {
+                    let result_ptr = result_val.into_pointer_value();
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let result_struct_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                    result_val = self
+                        .builder
+                        .build_load(result_struct_type, result_ptr, "result_struct_load_unwrap")
+                        .expect("Failed to load Result struct from pointer in UnwrapOrPanic");
+                }
+
+                // Try to load Result struct if not already a struct value
+                if !result_val.is_struct_value() {
+                    if let Some((_ok_type, _err_type)) = self.result_types.get(result_tmp) {
+                        if let Some(sym) = self.symbols.get(result_tmp) {
+                            let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                            let result_struct_type = self.context.struct_type(
+                                &[self.context.i32_type().into(), ptr_type.into()],
+                                false,
+                            );
+                            result_val = self
+                                .builder
+                                .build_load(
+                                    result_struct_type,
+                                    sym.ptr,
+                                    "result_struct_reload_unwrap",
+                                )
+                                .expect("Failed to reload Result struct");
+                        }
+                    }
+                }
+
+                if result_val.is_struct_value() {
+                    let result_struct = result_val.into_struct_value();
+
+                    // Extract tag (field 0)
+                    let tag = self
+                        .builder
+                        .build_extract_value(result_struct, 0, "result_tag")
+                        .unwrap()
+                        .into_int_value();
+
+                    // Check if tag == 1 (Err)
+                    let is_err = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            tag,
+                            self.context.i32_type().const_int(1, false),
+                            "is_err_unwrap",
+                        )
+                        .unwrap();
+
+                    // Create blocks for error and ok paths
+                    let func = self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let panic_block = self.context.append_basic_block(func, "unwrap_panic");
+                    let ok_block = self.context.append_basic_block(func, "unwrap_ok");
+
+                    self.builder
+                        .build_conditional_branch(is_err, panic_block, ok_block)
+                        .unwrap();
+
+                    // Panic path: call panic with the provided message
+                    self.builder.position_at_end(panic_block);
+
+                    // Resolve the panic message
+                    let panic_msg_val = self.resolve_value(panic_msg);
+
+                    // Print panic message using printf
+                    let printf_type = self.context.i32_type().fn_type(
+                        &[self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into()],
+                        true,
+                    );
+                    let printf_fn = self
+                        .module
+                        .get_function("printf")
+                        .unwrap_or_else(|| self.module.add_function("printf", printf_type, None));
+
+                    let panic_prefix = self
+                        .builder
+                        .build_global_string_ptr("panic: %s\n", "panic_fmt_unwrap")
+                        .unwrap();
+
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[panic_prefix.as_pointer_value().into(), panic_msg_val.into()],
+                            "print_panic",
+                        )
+                        .unwrap();
+
+                    // Exit with error code 1
+                    let exit_type = self
+                        .context
+                        .void_type()
+                        .fn_type(&[self.context.i32_type().into()], false);
+                    let exit_fn = self
+                        .module
+                        .get_function("exit")
+                        .unwrap_or_else(|| self.module.add_function("exit", exit_type, None));
+
+                    let exit_code = self.context.i32_type().const_int(1, false);
+                    self.builder
+                        .build_call(exit_fn, &[exit_code.into()], "exit_on_panic")
+                        .unwrap();
+
+                    self.builder.build_unreachable().unwrap();
+
+                    // Ok path: extract value (field 1) which is a pointer
+                    self.builder.position_at_end(ok_block);
+                    let ok_value_ptr = self
+                        .builder
+                        .build_extract_value(result_struct, 1, "ok_value_ptr_unwrap")
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Get the Ok type from result_types
+                    let ok_type = self
+                        .result_types
+                        .get(result_tmp)
+                        .map(|(t, _)| t.clone())
+                        .unwrap_or_else(|| "Int".to_string());
+
+                    // Convert pointer back to actual value based on type
+                    let is_struct_type =
+                        ok_type.contains("Struct(") || self.struct_metadata.contains_key(&ok_type);
+                    let is_tuple_type = ok_type.starts_with("Tuple(") || ok_type.contains(',');
+
+                    let actual_value = if ok_type.contains("Str")
+                        || ok_type.contains("String")
+                        || ok_type.contains("Array")
+                        || ok_type.contains("Map")
+                        || is_struct_type
+                        || is_tuple_type
+                    {
+                        ok_value_ptr.into()
+                    } else if ok_type.contains("Float") {
+                        let i64_val = self
+                            .builder
+                            .build_ptr_to_int(
+                                ok_value_ptr,
+                                self.context.i64_type(),
+                                "ptr_to_i64_unwrap",
+                            )
+                            .unwrap();
+                        let alloca = self
+                            .builder
+                            .build_alloca(self.context.i64_type(), "i64_tmp_unwrap")
+                            .unwrap();
+                        self.builder.build_store(alloca, i64_val).unwrap();
+                        let f64_ptr = self
+                            .builder
+                            .build_pointer_cast(
+                                alloca,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "f64_ptr_unwrap",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_load(self.context.f64_type(), f64_ptr, "f64_val_unwrap")
+                            .unwrap()
+                    } else {
+                        let i64_val = self
+                            .builder
+                            .build_ptr_to_int(
+                                ok_value_ptr,
+                                self.context.i64_type(),
+                                "ptr_to_i64_unwrap",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_int_truncate(
+                                i64_val,
+                                self.context.i32_type(),
+                                "ptr_to_i32_unwrap",
+                            )
+                            .unwrap()
+                            .into()
+                    };
+
+                    // Store the unwrapped value
+                    self.temp_values.insert(name.clone(), actual_value);
+                    let normalized_type = if is_struct_type && !ok_type.contains("Struct(") {
+                        format!("Struct({})", ok_type)
+                    } else {
+                        ok_type.clone()
+                    };
+                    self.variable_types.insert(name.clone(), normalized_type);
+
+                    Some(actual_value)
+                } else {
+                    // Not a Result struct - pass through
+                    self.temp_values.insert(name.clone(), result_val);
+                    self.variable_types
+                        .insert(name.clone(), "Unknown".to_string());
+                    Some(result_val)
+                }
+            }
+
             // let a, b , err = expr;
             MirInstr::ManualErrorExtract {
                 ok_names,

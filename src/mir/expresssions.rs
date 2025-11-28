@@ -998,6 +998,125 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             unwrapped_tmp
         }
 
+        // UnwrapOrPanic (?? operator): expr ?? panic("message")
+        AstNode::UnwrapOrPanic { expr, panic_msg } => {
+            // Build the expression that might fail
+            let result_tmp = build_expression(builder, expr, block);
+
+            // Extract the panic message from the fallback expression
+            // The fallback is typically panic("message"), so we need to extract the message argument
+            let panic_msg_tmp = match panic_msg.as_ref() {
+                // If it's a function call to panic, extract the first argument
+                AstNode::FunctionCall { func, args } => {
+                    if let AstNode::Identifier(name) = func.as_ref() {
+                        if name == "panic" && !args.is_empty() {
+                            // Build the message argument
+                            build_expression(builder, &args[0], block)
+                        } else {
+                            // Not a panic call - build the whole expression
+                            build_expression(builder, panic_msg, block)
+                        }
+                    } else {
+                        build_expression(builder, panic_msg, block)
+                    }
+                }
+                // If it's a string literal directly
+                AstNode::StringLiteral(s) => {
+                    let tmp = builder.next_tmp();
+                    block.instrs.push(MirInstr::Assign {
+                        name: tmp.clone(),
+                        value: format!("\"{}\"", s),
+                        mutable: false,
+                    });
+                    tmp
+                }
+                // Otherwise build whatever expression was provided
+                _ => build_expression(builder, panic_msg, block),
+            };
+
+            // Create a temporary for the unwrapped value
+            let unwrapped_tmp = builder.next_tmp();
+
+            // Generate UnwrapOrPanic instruction
+            // This will check the Result tag at runtime:
+            // - If Err: panic with the provided message
+            // - If Ok: extract and continue with the Ok value
+            block.instrs.push(MirInstr::UnwrapOrPanic {
+                name: unwrapped_tmp.clone(),
+                result: result_tmp.clone(),
+                panic_msg: panic_msg_tmp.clone(),
+            });
+
+            // The unwrapped value has the Ok type of the Result
+            // Copy type info from the result if available
+            if let Some(result_type) = builder.mir_symbol_table.get(&result_tmp).cloned() {
+                builder
+                    .mir_symbol_table
+                    .insert(unwrapped_tmp.clone(), result_type);
+            }
+
+            unwrapped_tmp
+        }
+
+        // Ok expression as expression (e.g., inside return Ok x)
+        AstNode::OkExpr { values } => {
+            // Build MIR for each value expression
+            let value_tmps: Vec<String> = values
+                .iter()
+                .map(|v| build_expression(builder, v, block))
+                .collect();
+
+            // Check if current function has error type
+            // If no error type, Ok is just a value (not wrapped in Result struct)
+            if builder.current_function_error_type.is_some() {
+                // Function has error type - create a Result Ok instruction
+                let result_tmp = builder.next_tmp();
+                block.instrs.push(MirInstr::ResultOk {
+                    name: result_tmp.clone(),
+                    values: value_tmps,
+                });
+                result_tmp
+            } else {
+                // Function has no error type - Ok is just the value itself
+                // Return the first value (or create empty temp if no values)
+                if value_tmps.len() == 1 {
+                    value_tmps[0].clone()
+                } else if value_tmps.is_empty() {
+                    // No values - return empty temp
+                    let tmp = builder.next_tmp();
+                    block.instrs.push(MirInstr::Assign {
+                        name: tmp.clone(),
+                        value: "0".to_string(),
+                        mutable: false,
+                    });
+                    tmp
+                } else {
+                    // Multiple values - create tuple
+                    let tuple_tmp = builder.next_tmp();
+                    block.instrs.push(MirInstr::TupleCreate {
+                        name: tuple_tmp.clone(),
+                        elements: value_tmps,
+                    });
+                    tuple_tmp
+                }
+            }
+        }
+
+        // Err expression as expression (e.g., inside return Err msg)
+        AstNode::ErrExpr { value } => {
+            // Build MIR for the error value
+            let error_tmp = build_expression(builder, value, block);
+
+            // Create a Result Err instruction
+            let result_tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::ResultErr {
+                name: result_tmp.clone(),
+                error: error_tmp,
+            });
+
+            result_tmp
+        }
+
         // Struct literal: Point { x: 10, y: 20 }
         AstNode::StructLiteral { name, fields } => {
             // Build MIR for each field value expression

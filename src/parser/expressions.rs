@@ -61,10 +61,22 @@ impl<'a> Parser<'a> {
             };
         }
 
-        // Handle ternary and try-propagate at lowest precedence (after all binary operators)
+        // Handle ternary, try-propagate, and unwrap-or-panic at lowest precedence (after all binary operators)
         // Only parse when at minimum precedence level (0) to ensure correct precedence
         // This ensures: x > y ? a : b parses as (x > y) ? a : b
-        if min_prec == 0 && self.peek_is(TokenType::Question) {
+
+        // Check for ?? (unwrap or panic operator) FIRST since lexer tokenizes ?? as DoubleQuestion
+        if min_prec == 0 && self.peek_is(TokenType::DoubleQuestion) {
+            self.advance(); // consume '??'
+
+            // Parse the fallback expression (typically panic("message"))
+            let fallback = self.parse_expression_prec(0)?;
+
+            left = AstNode::UnwrapOrPanic {
+                expr: Box::new(left),
+                panic_msg: Box::new(fallback),
+            };
+        } else if min_prec == 0 && self.peek_is(TokenType::Question) {
             self.advance(); // consume '?'
 
             // Distinguish between ternary and try-propagate by looking ahead

@@ -535,11 +535,31 @@ impl SemanticAnalyzer {
                 self.infer_type(expr)?;
                 Ok(())
             }
+            AstNode::UnwrapOrPanic { expr, panic_msg } => {
+                // Rule 13: ?? panic() operator unwraps Result or panics
+                // This can be used anywhere, doesn't require error type in signature
+                // Type check the expression (should return a Result type)
+                self.infer_type(expr)?;
+                // Type check the panic message (should be a string or function call)
+                self.infer_type(panic_msg)?;
+                Ok(())
+            }
             AstNode::ManualErrorExtract {
                 expr,
                 ok_pattern,
                 error_var,
             } => {
+                // Rule 12: Cannot ignore both ok value(s) and error
+                // let _, _ = divide(10, 2); is not allowed
+                let ok_ignored = matches!(ok_pattern, Pattern::Wildcard);
+                let err_ignored = error_var == "_";
+
+                if ok_ignored && err_ignored {
+                    return Err(SemanticError::UnexpectedNode {
+                        expected: "Cannot ignore both success value(s) and error in manual error extraction. Must capture at least one.".to_string(),
+                    });
+                }
+
                 // Type check the expression that returns Result
                 let expr_type = self.infer_type(expr)?;
 
