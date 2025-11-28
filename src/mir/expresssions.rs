@@ -583,13 +583,6 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
         }
 
         AstNode::FunctionCall { func, args } => {
-            let mut arg_tmps = vec![];
-            for arg in args {
-                let arg_tmp = build_expression(builder, arg, block);
-                arg_tmps.push(arg_tmp);
-            }
-
-            let dest_tmp = builder.next_tmp();
             let func_name = match &**func {
                 AstNode::Identifier(name) => name.clone(),
                 _ => {
@@ -598,13 +591,56 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 }
             };
 
-            block.instrs.push(MirInstr::Call {
-                dest: vec![dest_tmp.clone()],
-                func: func_name,
-                args: arg_tmps,
-            });
+            // Check if this is actually a bare enum variant call (e.g., Success(42) instead of Result::Success(42))
+            // Search through all enums to find if this name is a variant
+            let mut found_enum: Option<(String, String)> = None;
+            for (enum_name, variants) in builder.enum_table.iter() {
+                for (variant_name, _) in variants {
+                    if variant_name == &func_name {
+                        found_enum = Some((enum_name.clone(), variant_name.clone()));
+                        break;
+                    }
+                }
+                if found_enum.is_some() {
+                    break;
+                }
+            }
 
-            dest_tmp
+            if let Some((enum_name, variant_name)) = found_enum {
+                // This is a bare enum variant call - convert to EnumInit
+                let payload_tmp = if !args.is_empty() {
+                    // Enum variants only support single payload
+                    Some(build_expression(builder, &args[0], block))
+                } else {
+                    None
+                };
+
+                let enum_tmp = builder.next_tmp();
+                block.instrs.push(MirInstr::EnumInit {
+                    name: enum_tmp.clone(),
+                    enum_name: enum_name.clone(),
+                    variant: variant_name.clone(),
+                    value: payload_tmp,
+                });
+
+                enum_tmp
+            } else {
+                // Regular function call
+                let mut arg_tmps = vec![];
+                for arg in args {
+                    let arg_tmp = build_expression(builder, arg, block);
+                    arg_tmps.push(arg_tmp);
+                }
+
+                let dest_tmp = builder.next_tmp();
+                block.instrs.push(MirInstr::Call {
+                    dest: vec![dest_tmp.clone()],
+                    func: func_name,
+                    args: arg_tmps,
+                });
+
+                dest_tmp
+            }
         }
 
         AstNode::MethodCall {

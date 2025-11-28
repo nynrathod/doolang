@@ -1054,57 +1054,340 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
 
-                    // Look up variant name from enum_table using the tag
-                    let variant_name = if let Some(variants) = self.enum_table.get(enum_info) {
-                        // Get tag value as constant to find variant
-                        if let Some(tag_const) = tag.get_zero_extended_constant() {
-                            let tag_idx = tag_const as usize;
-                            // Find variant at this index
-                            variants
-                                .iter()
-                                .enumerate()
-                                .find(|(idx, _)| *idx == tag_idx)
-                                .map(|(_, (name, _))| name.clone())
-                                .unwrap_or_else(|| format!("Variant(tag={})", tag_const))
-                        } else {
-                            // Tag is not a constant, can't determine variant name at compile time
-                            format!("Variant(tag=?)")
+                    // Emit runtime switch to select variant name based on tag
+                    if let Some(variants) = self.enum_table.get(enum_info) {
+                        // Create a pointer to hold the variant name string
+                        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let variant_name_ptr = self
+                            .builder
+                            .build_alloca(ptr_type, "variant_name_ptr")
+                            .unwrap();
+
+                        // Build switch statement
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let current_fn = current_block.get_parent().unwrap();
+
+                        // Create blocks for each variant and a merge block
+                        let merge_block = self
+                            .context
+                            .append_basic_block(current_fn, "enum_print_merge");
+                        let mut cases = Vec::new();
+
+                        for (tag_idx, (variant_name, _)) in variants.iter().enumerate() {
+                            let case_block = self
+                                .context
+                                .append_basic_block(current_fn, &format!("enum_case_{}", tag_idx));
+                            cases.push((tag_idx as u32, case_block, variant_name.clone()));
+                        }
+
+                        // Default case
+                        let default_block =
+                            self.context.append_basic_block(current_fn, "enum_default");
+
+                        // Build switch
+                        let switch = self
+                            .builder
+                            .build_switch(
+                                tag,
+                                default_block,
+                                &cases
+                                    .iter()
+                                    .map(|(tag_val, block, _)| {
+                                        (
+                                            self.context
+                                                .i32_type()
+                                                .const_int(*tag_val as u64, false),
+                                            *block,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                            .unwrap();
+
+                        // Fill in case blocks
+                        for (_tag_val, case_block, variant_name) in cases {
+                            self.builder.position_at_end(case_block);
+                            let variant_str = self
+                                .builder
+                                .build_global_string_ptr(&variant_name, "variant_str")
+                                .unwrap();
+                            self.builder
+                                .build_store(variant_name_ptr, variant_str.as_pointer_value())
+                                .unwrap();
+                            self.builder
+                                .build_unconditional_branch(merge_block)
+                                .unwrap();
+                        }
+
+                        // Default block
+                        self.builder.position_at_end(default_block);
+                        let unknown_str = self
+                            .builder
+                            .build_global_string_ptr("Unknown", "unknown_str")
+                            .unwrap();
+                        self.builder
+                            .build_store(variant_name_ptr, unknown_str.as_pointer_value())
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(merge_block)
+                            .unwrap();
+
+                        // Continue in merge block
+                        self.builder.position_at_end(merge_block);
+                        let variant_name_val = self
+                            .builder
+                            .build_load(ptr_type, variant_name_ptr, "variant_name")
+                            .unwrap();
+
+                        // Print enum name and variant
+                        let format_str = "%s::%s";
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "enum_fmt")
+                            .unwrap();
+                        let enum_name_global = self
+                            .builder
+                            .build_global_string_ptr(enum_info, "enum_name")
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[
+                                    format_global.as_pointer_value().into(),
+                                    enum_name_global.as_pointer_value().into(),
+                                    variant_name_val.into_pointer_value().into(),
+                                ],
+                                "print_enum",
+                            )
+                            .unwrap();
+
+                        // Extract and print payload if present
+                        let payload_ptr = self
+                            .builder
+                            .build_extract_value(enum_struct, 1, "enum_payload_ptr")
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Check if payload is not null
+                        let null_ptr = ptr_type.const_null();
+                        let is_not_null = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::NE,
+                                self.builder
+                                    .build_ptr_to_int(
+                                        payload_ptr,
+                                        self.context.i64_type(),
+                                        "payload_int",
+                                    )
+                                    .unwrap(),
+                                self.builder
+                                    .build_ptr_to_int(null_ptr, self.context.i64_type(), "null_int")
+                                    .unwrap(),
+                                "payload_not_null",
+                            )
+                            .unwrap();
+
+                        let payload_block = self
+                            .context
+                            .append_basic_block(current_fn, "enum_print_payload");
+                        let no_payload_block = self
+                            .context
+                            .append_basic_block(current_fn, "enum_print_no_payload");
+                        let final_block = self
+                            .context
+                            .append_basic_block(current_fn, "enum_print_final");
+
+                        self.builder
+                            .build_conditional_branch(is_not_null, payload_block, no_payload_block)
+                            .unwrap();
+
+                        // Payload block: Build runtime switch to determine payload type and print accordingly
+                        self.builder.position_at_end(payload_block);
+
+                        // Print opening parenthesis
+                        let open_paren = self
+                            .builder
+                            .build_global_string_ptr("(", "open_paren")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[open_paren.as_pointer_value().into()],
+                                "print_open_paren",
+                            )
+                            .unwrap();
+
+                        // Build switch to determine payload type based on tag
+                        let print_merge = self
+                            .context
+                            .append_basic_block(current_fn, "payload_print_merge");
+                        let mut payload_cases = Vec::new();
+
+                        for (tag_idx, (variant_name, payload_type)) in variants.iter().enumerate() {
+                            if payload_type.is_some() {
+                                let case_block = self.context.append_basic_block(
+                                    current_fn,
+                                    &format!("payload_case_{}", tag_idx),
+                                );
+                                payload_cases.push((
+                                    tag_idx as u32,
+                                    case_block,
+                                    payload_type.clone(),
+                                ));
+                            }
+                        }
+
+                        let payload_default = self
+                            .context
+                            .append_basic_block(current_fn, "payload_default");
+
+                        self.builder
+                            .build_switch(
+                                tag,
+                                payload_default,
+                                &payload_cases
+                                    .iter()
+                                    .map(|(tag_val, block, _)| {
+                                        (
+                                            self.context
+                                                .i32_type()
+                                                .const_int(*tag_val as u64, false),
+                                            *block,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                            .unwrap();
+
+                        // Fill in payload printing for each case
+                        for (_tag_val, case_block, payload_type_opt) in payload_cases {
+                            self.builder.position_at_end(case_block);
+
+                            // Determine format based on payload type
+                            if let Some(payload_type) = payload_type_opt {
+                                let type_str = format!("{:?}", payload_type);
+                                if type_str.contains("String") || type_str.contains("Str") {
+                                    // String payload - payload_ptr IS the string pointer (not boxed)
+                                    let str_fmt = self
+                                        .builder
+                                        .build_global_string_ptr("\"%s\"", "str_fmt")
+                                        .unwrap();
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[
+                                                str_fmt.as_pointer_value().into(),
+                                                payload_ptr.into(),
+                                            ],
+                                            "print_payload_str",
+                                        )
+                                        .unwrap();
+                                } else {
+                                    // Int or other primitive - boxed, need to load from pointer
+                                    let payload_val = self
+                                        .builder
+                                        .build_load(
+                                            self.context.i32_type(),
+                                            payload_ptr,
+                                            "payload_val",
+                                        )
+                                        .unwrap();
+                                    let int_fmt = self
+                                        .builder
+                                        .build_global_string_ptr("%d", "int_fmt")
+                                        .unwrap();
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[
+                                                int_fmt.as_pointer_value().into(),
+                                                payload_val.into(),
+                                            ],
+                                            "print_payload_int",
+                                        )
+                                        .unwrap();
+                                }
+                            }
+
+                            self.builder
+                                .build_unconditional_branch(print_merge)
+                                .unwrap();
+                        }
+
+                        // Default: just skip
+                        self.builder.position_at_end(payload_default);
+                        self.builder
+                            .build_unconditional_branch(print_merge)
+                            .unwrap();
+
+                        self.builder.position_at_end(print_merge);
+
+                        // Print closing parenthesis
+                        let close_paren = self
+                            .builder
+                            .build_global_string_ptr(")", "close_paren")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[close_paren.as_pointer_value().into()],
+                                "print_close_paren",
+                            )
+                            .unwrap();
+
+                        self.builder
+                            .build_unconditional_branch(final_block)
+                            .unwrap();
+
+                        // No payload block: do nothing
+                        self.builder.position_at_end(no_payload_block);
+                        self.builder
+                            .build_unconditional_branch(final_block)
+                            .unwrap();
+
+                        // Final block: print space if needed
+                        self.builder.position_at_end(final_block);
+                        if idx < values.len() - 1 {
+                            let space_fmt = self
+                                .builder
+                                .build_global_string_ptr(" ", "space_fmt")
+                                .unwrap();
+                            self.builder
+                                .build_call(
+                                    printf_fn,
+                                    &[space_fmt.as_pointer_value().into()],
+                                    "space_call",
+                                )
+                                .unwrap();
                         }
                     } else {
-                        // Enum not found in table, use fallback
-                        format!("Variant(tag=?)")
-                    };
-
-                    let format_str = if idx < values.len() - 1 {
-                        "%s::%s "
-                    } else {
-                        "%s::%s"
-                    };
-
-                    let format_global = self
-                        .builder
-                        .build_global_string_ptr(format_str, "enum_fmt")
-                        .unwrap();
-                    let enum_name_global = self
-                        .builder
-                        .build_global_string_ptr(enum_info, "enum_name")
-                        .unwrap();
-                    let variant_name_global = self
-                        .builder
-                        .build_global_string_ptr(&variant_name, "variant_name")
-                        .unwrap();
-
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[
-                                format_global.as_pointer_value().into(),
-                                enum_name_global.as_pointer_value().into(),
-                                variant_name_global.as_pointer_value().into(),
-                            ],
-                            "print_enum",
-                        )
-                        .unwrap();
+                        // Enum not in table - print unknown
+                        let format_str = if idx < values.len() - 1 {
+                            "%s::Unknown "
+                        } else {
+                            "%s::Unknown"
+                        };
+                        let format_global = self
+                            .builder
+                            .build_global_string_ptr(format_str, "enum_fmt")
+                            .unwrap();
+                        let enum_name_global = self
+                            .builder
+                            .build_global_string_ptr(enum_info, "enum_name")
+                            .unwrap();
+                        self.builder
+                            .build_call(
+                                printf_fn,
+                                &[
+                                    format_global.as_pointer_value().into(),
+                                    enum_name_global.as_pointer_value().into(),
+                                ],
+                                "print_enum_unknown",
+                            )
+                            .unwrap();
+                    }
                 } else {
                     // Fallback for non-struct enum values
                     let placeholder = format!("<{}>", enum_info);
