@@ -214,7 +214,7 @@ impl<'ctx> CodeGen<'ctx> {
                 len_ptr_cast,
                 self.context
                     .i32_type()
-                    .const_int(elements.len() as u64, false),
+                    .const_int(expanded_elements.len() as u64, false),
             )
             .unwrap();
 

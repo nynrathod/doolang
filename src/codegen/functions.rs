@@ -828,42 +828,29 @@ impl<'ctx> CodeGen<'ctx> {
                 match instr {
                     crate::mir::MirInstr::Assign { name, value, .. } => {
                         block_defs.insert(name.clone());
-                        if !value.starts_with('%')
-                            && !value.parse::<i32>().is_ok()
-                            && value != "true"
-                            && value != "false"
-                        {
+                        // Track ALL variable uses, including temps starting with %
+                        // This is critical for detecting cross-block temps from ternary/conditional expressions
+                        if !value.parse::<i32>().is_ok() && value != "true" && value != "false" {
                             block_uses.insert(value.clone());
                         }
                     }
                     crate::mir::MirInstr::BinaryOp(_, _, left, right) => {
-                        if !left.starts_with('%')
-                            && !left.parse::<i32>().is_ok()
-                            && left != "true"
-                            && left != "false"
-                        {
+                        // Track ALL variable uses, including temps starting with %
+                        if !left.parse::<i32>().is_ok() && left != "true" && left != "false" {
                             block_uses.insert(left.clone());
                         }
-                        if !right.starts_with('%')
-                            && !right.parse::<i32>().is_ok()
-                            && right != "true"
-                            && right != "false"
-                        {
+                        if !right.parse::<i32>().is_ok() && right != "true" && right != "false" {
                             block_uses.insert(right.clone());
                         }
                     }
                     crate::mir::MirInstr::ArrayLen { array, .. } => {
-                        if !array.starts_with('%') {
-                            block_uses.insert(array.clone());
-                        }
+                        // Track ALL variable uses, including temps
+                        block_uses.insert(array.clone());
                     }
                     crate::mir::MirInstr::ArrayGet { array, index, .. } => {
-                        if !array.starts_with('%') {
-                            block_uses.insert(array.clone());
-                        }
-                        if !index.starts_with('%') {
-                            block_uses.insert(index.clone());
-                        }
+                        // Track ALL variable uses, including temps
+                        block_uses.insert(array.clone());
+                        block_uses.insert(index.clone());
                     }
                     _ => {}
                 }
@@ -873,11 +860,8 @@ impl<'ctx> CodeGen<'ctx> {
             if let Some(term) = &block.terminator {
                 match term {
                     crate::mir::MirInstr::CondJump { cond, .. } => {
-                        if !cond.starts_with('%')
-                            && !cond.parse::<i32>().is_ok()
-                            && cond != "true"
-                            && cond != "false"
-                        {
+                        // Track ALL variable uses, including temps starting with %
+                        if !cond.parse::<i32>().is_ok() && cond != "true" && cond != "false" {
                             block_uses.insert(cond.clone());
                         }
                     }
@@ -1125,6 +1109,11 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         // Allocate stack space for cross-block variables with correct types
+        // Store cross-block vars in CodeGen so Assign doesn't remove their symbols
+        for var in &cross_block_vars {
+            self.cross_block_vars.insert(var.clone());
+        }
+
         for var in &cross_block_vars {
             if !self.symbols.contains_key(var) {
                 // Skip function parameters - they are already initialized from incoming values

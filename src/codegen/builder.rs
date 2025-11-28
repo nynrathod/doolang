@@ -231,7 +231,10 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // For boolean comparison results, remove any existing symbol and force reallocation
                 // This ensures boolean values are always stored as i32, not as their temporary type
-                if self.variable_types.get(name).map_or(false, |t| t == "Bool") {
+                // EXCEPT for cross-block variables which must keep their allocated symbol
+                if self.variable_types.get(name).map_or(false, |t| t == "Bool")
+                    && !self.cross_block_vars.contains(name)
+                {
                     self.symbols.remove(name);
                 }
 
@@ -351,7 +354,8 @@ impl<'ctx> CodeGen<'ctx> {
                     // Update temp_values to override old values when variable names are reused
                     // This is critical for loop variables that change types across iterations
                     // Only update for pointer values (strings, arrays, maps) to avoid breaking other logic
-                    if val.is_pointer_value() {
+                    // BUT: Do NOT cache cross-block variables - they must be loaded from their allocas
+                    if val.is_pointer_value() && !self.cross_block_vars.contains(name) {
                         self.temp_values.insert(name.clone(), val);
                     }
 
@@ -806,22 +810,28 @@ impl<'ctx> CodeGen<'ctx> {
                     // Non-empty slice case
                     self.builder.position_at_end(alloc_bb);
 
-                    // Allocate new array for slice using malloc
+                    // Allocate new array for slice WITH RC header and length (8 bytes)
+                    // Layout: [RC: 4 bytes][Length: 4 bytes][data...]
                     let elem_size = elem_type.size_of().unwrap();
+                    let data_size = self
+                        .builder
+                        .build_int_mul(slice_len, elem_size, "data_size")
+                        .unwrap();
+                    let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
                         .builder
-                        .build_int_mul(slice_len, elem_size, "total_size")
+                        .build_int_add(header_size, data_size, "total_size")
                         .unwrap();
 
                     let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
                         let fn_type = self
                             .context
                             .ptr_type(inkwell::AddressSpace::default())
-                            .fn_type(&[self.context.i32_type().into()], false);
+                            .fn_type(&[self.context.i64_type().into()], false);
                         self.module.add_function("malloc", fn_type, None)
                     });
 
-                    let new_array = self
+                    let heap_ptr = self
                         .builder
                         .build_call(malloc_fn, &[total_size.into()], "slice_malloc")
                         .unwrap()
@@ -829,6 +839,52 @@ impl<'ctx> CodeGen<'ctx> {
                         .left()
                         .unwrap()
                         .into_pointer_value();
+
+                    // Store RC = 1 at offset 0
+                    let rc_ptr = self
+                        .builder
+                        .build_pointer_cast(
+                            heap_ptr,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "rc_ptr",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(rc_ptr, self.context.i32_type().const_int(1, false))
+                        .unwrap();
+
+                    // Store slice length at offset 4
+                    let len_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i8_type(),
+                                heap_ptr,
+                                &[self.context.i32_type().const_int(4, false)],
+                                "len_ptr",
+                            )
+                            .unwrap()
+                    };
+                    let len_ptr_cast = self
+                        .builder
+                        .build_pointer_cast(
+                            len_ptr,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "len_ptr_cast",
+                        )
+                        .unwrap();
+                    self.builder.build_store(len_ptr_cast, slice_len).unwrap();
+
+                    // Get data pointer at offset 8
+                    let new_array = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i8_type(),
+                                heap_ptr,
+                                &[self.context.i32_type().const_int(8, false)],
+                                "data_ptr",
+                            )
+                            .unwrap()
+                    };
 
                     // Copy elements using memcpy for better performance
                     let array_ptr = array_val.into_pointer_value();
@@ -868,7 +924,7 @@ impl<'ctx> CodeGen<'ctx> {
                             &[
                                 new_array.into(),
                                 src_ptr.into(),
-                                total_size.into(),
+                                data_size.into(),
                                 self.context.bool_type().const_zero().into(),
                             ],
                             "memcpy_slice",
@@ -893,18 +949,18 @@ impl<'ctx> CodeGen<'ctx> {
                     self.temp_values.insert(name.clone(), result_ptr.into());
 
                     // Store metadata for slices so ArrayGet can find the element type
+                    // Note: length is 0 here but runtime length is stored in heap header
                     self.array_metadata.insert(
                         name.clone(),
                         crate::codegen::ArrayMetadata {
                             element_type: meta.element_type.clone(),
-                            length: 0, // Dynamic length - not tracked
+                            length: 0, // Runtime length stored in heap header
                             contains_strings: meta.contains_strings,
                         },
                     );
 
-                    // Mark as a slice (malloc'd but no RC header) so cleanup doesn't try to decref it
-                    // Store in slice_arrays instead of heap_arrays to avoid RC deref on cleanup
-                    self.slice_arrays.insert(name.clone());
+                    // Mark as heap-allocated array with RC header (now consistent with regular arrays)
+                    self.heap_arrays.insert(name.clone());
                     self.variable_types
                         .insert(name.clone(), "Array".to_string());
 

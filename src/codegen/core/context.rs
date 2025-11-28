@@ -101,6 +101,7 @@ pub struct CodeGen<'ctx> {
     pub loop_stack: Vec<LoopContext>,
     pub loop_local_vars: std::collections::HashSet<String>, // Track variables allocated inside loop bodies (must not be cleaned up at function level)
     pub arrayget_sources: HashMap<String, String>, // Maps ArrayGet result names to their source array names
+    pub cross_block_vars: std::collections::HashSet<String>, // Track variables used across multiple blocks (allocated once in entry block)
     pub current_function_params: Vec<(String, Option<String>)>, // Track current function parameters (name, type) for RC on return
     pub function_return_types: HashMap<String, String>, // Track function return types for proper RC handling on call results
     pub functions_returning_heap: std::collections::HashSet<String>, // Track functions that return heap-allocated values
@@ -178,6 +179,7 @@ impl<'ctx> CodeGen<'ctx> {
             loop_stack: Vec::new(),
             loop_local_vars: std::collections::HashSet::new(),
             arrayget_sources: HashMap::new(),
+            cross_block_vars: std::collections::HashSet::new(),
             current_function_params: Vec::new(),
             function_return_types: HashMap::new(),
             functions_returning_heap: std::collections::HashSet::new(),

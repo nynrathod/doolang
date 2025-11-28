@@ -1172,77 +1172,13 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             true_expr,
             false_expr,
         } => {
-            // Evaluate condition
-            let cond_tmp = build_expression(builder, condition, block);
-
-            // Create blocks for true and false branches
-            let true_label = builder.next_block();
-            let false_label = builder.next_block();
-            let merge_label = builder.next_block();
-
-            // Allocate result variable before branching - both branches will assign to this
-            let result_tmp = builder.next_tmp();
-
-            // Set terminator for current block
-            block.terminator = Some(MirInstr::CondJump {
-                cond: cond_tmp,
-                then_block: true_label.clone(),
-                else_block: false_label.clone(),
-            });
-
-            // Save the current block with its terminator
-            let original_block = MirBlock {
-                label: block.label.clone(),
-                instrs: block.instrs.clone(),
-                terminator: block.terminator.clone(),
+            // Use ConditionalExpr (if-else expression) instead, which properly handles cross-block values
+            let if_expr = AstNode::ConditionalExpr {
+                condition: condition.clone(),
+                then_expr: true_expr.clone(),
+                else_expr: false_expr.clone(),
             };
-
-            // True block
-            let mut true_block = MirBlock {
-                label: true_label.clone(),
-                instrs: vec![],
-                terminator: None,
-            };
-            let true_result = build_expression(builder, true_expr, &mut true_block);
-            true_block.instrs.push(MirInstr::Assign {
-                name: result_tmp.clone(),
-                value: true_result,
-                mutable: false,
-            });
-            true_block.terminator = Some(MirInstr::Jump {
-                label: merge_label.clone(),
-            });
-
-            // False block
-            let mut false_block = MirBlock {
-                label: false_label.clone(),
-                instrs: vec![],
-                terminator: None,
-            };
-            let false_result = build_expression(builder, false_expr, &mut false_block);
-            false_block.instrs.push(MirInstr::Assign {
-                name: result_tmp.clone(),
-                value: false_result,
-                mutable: false,
-            });
-            false_block.terminator = Some(MirInstr::Jump {
-                label: merge_label.clone(),
-            });
-
-            // Push all blocks to function
-            if let Some(current_func) = builder.program.functions.last_mut() {
-                current_func.blocks.push(original_block);
-                current_func.blocks.push(true_block);
-                current_func.blocks.push(false_block);
-            }
-
-            // Replace current block with merge label continuation
-            block.label = merge_label;
-            block.instrs.clear();
-            block.terminator = None;
-
-            // Return the result variable which both branches assign to
-            result_tmp
+            return build_expression(builder, &if_expr, block);
         }
 
         // Match expression
