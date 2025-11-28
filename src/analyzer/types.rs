@@ -134,6 +134,12 @@ pub enum SemanticError {
         file: String,
         error: String,
     },
+
+    // Error handling
+    UnhandledResult {
+        ok_type: TypeNode,
+        error_type: TypeNode,
+    },
 }
 
 impl fmt::Display for TypeNode {
@@ -247,6 +253,9 @@ impl SemanticError {
 
             SemanticError::ParseErrorInModule { .. } => "E0704",
             SemanticError::CircularImport { .. } => "E0705",
+
+            // Error handling
+            SemanticError::UnhandledResult { .. } => "E0801",
         }
     }
 }
@@ -503,6 +512,15 @@ impl fmt::Display for SemanticError {
             E::ParseErrorInModule { file, error } => {
                 write!(f, "error[{}] in {}: {}", self.code(), file, error)
             }
+
+            // Error handling
+            E::UnhandledResult { ok_type, error_type } => write!(
+                f,
+                "error[{}]: unhandled Result type: function returns Result({}, {}). Error handling is mandatory - use '?' operator to propagate, or manually extract with 'let ok, err = ...'",
+                self.code(),
+                ok_type,
+                error_type
+            ),
         }
     }
 }

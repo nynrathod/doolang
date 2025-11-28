@@ -158,18 +158,12 @@ impl SemanticAnalyzer {
                             types.push((**error_type).clone());
                             types
                         } else {
-                            // Not manual error extraction - treat as before
-                            // Result types can be unpacked if inner type is tuple and user uses tuple destructuring
-                            match &**ok_type {
-                                TypeNode::Tuple(inner_types) if targets.len() > 1 => {
-                                    // User is destructuring and inner is tuple - unpack both layers
-                                    inner_types.clone()
-                                }
-                                _ => {
-                                    // Either not a tuple inside, or user is not destructuring
-                                    vec![rhs_type.clone()]
-                                }
-                            }
+                            // Not manual error extraction - this is an error!
+                            // Result types MUST be handled with either ? operator or manual extraction
+                            return Err(SemanticError::UnhandledResult {
+                                ok_type: (**ok_type).clone(),
+                                error_type: (**error_type).clone(),
+                            });
                         }
                     }
                     t => vec![t.clone()],
