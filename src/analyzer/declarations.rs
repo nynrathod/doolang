@@ -446,6 +446,16 @@ impl SemanticAnalyzer {
             }
         }
 
+        // ENFORCEMENT: If function has return type, it MUST use Ok (not bare Return)
+        if return_type.is_some() && return_type.as_ref() != Some(&TypeNode::Void) {
+            self.ensure_uses_ok_not_return(body, name, error_type.is_some())?;
+        }
+
+        // ENFORCEMENT: If function has error type, it MUST have at least one Err path
+        if error_type.is_some() {
+            self.ensure_has_error_path(body, name)?;
+        }
+
         self.function_depth += 1;
 
         // Set current function's error type for ? operator validation
@@ -782,5 +792,101 @@ impl SemanticAnalyzer {
             );
         }
         Ok(())
+    }
+
+    /// Enforces that functions with return types use Ok expressions, not bare Return statements
+    /// If function has error type, Return is never allowed. If no error type, bare Return is allowed for void functions.
+    fn ensure_uses_ok_not_return(
+        &self,
+        body: &[AstNode],
+        function_name: &str,
+        has_error_type: bool,
+    ) -> Result<(), SemanticError> {
+        self.check_return_usage(body, function_name, has_error_type)
+    }
+
+    /// Recursively checks for Return statements that should be Ok or Err
+    fn check_return_usage(
+        &self,
+        nodes: &[AstNode],
+        function_name: &str,
+        has_error_type: bool,
+    ) -> Result<(), SemanticError> {
+        for node in nodes {
+            match node {
+                AstNode::Return { values } => {
+                    if has_error_type || !values.is_empty() {
+                        // If function has error type, Return is not allowed at all
+                        // If function has return type + values, Return is not allowed (use Ok)
+                        return Err(SemanticError::UnexpectedReturnWithReturnType {
+                            function: function_name.to_string(),
+                        });
+                    }
+                }
+                AstNode::ConditionalStmt {
+                    then_block,
+                    else_branch,
+                    ..
+                } => {
+                    self.check_return_usage(then_block, function_name, has_error_type)?;
+                    if let Some(else_block) = else_branch {
+                        self.check_return_usage(
+                            &vec![*else_block.clone()],
+                            function_name,
+                            has_error_type,
+                        )?;
+                    }
+                }
+                AstNode::Block(inner_nodes) => {
+                    self.check_return_usage(inner_nodes, function_name, has_error_type)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Enforces that functions declaring error types must have at least one Err expression
+    fn ensure_has_error_path(
+        &self,
+        body: &[AstNode],
+        function_name: &str,
+    ) -> Result<(), SemanticError> {
+        if !self.has_error_statement(body) {
+            return Err(SemanticError::MissingErrInFunctionWithErrorType {
+                function: function_name.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Recursively checks if a function body contains at least one Err expression
+    fn has_error_statement(&self, nodes: &[AstNode]) -> bool {
+        for node in nodes {
+            match node {
+                AstNode::ErrExpr { .. } => return true,
+                AstNode::ConditionalStmt {
+                    then_block,
+                    else_branch,
+                    ..
+                } => {
+                    if self.has_error_statement(then_block) {
+                        return true;
+                    }
+                    if let Some(else_block) = else_branch {
+                        if self.has_error_statement(&vec![*else_block.clone()]) {
+                            return true;
+                        }
+                    }
+                }
+                AstNode::Block(inner_nodes) => {
+                    if self.has_error_statement(inner_nodes) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 }

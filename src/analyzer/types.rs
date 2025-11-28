@@ -140,6 +140,15 @@ pub enum SemanticError {
         ok_type: TypeNode,
         error_type: TypeNode,
     },
+    MissingOkInFunctionWithReturnType {
+        function: String,
+    },
+    MissingErrInFunctionWithErrorType {
+        function: String,
+    },
+    UnexpectedReturnWithReturnType {
+        function: String,
+    },
 }
 
 impl fmt::Display for TypeNode {
@@ -256,6 +265,9 @@ impl SemanticError {
 
             // Error handling
             SemanticError::UnhandledResult { .. } => "E0801",
+            SemanticError::MissingOkInFunctionWithReturnType { .. } => "E0802",
+            SemanticError::MissingErrInFunctionWithErrorType { .. } => "E0803",
+            SemanticError::UnexpectedReturnWithReturnType { .. } => "E0804",
         }
     }
 }
@@ -520,6 +532,24 @@ impl fmt::Display for SemanticError {
                 self.code(),
                 ok_type,
                 error_type
+            ),
+            E::MissingOkInFunctionWithReturnType { function } => write!(
+                f,
+                "error[{}]: function '{}' declares a return type but uses bare 'Return' statements. Functions with return types MUST use 'Ok' expression. Use 'Ok value;' instead of 'return value;'",
+                self.code(),
+                function
+            ),
+            E::MissingErrInFunctionWithErrorType { function } => write!(
+                f,
+                "error[{}]: function '{}' declares an error type (! ErrorType) but has no error handling path (no Err expression). Either add an 'Err value;' branch or remove the error type declaration",
+                self.code(),
+                function
+            ),
+            E::UnexpectedReturnWithReturnType { function } => write!(
+                f,
+                "error[{}]: function '{}' declares a return type but uses bare 'Return' statement. Functions with return types MUST use 'Ok' expression instead. Use 'Ok value;' instead of 'return value;'",
+                self.code(),
+                function
             ),
         }
     }
