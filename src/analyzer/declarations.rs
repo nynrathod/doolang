@@ -829,13 +829,13 @@ impl SemanticAnalyzer {
                         continue;
                     }
 
-                    if has_error_type || !values.is_empty() {
-                        // If function has error type, Return is not allowed at all
-                        // If function has return type + values, Return is not allowed (use Ok)
+                    if has_error_type {
+                        // If function has error type, Return is not allowed at all (must use Ok/Err)
                         return Err(SemanticError::UnexpectedReturnWithReturnType {
                             function: function_name.to_string(),
                         });
                     }
+                    // If function has NO error type, bare return is allowed (no check needed)
                 }
                 AstNode::ConditionalStmt {
                     then_block,
