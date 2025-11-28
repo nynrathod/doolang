@@ -79,7 +79,12 @@ impl MirFunction {
 
                 // Add defined values
                 if let Some(def) = instr.get_defined_value() {
-                    defined.insert(def);
+                    defined.insert(def.clone());
+                    // MapGetPair also defines {name}_k and {name}_v temporaries
+                    if matches!(instr, MirInstr::MapGetPair { .. }) {
+                        defined.insert(format!("{}_k", def));
+                        defined.insert(format!("{}_v", def));
+                    }
                 }
             }
 
