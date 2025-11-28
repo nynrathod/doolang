@@ -5155,8 +5155,19 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_alloca(enum_type, &format!("{}_enum", name))
                     .unwrap();
 
-                // Set tag (variant index - for now use hash of variant name)
-                let tag_value = variant.len() as u32; // Simple hash - TODO: Use proper variant indexing
+                // Calculate proper variant index from enum_table
+                let tag_value = if let Some(variants) = self.enum_table.get(enum_name) {
+                    // Find the index of this variant in the enum definition
+                    // Use enumerate to get stable indices
+                    variants
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (v, _))| *v == variant)
+                        .map(|(idx, _)| idx as u32)
+                        .unwrap_or_else(|| variant.len() as u32) // Fallback to string length
+                } else {
+                    variant.len() as u32 // Fallback if enum not found in table
+                };
                 let tag_ptr = self
                     .builder
                     .build_struct_gep(enum_type, enum_alloca, 0, "tag_ptr")
@@ -5208,6 +5219,126 @@ impl<'ctx> CodeGen<'ctx> {
                     .insert(name.clone(), format!("Enum({})", enum_name));
 
                 Some(enum_val)
+            }
+
+            // Extract tag from enum for comparison
+            MirInstr::EnumGetTag { name, enum_value } => {
+                // Enum is represented as { i32 tag, ptr payload }
+                // Extract the tag field (index 0)
+                let enum_val = self.resolve_value(enum_value);
+
+                if let BasicValueEnum::StructValue(struct_val) = enum_val {
+                    // Extract the tag field from the struct
+                    let tag_val = self
+                        .builder
+                        .build_extract_value(struct_val, 0, &format!("{}_tag", name))
+                        .unwrap();
+
+                    self.temp_values.insert(name.clone(), tag_val);
+                    self.variable_types.insert(name.clone(), "Int".to_string());
+
+                    Some(tag_val)
+                } else {
+                    // Fallback if not a struct (shouldn't happen for enums)
+                    None
+                }
+            }
+
+            // Extract payload from enum
+            MirInstr::EnumGetPayload {
+                name,
+                enum_value,
+                enum_name,
+                variant,
+                payload_type,
+            } => {
+                // Enum is represented as { i32 tag, ptr payload }
+                // Extract the payload field (index 1)
+                let enum_val = self.resolve_value(enum_value);
+
+                if let BasicValueEnum::StructValue(struct_val) = enum_val {
+                    // Extract the payload pointer field from the struct
+                    let payload_ptr = self
+                        .builder
+                        .build_extract_value(struct_val, 1, &format!("{}_payload_ptr", name))
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Determine the LLVM type to load based on the payload type
+                    let (load_type, type_str): (BasicTypeEnum, String) =
+                        if let Some(ref ptype) = payload_type {
+                            match ptype {
+                                crate::parser::ast::TypeNode::Int => {
+                                    (self.context.i32_type().into(), "Int".to_string())
+                                }
+                                crate::parser::ast::TypeNode::Float => {
+                                    (self.context.f64_type().into(), "Float".to_string())
+                                }
+                                crate::parser::ast::TypeNode::Bool => {
+                                    (self.context.bool_type().into(), "Bool".to_string())
+                                }
+                                crate::parser::ast::TypeNode::String => {
+                                    // String is a pointer type
+                                    (
+                                        self.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into(),
+                                        "Str".to_string(),
+                                    )
+                                }
+                                crate::parser::ast::TypeNode::Array(_) => {
+                                    // Array is a pointer type
+                                    (
+                                        self.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into(),
+                                        "Array".to_string(),
+                                    )
+                                }
+                                crate::parser::ast::TypeNode::Map(_, _) => {
+                                    // Map is a pointer type
+                                    (
+                                        self.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into(),
+                                        "Map".to_string(),
+                                    )
+                                }
+                                _ => {
+                                    // Default to i32 for unknown types
+                                    (self.context.i32_type().into(), "Int".to_string())
+                                }
+                            }
+                        } else {
+                            // No payload type info - default to i32
+                            (self.context.i32_type().into(), "Int".to_string())
+                        };
+
+                    // For pointer types (String, Array, Map), the payload_ptr IS the value
+                    // For value types (Int, Float, Bool), we need to load from the pointer
+                    let payload_val = match payload_type {
+                        Some(crate::parser::ast::TypeNode::String)
+                        | Some(crate::parser::ast::TypeNode::Array(_))
+                        | Some(crate::parser::ast::TypeNode::Map(_, _)) => {
+                            // Pointer types - just use the pointer directly
+                            BasicValueEnum::PointerValue(payload_ptr)
+                        }
+                        _ => {
+                            // Value types - load from the pointer
+                            self.builder
+                                .build_load(load_type, payload_ptr, &format!("{}_payload", name))
+                                .unwrap()
+                        }
+                    };
+
+                    self.temp_values.insert(name.clone(), payload_val);
+                    self.variable_types.insert(name.clone(), type_str);
+
+                    Some(payload_val)
+                } else {
+                    // Fallback if not a struct (shouldn't happen for enums)
+                    None
+                }
             }
 
             _ => None,

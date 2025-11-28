@@ -445,12 +445,8 @@ impl SemanticAnalyzer {
                         expected: "Ok expression inside function with error type".to_string(),
                     });
                 }
-                // Check that current function has an error return type
-                if self.current_function_error_type.is_none() {
-                    return Err(SemanticError::UnexpectedNode {
-                        expected: "Ok can only be used in functions with error return type (e.g., -> T ! E or ! E)".to_string(),
-                    });
-                }
+                // Ok can be used as a return statement even without error types
+                // This allows Ok to act like return in non-error-returning functions
                 // Type check values
                 for v in values {
                     self.infer_type(v)?;
@@ -581,19 +577,28 @@ impl SemanticAnalyzer {
 
                 // Type check all match arms
                 for arm in arms {
-                    // Type check pattern
+                    // Type check pattern and analyze body with binding in scope
                     match &arm.pattern {
                         crate::parser::ast::MatchPattern::Literal(expr) => {
                             self.infer_type(expr)?;
+                            // No binding, just analyze body
+                            self.infer_type(&arm.body)?;
                         }
                         crate::parser::ast::MatchPattern::Condition(expr) => {
                             self.infer_type(expr)?;
+                            // No binding, just analyze body
+                            self.infer_type(&arm.body)?;
                         }
-                        crate::parser::ast::MatchPattern::Wildcard => {}
+                        crate::parser::ast::MatchPattern::Wildcard => {
+                            // No binding, just analyze body
+                            self.infer_type(&arm.body)?;
+                        }
                         crate::parser::ast::MatchPattern::EnumVariant { enum_name, variant } => {
                             // Type check enum variant exists
                             // TODO: Add enum validation when enum type system is enhanced
                             let _ = (enum_name, variant);
+                            // No binding, just analyze body
+                            self.infer_type(&arm.body)?;
                         }
                         crate::parser::ast::MatchPattern::EnumVariantWithPayload {
                             enum_name,
@@ -602,12 +607,33 @@ impl SemanticAnalyzer {
                         } => {
                             // Type check enum variant with payload
                             // TODO: Add enum validation and binding type inference
-                            let _ = (enum_name, variant, binding);
+                            let _ = (enum_name, variant);
+
+                            // Create a new scope for this arm with the binding variable
+                            let parent_scope = self.symbol_table.clone();
+
+                            // Add the binding variable to the scope
+                            // For now, assume Int type for the payload
+                            // TODO: Infer actual payload type from enum variant
+                            self.symbol_table.insert(
+                                binding.clone(),
+                                SymbolInfo {
+                                    ty: TypeNode::Int,
+                                    mutable: false,
+                                    is_parameter: false,
+                                    is_ref_counted: false,
+                                },
+                            );
+
+                            // Analyze the arm body with the binding in scope
+                            let result = self.infer_type(&arm.body);
+
+                            // Restore the parent scope
+                            self.symbol_table = parent_scope;
+
+                            result?;
                         }
                     }
-
-                    // Type check body
-                    self.infer_type(&arm.body)?;
                 }
                 Ok(())
             }

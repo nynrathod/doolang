@@ -1,4 +1,5 @@
 use crate::limits::CODEGEN_MAX_DEPTH;
+use crate::parser::ast::TypeNode;
 use inkwell::{
     builder::Builder,
     context::Context,
@@ -125,6 +126,11 @@ pub struct CodeGen<'ctx> {
     pub result_values: HashMap<String, (bool, String)>, // Maps temp to (is_ok, value_temp) to track Ok vs Err
     pub no_storage_vars: std::collections::HashSet<String>, // Track variables that should NOT get stack allocations (e.g., tuple pointers from Result unwrapping)
 
+    // Enum tracking
+    pub enum_variants: HashMap<String, Vec<(String, u32)>>, // Maps enum_name to vec of (variant_name, tag_value)
+    pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
+    pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
+
     // Current function context
     pub current_function_name: Option<String>, // Track the name of the function being currently generated
     pub current_error_type: Option<String>, // Track the error type of the current function (for Result handling)
@@ -193,6 +199,9 @@ impl<'ctx> CodeGen<'ctx> {
             heap_pointers: HashMap::new(),
             result_types: HashMap::new(),
             result_values: HashMap::new(),
+            enum_variants: HashMap::new(),
+            enum_table: HashMap::new(),
+            struct_table: HashMap::new(),
             current_function_name: None,
             current_error_type: None,
         }

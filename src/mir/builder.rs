@@ -40,6 +40,8 @@ impl MirBuilder {
                 functions: vec![],
                 globals: vec![],
                 is_main_entry: true, // Default to true; can be set to false for imported modules
+                enum_table: HashMap::new(),
+                struct_table: HashMap::new(),
             },
             tmp_counter: 1,
             block_counter: 0,
@@ -406,7 +408,12 @@ impl MirBuilder {
     /// - Removes empty blocks (but keeps referenced ones).
     /// - Deduplicates global constants/assignments.
     /// - Optionally merges consecutive assignments to the same target.
+    /// - Copies enum_table and struct_table metadata to the program for codegen.
     pub fn finalize(&mut self) {
+        // Copy enum_table and struct_table to the program so codegen has access to type metadata
+        self.program.enum_table = (*self.enum_table).clone();
+        self.program.struct_table = HashMap::new(); // TODO: populate from analyzer
+
         // 1. Remove empty blocks (blocks without instructions and no terminator)
         //    BUT: keep blocks that are referenced by other blocks
         for func in &mut self.program.functions {

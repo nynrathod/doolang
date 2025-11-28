@@ -236,6 +236,9 @@ impl<'a> Parser<'a> {
                 // Return type will be inferred by analyzer
             }
 
+            // Expect semicolon at the end of inline function
+            self.expect(TokenType::Semi)?;
+
             // Wrap expressions in a return statement
             let body_block = vec![AstNode::Return {
                 values: return_values,

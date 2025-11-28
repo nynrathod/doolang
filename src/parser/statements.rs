@@ -195,6 +195,7 @@ impl<'a> Parser<'a> {
             self.expect(TokenType::FatArrow)?;
 
             // Parse body - handle both expressions and statements like print
+            let mut body_is_block = false;
             let body = if let Some(tok) = self.peek() {
                 match tok.kind {
                     TokenType::Print => {
@@ -203,6 +204,7 @@ impl<'a> Parser<'a> {
                     }
                     TokenType::OpenBrace => {
                         // Parse block as body
+                        body_is_block = true;
                         let block = self.parse_braced_block()?;
                         Box::new(AstNode::Block(block))
                     }
@@ -217,10 +219,11 @@ impl<'a> Parser<'a> {
 
             arms.push(MatchArm { pattern, body });
 
-            // Optional comma
+            // Optional comma - not required after block closing brace
             if self.peek_is(TokenType::Comma) {
                 self.advance();
-            } else if !self.peek_is(TokenType::CloseBrace) {
+            } else if !self.peek_is(TokenType::CloseBrace) && !body_is_block {
+                // Only require comma if body is not a block
                 return Err(ParseError::UnexpectedToken(
                     "Expected ',' or '}' after match arm".to_string(),
                 ));

@@ -20,6 +20,10 @@ impl<'ctx> CodeGen<'ctx> {
         // Store the global instructions for later use (e.g., initialization).
         self.globals = program.globals.clone();
 
+        // Copy enum_table and struct_table from MirProgram for type metadata access
+        self.enum_table = program.enum_table.clone();
+        self.struct_table = program.struct_table.clone();
+
         // --- PRE-PROCESSING ---
         // CRITICAL: Scan for struct declarations FIRST to populate metadata and create canonical types
         // This MUST happen BEFORE predeclaring functions so that struct parameter types are recognized

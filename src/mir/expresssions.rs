@@ -1222,17 +1222,9 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             let merge_label = builder.next_block();
             let result_tmp = builder.next_tmp();
 
-            // Check if all arms are statements (not expressions)
-            let all_arms_statements = arms.iter().all(|arm| {
-                matches!(
-                    arm.body.as_ref(),
-                    AstNode::Print { .. }
-                        | AstNode::Block(_)
-                        | AstNode::Break
-                        | AstNode::Continue
-                        | AstNode::Return { .. }
-                )
-            });
+            // Match expressions always need a result, even if arms are statement-like
+            // We'll assign a unit value (0) for statement arms
+            let all_arms_statements = false;
 
             // Pre-allocate all labels first
             let mut arm_labels = Vec::new();
@@ -1332,6 +1324,13 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     }
                     crate::parser::ast::MatchPattern::EnumVariant { enum_name, variant } => {
                         // Enum variant match without payload: compare enum tag
+                        // Extract tag from the enum value
+                        let value_tag_tmp = builder.next_tmp();
+                        check_block.instrs.push(MirInstr::EnumGetTag {
+                            name: value_tag_tmp.clone(),
+                            enum_value: value_tmp.clone(),
+                        });
+
                         // Create an enum variant temporary to compare against
                         let variant_tmp = builder.next_tmp();
                         check_block.instrs.push(MirInstr::EnumInit {
@@ -1341,12 +1340,20 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             value: None,
                         });
 
+                        // Extract tag from the variant
+                        let variant_tag_tmp = builder.next_tmp();
+                        check_block.instrs.push(MirInstr::EnumGetTag {
+                            name: variant_tag_tmp.clone(),
+                            enum_value: variant_tmp.clone(),
+                        });
+
+                        // Compare the tags
                         let cond_tmp = builder.next_tmp();
                         check_block.instrs.push(MirInstr::BinaryOp(
                             "eq:int".to_string(),
                             cond_tmp.clone(),
-                            value_tmp.clone(),
-                            variant_tmp,
+                            value_tag_tmp,
+                            variant_tag_tmp,
                         ));
                         check_block.terminator = Some(MirInstr::CondJump {
                             cond: cond_tmp,
@@ -1360,6 +1367,13 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                         binding,
                     } => {
                         // Enum variant match with payload: check tag and extract payload
+                        // Extract tag from the enum value
+                        let value_tag_tmp = builder.next_tmp();
+                        check_block.instrs.push(MirInstr::EnumGetTag {
+                            name: value_tag_tmp.clone(),
+                            enum_value: value_tmp.clone(),
+                        });
+
                         // Create an enum variant temporary to compare against
                         let variant_tmp = builder.next_tmp();
                         check_block.instrs.push(MirInstr::EnumInit {
@@ -1369,20 +1383,39 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             value: None, // For comparison, we don't need the payload value
                         });
 
+                        // Extract tag from the variant
+                        let variant_tag_tmp = builder.next_tmp();
+                        check_block.instrs.push(MirInstr::EnumGetTag {
+                            name: variant_tag_tmp.clone(),
+                            enum_value: variant_tmp.clone(),
+                        });
+
+                        // Compare the tags
                         let cond_tmp = builder.next_tmp();
-                        // Compare the enum variant
                         check_block.instrs.push(MirInstr::BinaryOp(
                             "eq:int".to_string(),
                             cond_tmp.clone(),
-                            value_tmp.clone(),
-                            variant_tmp,
+                            value_tag_tmp,
+                            variant_tag_tmp,
                         ));
 
-                        // Extract payload into binding variable
-                        // Store the binding in the symbol table with inferred type
-                        builder
-                            .mir_symbol_table
-                            .insert(binding.clone(), TypeNode::Int);
+                        // Look up the payload type from enum_table and store in symbol table
+                        let payload_type = builder
+                            .enum_table
+                            .get(enum_name)
+                            .and_then(|variants| variants.get(variant))
+                            .and_then(|opt_type| opt_type.clone());
+
+                        if let Some(ref ptype) = payload_type {
+                            builder
+                                .mir_symbol_table
+                                .insert(binding.clone(), ptype.clone());
+                        } else {
+                            // Fallback to Int if type lookup fails
+                            builder
+                                .mir_symbol_table
+                                .insert(binding.clone(), TypeNode::Int);
+                        }
 
                         check_block.terminator = Some(MirInstr::CondJump {
                             cond: cond_tmp,
@@ -1408,24 +1441,59 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     terminator: None,
                 };
 
+                // If this arm has a payload binding, extract it at the start of the arm block
+                if let crate::parser::ast::MatchPattern::EnumVariantWithPayload {
+                    enum_name,
+                    variant,
+                    binding,
+                } = &arm.pattern
+                {
+                    // Look up the payload type from enum_table
+                    let payload_type = builder
+                        .enum_table
+                        .get(enum_name)
+                        .and_then(|variants| variants.get(variant))
+                        .and_then(|opt_type| opt_type.clone());
+
+                    // Extract payload from the enum value directly into the binding variable name
+                    // This avoids an extra Assign and makes the binding directly available as a temporary
+                    arm_block.instrs.push(MirInstr::EnumGetPayload {
+                        name: binding.clone(),
+                        enum_value: value_tmp.clone(),
+                        enum_name: enum_name.clone(),
+                        variant: variant.clone(),
+                        payload_type: payload_type.clone(),
+                    });
+
+                    // Store the binding type in symbol table for type checking
+                    if let Some(ref ptype) = payload_type {
+                        builder
+                            .mir_symbol_table
+                            .insert(binding.clone(), ptype.clone());
+                    } else {
+                        // Fallback to Int if type lookup fails
+                        builder
+                            .mir_symbol_table
+                            .insert(binding.clone(), TypeNode::Int);
+                    }
+                }
+
                 // Check if arm body is a statement or expression
                 match arm.body.as_ref() {
                     AstNode::Print { .. } => {
                         build_statement(builder, &arm.body, &mut arm_block);
 
-                        if !all_arms_statements {
-                            // Mixed mode - assign a unit/void value
-                            let unit_tmp = builder.next_tmp();
-                            arm_block.instrs.push(MirInstr::ConstInt {
-                                name: unit_tmp.clone(),
-                                value: 0,
-                            });
-                            arm_block.instrs.push(MirInstr::Assign {
-                                name: result_tmp.clone(),
-                                value: unit_tmp,
-                                mutable: false,
-                            });
-                        }
+                        // Always assign a unit/void value for statement arms
+                        let unit_tmp = builder.next_tmp();
+                        arm_block.instrs.push(MirInstr::ConstInt {
+                            name: unit_tmp.clone(),
+                            value: 0,
+                        });
+                        arm_block.instrs.push(MirInstr::Assign {
+                            name: result_tmp.clone(),
+                            value: unit_tmp,
+                            mutable: false,
+                        });
                     }
                     AstNode::Block(statements) => {
                         let mut last_result = String::new();
@@ -1449,25 +1517,24 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             }
                         }
 
-                        if !all_arms_statements {
-                            if last_result.is_empty() {
-                                let unit_tmp = builder.next_tmp();
-                                arm_block.instrs.push(MirInstr::ConstInt {
-                                    name: unit_tmp.clone(),
-                                    value: 0,
-                                });
-                                arm_block.instrs.push(MirInstr::Assign {
-                                    name: result_tmp.clone(),
-                                    value: unit_tmp,
-                                    mutable: false,
-                                });
-                            } else {
-                                arm_block.instrs.push(MirInstr::Assign {
-                                    name: result_tmp.clone(),
-                                    value: last_result,
-                                    mutable: false,
-                                });
-                            }
+                        // Always assign result for block arms
+                        if last_result.is_empty() {
+                            let unit_tmp = builder.next_tmp();
+                            arm_block.instrs.push(MirInstr::ConstInt {
+                                name: unit_tmp.clone(),
+                                value: 0,
+                            });
+                            arm_block.instrs.push(MirInstr::Assign {
+                                name: result_tmp.clone(),
+                                value: unit_tmp,
+                                mutable: false,
+                            });
+                        } else {
+                            arm_block.instrs.push(MirInstr::Assign {
+                                name: result_tmp.clone(),
+                                value: last_result,
+                                mutable: false,
+                            });
                         }
                     }
                     AstNode::Break | AstNode::Continue | AstNode::Return { .. } => {
@@ -1476,13 +1543,12 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     _ => {
                         let arm_result = build_expression(builder, &arm.body, &mut arm_block);
 
-                        if !all_arms_statements {
-                            arm_block.instrs.push(MirInstr::Assign {
-                                name: result_tmp.clone(),
-                                value: arm_result,
-                                mutable: false,
-                            });
-                        }
+                        // Always assign result for expression arms
+                        arm_block.instrs.push(MirInstr::Assign {
+                            name: result_tmp.clone(),
+                            value: arm_result,
+                            mutable: false,
+                        });
                     }
                 }
 

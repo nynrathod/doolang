@@ -1,6 +1,7 @@
 use crate::codegen::core::helpers::parse_tuple_types;
 use crate::codegen::core::CodeGen;
 use inkwell::types::BasicTypeEnum;
+use inkwell::values::BasicValueEnum;
 impl<'ctx> CodeGen<'ctx> {
     pub fn generate_call(
         &mut self,
@@ -1032,6 +1033,98 @@ impl<'ctx> CodeGen<'ctx> {
                                 placeholder_global.as_pointer_value().into(),
                             ],
                             "print_struct_placeholder",
+                        )
+                        .unwrap();
+                }
+            } else if let Some(enum_info) = self.variable_types.get(value).and_then(|t| {
+                if t.starts_with("Enum(") && t.ends_with(")") {
+                    Some(&t[5..t.len() - 1])
+                } else {
+                    None
+                }
+            }) {
+                // Handle enum printing: EnumName::VariantName or EnumName::VariantName(payload)
+                let val = self.resolve_value(value);
+
+                if let BasicValueEnum::StructValue(enum_struct) = val {
+                    // Extract tag (field 0) to determine variant
+                    let tag = self
+                        .builder
+                        .build_extract_value(enum_struct, 0, "enum_tag_print")
+                        .unwrap()
+                        .into_int_value();
+
+                    // Look up variant name from enum_table using the tag
+                    let variant_name = if let Some(variants) = self.enum_table.get(enum_info) {
+                        // Get tag value as constant to find variant
+                        if let Some(tag_const) = tag.get_zero_extended_constant() {
+                            let tag_idx = tag_const as usize;
+                            // Find variant at this index
+                            variants
+                                .iter()
+                                .enumerate()
+                                .find(|(idx, _)| *idx == tag_idx)
+                                .map(|(_, (name, _))| name.clone())
+                                .unwrap_or_else(|| format!("Variant(tag={})", tag_const))
+                        } else {
+                            // Tag is not a constant, can't determine variant name at compile time
+                            format!("Variant(tag=?)")
+                        }
+                    } else {
+                        // Enum not found in table, use fallback
+                        format!("Variant(tag=?)")
+                    };
+
+                    let format_str = if idx < values.len() - 1 {
+                        "%s::%s "
+                    } else {
+                        "%s::%s"
+                    };
+
+                    let format_global = self
+                        .builder
+                        .build_global_string_ptr(format_str, "enum_fmt")
+                        .unwrap();
+                    let enum_name_global = self
+                        .builder
+                        .build_global_string_ptr(enum_info, "enum_name")
+                        .unwrap();
+                    let variant_name_global = self
+                        .builder
+                        .build_global_string_ptr(&variant_name, "variant_name")
+                        .unwrap();
+
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[
+                                format_global.as_pointer_value().into(),
+                                enum_name_global.as_pointer_value().into(),
+                                variant_name_global.as_pointer_value().into(),
+                            ],
+                            "print_enum",
+                        )
+                        .unwrap();
+                } else {
+                    // Fallback for non-struct enum values
+                    let placeholder = format!("<{}>", enum_info);
+                    let format_str = if idx < values.len() - 1 { "%s " } else { "%s" };
+                    let format_global = self
+                        .builder
+                        .build_global_string_ptr(format_str, "enum_fallback_fmt")
+                        .unwrap();
+                    let placeholder_global = self
+                        .builder
+                        .build_global_string_ptr(&placeholder, "enum_placeholder")
+                        .unwrap();
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[
+                                format_global.as_pointer_value().into(),
+                                placeholder_global.as_pointer_value().into(),
+                            ],
+                            "print_enum_placeholder",
                         )
                         .unwrap();
                 }

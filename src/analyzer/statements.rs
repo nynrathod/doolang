@@ -450,6 +450,7 @@ impl SemanticAnalyzer {
                     | TypeNode::Tuple(_)
                     | TypeNode::Result(_, _)
                     | TypeNode::Struct(_, _)
+                    | TypeNode::Enum(_, _)
                     | TypeNode::TypeRef(_) => {
                         // Supported type for printing (TypeRef includes struct references).
                     }
