@@ -21,6 +21,7 @@ pub struct MirBuilder {
     pub mir_symbol_table: std::collections::HashMap<String, crate::parser::ast::TypeNode>, // Track variable types for MIR
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
     pub enum_table: Arc<HashMap<String, HashMap<String, Option<TypeNode>>>>, // Shared enum table for enum variant resolution
+    pub enum_variant_order: Arc<HashMap<String, Vec<(String, Option<TypeNode>)>>>, // Ordered enum variants for correct tag values
     pub function_table: Arc<HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Shared function table for namespace resolution
     pub current_function_error_type: Option<TypeNode>, // Track if current function has error type for Ok/Err handling
 }
@@ -43,6 +44,7 @@ impl MirBuilder {
                 is_main_entry: true, // Default to true; can be set to false for imported modules
                 enum_table: HashMap::new(),
                 struct_table: HashMap::new(),
+                enum_variant_order: HashMap::new(),
             },
             tmp_counter: 1,
             block_counter: 0,
@@ -51,6 +53,7 @@ impl MirBuilder {
             mir_symbol_table: std::collections::HashMap::new(),
             recursion_depth: 0,
             enum_table: Arc::new(HashMap::new()),
+            enum_variant_order: Arc::new(HashMap::new()),
             function_table: Arc::new(HashMap::new()),
             current_function_error_type: None,
         }
@@ -414,6 +417,7 @@ impl MirBuilder {
     pub fn finalize(&mut self) {
         // Copy enum_table and struct_table to the program so codegen has access to type metadata
         self.program.enum_table = (*self.enum_table).clone();
+        self.program.enum_variant_order = (*self.enum_variant_order).clone();
         self.program.struct_table = HashMap::new(); // TODO: populate from analyzer
 
         // 1. Remove empty blocks (blocks without instructions and no terminator)

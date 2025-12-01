@@ -14,6 +14,42 @@ fn get_node_location(_node: &AstNode) -> (Option<usize>, Option<usize>) {
 }
 
 impl SemanticAnalyzer {
+    /// Infers the type of an AST node with an expected type context.
+    /// If the inferred type is `Any` (e.g., from JSON.parse), returns the expected type instead.
+    /// This allows proper type checking when passing dynamic values to typed parameters.
+    /// Also handles empty arrays and maps by using the expected type.
+    pub fn infer_type_with_expected(
+        &self,
+        node: &AstNode,
+        expected: &TypeNode,
+    ) -> Result<TypeNode, SemanticError> {
+        // Special case: empty array literal should use expected array type
+        if let AstNode::ArrayLiteral(elements) = node {
+            if elements.is_empty() {
+                if let TypeNode::Array(_) = expected {
+                    return Ok(expected.clone());
+                }
+            }
+        }
+
+        // Special case: empty map literal should use expected map type
+        if let AstNode::MapLiteral(pairs) = node {
+            if pairs.is_empty() {
+                if let TypeNode::Map(_, _) = expected {
+                    return Ok(expected.clone());
+                }
+            }
+        }
+
+        let inferred = self.infer_type(node)?;
+        // If inferred type is Any, use the expected type instead
+        if matches!(inferred, TypeNode::Any) {
+            Ok(expected.clone())
+        } else {
+            Ok(inferred)
+        }
+    }
+
     /// Infers the type of an AST node (expression).
     /// This is the core type inference function for all expressions in the language.
     /// - Returns the type of literals directly.
@@ -1175,6 +1211,7 @@ impl SemanticAnalyzer {
                     function_table: self.function_table.clone(),
                     struct_table: self.struct_table.clone(),
                     enum_table: self.enum_table.clone(),
+                    enum_variant_order: self.enum_variant_order.clone(),
                     method_table: self.method_table.clone(),
                     function_aliases: self.function_aliases.clone(),
                     loop_depth: self.loop_depth,
@@ -1474,6 +1511,7 @@ impl SemanticAnalyzer {
             function_table: self.function_table.clone(),
             struct_table: self.struct_table.clone(),
             enum_table: self.enum_table.clone(),
+            enum_variant_order: self.enum_variant_order.clone(),
             method_table: self.method_table.clone(),
             outer_symbol_table: self.outer_symbol_table.clone(),
             project_root: self.project_root.clone(),
@@ -2081,11 +2119,9 @@ impl SemanticAnalyzer {
                             found: args.len(),
                         });
                     }
-                    // JSON.parse returns a Map<String, Any> - we'll use Map<String, String> for simplicity
-                    Ok(TypeNode::Map(
-                        Box::new(TypeNode::String),
-                        Box::new(TypeNode::String),
-                    ))
+                    // JSON.parse returns Any type - compatible with any expected type
+                    // The actual type is determined at runtime based on the JSON content
+                    Ok(TypeNode::Any)
                 }
                 "stringify" => {
                     if args.len() != 1 {

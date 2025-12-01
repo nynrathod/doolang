@@ -25,6 +25,7 @@ pub struct SemanticAnalyzer {
     pub(crate) function_table: HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>, // Function signatures (params, return_type, error_type)
     pub(crate) struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field map
     pub(crate) enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant map
+    pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
     pub(crate) method_table:
         HashMap<String, HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Methods per type: TypeName -> MethodName -> (params, return_type, error_type)
 
@@ -77,6 +78,7 @@ impl SemanticAnalyzer {
             function_table,
             struct_table: HashMap::new(),
             enum_table: HashMap::new(),
+            enum_variant_order: HashMap::new(),
             method_table: HashMap::new(),
             outer_symbol_table: None,
             project_root,
@@ -198,10 +200,13 @@ impl SemanticAnalyzer {
                     }
                     // Build variant map
                     let mut variant_map = HashMap::new();
+                    let mut variant_order = Vec::new();
                     for variant in variants {
                         variant_map.insert(variant.name.clone(), variant.payload.clone());
+                        variant_order.push((variant.name.clone(), variant.payload.clone()));
                     }
                     self.enum_table.insert(name.clone(), variant_map.clone());
+                    self.enum_variant_order.insert(name.clone(), variant_order);
                     // Also add to symbol table
                     self.symbol_table.insert(
                         name.clone(),
@@ -828,7 +833,8 @@ impl SemanticAnalyzer {
 
                         // Check argument types
                         for (arg, expected_type) in args.iter().zip(param_types.iter()) {
-                            let arg_type = self.infer_type(arg)?;
+                            // Use infer_type_with_expected to handle Any types (from JSON.parse)
+                            let arg_type = self.infer_type_with_expected(arg, expected_type)?;
                             if !types_compatible(
                                 &arg_type,
                                 expected_type,
@@ -1339,6 +1345,11 @@ pub(crate) fn types_compatible(
 ) -> bool {
     // Direct equality check first
     if actual == expected {
+        return true;
+    }
+
+    // Any type is compatible with everything (used for JSON.parse)
+    if matches!(actual, TypeNode::Any) || matches!(expected, TypeNode::Any) {
         return true;
     }
 

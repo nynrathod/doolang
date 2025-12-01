@@ -5419,7 +5419,8 @@ impl<'ctx> CodeGen<'ctx> {
             MirInstr::EnumInit {
                 name,
                 enum_name,
-                variant,
+                variant: _,
+                variant_index,
                 value,
             } => {
                 // Enum is represented as a tagged union: { i32 tag, ptr payload }
@@ -5433,19 +5434,8 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_alloca(enum_type, &format!("{}_enum", name))
                     .unwrap();
 
-                // Calculate proper variant index from enum_table
-                let tag_value = if let Some(variants) = self.enum_table.get(enum_name) {
-                    // Find the index of this variant in the enum definition
-                    // Use enumerate to get stable indices
-                    variants
-                        .iter()
-                        .enumerate()
-                        .find(|(_, (v, _))| *v == variant)
-                        .map(|(idx, _)| idx as u32)
-                        .unwrap_or_else(|| variant.len() as u32) // Fallback to string length
-                } else {
-                    variant.len() as u32 // Fallback if enum not found in table
-                };
+                // Use the variant_index from MIR directly (computed at MIR build time)
+                let tag_value = *variant_index;
                 let tag_ptr = self
                     .builder
                     .build_struct_gep(enum_type, enum_alloca, 0, "tag_ptr")

@@ -276,6 +276,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     let mut mir_builder = MirBuilder::new();
     mir_builder.enum_table = std::sync::Arc::new(analyzer.enum_table.clone());
+    mir_builder.enum_variant_order = std::sync::Arc::new(analyzer.enum_variant_order.clone());
     mir_builder.function_table = std::sync::Arc::new(analyzer.function_table.clone());
     mir_builder.set_is_main_entry(true); // Mark this as the main entry point
     mir_builder.build_program(&all_nodes);

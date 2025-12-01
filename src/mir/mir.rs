@@ -12,6 +12,7 @@ pub struct MirProgram {
     pub is_main_entry: bool,         // Whether this is the main entry point file (requires main())
     pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
+    pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
 }
 
 impl MirProgram {
@@ -335,6 +336,7 @@ pub enum MirInstr {
         name: String,
         enum_name: String,
         variant: String,
+        variant_index: u32,
         value: Option<String>,
     },
     EnumMatch {

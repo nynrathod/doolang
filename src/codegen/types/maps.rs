@@ -508,6 +508,10 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         if let Some(metadata) = metadata {
+            // NOTE: Don't early-return for length==0 here because:
+            // 1. For struct fields, we pass length=0 but actual length is in heap header
+            // 2. The null pointer check and runtime length loop below handle empty maps correctly
+
             // Get pointer to the map data
             let map_ptr = if self.symbols.contains_key(map_name) {
                 // Variable case: resolve_pointer gives us the alloca,
@@ -524,6 +528,49 @@ impl<'ctx> CodeGen<'ctx> {
             } else {
                 self.resolve_value(map_name).into_pointer_value()
             };
+
+            // Check for null pointer (empty map at runtime)
+            let is_null = self.builder.build_is_null(map_ptr, "is_null_map").unwrap();
+
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+            let print_map_block = self
+                .context
+                .append_basic_block(current_fn, "print_map_contents");
+            let skip_map_block = self
+                .context
+                .append_basic_block(current_fn, "print_map_empty");
+            let merge_block = self
+                .context
+                .append_basic_block(current_fn, "print_map_merge");
+
+            self.builder
+                .build_conditional_branch(is_null, skip_map_block, print_map_block)
+                .unwrap();
+
+            // Skip block - map is null/empty, just close brace
+            self.builder.position_at_end(skip_map_block);
+            let close_brace_empty = self
+                .builder
+                .build_global_string_ptr("}", "close_brace_null")
+                .unwrap();
+            self.builder
+                .build_call(
+                    printf_fn,
+                    &[close_brace_empty.as_pointer_value().into()],
+                    "",
+                )
+                .unwrap();
+            self.builder
+                .build_unconditional_branch(merge_block)
+                .unwrap();
+
+            // Print block - map has contents
+            self.builder.position_at_end(print_map_block);
 
             let key_type = match metadata.key_type.as_str() {
                 "Str" => self
@@ -894,15 +941,30 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Loop done
             self.builder.position_at_end(loop_done);
-        }
 
-        // Print closing brace
-        let close_brace = self
-            .builder
-            .build_global_string_ptr("}", "close_brace")
-            .unwrap();
-        self.builder
-            .build_call(printf_fn, &[close_brace.as_pointer_value().into()], "")
-            .unwrap();
+            // Print closing brace
+            let close_brace = self
+                .builder
+                .build_global_string_ptr("}", "close_brace")
+                .unwrap();
+            self.builder
+                .build_call(printf_fn, &[close_brace.as_pointer_value().into()], "")
+                .unwrap();
+            self.builder
+                .build_unconditional_branch(merge_block)
+                .unwrap();
+
+            // Merge block - continue after printing
+            self.builder.position_at_end(merge_block);
+        } else {
+            // No metadata - just print closing brace
+            let close_brace = self
+                .builder
+                .build_global_string_ptr("}", "close_brace_no_meta")
+                .unwrap();
+            self.builder
+                .build_call(printf_fn, &[close_brace.as_pointer_value().into()], "")
+                .unwrap();
+        }
     }
 }

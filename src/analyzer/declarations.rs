@@ -26,7 +26,8 @@ impl SemanticAnalyzer {
                 is_ref_counted,
             } => {
                 // Check if immutable variable is initialized with empty collection
-                if !*mutable {
+                // Only error if there's no type annotation (type annotation makes it valid)
+                if !*mutable && type_annotation.is_none() {
                     match &**value {
                         AstNode::ArrayLiteral(elements) if elements.is_empty() => {
                             return Err(SemanticError::ImmutableEmptyCollection {
@@ -78,22 +79,28 @@ impl SemanticAnalyzer {
                                 })?
                             };
 
-                            // Verify inferred type matches annotation
-                            if !types_compatible(
-                                &inferred,
-                                annotated_type,
-                                &self.struct_table,
-                                &self.enum_table,
-                            ) {
-                                return Err(SemanticError::VarTypeMismatch(TypeMismatch {
-                                    expected: annotated_type.clone(),
-                                    found: inferred,
-                                    value: Some(value.clone()),
-                                    line: None,
-                                    col: None,
-                                }));
+                            // If inferred type is Any (e.g., from JSON.parse), use the type annotation
+                            // This allows explicit type annotations to override dynamic types
+                            if matches!(inferred, TypeNode::Any) {
+                                annotated_type.clone()
+                            } else {
+                                // Verify inferred type matches annotation
+                                if !types_compatible(
+                                    &inferred,
+                                    annotated_type,
+                                    &self.struct_table,
+                                    &self.enum_table,
+                                ) {
+                                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                        expected: annotated_type.clone(),
+                                        found: inferred,
+                                        value: Some(value.clone()),
+                                        line: None,
+                                        col: None,
+                                    }));
+                                }
+                                inferred
                             }
-                            inferred
                         }
                     }
                 } else {

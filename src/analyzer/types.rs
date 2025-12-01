@@ -185,6 +185,7 @@ impl fmt::Display for TypeNode {
                 write!(f, "Result<{}, {}>", ok_type, err_type)
             }
             TypeNode::Builtin(name) => write!(f, "Builtin({})", name),
+            TypeNode::Any => write!(f, "Any"),
         }
     }
 }

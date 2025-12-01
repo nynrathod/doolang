@@ -5,6 +5,30 @@ use crate::{
     parser::ast::{AstNode, TypeNode},
 };
 
+/// Helper function to get the variant index for an enum variant
+/// Returns 0 if the enum or variant is not found
+fn get_enum_variant_index(builder: &MirBuilder, enum_name: &str, variant_name: &str) -> u32 {
+    // First try to use enum_variant_order which preserves declaration order
+    if let Some(variants) = builder.enum_variant_order.get(enum_name) {
+        for (idx, (name, _)) in variants.iter().enumerate() {
+            if name == variant_name {
+                return idx as u32;
+            }
+        }
+    }
+    // Fallback: use enum_table with sorted keys (for determinism, not order preservation)
+    if let Some(variants) = builder.enum_table.get(enum_name) {
+        let mut sorted_variants: Vec<_> = variants.keys().collect();
+        sorted_variants.sort();
+        for (idx, name) in sorted_variants.iter().enumerate() {
+            if *name == variant_name {
+                return idx as u32;
+            }
+        }
+    }
+    0
+}
+
 /// Helper function to determine the type of an operand by looking it up in the symbol table
 /// If not found, tries to infer the type from the operand value (e.g., literals)
 fn get_operand_type(builder: &MirBuilder, operand: &str) -> Option<TypeNode> {
@@ -616,10 +640,12 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 };
 
                 let enum_tmp = builder.next_tmp();
+                let variant_index = get_enum_variant_index(builder, &enum_name, &variant_name);
                 block.instrs.push(MirInstr::EnumInit {
                     name: enum_tmp.clone(),
                     enum_name: enum_name.clone(),
                     variant: variant_name.clone(),
+                    variant_index,
                     value: payload_tmp,
                 });
 
@@ -1177,10 +1203,12 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
 
                 // Create enum initialization instruction
                 let enum_tmp = builder.next_tmp();
+                let variant_index = get_enum_variant_index(builder, enum_name, variant);
                 block.instrs.push(MirInstr::EnumInit {
                     name: enum_tmp.clone(),
                     enum_name: enum_name.clone(),
                     variant: variant.clone(),
+                    variant_index,
                     value: payload_tmp,
                 });
 
@@ -1433,10 +1461,12 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
 
                         // Create an enum variant temporary to compare against
                         let variant_tmp = builder.next_tmp();
+                        let variant_index = get_enum_variant_index(builder, enum_name, variant);
                         check_block.instrs.push(MirInstr::EnumInit {
                             name: variant_tmp.clone(),
                             enum_name: enum_name.clone(),
                             variant: variant.clone(),
+                            variant_index,
                             value: None,
                         });
 
@@ -1476,10 +1506,12 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
 
                         // Create an enum variant temporary to compare against
                         let variant_tmp = builder.next_tmp();
+                        let variant_index = get_enum_variant_index(builder, enum_name, variant);
                         check_block.instrs.push(MirInstr::EnumInit {
                             name: variant_tmp.clone(),
                             enum_name: enum_name.clone(),
                             variant: variant.clone(),
+                            variant_index,
                             value: None, // For comparison, we don't need the payload value
                         });
 

@@ -369,7 +369,8 @@ impl SemanticAnalyzer {
 
                 // Check argument types
                 for (arg, expected_ty) in args.iter().zip(param_types.iter()) {
-                    let arg_ty = self.infer_type(arg)?;
+                    // Use infer_type_with_expected to handle Any types (from JSON.parse)
+                    let arg_ty = self.infer_type_with_expected(arg, expected_ty)?;
                     if !super::analyzer::types_compatible(
                         &arg_ty,
                         expected_ty,
@@ -451,16 +452,18 @@ impl SemanticAnalyzer {
                     | TypeNode::Result(_, _)
                     | TypeNode::Struct(_, _)
                     | TypeNode::Enum(_, _)
-                    | TypeNode::TypeRef(_) => {
+                    | TypeNode::TypeRef(_)
+                    | TypeNode::Any => {
                         // Supported type for printing (TypeRef includes struct references).
+                        // Any is supported for dynamic types like JSON.parse results.
                     }
                     _ => {
                         // If the type is not supported, return an error.
                         return Err(SemanticError::InvalidPrintType { found: ty });
                     }
                 }
-                // Recursively analyze the expression for semantic correctness.
-                self.analyze_node(expr)?;
+                // Note: infer_type already validates the expression structure,
+                // so we don't need to call analyze_node again (avoids double recursion)
             }
             Ok(())
         } else {

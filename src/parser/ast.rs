@@ -22,6 +22,7 @@ pub enum TypeNode {
     Function(Vec<TypeNode>, Box<TypeNode>),
     Result(Box<TypeNode>, Box<TypeNode>), // Result(OkType, ErrType)
     Builtin(String),                      // Builtin types like "json", "file"
+    Any, // Dynamic type - compatible with any type (used for JSON.parse)
 }
 
 impl TypeNode {
@@ -65,6 +66,7 @@ impl TypeNode {
                 )
             }
             TypeNode::Builtin(name) => format!("Builtin({})", name),
+            TypeNode::Any => "Any".to_string(),
         }
     }
 

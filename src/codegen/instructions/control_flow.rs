@@ -756,7 +756,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let struct_name = struct_instance_name.unwrap();
                 let struct_val = self.resolve_value(value);
 
-                if let Some(metadata) = self.struct_metadata.get(&struct_name) {
+                if let Some(metadata) = self.struct_metadata.get(&struct_name).cloned() {
                     // Check if struct_val is a pointer - if so, print with actual values
                     // If not, use a safe fallback showing field names only
                     let struct_ptr_opt = if struct_val.is_pointer_value() {
@@ -943,8 +943,86 @@ impl<'ctx> CodeGen<'ctx> {
                                         "print_bool_field",
                                     )
                                     .unwrap();
+                            } else if field_type.starts_with("Array(") && field_type.ends_with(')')
+                            {
+                                // Array field - extract element type and print array
+                                let element_type = &field_type[6..field_type.len() - 1];
+                                let field_ptr_val = field_value.into_pointer_value();
+
+                                // Create temporary array metadata for printing
+                                let temp_arr_name = format!("_struct_field_arr_{}", field_name);
+                                self.array_metadata.insert(
+                                    temp_arr_name.clone(),
+                                    crate::codegen::ArrayMetadata {
+                                        length: 0, // Runtime length from heap header
+                                        element_type: element_type.to_string(),
+                                        contains_strings: element_type == "Str",
+                                    },
+                                );
+                                self.temp_values
+                                    .insert(temp_arr_name.clone(), field_ptr_val.into());
+
+                                // Use print_array to print it properly
+                                self.print_array(&temp_arr_name);
+
+                                // Clean up temp metadata
+                                self.array_metadata.remove(&temp_arr_name);
+                                self.temp_values.remove(&temp_arr_name);
+                            } else if field_type.starts_with("Map(") && field_type.ends_with(')') {
+                                // Map field - extract key/value types and print map
+                                let inner = &field_type[4..field_type.len() - 1];
+                                let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+                                let (key_type, value_type) = if parts.len() == 2 {
+                                    (parts[0].to_string(), parts[1].to_string())
+                                } else {
+                                    ("Str".to_string(), "Int".to_string())
+                                };
+
+                                let field_ptr_val = field_value.into_pointer_value();
+
+                                // Create temporary map metadata for printing
+                                let temp_map_name = format!("_struct_field_map_{}", field_name);
+                                self.map_metadata.insert(
+                                    temp_map_name.clone(),
+                                    crate::codegen::MapMetadata {
+                                        length: 0, // Runtime length from heap header
+                                        key_type: key_type.clone(),
+                                        value_type: value_type.clone(),
+                                        key_is_string: key_type == "Str",
+                                        value_is_string: value_type == "Str",
+                                        key_needs_rc: key_type == "Str",
+                                        value_needs_rc: value_type == "Str",
+                                    },
+                                );
+                                self.temp_values
+                                    .insert(temp_map_name.clone(), field_ptr_val.into());
+
+                                // Use print_map to print it properly
+                                self.print_map(&temp_map_name);
+
+                                // Clean up temp metadata
+                                self.map_metadata.remove(&temp_map_name);
+                                self.temp_values.remove(&temp_map_name);
+                            } else if self.enum_table.contains_key(field_type)
+                                || self.enum_variants.contains_key(field_type)
+                            {
+                                // Enum field - print tag value (variant index)
+                                // For simple enums without payload, just print the tag
+                                let tag_val = field_value.into_int_value();
+                                let format_str = "%d";
+                                let format_global = self
+                                    .builder
+                                    .build_global_string_ptr(format_str, "field_enum_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[format_global.as_pointer_value().into(), tag_val.into()],
+                                        "print_field_enum",
+                                    )
+                                    .unwrap();
                             } else {
-                                // Fallback for unknown types
+                                // Fallback for truly unknown types - print as integer
                                 let format_str = "%d";
                                 let format_global = self
                                     .builder
