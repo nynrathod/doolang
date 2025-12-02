@@ -604,6 +604,41 @@ mod parser_tests {
         assert_parses("import std::Math::{Abs as AbsValue};");
     }
 
+    #[test]
+    fn test_parse_import_single_module_no_braces() {
+        assert_parses("import std::File; fn main() { File::Write(); }");
+    }
+
+    #[test]
+    fn test_parse_import_single_module_alias() {
+        assert_parses("import std::File as F; fn main() { F::Write(); }");
+    }
+
+    #[test]
+    fn test_parse_import_single_module_wildcard() {
+        assert_parses("import std::File::*; fn main() { Write(); }");
+    }
+
+    #[test]
+    fn test_parse_import_top_level_multiple_modules() {
+        assert_parses("import std::{File, Math, Json}; fn main() { File::Write(); Math::sqrt(); Json::parse(); }");
+    }
+
+    #[test]
+    fn test_parse_import_top_level_multiple_with_aliases() {
+        assert_parses("import std::{File as F, Math as M}; fn main() { F::Write(); M::sqrt(); }");
+    }
+
+    #[test]
+    fn test_parse_import_top_level_mixed_wildcard() {
+        assert_parses("import std::{File::*, Math}; fn main() { Write(); Math::sqrt(); }");
+    }
+
+    #[test]
+    fn test_parse_import_undefined_symbol_syntax_only() {
+        assert_parses("import std::Math::{NonExistent}; fn main() { }");
+    }
+
     // =====================================================================
     // OPERATOR PRECEDENCE - COMPLEX CASES
     // =====================================================================

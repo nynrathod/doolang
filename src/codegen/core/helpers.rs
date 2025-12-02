@@ -75,11 +75,17 @@ impl<'ctx> CodeGen<'ctx> {
         // reflect the actual runtime pointer stored in the symbol
         let is_heap_map = self.heap_maps.contains(name);
 
+        // For cross-block variables (those with symbols), ALWAYS load from symbol
+        // This is critical for match arm bindings that use the same name in different arms
+        // The temp_values cache contains an LLVM value defined in one block, which can't be
+        // used in other blocks due to SSA dominance rules
+        let has_symbol = self.symbols.contains_key(name);
+
         if let Some(val) = self.temp_values.get(name) {
-            // If this is a loop variable AND we have a symbol for it, prefer the symbol
-            // because the symbol's alloca gets updated each iteration, but temp_values doesn't
-            // Also prefer symbol for heap maps to ensure we get the correct runtime pointer
-            if (is_loop_var || is_heap_map) && self.symbols.contains_key(name) {
+            // If this variable has a symbol (cross-block), prefer loading from symbol
+            // because temp_values contains a value from one specific block that doesn't
+            // dominate all uses in other blocks
+            if (is_loop_var || is_heap_map || has_symbol) && self.symbols.contains_key(name) {
                 // Fall through to symbol lookup below
             } else {
                 return *val;
@@ -100,11 +106,22 @@ impl<'ctx> CodeGen<'ctx> {
                 .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
                 .unwrap_or(false);
 
+            // Check if this is an enum by looking at variable_types
+            let is_enum = var_type
+                .map(|t| t.starts_with("Enum(") || self.enum_table.contains_key(t))
+                .unwrap_or(false);
+
             // Check if this is a string value (from map, array, etc.)
             let is_string =
                 self.heap_strings.contains(name) || var_type.map(|t| t == "Str").unwrap_or(false);
 
-            let load_type = if is_array_or_map || is_struct {
+            let load_type = if is_enum {
+                // Enum is represented as { i32 tag, ptr payload }
+                let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                self.context
+                    .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                    .into()
+            } else if is_array_or_map || is_struct {
                 // Arrays, maps, and structs are always pointers, regardless of how they were stored
                 self.context
                     .ptr_type(inkwell::AddressSpace::default())
@@ -159,6 +176,9 @@ impl<'ctx> CodeGen<'ctx> {
             "Available in symbols: {:?}",
             self.symbols.keys().collect::<Vec<_>>()
         );
+        if let Some(block) = self.builder.get_insert_block() {
+            eprintln!("Current block: {:?}", block.get_name());
+        }
         eprintln!("BACKTRACE:");
         eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
         panic!(
@@ -173,7 +193,8 @@ impl<'ctx> CodeGen<'ctx> {
         match type_name {
             "Int" => self.context.i32_type().into(), // Only i32 for integers
             "Float" => self.context.f64_type().into(), // f64 for floating point
-            "Bool" => self.context.bool_type().into(),
+            // Use i32 for Bool to match internal representation (all Bools are stored as i32)
+            "Bool" => self.context.i32_type().into(),
             "Str" => self.context.ptr_type(AddressSpace::default()).into(),
             _ => self.context.i32_type().into(),
         }
@@ -203,7 +224,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Allocate buffer for the result (max 12 chars for i32: "-2147483648")
         let malloc_fn = self.get_or_declare_malloc_libc();
-        let buffer_size = self.context.i32_type().const_int(32, false);
+        let buffer_size = self.context.i64_type().const_int(32, false);
         let buffer_ptr = self
             .builder
             .build_call(malloc_fn, &[buffer_size.into()], "int_buf")
@@ -243,7 +264,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Allocate buffer for the result
         let malloc_fn = self.get_or_declare_malloc_libc();
-        let buffer_size = self.context.i32_type().const_int(32, false);
+        let buffer_size = self.context.i64_type().const_int(32, false);
         let buffer_ptr = self
             .builder
             .build_call(malloc_fn, &[buffer_size.into()], "float_buf")
@@ -291,7 +312,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
-        let malloc_type = i8_ptr_type.fn_type(&[self.context.i32_type().into()], false);
+        let malloc_type = i8_ptr_type.fn_type(&[self.context.i64_type().into()], false);
         self.module.add_function("malloc", malloc_type, None)
     }
 }

@@ -1571,12 +1571,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let loop_body = self
                     .context
                     .append_basic_block(current_fn, "replace_loop_body");
-                let _ = self
-                    .context
-                    .append_basic_block(current_fn, "replace_loop_copy");
-                let _ = self
-                    .context
-                    .append_basic_block(current_fn, "replace_loop_next");
                 let after_block = self.context.append_basic_block(current_fn, "replace_after");
 
                 // Allocate counters: src_pos, dest_pos

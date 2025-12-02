@@ -128,68 +128,62 @@ impl<'a> Parser<'a> {
 
     /// Parse match expression
     /// Syntax:
+    ///   - `match value1, value2, ... { pattern => expr, ... }` (tuple match without parens)
     ///   - `match value { pattern => expr, ... }`
     ///   - `match { condition => expr, ... }`
     pub fn parse_match_expr(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::Match)?;
 
         // Check if we have a value or condition-based match
-        let value = if self.peek_is(TokenType::OpenBrace) {
-            None // condition-based match
+        let values = if self.peek_is(TokenType::OpenBrace) {
+            vec![] // condition-based match
         } else {
-            Some(Box::new(self.parse_expression()?))
+            // Parse first expression
+            let first = self.parse_expression()?;
+            let mut vals = vec![first];
+
+            // Check for comma-separated additional values (tuple match without parens)
+            while self.peek_is(TokenType::Comma)
+                && !self
+                    .peek_ahead(1)
+                    .map(|t| t.kind == TokenType::OpenBrace)
+                    .unwrap_or(false)
+            {
+                // Only continue if the next token after comma is NOT an open brace
+                // This handles the case of `match a, b {` vs `match a { x, y => ... }`
+                if self
+                    .peek_ahead(1)
+                    .map(|t| t.kind == TokenType::OpenBrace)
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+                self.advance(); // consume ','
+                vals.push(self.parse_expression()?);
+            }
+            vals
         };
 
         self.expect(TokenType::OpenBrace)?;
 
         let mut arms = Vec::new();
+        let is_tuple_match = values.len() > 1;
 
         while !self.peek_is(TokenType::CloseBrace) {
             // Parse pattern
             let pattern = if self.peek_is(TokenType::Underscore) {
                 self.advance();
                 MatchPattern::Wildcard
-            } else if value.is_none() {
+            } else if values.is_empty() {
                 // Condition-based match: parse expression as condition
                 let condition = self.parse_expression()?;
                 MatchPattern::Condition(Box::new(condition))
+            } else if is_tuple_match {
+                // Tuple match: parse comma-separated patterns without parens
+                self.parse_tuple_pattern(values.len())?
             } else {
-                // Check if it's an enum pattern (e.g., Status::Active or HttpCode::Success(code))
-                if let Some(first_tok) = self.peek() {
-                    if first_tok.kind == TokenType::Identifier {
-                        // Look ahead for :: to detect enum pattern
-                        if self.peek_ahead(1).map(|t| t.kind) == Some(TokenType::ColonColon) {
-                            // Parse enum pattern
-                            let enum_name = self.advance().unwrap().value.to_string();
-                            self.expect(TokenType::ColonColon)?;
-                            let variant = self.expect(TokenType::Identifier)?.value.to_string();
-
-                            // Check if there's a payload with binding
-                            if self.peek_is(TokenType::OpenParen) {
-                                self.advance(); // consume '('
-                                let binding = self.expect(TokenType::Identifier)?.value.to_string();
-                                self.expect(TokenType::CloseParen)?;
-                                MatchPattern::EnumVariantWithPayload {
-                                    enum_name,
-                                    variant,
-                                    binding,
-                                }
-                            } else {
-                                MatchPattern::EnumVariant { enum_name, variant }
-                            }
-                        } else {
-                            // Regular literal pattern
-                            let literal = self.parse_expression()?;
-                            MatchPattern::Literal(Box::new(literal))
-                        }
-                    } else {
-                        // Value-based match: parse literal pattern
-                        let literal = self.parse_expression()?;
-                        MatchPattern::Literal(Box::new(literal))
-                    }
-                } else {
-                    return Err(ParseError::EndOfInput);
-                }
+                // Single value match
+                self.parse_single_pattern()?
             };
 
             self.expect(TokenType::FatArrow)?;
@@ -208,6 +202,11 @@ impl<'a> Parser<'a> {
                         let block = self.parse_braced_block()?;
                         Box::new(AstNode::Block(block))
                     }
+                    TokenType::Match => {
+                        // Parse nested match expression as body
+                        body_is_block = true;
+                        Box::new(self.parse_match_expr()?)
+                    }
                     _ => {
                         // Parse regular expression
                         Box::new(self.parse_expression()?)
@@ -217,7 +216,11 @@ impl<'a> Parser<'a> {
                 return Err(ParseError::EndOfInput);
             };
 
-            arms.push(MatchArm { pattern, body });
+            arms.push(MatchArm {
+                pattern,
+                guard: None,
+                body,
+            });
 
             // Optional comma - not required after block closing brace
             if self.peek_is(TokenType::Comma) {
@@ -232,7 +235,151 @@ impl<'a> Parser<'a> {
 
         self.expect(TokenType::CloseBrace)?;
 
-        Ok(AstNode::MatchExpr { value, arms })
+        Ok(AstNode::MatchExpr { values, arms })
+    }
+
+    /// Parse a single match pattern (for single-value match)
+    fn parse_single_pattern(&mut self) -> ParseResult<MatchPattern> {
+        // Check if it's an enum pattern (e.g., Status::Active or HttpCode::Success(code))
+        if let Some(first_tok) = self.peek() {
+            if first_tok.kind == TokenType::Identifier {
+                // Look ahead for :: to detect enum pattern
+                if self.peek_ahead(1).map(|t| t.kind) == Some(TokenType::ColonColon) {
+                    // Parse enum pattern
+                    let enum_name = self.advance().unwrap().value.to_string();
+                    self.expect(TokenType::ColonColon)?;
+                    let variant = self.expect(TokenType::Identifier)?.value.to_string();
+
+                    // Check if there's a payload with binding(s)
+                    if self.peek_is(TokenType::OpenParen) {
+                        self.advance(); // consume '('
+                        let first_binding = self.expect(TokenType::Identifier)?.value.to_string();
+
+                        // Check for multiple bindings (comma-separated)
+                        let bindings = if self.peek_is(TokenType::Comma) {
+                            let mut bindings = vec![first_binding];
+                            while self.peek_is(TokenType::Comma) {
+                                self.advance(); // consume ','
+                                bindings
+                                    .push(self.expect(TokenType::Identifier)?.value.to_string());
+                            }
+                            bindings
+                        } else {
+                            vec![first_binding]
+                        };
+
+                        self.expect(TokenType::CloseParen)?;
+                        return Ok(MatchPattern::EnumVariantWithPayload {
+                            enum_name,
+                            variant,
+                            bindings,
+                        });
+                    } else {
+                        return Ok(MatchPattern::EnumVariant { enum_name, variant });
+                    }
+                } else {
+                    // Regular literal pattern
+                    let literal = self.parse_expression()?;
+                    return Ok(MatchPattern::Literal(Box::new(literal)));
+                }
+            } else {
+                // Value-based match: parse literal pattern
+                let literal = self.parse_expression()?;
+                return Ok(MatchPattern::Literal(Box::new(literal)));
+            }
+        }
+        Err(ParseError::EndOfInput)
+    }
+
+    /// Parse a tuple pattern (comma-separated patterns without parens)
+    /// e.g., `1, "err", true` or `1, _, _` or just `_` for wildcard
+    fn parse_tuple_pattern(&mut self, expected_count: usize) -> ParseResult<MatchPattern> {
+        // Check for single wildcard that matches all
+        if self.peek_is(TokenType::Underscore) {
+            // Check if next token after underscore is => (single wildcard for entire tuple)
+            if self.peek_ahead(1).map(|t| t.kind) == Some(TokenType::FatArrow) {
+                self.advance(); // consume '_'
+                return Ok(MatchPattern::Wildcard);
+            }
+        }
+
+        let mut patterns = Vec::new();
+
+        // Parse first pattern element
+        patterns.push(self.parse_pattern_element()?);
+
+        // Parse remaining comma-separated pattern elements
+        while self.peek_is(TokenType::Comma) {
+            // Check if next after comma is => (end of pattern)
+            if self.peek_ahead(1).map(|t| t.kind) == Some(TokenType::FatArrow) {
+                break;
+            }
+            self.advance(); // consume ','
+            patterns.push(self.parse_pattern_element()?);
+        }
+
+        // Verify count matches
+        if patterns.len() != expected_count {
+            return Err(ParseError::UnexpectedToken(format!(
+                "Expected {} pattern elements, got {}",
+                expected_count,
+                patterns.len()
+            )));
+        }
+
+        Ok(MatchPattern::Tuple(patterns))
+    }
+
+    /// Parse a single pattern element (literal, wildcard, or struct pattern)
+    fn parse_pattern_element(&mut self) -> ParseResult<MatchPattern> {
+        if self.peek_is(TokenType::Underscore) {
+            self.advance();
+            Ok(MatchPattern::Wildcard)
+        } else if let Some(tok) = self.peek() {
+            if tok.kind == TokenType::Identifier {
+                // Check for enum pattern or struct pattern
+                if self.peek_ahead(1).map(|t| t.kind) == Some(TokenType::ColonColon) {
+                    // Enum pattern
+                    let enum_name = self.advance().unwrap().value.to_string();
+                    self.expect(TokenType::ColonColon)?;
+                    let variant = self.expect(TokenType::Identifier)?.value.to_string();
+
+                    if self.peek_is(TokenType::OpenParen) {
+                        self.advance(); // consume '('
+                        let first_binding = self.expect(TokenType::Identifier)?.value.to_string();
+                        let bindings = if self.peek_is(TokenType::Comma) {
+                            let mut bindings = vec![first_binding];
+                            while self.peek_is(TokenType::Comma) {
+                                self.advance();
+                                bindings
+                                    .push(self.expect(TokenType::Identifier)?.value.to_string());
+                            }
+                            bindings
+                        } else {
+                            vec![first_binding]
+                        };
+                        self.expect(TokenType::CloseParen)?;
+                        Ok(MatchPattern::EnumVariantWithPayload {
+                            enum_name,
+                            variant,
+                            bindings,
+                        })
+                    } else {
+                        Ok(MatchPattern::EnumVariant { enum_name, variant })
+                    }
+                } else {
+                    // Regular expression/literal
+                    let literal = self.parse_expression()?;
+                    Ok(MatchPattern::Literal(Box::new(literal)))
+                }
+            } else {
+                // Parse as literal expression
+                let literal = self.parse_expression()?;
+                Ok(MatchPattern::Literal(Box::new(literal)))
+            }
+        } else {
+            Err(ParseError::EndOfInput)
+        }
     }
 
     /// Parses a return statement.

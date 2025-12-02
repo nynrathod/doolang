@@ -22,7 +22,8 @@ pub enum TypeNode {
     Function(Vec<TypeNode>, Box<TypeNode>),
     Result(Box<TypeNode>, Box<TypeNode>), // Result(OkType, ErrType)
     Builtin(String),                      // Builtin types like "json", "file"
-    Any, // Dynamic type - compatible with any type (used for JSON.parse)
+    Any,   // Dynamic type - compatible with any type (used for JSON.parse)
+    Error, // Generic error type - can hold any error value (used for ! Error syntax)
 }
 
 impl TypeNode {
@@ -67,6 +68,7 @@ impl TypeNode {
             }
             TypeNode::Builtin(name) => format!("Builtin({})", name),
             TypeNode::Any => "Any".to_string(),
+            TypeNode::Error => "Error".to_string(),
         }
     }
 
@@ -349,7 +351,7 @@ pub enum AstNode {
 
     // Match expression
     MatchExpr {
-        value: Option<Box<AstNode>>, // None for condition-based match
+        values: Vec<AstNode>, // Empty for condition-based match, one or more for value-based match
         arms: Vec<MatchArm>,
     },
 }
@@ -357,6 +359,7 @@ pub enum AstNode {
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: MatchPattern,
+    pub guard: Option<Box<AstNode>>, // Optional guard condition (if expr)
     pub body: Box<AstNode>,
 }
 
@@ -370,8 +373,9 @@ pub enum MatchPattern {
         variant: String,   // Active
     },
     EnumVariantWithPayload {
-        enum_name: String, // HttpCode
-        variant: String,   // Success
-        binding: String,   // code (variable to bind payload to)
+        enum_name: String,     // HttpCode
+        variant: String,       // Success
+        bindings: Vec<String>, // code, msg (variables to bind payload to)
     },
+    Tuple(Vec<MatchPattern>), // 1, "err", true => (tuple pattern without parens)
 }

@@ -754,4 +754,281 @@ impl<'ctx> CodeGen<'ctx> {
         self.temp_values.insert(name.to_string(), false_val.into());
         Some(false_val.into())
     }
+
+    pub fn generate_array_contains(
+        &mut self,
+        name: &str,
+        array: &str,
+        element: &str,
+    ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
+        let element_val = self.resolve_value(element);
+
+        // Get array metadata to determine element type
+        if let Some(array_metadata) = self.array_metadata.get(array).cloned() {
+            let element_type_str = array_metadata.element_type.clone();
+
+            let element_type_llvm: inkwell::types::BasicTypeEnum = match element_type_str.as_str() {
+                "Str" => self
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+                "Float" => self.context.f64_type().into(),
+                "Bool" => self.context.i32_type().into(),
+                _ => self.context.i32_type().into(),
+            };
+
+            // Create blocks for the search loop
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+            let loop_block = self
+                .context
+                .append_basic_block(current_fn, "arr_contains_loop");
+            let check_block = self
+                .context
+                .append_basic_block(current_fn, "arr_contains_check");
+            let found_block = self
+                .context
+                .append_basic_block(current_fn, "arr_contains_found");
+            let not_found_block = self
+                .context
+                .append_basic_block(current_fn, "arr_contains_not_found");
+            let continue_block = self
+                .context
+                .append_basic_block(current_fn, "arr_contains_continue");
+
+            // Create index variable in entry block
+            let current_block = self.builder.get_insert_block().unwrap();
+            let entry_block = current_fn.get_first_basic_block().unwrap();
+            if let Some(terminator) = entry_block.get_terminator() {
+                self.builder.position_before(&terminator);
+            } else {
+                self.builder.position_at_end(entry_block);
+            }
+            let index_alloca = self
+                .builder
+                .build_alloca(self.context.i32_type(), "arr_contains_index")
+                .unwrap();
+            self.builder.position_at_end(current_block);
+
+            self.builder
+                .build_store(index_alloca, self.context.i32_type().const_zero())
+                .unwrap();
+
+            // Get array length from runtime header
+            let array_ptr = if let Some(symbol) = self.symbols.get(array) {
+                self.builder
+                    .build_load(
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        symbol.ptr,
+                        "array_ptr",
+                    )
+                    .unwrap()
+                    .into_pointer_value()
+            } else {
+                self.resolve_value(array).into_pointer_value()
+            };
+
+            // Read length from header (at offset -4 from data pointer)
+            let len_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        self.context.i8_type(),
+                        array_ptr,
+                        &[self.context.i32_type().const_int((-4_i32) as u64, true)],
+                        "len_ptr",
+                    )
+                    .unwrap()
+            };
+            let len_ptr_cast = self
+                .builder
+                .build_pointer_cast(
+                    len_ptr,
+                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                    "len_ptr_cast",
+                )
+                .unwrap();
+            let array_length = self
+                .builder
+                .build_load(self.context.i32_type(), len_ptr_cast, "array_len")
+                .unwrap()
+                .into_int_value();
+
+            // Jump to loop
+            self.builder.build_unconditional_branch(loop_block).unwrap();
+
+            // Loop block: check if index < length
+            self.builder.position_at_end(loop_block);
+            let current_index = self
+                .builder
+                .build_load(self.context.i32_type(), index_alloca, "idx")
+                .unwrap()
+                .into_int_value();
+            let cmp = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::ULT,
+                    current_index,
+                    array_length,
+                    "cmp",
+                )
+                .unwrap();
+            self.builder
+                .build_conditional_branch(cmp, check_block, not_found_block)
+                .unwrap();
+
+            // Check block: compare current element with search element
+            self.builder.position_at_end(check_block);
+
+            // Reload array pointer for SSA dominance
+            let array_ptr_fresh = if let Some(symbol) = self.symbols.get(array) {
+                self.builder
+                    .build_load(
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        symbol.ptr,
+                        "array_ptr_fresh",
+                    )
+                    .unwrap()
+                    .into_pointer_value()
+            } else {
+                self.resolve_value(array).into_pointer_value()
+            };
+
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        element_type_llvm,
+                        array_ptr_fresh,
+                        &[current_index],
+                        "elem_ptr",
+                    )
+                    .unwrap()
+            };
+
+            let elem_in_array = self
+                .builder
+                .build_load(element_type_llvm, elem_ptr, "elem_in_array")
+                .unwrap();
+
+            let is_equal = if element_type_str == "Str" {
+                // String comparison with strcmp
+                let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
+                    let i8_ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let fn_type = self
+                        .context
+                        .i32_type()
+                        .fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
+                    self.module.add_function("strcmp", fn_type, None)
+                });
+
+                let cmp_result = self
+                    .builder
+                    .build_call(
+                        strcmp_fn,
+                        &[
+                            elem_in_array.into_pointer_value().into(),
+                            element_val.into_pointer_value().into(),
+                        ],
+                        "strcmp",
+                    )
+                    .unwrap();
+                let cmp_val = cmp_result
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        cmp_val,
+                        self.context.i32_type().const_zero(),
+                        "is_equal",
+                    )
+                    .unwrap()
+            } else if element_type_str == "Float" {
+                self.builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OEQ,
+                        elem_in_array.into_float_value(),
+                        element_val.into_float_value(),
+                        "is_equal",
+                    )
+                    .unwrap()
+            } else {
+                // Int or Bool comparison
+                self.builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        elem_in_array.into_int_value(),
+                        element_val.into_int_value(),
+                        "is_equal",
+                    )
+                    .unwrap()
+            };
+
+            // If equal, jump to found; otherwise increment and continue loop
+            let inc_block = self
+                .context
+                .append_basic_block(current_fn, "arr_contains_inc");
+            self.builder
+                .build_conditional_branch(is_equal, found_block, inc_block)
+                .unwrap();
+
+            // Increment block
+            self.builder.position_at_end(inc_block);
+            let next_index = self
+                .builder
+                .build_int_add(
+                    current_index,
+                    self.context.i32_type().const_int(1, false),
+                    "next_idx",
+                )
+                .unwrap();
+            self.builder.build_store(index_alloca, next_index).unwrap();
+            self.builder.build_unconditional_branch(loop_block).unwrap();
+
+            // Found block: return true
+            self.builder.position_at_end(found_block);
+            self.builder
+                .build_unconditional_branch(continue_block)
+                .unwrap();
+
+            // Not found block: return false
+            self.builder.position_at_end(not_found_block);
+            self.builder
+                .build_unconditional_branch(continue_block)
+                .unwrap();
+
+            // Continue block: merge results with phi node
+            // Use i32 for boolean result (consistent with rest of compiler)
+            self.builder.position_at_end(continue_block);
+            let phi = self
+                .builder
+                .build_phi(self.context.i32_type(), name)
+                .unwrap();
+            phi.add_incoming(&[
+                (&self.context.i32_type().const_int(1, false), found_block),
+                (&self.context.i32_type().const_zero(), not_found_block),
+            ]);
+
+            let result_val = phi.as_basic_value();
+
+            // CRITICAL: Store result to symbol alloca if one exists
+            // This ensures the value is available when the conditional branch reads it
+            if let Some(sym) = self.symbols.get(name) {
+                self.builder.build_store(sym.ptr, result_val).unwrap();
+            }
+
+            self.temp_values.insert(name.to_string(), result_val);
+            return Some(result_val);
+        }
+
+        // Fallback: return false if metadata not found
+        let false_val = self.context.i32_type().const_zero();
+        self.temp_values.insert(name.to_string(), false_val.into());
+        Some(false_val.into())
+    }
 }

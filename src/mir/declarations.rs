@@ -285,7 +285,12 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         }
 
         // Build MIR for each statement in the function body.
-        for stmt in body {
+        // Track last expression result for implicit return
+        let mut last_expr_result: Option<String> = None;
+        let body_len = body.len();
+
+        for (stmt_idx, stmt) in body.iter().enumerate() {
+            let is_last_stmt = stmt_idx == body_len - 1;
             let old_label = block.label.clone();
 
             // Add the current block BEFORE processing the statement
@@ -320,7 +325,18 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
                 }
             }
 
-            build_statement(builder, stmt, &mut block);
+            // For the last statement in a function with return type,
+            // if it's a match expression, capture the result for implicit return
+            if is_last_stmt && return_type.is_some() {
+                if let AstNode::MatchExpr { .. } = stmt {
+                    let result_tmp = build_expression(builder, stmt, &mut block);
+                    last_expr_result = Some(result_tmp);
+                } else {
+                    build_statement(builder, stmt, &mut block);
+                }
+            } else {
+                build_statement(builder, stmt, &mut block);
+            }
 
             // If the statement set a terminator (like a for-loop), subsequent statements
             // need a new block to avoid adding instructions after the terminator
@@ -351,6 +367,15 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
                         }
                     }
                 }
+            }
+        }
+
+        // If we have an implicit return from match expression, add Return terminator
+        if let Some(result_tmp) = last_expr_result {
+            if block.terminator.is_none() {
+                block.terminator = Some(MirInstr::Return {
+                    values: vec![result_tmp],
+                });
             }
         }
 

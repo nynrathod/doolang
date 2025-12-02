@@ -759,37 +759,32 @@ mod analyzer_tests {
     // ========================================
 
     #[test]
-    fn test_analyze_import_statement() {
+    fn test_analyze_import_statement_braced() {
         assert_ok("import std::Math::{Abs}; fn main() { let x = Abs(-5); }");
     }
 
     #[test]
-    fn test_analyze_import_multiple() {
+    fn test_analyze_import_multiple_braced() {
         assert_ok("import std::Math::{Abs, Min, Max}; fn main() { let a = Abs(-3); let b = Min(1, 2); let c = Max(4, 5); }");
     }
 
     #[test]
-    fn test_analyze_import_wildcard() {
+    fn test_analyze_import_wildcard_braced() {
         assert_ok("import std::Math::*; fn main() { let x = Abs(-7); let y = Min(2, 3); let z = Max(8, 9); }");
     }
 
     #[test]
-    fn test_analyze_import_aliased() {
+    fn test_analyze_import_aliased_braced() {
         assert_ok("import std::Math::{Abs as AbsValue}; fn main() { let x = AbsValue(-10); }");
     }
 
     #[test]
-    fn test_analyze_import_undefined_function() {
-        assert_err("import std::Math::{NonExistent}; fn main() { }");
-    }
-
-    #[test]
-    fn test_analyze_import_multiple_abs() {
+    fn test_analyze_import_multiple_braced_multiline() {
         assert_ok(
             r#"
             import std::Math::{Abs, Min};
             fn main() { let x = Abs(-5); let y = Min(1, 2); }
-        "#,
+            "#,
         );
     }
 

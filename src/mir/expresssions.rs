@@ -31,6 +31,34 @@ fn get_enum_variant_index(builder: &MirBuilder, enum_name: &str, variant_name: &
 
 /// Helper function to determine the type of an operand by looking it up in the symbol table
 /// If not found, tries to infer the type from the operand value (e.g., literals)
+/// Helper function to convert TypeNode to source_type string for Cast instructions
+fn type_node_to_source_type(ty: &Option<TypeNode>) -> String {
+    match ty {
+        Some(TypeNode::Float) => "Float".to_string(),
+        Some(TypeNode::Int) => "Int".to_string(),
+        Some(TypeNode::Bool) => "Bool".to_string(),
+        Some(TypeNode::String) => "String".to_string(),
+        Some(TypeNode::Array(inner)) => format!("Array({})", inner.format_type_string()),
+        Some(TypeNode::Map(k, v)) => {
+            format!("Map({},{})", k.format_type_string(), v.format_type_string())
+        }
+        Some(TypeNode::Struct(name, _)) => format!("Struct({})", name),
+        Some(TypeNode::TypeRef(name)) => format!("Struct({})", name),
+        Some(TypeNode::Enum(name, _)) => format!("Enum({})", name),
+        Some(TypeNode::Tuple(types)) => {
+            let parts: Vec<String> = types.iter().map(|t| t.format_type_string()).collect();
+            format!("Tuple({})", parts.join(","))
+        }
+        Some(TypeNode::Result(ok, err)) => format!(
+            "Result({},{})",
+            ok.format_type_string(),
+            err.format_type_string()
+        ),
+        Some(TypeNode::Any) => "Any".to_string(),
+        _ => "Int".to_string(), // Default fallback
+    }
+}
+
 fn get_operand_type(builder: &MirBuilder, operand: &str) -> Option<TypeNode> {
     // Check for nil first - it's a special pointer value
     if operand == "nil" {
@@ -301,17 +329,30 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
         }
 
         AstNode::BinaryExpr { left, op, right } => {
-            // Special handling for "in" operator (key in map)
+            // Special handling for "in" operator (key in map or element in array)
             if *op == TokenType::In {
-                let key_tmp = build_expression(builder, left, block);
-                let map_tmp = build_expression(builder, right, block);
+                let left_tmp = build_expression(builder, left, block);
+                let right_tmp = build_expression(builder, right, block);
                 let result_tmp = builder.next_tmp();
 
-                block.instrs.push(MirInstr::MapContains {
-                    name: result_tmp.clone(),
-                    map: map_tmp,
-                    key: key_tmp,
-                });
+                // Check if right side is an array or map based on type
+                let right_type = get_operand_type(builder, &right_tmp);
+
+                if let Some(TypeNode::Array(_)) = right_type {
+                    // Array contains check
+                    block.instrs.push(MirInstr::ArrayContains {
+                        name: result_tmp.clone(),
+                        array: right_tmp,
+                        element: left_tmp,
+                    });
+                } else {
+                    // Map contains check (default)
+                    block.instrs.push(MirInstr::MapContains {
+                        name: result_tmp.clone(),
+                        map: right_tmp,
+                        key: left_tmp,
+                    });
+                }
 
                 builder
                     .mir_symbol_table
@@ -357,13 +398,7 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             } else {
                                 // Cast non-string to string
                                 let cast_tmp = builder.next_tmp();
-                                let source_type = if let Some(TypeNode::Float) =
-                                    get_operand_type(builder, &lhs_tmp)
-                                {
-                                    "Float".to_string()
-                                } else {
-                                    "Int".to_string()
-                                };
+                                let source_type = type_node_to_source_type(&lhs_type);
                                 block.instrs.push(MirInstr::Cast {
                                     name: cast_tmp.clone(),
                                     value: lhs_tmp.clone(),
@@ -381,13 +416,7 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             } else {
                                 // Cast non-string to string
                                 let cast_tmp = builder.next_tmp();
-                                let source_type = if let Some(TypeNode::Float) =
-                                    get_operand_type(builder, &rhs_tmp)
-                                {
-                                    "Float".to_string()
-                                } else {
-                                    "Int".to_string()
-                                };
+                                let source_type = type_node_to_source_type(&rhs_type);
                                 block.instrs.push(MirInstr::Cast {
                                     name: cast_tmp.clone(),
                                     value: rhs_tmp.clone(),
@@ -413,59 +442,47 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             match determine_op_type(builder, &lhs_tmp, &rhs_tmp) {
                                 Ok(op_type) if op_type == "string" => {
                                     // Convert non-string operands to strings for concatenation
-                                    let lhs_for_concat = if matches!(
-                                        get_operand_type(builder, &lhs_tmp),
-                                        Some(TypeNode::String)
-                                    ) {
-                                        lhs_tmp.clone()
-                                    } else {
-                                        // Cast non-string to string
-                                        let cast_tmp = builder.next_tmp();
-                                        let source_type = if let Some(TypeNode::Float) =
-                                            get_operand_type(builder, &lhs_tmp)
-                                        {
-                                            "Float".to_string()
+                                    let lhs_type_inner = get_operand_type(builder, &lhs_tmp);
+                                    let lhs_for_concat =
+                                        if matches!(lhs_type_inner, Some(TypeNode::String)) {
+                                            lhs_tmp.clone()
                                         } else {
-                                            "Int".to_string()
+                                            // Cast non-string to string
+                                            let cast_tmp = builder.next_tmp();
+                                            let source_type =
+                                                type_node_to_source_type(&lhs_type_inner);
+                                            block.instrs.push(MirInstr::Cast {
+                                                name: cast_tmp.clone(),
+                                                value: lhs_tmp.clone(),
+                                                source_type,
+                                                target_type: "String".to_string(),
+                                            });
+                                            builder
+                                                .mir_symbol_table
+                                                .insert(cast_tmp.clone(), TypeNode::String);
+                                            cast_tmp
                                         };
-                                        block.instrs.push(MirInstr::Cast {
-                                            name: cast_tmp.clone(),
-                                            value: lhs_tmp.clone(),
-                                            source_type,
-                                            target_type: "String".to_string(),
-                                        });
-                                        builder
-                                            .mir_symbol_table
-                                            .insert(cast_tmp.clone(), TypeNode::String);
-                                        cast_tmp
-                                    };
 
-                                    let rhs_for_concat = if matches!(
-                                        get_operand_type(builder, &rhs_tmp),
-                                        Some(TypeNode::String)
-                                    ) {
-                                        rhs_tmp.clone()
-                                    } else {
-                                        // Cast non-string to string
-                                        let cast_tmp = builder.next_tmp();
-                                        let source_type = if let Some(TypeNode::Float) =
-                                            get_operand_type(builder, &rhs_tmp)
-                                        {
-                                            "Float".to_string()
+                                    let rhs_type_inner = get_operand_type(builder, &rhs_tmp);
+                                    let rhs_for_concat =
+                                        if matches!(rhs_type_inner, Some(TypeNode::String)) {
+                                            rhs_tmp.clone()
                                         } else {
-                                            "Int".to_string()
+                                            // Cast non-string to string
+                                            let cast_tmp = builder.next_tmp();
+                                            let source_type =
+                                                type_node_to_source_type(&rhs_type_inner);
+                                            block.instrs.push(MirInstr::Cast {
+                                                name: cast_tmp.clone(),
+                                                value: rhs_tmp.clone(),
+                                                source_type,
+                                                target_type: "String".to_string(),
+                                            });
+                                            builder
+                                                .mir_symbol_table
+                                                .insert(cast_tmp.clone(), TypeNode::String);
+                                            cast_tmp
                                         };
-                                        block.instrs.push(MirInstr::Cast {
-                                            name: cast_tmp.clone(),
-                                            value: rhs_tmp.clone(),
-                                            source_type,
-                                            target_type: "String".to_string(),
-                                        });
-                                        builder
-                                            .mir_symbol_table
-                                            .insert(cast_tmp.clone(), TypeNode::String);
-                                        cast_tmp
-                                    };
 
                                     block.instrs.push(MirInstr::StringConcat {
                                         name: dest_tmp.clone(),
@@ -648,6 +665,14 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     variant_index,
                     value: payload_tmp,
                 });
+
+                // Track enum type in symbol table so Cast knows the source type
+                if let Some(variants) = builder.enum_table.get(&enum_name) {
+                    builder.mir_symbol_table.insert(
+                        enum_tmp.clone(),
+                        TypeNode::Enum(enum_name.clone(), variants.clone()),
+                    );
+                }
 
                 enum_tmp
             } else {
@@ -1160,6 +1185,11 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 fields: field_values,
             });
 
+            // Track struct type in symbol table so Cast knows the source type
+            builder
+                .mir_symbol_table
+                .insert(struct_tmp.clone(), TypeNode::TypeRef(name.clone()));
+
             struct_tmp
         }
 
@@ -1193,10 +1223,28 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
 
             if is_enum {
                 // It's an actual enum variant
-                // Build MIR for payload if present (should be 0 or 1 argument for enum variants)
+                // Build MIR for payload if present
                 let payload_tmp = if !payload.is_empty() {
-                    // Enum variants only support single payload
-                    Some(build_expression(builder, &payload[0], block))
+                    if payload.len() == 1 {
+                        // Single payload - build directly
+                        Some(build_expression(builder, &payload[0], block))
+                    } else {
+                        // Multiple payloads - create a tuple
+                        let mut element_tmps = vec![];
+                        for elem in payload {
+                            let elem_tmp = build_expression(builder, elem, block);
+                            element_tmps.push(elem_tmp);
+                        }
+
+                        // Create tuple from the elements
+                        let tuple_tmp = builder.next_tmp();
+                        block.instrs.push(MirInstr::TupleCreate {
+                            name: tuple_tmp.clone(),
+                            elements: element_tmps,
+                        });
+
+                        Some(tuple_tmp)
+                    }
                 } else {
                     None
                 };
@@ -1211,6 +1259,14 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     variant_index,
                     value: payload_tmp,
                 });
+
+                // Track enum type in symbol table so Cast knows the source type
+                if let Some(variants) = builder.enum_table.get(enum_name) {
+                    builder.mir_symbol_table.insert(
+                        enum_tmp.clone(),
+                        TypeNode::Enum(enum_name.clone(), variants.clone()),
+                    );
+                }
 
                 enum_tmp
             } else if is_function {
@@ -1338,13 +1394,16 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
         }
 
         // Match expression
-        AstNode::MatchExpr { value, arms } => {
-            // Evaluate the match value if present
-            let value_tmp = if let Some(v) = value {
-                build_expression(builder, v, block)
-            } else {
-                String::new() // No value for condition-based match
-            };
+        AstNode::MatchExpr { values, arms } => {
+            // Evaluate the match values if present
+            let value_tmps: Vec<String> = values
+                .iter()
+                .map(|v| build_expression(builder, v, block))
+                .collect();
+
+            // For single-value match, use first value; for tuple match, we compare each element
+            let value_tmp = value_tmps.first().cloned().unwrap_or_default();
+            let is_tuple_match = value_tmps.len() > 1;
 
             // Create merge block that all arms will jump to
             let merge_label = builder.next_block();
@@ -1441,6 +1500,76 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             else_block: next_label.clone(),
                         });
                     }
+                    crate::parser::ast::MatchPattern::Tuple(patterns) => {
+                        // Tuple match: compare each element
+                        // Build comparisons for each pattern element
+                        let mut all_match_tmp = String::new();
+
+                        for (idx, pattern) in patterns.iter().enumerate() {
+                            let val_tmp = if idx < value_tmps.len() {
+                                value_tmps[idx].clone()
+                            } else {
+                                value_tmp.clone()
+                            };
+
+                            let elem_cond = match pattern {
+                                crate::parser::ast::MatchPattern::Wildcard => {
+                                    // Wildcard matches anything - always true
+                                    let true_tmp = builder.next_tmp();
+                                    check_block.instrs.push(MirInstr::ConstBool {
+                                        name: true_tmp.clone(),
+                                        value: true,
+                                    });
+                                    true_tmp
+                                }
+                                crate::parser::ast::MatchPattern::Literal(lit) => {
+                                    let lit_tmp = build_expression(builder, lit, &mut check_block);
+                                    let cmp_tmp = builder.next_tmp();
+                                    let op_type =
+                                        match determine_op_type(builder, &val_tmp, &lit_tmp) {
+                                            Ok(t) => t,
+                                            Err(_) => "int".to_string(),
+                                        };
+                                    check_block.instrs.push(MirInstr::BinaryOp(
+                                        format!("eq:{}", op_type),
+                                        cmp_tmp.clone(),
+                                        val_tmp,
+                                        lit_tmp,
+                                    ));
+                                    cmp_tmp
+                                }
+                                _ => {
+                                    // For other pattern types in tuple, treat as always match for now
+                                    let true_tmp = builder.next_tmp();
+                                    check_block.instrs.push(MirInstr::ConstBool {
+                                        name: true_tmp.clone(),
+                                        value: true,
+                                    });
+                                    true_tmp
+                                }
+                            };
+
+                            if all_match_tmp.is_empty() {
+                                all_match_tmp = elem_cond;
+                            } else {
+                                // AND with previous result
+                                let and_tmp = builder.next_tmp();
+                                check_block.instrs.push(MirInstr::BinaryOp(
+                                    "and:bool".to_string(),
+                                    and_tmp.clone(),
+                                    all_match_tmp,
+                                    elem_cond,
+                                ));
+                                all_match_tmp = and_tmp;
+                            }
+                        }
+
+                        check_block.terminator = Some(MirInstr::CondJump {
+                            cond: all_match_tmp,
+                            then_block: arm_label.clone(),
+                            else_block: next_label.clone(),
+                        });
+                    }
                     crate::parser::ast::MatchPattern::Condition(cond) => {
                         // Condition-based match: evaluate condition
                         let cond_tmp = build_expression(builder, cond, &mut check_block);
@@ -1494,7 +1623,7 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     crate::parser::ast::MatchPattern::EnumVariantWithPayload {
                         enum_name,
                         variant,
-                        binding,
+                        bindings,
                     } => {
                         // Enum variant match with payload: check tag and extract payload
                         // Extract tag from the enum value
@@ -1538,15 +1667,29 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                             .and_then(|variants| variants.get(variant))
                             .and_then(|opt_type| opt_type.clone());
 
+                        // Store bindings in symbol table
                         if let Some(ref ptype) = payload_type {
-                            builder
-                                .mir_symbol_table
-                                .insert(binding.clone(), ptype.clone());
+                            // For tuple types, we need to handle multiple bindings
+                            if let TypeNode::Tuple(types) = ptype {
+                                for (i, binding) in bindings.iter().enumerate() {
+                                    let elem_type = types.get(i).cloned().unwrap_or(TypeNode::Int);
+                                    builder.mir_symbol_table.insert(binding.clone(), elem_type);
+                                }
+                            } else {
+                                // Single binding
+                                if let Some(binding) = bindings.first() {
+                                    builder
+                                        .mir_symbol_table
+                                        .insert(binding.clone(), ptype.clone());
+                                }
+                            }
                         } else {
                             // Fallback to Int if type lookup fails
-                            builder
-                                .mir_symbol_table
-                                .insert(binding.clone(), TypeNode::Int);
+                            for binding in bindings {
+                                builder
+                                    .mir_symbol_table
+                                    .insert(binding.clone(), TypeNode::Int);
+                            }
                         }
 
                         check_block.terminator = Some(MirInstr::CondJump {
@@ -1574,41 +1717,82 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 };
 
                 // If this arm has a payload binding, extract it at the start of the arm block
-                if let crate::parser::ast::MatchPattern::EnumVariantWithPayload {
-                    enum_name,
-                    variant,
-                    binding,
-                } = &arm.pattern
-                {
-                    // Look up the payload type from enum_table
-                    let payload_type = builder
-                        .enum_table
-                        .get(enum_name)
-                        .and_then(|variants| variants.get(variant))
-                        .and_then(|opt_type| opt_type.clone());
+                // Use the user's binding name directly - EnumGetPayload only stores to temp_values
+                let _payload_binding_names =
+                    if let crate::parser::ast::MatchPattern::EnumVariantWithPayload {
+                        enum_name,
+                        variant,
+                        bindings,
+                    } = &arm.pattern
+                    {
+                        // Look up the payload type from enum_table
+                        let payload_type = builder
+                            .enum_table
+                            .get(enum_name)
+                            .and_then(|variants| variants.get(variant))
+                            .and_then(|opt_type| opt_type.clone());
 
-                    // Extract payload from the enum value directly into the binding variable name
-                    // This avoids an extra Assign and makes the binding directly available as a temporary
-                    arm_block.instrs.push(MirInstr::EnumGetPayload {
-                        name: binding.clone(),
-                        enum_value: value_tmp.clone(),
-                        enum_name: enum_name.clone(),
-                        variant: variant.clone(),
-                        payload_type: payload_type.clone(),
-                    });
+                        // Handle multiple bindings for tuple payloads
+                        if bindings.len() == 1 {
+                            // Single binding - extract payload directly
+                            arm_block.instrs.push(MirInstr::EnumGetPayload {
+                                name: bindings[0].clone(),
+                                enum_value: value_tmp.clone(),
+                                enum_name: enum_name.clone(),
+                                variant: variant.clone(),
+                                payload_type: payload_type.clone(),
+                            });
 
-                    // Store the binding type in symbol table for type checking
-                    if let Some(ref ptype) = payload_type {
-                        builder
-                            .mir_symbol_table
-                            .insert(binding.clone(), ptype.clone());
+                            // Store the binding type in symbol table for type checking
+                            if let Some(ref ptype) = payload_type {
+                                builder
+                                    .mir_symbol_table
+                                    .insert(bindings[0].clone(), ptype.clone());
+                            } else {
+                                builder
+                                    .mir_symbol_table
+                                    .insert(bindings[0].clone(), TypeNode::Int);
+                            }
+                        } else {
+                            // Multiple bindings - tuple payload
+                            // First extract the tuple payload
+                            let tuple_tmp = builder.next_tmp();
+                            arm_block.instrs.push(MirInstr::EnumGetPayload {
+                                name: tuple_tmp.clone(),
+                                enum_value: value_tmp.clone(),
+                                enum_name: enum_name.clone(),
+                                variant: variant.clone(),
+                                payload_type: payload_type.clone(),
+                            });
+
+                            // Get the tuple element types if available
+                            let element_types = if let Some(TypeNode::Tuple(types)) = &payload_type
+                            {
+                                types.clone()
+                            } else {
+                                // Default to Int for all elements
+                                vec![TypeNode::Int; bindings.len()]
+                            };
+
+                            // Extract each tuple element into its binding
+                            for (i, binding) in bindings.iter().enumerate() {
+                                arm_block.instrs.push(MirInstr::TupleGet {
+                                    name: binding.clone(),
+                                    tuple: tuple_tmp.clone(),
+                                    index: i,
+                                });
+
+                                // Store the binding type
+                                let elem_type =
+                                    element_types.get(i).cloned().unwrap_or(TypeNode::Int);
+                                builder.mir_symbol_table.insert(binding.clone(), elem_type);
+                            }
+                        }
+
+                        Some(bindings.clone())
                     } else {
-                        // Fallback to Int if type lookup fails
-                        builder
-                            .mir_symbol_table
-                            .insert(binding.clone(), TypeNode::Int);
-                    }
-                }
+                        None
+                    };
 
                 // Check if arm body is a statement or expression
                 match arm.body.as_ref() {
@@ -1671,6 +1855,63 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                     }
                     AstNode::Break | AstNode::Continue | AstNode::Return { .. } => {
                         build_statement(builder, &arm.body, &mut arm_block);
+                    }
+                    AstNode::MatchExpr { .. } => {
+                        // Special handling for nested MatchExpr:
+                        // The nested match will take over the block and create its own control flow.
+                        // We need to:
+                        // 1. First commit the current arm_block with its payload extraction instructions
+                        // 2. Create a new block for the nested match to use
+                        // 3. Let the nested match build its own blocks
+                        // 4. After nested match, assign result and jump to outer merge
+
+                        // Save the payload extraction instructions that we've already added
+                        let saved_instrs = arm_block.instrs.clone();
+                        let saved_label = arm_block.label.clone();
+
+                        // Create a fresh block for the nested match to use as its entry
+                        let nested_entry_label = builder.next_block();
+                        let mut nested_entry_block = MirBlock {
+                            label: nested_entry_label.clone(),
+                            instrs: vec![],
+                            terminator: None,
+                        };
+
+                        // Build the nested match expression using the fresh block
+                        let nested_result =
+                            build_expression(builder, &arm.body, &mut nested_entry_block);
+
+                        // The nested match will have transformed nested_entry_block into its merge block
+                        // We need to add the result assignment and jump to outer merge
+                        nested_entry_block.instrs.push(MirInstr::Assign {
+                            name: result_tmp.clone(),
+                            value: nested_result,
+                            mutable: false,
+                        });
+                        nested_entry_block.terminator = Some(MirInstr::Jump {
+                            label: merge_label.clone(),
+                        });
+
+                        // Restore the original arm_block with saved instructions
+                        arm_block.label = saved_label;
+                        arm_block.instrs = saved_instrs;
+                        // Make the arm_block jump to the nested match entry
+                        arm_block.terminator = Some(MirInstr::Jump {
+                            label: nested_entry_label.clone(),
+                        });
+
+                        // Add the arm_block to function (it has payload extraction and jumps to nested match)
+                        if let Some(current_func) = builder.program.functions.last_mut() {
+                            current_func.blocks.push(arm_block.clone());
+                        }
+
+                        // Add the nested match's merge block (which is now nested_entry_block)
+                        if let Some(current_func) = builder.program.functions.last_mut() {
+                            current_func.blocks.push(nested_entry_block);
+                        }
+
+                        // Skip the normal arm_block handling below since we've already handled it
+                        continue;
                     }
                     _ => {
                         let arm_result = build_expression(builder, &arm.body, &mut arm_block);

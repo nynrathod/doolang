@@ -40,7 +40,7 @@ impl<'ctx> CodeGen<'ctx> {
             .builder
             .build_int_add(
                 total_len,
-                self.context.i32_type().const_int(1, false),
+                self.context.i64_type().const_int(1, false),
                 "len_with_null",
             )
             .unwrap();
@@ -48,7 +48,7 @@ impl<'ctx> CodeGen<'ctx> {
             .builder
             .build_int_add(
                 total_len_plus_null,
-                self.context.i32_type().const_int(8, false),
+                self.context.i64_type().const_int(8, false),
                 "total_size",
             )
             .unwrap();
@@ -86,40 +86,42 @@ impl<'ctx> CodeGen<'ctx> {
         .unwrap();
 
         let memcpy_fn = self.get_or_declare_memcpy();
-        let left_len_i64 = self
-            .builder
-            .build_int_cast(left_len, self.context.i64_type(), "left_len_i64")
-            .unwrap();
         self.builder
             .build_call(
                 memcpy_fn,
                 &[
                     data_ptr.into(),
                     left_ptr.into(),
-                    left_len_i64.into(),
+                    left_len.into(),
                     self.context.bool_type().const_zero().into(),
                 ],
                 "",
             )
             .unwrap();
 
+        // Cast left_len to i32 for GEP index
+        let left_len_i32 = self
+            .builder
+            .build_int_cast(left_len, self.context.i32_type(), "left_len_i32")
+            .unwrap();
+
         let right_dest = unsafe {
-            self.builder
-                .build_gep(self.context.i8_type(), data_ptr, &[left_len], "right_dest")
+            self.builder.build_gep(
+                self.context.i8_type(),
+                data_ptr,
+                &[left_len_i32],
+                "right_dest",
+            )
         }
         .unwrap();
 
-        let right_len_i64 = self
-            .builder
-            .build_int_cast(right_len, self.context.i64_type(), "right_len_i64")
-            .unwrap();
         self.builder
             .build_call(
                 memcpy_fn,
                 &[
                     right_dest.into(),
                     right_ptr.into(),
-                    right_len_i64.into(),
+                    right_len.into(),
                     self.context.bool_type().const_zero().into(),
                 ],
                 "",
@@ -127,11 +129,17 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap();
 
         let null_pos = unsafe {
-            self.builder
-                .build_gep(self.context.i8_type(), data_ptr, &[total_len], "null_pos")
+            self.builder.build_gep(
+                self.context.i8_type(),
+                data_ptr,
+                &[self
+                    .builder
+                    .build_int_cast(total_len, self.context.i32_type(), "total_len_i32")
+                    .unwrap()],
+                "null_pos",
+            )
         }
         .unwrap();
-
         self.builder
             .build_store(null_pos, self.context.i8_type().const_zero())
             .unwrap();
@@ -149,7 +157,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Declare strlen: size_t strlen(const char *s)
         let i8_ptr = self.context.ptr_type(AddressSpace::default());
-        let size_t = self.context.i32_type(); // Using i32 for size_t
+        let size_t = self.context.i64_type(); // Using i64 for size_t
         let fn_type = size_t.fn_type(&[i8_ptr.into()], false);
 
         self.module.add_function("strlen", fn_type, None)

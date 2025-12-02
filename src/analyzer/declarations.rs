@@ -509,6 +509,12 @@ impl SemanticAnalyzer {
     /// Treats Ok/Err expressions as implicit returns.
     fn ensure_has_return(&self, body: &Vec<AstNode>, fn_name: &str) -> Result<(), SemanticError> {
         if !self.has_return_statement(body) {
+            // Check if last statement is a match expression (implicit return)
+            if let Some(last) = body.last() {
+                if matches!(last, AstNode::MatchExpr { .. }) {
+                    return Ok(());
+                }
+            }
             return Err(SemanticError::MissingFunctionReturn {
                 function: fn_name.to_string(),
             });
@@ -542,6 +548,22 @@ impl SemanticAnalyzer {
                 }
                 AstNode::Block(inner_nodes) => {
                     if self.has_return_statement(inner_nodes) {
+                        return true;
+                    }
+                }
+                AstNode::MatchExpr { arms, .. } => {
+                    // Match is a return if all arms have returns
+                    let all_arms_return = arms.iter().all(|arm| match arm.body.as_ref() {
+                        AstNode::Block(stmts) => self.has_return_statement(stmts),
+                        AstNode::Return { .. }
+                        | AstNode::OkExpr { .. }
+                        | AstNode::ErrExpr { .. } => true,
+                        other => {
+                            let v = vec![other.clone()];
+                            self.has_return_statement(&v)
+                        }
+                    });
+                    if all_arms_return && !arms.is_empty() {
                         return true;
                     }
                 }

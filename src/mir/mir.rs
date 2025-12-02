@@ -225,6 +225,11 @@ pub enum MirInstr {
         map: String,
         key: String,
     },
+    ArrayContains {
+        name: String,
+        array: String,
+        element: String,
+    },
 
     // Arithmetic operations
     Add(String, String, String), // (dest, lhs, rhs)
@@ -628,6 +633,10 @@ impl MirInstr {
                 used.push(map.clone());
                 used.push(key.clone());
             }
+            MirInstr::ArrayContains { array, element, .. } => {
+                used.push(array.clone());
+                used.push(element.clone());
+            }
             MirInstr::MapLen { map, .. } => {
                 used.push(map.clone());
             }
@@ -722,6 +731,7 @@ impl MirInstr {
             | MirInstr::MapGet { name, .. }
             | MirInstr::MapGetPair { name, .. }
             | MirInstr::MapContains { name, .. }
+            | MirInstr::ArrayContains { name, .. }
             | MirInstr::MapLen { name, .. }
             | MirInstr::StructInit { name, .. }
             | MirInstr::StructGet { name, .. }

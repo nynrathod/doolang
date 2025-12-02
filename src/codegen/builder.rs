@@ -113,7 +113,62 @@ impl<'ctx> CodeGen<'ctx> {
                 object,
                 method,
                 args,
-            } => self.generate_method_call(dest, object, method, args),
+            } => {
+                let result = self.generate_method_call(dest, object, method, args);
+                // CRITICAL FIX: Store the method call result into the symbol alloca if one exists
+                // This ensures that when the value is later loaded (e.g., for print), we get the
+                // actual computed result, not the default-initialized zero value
+                if let Some(result_val) = result {
+                    if let Some(sym) = self.symbols.get(dest) {
+                        // Check if the result type matches the symbol type before storing
+                        let result_type = result_val.get_type();
+                        let sym_type = sym.ty;
+
+                        // Handle type conversions if needed
+                        let store_val = if result_type.is_int_type() && sym_type.is_int_type() {
+                            let result_int = result_val.into_int_value();
+                            let sym_int_type = sym_type.into_int_type();
+                            if result_int.get_type().get_bit_width() != sym_int_type.get_bit_width()
+                            {
+                                // Need to truncate or extend
+                                if result_int.get_type().get_bit_width()
+                                    > sym_int_type.get_bit_width()
+                                {
+                                    self.builder
+                                        .build_int_truncate(
+                                            result_int,
+                                            sym_int_type,
+                                            "method_result_trunc",
+                                        )
+                                        .unwrap()
+                                        .into()
+                                } else {
+                                    self.builder
+                                        .build_int_z_extend(
+                                            result_int,
+                                            sym_int_type,
+                                            "method_result_ext",
+                                        )
+                                        .unwrap()
+                                        .into()
+                                }
+                            } else {
+                                result_val
+                            }
+                        } else if result_type.is_pointer_type() && sym_type.is_pointer_type() {
+                            result_val
+                        } else if result_type.is_float_type() && sym_type.is_float_type() {
+                            result_val
+                        } else {
+                            // Types don't match well, skip storing
+                            return result;
+                        };
+
+                        self.builder.build_store(sym.ptr, store_val).unwrap();
+                    }
+                }
+                result
+            }
             MirInstr::Closure {
                 name,
                 params,
@@ -134,6 +189,11 @@ impl<'ctx> CodeGen<'ctx> {
             MirInstr::ArrayLen { name, array } => self.generate_array_len(name, array),
             MirInstr::MapLen { name, map } => self.generate_array_len(name, map),
             MirInstr::MapContains { name, map, key } => self.generate_map_contains(name, map, key),
+            MirInstr::ArrayContains {
+                name,
+                array,
+                element,
+            } => self.generate_array_contains(name, array, element),
 
             // ===== LOOP INSTRUCTIONS =====
             MirInstr::ForRange { .. }
@@ -300,9 +360,30 @@ impl<'ctx> CodeGen<'ctx> {
                         self.emit_decref(name);
                     }
 
+                    // Handle i1 to i32 extension for boolean values during reassignment
+                    let is_i1_reassign =
+                        val.is_int_value() && val.into_int_value().get_type().get_bit_width() == 1;
+                    let store_val_reassign = if is_i1_reassign
+                        && sym.ty.is_int_type()
+                        && sym.ty.into_int_type().get_bit_width() == 32
+                    {
+                        // Extend i1 to i32 to match existing alloca type
+                        let i1_val = val.into_int_value();
+                        self.builder
+                            .build_int_z_extend(
+                                i1_val,
+                                self.context.i32_type(),
+                                "bool_to_i32_reassign",
+                            )
+                            .unwrap()
+                            .into()
+                    } else {
+                        val
+                    };
+
                     // CRITICAL: Check if types match before storing
                     // If types don't match, we MUST recreate the alloca to prevent stack corruption
-                    if sym.ty != val.get_type() {
+                    if sym.ty != store_val_reassign.get_type() {
                         // Types mismatch - remove old symbol and recreate alloca with correct type
                         self.symbols.remove(name);
 
@@ -352,7 +433,9 @@ impl<'ctx> CodeGen<'ctx> {
                         );
                     } else {
                         // Types match - safe to store to existing alloca
-                        self.builder.build_store(sym.ptr, val).unwrap();
+                        self.builder
+                            .build_store(sym.ptr, store_val_reassign)
+                            .unwrap();
                     }
 
                     // Update temp_values to override old values when variable names are reused
@@ -536,11 +619,27 @@ impl<'ctx> CodeGen<'ctx> {
                     let is_i1_value =
                         val.is_int_value() && val.into_int_value().get_type().get_bit_width() == 1;
 
+                    // If value is i1 (bool comparison result), extend to i32 before storing
+                    let store_val = if is_i1_value {
+                        let i1_val = val.into_int_value();
+                        self.builder
+                            .build_int_z_extend(i1_val, self.context.i32_type(), "bool_to_i32")
+                            .unwrap()
+                            .into()
+                    } else {
+                        val
+                    };
+
                     // For arrays/maps, force pointer type allocation
-                    let is_array =
-                        self.heap_arrays.contains(name) || self.array_metadata.contains_key(name);
-                    let is_map =
-                        self.heap_maps.contains(name) || self.map_metadata.contains_key(name);
+                    // Also check the source value in case we're assigning from ArraySlice result
+                    let is_array = self.heap_arrays.contains(name)
+                        || self.array_metadata.contains_key(name)
+                        || value_is_heap_array
+                        || self.array_metadata.contains_key(value);
+                    let is_map = self.heap_maps.contains(name)
+                        || self.map_metadata.contains_key(name)
+                        || value_is_heap_map
+                        || self.map_metadata.contains_key(value);
 
                     let alloc_type = if is_bool_type || is_i1_value {
                         self.context.i32_type().into()
@@ -569,7 +668,7 @@ impl<'ctx> CodeGen<'ctx> {
                     // Restore position to current block
                     self.builder.position_at_end(current_block);
 
-                    self.builder.build_store(alloca, val).unwrap();
+                    self.builder.build_store(alloca, store_val).unwrap();
 
                     self.symbols.insert(
                         name.clone(),
@@ -817,9 +916,14 @@ impl<'ctx> CodeGen<'ctx> {
                     // Allocate new array for slice WITH RC header and length (8 bytes)
                     // Layout: [RC: 4 bytes][Length: 4 bytes][data...]
                     let elem_size = elem_type.size_of().unwrap();
+                    // Cast slice_len to i64 to match elem_size type
+                    let slice_len_i64 = self
+                        .builder
+                        .build_int_z_extend(slice_len, self.context.i64_type(), "slice_len_i64")
+                        .unwrap();
                     let data_size = self
                         .builder
-                        .build_int_mul(slice_len, elem_size, "data_size")
+                        .build_int_mul(slice_len_i64, elem_size, "data_size")
                         .unwrap();
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
@@ -901,26 +1005,7 @@ impl<'ctx> CodeGen<'ctx> {
                     };
 
                     // Use memcpy to copy the slice
-                    let memcpy_fn = self
-                        .module
-                        .get_function("llvm.memcpy.p0.p0.i32")
-                        .unwrap_or_else(|| {
-                            let fn_type = self.context.void_type().fn_type(
-                                &[
-                                    self.context
-                                        .ptr_type(inkwell::AddressSpace::default())
-                                        .into(),
-                                    self.context
-                                        .ptr_type(inkwell::AddressSpace::default())
-                                        .into(),
-                                    self.context.i32_type().into(),
-                                    self.context.bool_type().into(),
-                                ],
-                                false,
-                            );
-                            self.module
-                                .add_function("llvm.memcpy.p0.p0.i32", fn_type, None)
-                        });
+                    let memcpy_fn = self.get_or_declare_memcpy();
 
                     self.builder
                         .build_call(
@@ -951,6 +1036,12 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Store metadata and register the slice
                     self.temp_values.insert(name.clone(), result_ptr.into());
+
+                    // CRITICAL: If there's a pre-allocated symbol for this variable (cross-block usage),
+                    // we must also store the result to that symbol
+                    if let Some(sym) = self.symbols.get(name) {
+                        self.builder.build_store(sym.ptr, result_ptr).unwrap();
+                    }
 
                     // Store metadata for slices so ArrayGet can find the element type
                     // Note: length is 0 here but runtime length is stored in heap header
@@ -1437,6 +1528,15 @@ impl<'ctx> CodeGen<'ctx> {
 
                                                         self.temp_values
                                                             .insert(name.clone(), field_val);
+
+                                                        // CRITICAL FIX: Also store to symbol if one exists (cross-block vars)
+                                                        // This ensures resolve_value gets the correct value when loading from symbol
+                                                        if let Some(sym) = self.symbols.get(name) {
+                                                            self.builder
+                                                                .build_store(sym.ptr, field_val)
+                                                                .expect("Failed to store TupleExtract result to symbol");
+                                                        }
+
                                                         return Some(field_val);
                                                     } else {
                                                     }
@@ -1631,9 +1731,18 @@ impl<'ctx> CodeGen<'ctx> {
                                 }
 
                                 self.temp_values.insert(name.clone(), field_val);
+
+                                // CRITICAL FIX: Also store to symbol if one exists (cross-block vars)
+                                if let Some(sym) = self.symbols.get(name) {
+                                    self.builder
+                                        .build_store(sym.ptr, field_val)
+                                        .expect("Failed to store TupleExtract result to symbol");
+                                }
+
                                 return Some(field_val);
                             }
                         }
+                    } else if let Some(sym) = self.symbols.get(source) {
                     }
                 }
 
@@ -2033,9 +2142,169 @@ impl<'ctx> CodeGen<'ctx> {
                 Some(zero.into())
             }
 
+            MirInstr::TupleCreate { name, elements } => {
+                // Create a tuple (struct) from the given elements
+                // Used for multi-payload enum variants like Response::Okkk(200, "Success")
+
+                // Get LLVM types for each element
+                let mut llvm_types: Vec<BasicTypeEnum> = vec![];
+                let mut llvm_values: Vec<BasicValueEnum> = vec![];
+
+                for elem in elements {
+                    let val = self.resolve_value(elem);
+                    llvm_values.push(val);
+                    llvm_types.push(val.get_type());
+                }
+
+                // Create the struct type
+                let tuple_type = self.context.struct_type(&llvm_types, false);
+
+                // Allocate space for the tuple
+                let tuple_alloca = self
+                    .builder
+                    .build_alloca(tuple_type, &format!("{}_tuple", name))
+                    .unwrap();
+
+                // Store each element
+                for (i, val) in llvm_values.iter().enumerate() {
+                    let elem_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            tuple_type,
+                            tuple_alloca,
+                            i as u32,
+                            &format!("{}_elem_{}", name, i),
+                        )
+                        .unwrap();
+                    self.builder.build_store(elem_ptr, *val).unwrap();
+                }
+
+                // Store the pointer to the tuple in temp_values
+                self.temp_values.insert(name.clone(), tuple_alloca.into());
+
+                // CRITICAL: Store to symbol if this is a cross-block variable
+                // This ensures the value is accessible from other blocks via load from symbol
+                if self.cross_block_vars.contains(name) {
+                    if let Some(sym) = self.symbols.get(name) {
+                        self.builder.build_store(sym.ptr, tuple_alloca).unwrap();
+                    }
+                }
+
+                // Track the tuple element types for later TupleGet operations
+                // Store LLVM types in tuple_field_types
+                self.tuple_field_types
+                    .insert(name.clone(), llvm_types.clone());
+
+                // Also store type string in tuple_types
+                let type_strs: Vec<&str> = llvm_types
+                    .iter()
+                    .map(|t| {
+                        if t.is_int_type() {
+                            let int_type = t.into_int_type();
+                            if int_type.get_bit_width() == 1 {
+                                "Bool"
+                            } else {
+                                "Int"
+                            }
+                        } else if t.is_float_type() {
+                            "Float"
+                        } else if t.is_pointer_type() {
+                            "Str"
+                        } else {
+                            "Int"
+                        }
+                    })
+                    .collect();
+                self.tuple_types
+                    .insert(name.clone(), format!("Tuple({})", type_strs.join(",")));
+
+                Some(tuple_alloca.into())
+            }
+
             MirInstr::TupleGet { name, tuple, index } => {
                 // Get the tuple/pair value (should be a pointer to a pair struct from ArrayGet)
                 let tuple_val = self.resolve_value(tuple);
+
+                // Check if this is an enum tuple payload (stored in tuple_field_types)
+                if let Some(llvm_elem_types) = self.tuple_field_types.get(tuple).cloned() {
+                    // This is an enum tuple payload - extract the element
+                    if !tuple_val.is_pointer_value() {
+                        let dummy = self.context.i32_type().const_int(0, false);
+                        self.temp_values.insert(name.clone(), dummy.into());
+                        return Some(dummy.into());
+                    }
+
+                    let tuple_ptr = tuple_val.into_pointer_value();
+
+                    let tuple_struct_type = self.context.struct_type(&llvm_elem_types, false);
+
+                    // GEP to the element
+                    let elem_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            tuple_struct_type,
+                            tuple_ptr,
+                            *index as u32,
+                            &format!("{}_ptr", name),
+                        )
+                        .unwrap();
+
+                    // Load the element
+                    let elem_type = llvm_elem_types
+                        .get(*index)
+                        .cloned()
+                        .unwrap_or(self.context.i32_type().into());
+                    let elem_val = self.builder.build_load(elem_type, elem_ptr, name).unwrap();
+
+                    // For cross-block variables (those with a pre-allocated symbol), store to the symbol
+                    // This ensures the value is accessible from other blocks via load from symbol
+                    if let Some(sym) = self.symbols.get(name) {
+                        // Convert bool (i1) to i32 if needed for symbol storage
+                        let store_val = if elem_val.is_int_value() {
+                            let int_val = elem_val.into_int_value();
+                            if int_val.get_type().get_bit_width() == 1 {
+                                // Bool (i1) needs to be extended to i32 for symbol storage
+                                self.builder
+                                    .build_int_z_extend(
+                                        int_val,
+                                        self.context.i32_type(),
+                                        "bool_ext",
+                                    )
+                                    .unwrap()
+                                    .into()
+                            } else {
+                                elem_val
+                            }
+                        } else {
+                            elem_val
+                        };
+                        self.builder.build_store(sym.ptr, store_val).unwrap();
+                    }
+
+                    self.temp_values.insert(name.clone(), elem_val);
+
+                    // Set variable type
+                    if let Some(t) = llvm_elem_types.get(*index) {
+                        let type_str = if t.is_int_type() {
+                            let int_type = t.into_int_type();
+                            if int_type.get_bit_width() == 1 {
+                                "Bool"
+                            } else {
+                                "Int"
+                            }
+                        } else if t.is_float_type() {
+                            "Float"
+                        } else if t.is_pointer_type() {
+                            "Str"
+                        } else {
+                            "Int"
+                        };
+                        self.variable_types
+                            .insert(name.clone(), type_str.to_string());
+                    }
+
+                    return Some(elem_val);
+                }
 
                 if !tuple_val.is_pointer_value() {
                     // Not a pointer - return a dummy value
@@ -2375,7 +2644,7 @@ impl<'ctx> CodeGen<'ctx> {
                             .ptr_type(inkwell::AddressSpace::default())
                             .into(),
                         "Int" => self.context.i32_type().into(),
-                        "Bool" => self.context.bool_type().into(),
+                        "Bool" => self.context.i32_type().into(), // Use i32 for Bool to match map storage
                         "Float" => self.context.f64_type().into(),
                         _ => self.context.i32_type().into(),
                     };
@@ -2388,7 +2657,7 @@ impl<'ctx> CodeGen<'ctx> {
                     } else if key_type_str == "Float" {
                         self.context.f64_type().into()
                     } else if key_type_str == "Bool" {
-                        self.context.bool_type().into()
+                        self.context.i32_type().into() // Use i32 for Bool to match map storage
                     } else {
                         self.context.i32_type().into()
                     };
@@ -2542,11 +2811,27 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                             .unwrap();
 
-                        // If match, break and use current_index; else increment and continue
+                        // If match, store current_index and break; else increment and continue
+                        let match_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_match_found");
                         let increment_block =
                             self.context.append_basic_block(current_fn, "map_increment");
                         self.builder
-                            .build_conditional_branch(keys_match, continue_block, increment_block)
+                            .build_conditional_branch(
+                                keys_match,
+                                match_found_block,
+                                increment_block,
+                            )
+                            .unwrap();
+
+                        // Match found block: store current_index before continuing
+                        self.builder.position_at_end(match_found_block);
+                        self.builder
+                            .build_store(index_alloca, current_index)
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
                             .unwrap();
 
                         // Increment block
@@ -2677,11 +2962,27 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                             .unwrap();
 
+                        let match_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_match_found_float");
                         let increment_block = self
                             .context
                             .append_basic_block(current_fn, "map_increment_float");
                         self.builder
-                            .build_conditional_branch(keys_match, continue_block, increment_block)
+                            .build_conditional_branch(
+                                keys_match,
+                                match_found_block,
+                                increment_block,
+                            )
+                            .unwrap();
+
+                        // Match found block: store current_index before continuing
+                        self.builder.position_at_end(match_found_block);
+                        self.builder
+                            .build_store(index_alloca, current_index)
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
                             .unwrap();
 
                         self.builder.position_at_end(increment_block);
@@ -2711,7 +3012,19 @@ impl<'ctx> CodeGen<'ctx> {
                             .into_int_value()
                     } else if key_type_str == "Bool" {
                         // Bool key: linear search comparing bool values
-                        let key_bool = key_val.into_int_value();
+                        let key_bool_raw = key_val.into_int_value();
+                        // Extend to i32 if key is i1 (bool) to match stored map keys
+                        let key_bool = if key_bool_raw.get_type().get_bit_width() == 1 {
+                            self.builder
+                                .build_int_z_extend(
+                                    key_bool_raw,
+                                    self.context.i32_type(),
+                                    "key_bool_i32",
+                                )
+                                .unwrap()
+                        } else {
+                            key_bool_raw
+                        };
                         let map_length = map_metadata_clone.length;
 
                         let current_fn = self
@@ -2794,7 +3107,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                         let stored_key = self
                             .builder
-                            .build_load(self.context.bool_type(), stored_key_ptr, "stored_key_bool")
+                            .build_load(self.context.i32_type(), stored_key_ptr, "stored_key_bool")
                             .unwrap()
                             .into_int_value();
 
@@ -2808,11 +3121,27 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                             .unwrap();
 
+                        let match_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_match_found_bool");
                         let increment_block = self
                             .context
                             .append_basic_block(current_fn, "map_increment_bool");
                         self.builder
-                            .build_conditional_branch(keys_match, continue_block, increment_block)
+                            .build_conditional_branch(
+                                keys_match,
+                                match_found_block,
+                                increment_block,
+                            )
+                            .unwrap();
+
+                        // Match found block: store current_index before continuing
+                        self.builder.position_at_end(match_found_block);
+                        self.builder
+                            .build_store(index_alloca, current_index)
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
                             .unwrap();
 
                         self.builder.position_at_end(increment_block);
@@ -2938,11 +3267,27 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                             .unwrap();
 
+                        let match_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "map_match_found_int");
                         let increment_block = self
                             .context
                             .append_basic_block(current_fn, "map_increment_int");
                         self.builder
-                            .build_conditional_branch(keys_match, continue_block, increment_block)
+                            .build_conditional_branch(
+                                keys_match,
+                                match_found_block,
+                                increment_block,
+                            )
+                            .unwrap();
+
+                        // Match found block: store current_index before continuing
+                        self.builder.position_at_end(match_found_block);
+                        self.builder
+                            .build_store(index_alloca, current_index)
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
                             .unwrap();
 
                         self.builder.position_at_end(increment_block);
@@ -5220,6 +5565,14 @@ impl<'ctx> CodeGen<'ctx> {
                 self.variable_types
                     .insert(name.clone(), format!("Struct({})", struct_name));
 
+                // CRITICAL: Store to symbol if this is a cross-block variable
+                // This ensures the value is accessible from other blocks via load from symbol
+                if self.cross_block_vars.contains(name) {
+                    if let Some(sym) = self.symbols.get(name) {
+                        self.builder.build_store(sym.ptr, typed_ptr).unwrap();
+                    }
+                }
+
                 // Store instance metadata mapping this variable to its struct type
                 self.variable_types
                     .insert(format!("{}_struct_type", name), struct_name.clone());
@@ -5327,7 +5680,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 match type_name.as_str() {
                                     "Int" => self.context.i32_type().into(),
                                     "Float" => self.context.f64_type().into(),
-                                    "Bool" => self.context.bool_type().into(),
+                                    // Use i32 for Bool to match internal representation (all Bools are stored as i32)
+                                    "Bool" => self.context.i32_type().into(),
                                     "Str" | "String" => self
                                         .context
                                         .ptr_type(inkwell::AddressSpace::default())
@@ -5412,6 +5766,14 @@ impl<'ctx> CodeGen<'ctx> {
                         .insert(name.clone(), field_type_name.clone());
                 }
 
+                // CRITICAL: Store to symbol if this is a cross-block variable
+                // This ensures the value is accessible from other blocks via load from symbol
+                if self.cross_block_vars.contains(name) {
+                    if let Some(sym) = self.symbols.get(name) {
+                        self.builder.build_store(sym.ptr, field_val).unwrap();
+                    }
+                }
+
                 Some(field_val)
             }
 
@@ -5482,6 +5844,12 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_load(enum_type, enum_alloca, &format!("{}_load", name))
                     .unwrap();
 
+                // For cross-block variables (those with a pre-allocated symbol), store to the symbol
+                // This ensures the value is accessible from other blocks via load from symbol
+                if let Some(sym) = self.symbols.get(name) {
+                    self.builder.build_store(sym.ptr, enum_val).unwrap();
+                }
+
                 self.temp_values.insert(name.clone(), enum_val);
                 self.variable_types
                     .insert(name.clone(), format!("Enum({})", enum_name));
@@ -5493,7 +5861,22 @@ impl<'ctx> CodeGen<'ctx> {
             MirInstr::EnumGetTag { name, enum_value } => {
                 // Enum is represented as { i32 tag, ptr payload }
                 // Extract the tag field (index 0)
-                let enum_val = self.resolve_value(enum_value);
+                // For enum values, prefer loading from symbols to avoid conflict with payload bindings
+                // that may have overwritten temp_values with the same name
+                let enum_val = if self.symbols.contains_key(enum_value) {
+                    // Load from symbol - this gives us the actual enum struct
+                    let sym = self.symbols.get(enum_value).unwrap();
+                    // Enum type is { i32, ptr }
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let enum_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                    self.builder
+                        .build_load(enum_type, sym.ptr, enum_value)
+                        .expect("Failed to load enum from symbol")
+                } else {
+                    self.resolve_value(enum_value)
+                };
 
                 if let BasicValueEnum::StructValue(struct_val) = enum_val {
                     // Extract the tag field from the struct
@@ -5501,6 +5884,12 @@ impl<'ctx> CodeGen<'ctx> {
                         .builder
                         .build_extract_value(struct_val, 0, &format!("{}_tag", name))
                         .unwrap();
+
+                    // For cross-block variables (those with a pre-allocated symbol), store to the symbol
+                    // This ensures the value is accessible from other blocks via load from symbol
+                    if let Some(sym) = self.symbols.get(name) {
+                        self.builder.build_store(sym.ptr, tag_val).unwrap();
+                    }
 
                     self.temp_values.insert(name.clone(), tag_val);
                     self.variable_types.insert(name.clone(), "Int".to_string());
@@ -5522,7 +5911,22 @@ impl<'ctx> CodeGen<'ctx> {
             } => {
                 // Enum is represented as { i32 tag, ptr payload }
                 // Extract the payload field (index 1)
-                let enum_val = self.resolve_value(enum_value);
+                // For enum values, prefer loading from symbols to avoid conflict with payload bindings
+                // that may have overwritten temp_values with the same name
+                let enum_val = if self.symbols.contains_key(enum_value) {
+                    // Load from symbol - this gives us the actual enum struct
+                    let sym = self.symbols.get(enum_value).unwrap();
+                    // Enum type is { i32, ptr }
+                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let enum_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                    self.builder
+                        .build_load(enum_type, sym.ptr, enum_value)
+                        .expect("Failed to load enum from symbol")
+                } else {
+                    self.resolve_value(enum_value)
+                };
 
                 if let BasicValueEnum::StructValue(struct_val) = enum_val {
                     // Extract the payload pointer field from the struct
@@ -5572,6 +5976,36 @@ impl<'ctx> CodeGen<'ctx> {
                                         "Map".to_string(),
                                     )
                                 }
+                                crate::parser::ast::TypeNode::Tuple(types) => {
+                                    // Tuple is a pointer to a struct containing the elements
+                                    (
+                                        self.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into(),
+                                        format!("Tuple({})", types.len()),
+                                    )
+                                }
+                                crate::parser::ast::TypeNode::TypeRef(ref_name) => {
+                                    // TypeRef to an enum - enums are represented as { i32, ptr } structs
+                                    // Store as pointer so we can access the full struct later
+                                    let ptr_type =
+                                        self.context.ptr_type(inkwell::AddressSpace::default());
+                                    let enum_type = self.context.struct_type(
+                                        &[self.context.i32_type().into(), ptr_type.into()],
+                                        false,
+                                    );
+                                    (enum_type.into(), format!("Enum({})", ref_name))
+                                }
+                                crate::parser::ast::TypeNode::Enum(ref enum_name, _) => {
+                                    // Enum type - represented as { i32 tag, ptr payload } struct
+                                    let ptr_type =
+                                        self.context.ptr_type(inkwell::AddressSpace::default());
+                                    let enum_type = self.context.struct_type(
+                                        &[self.context.i32_type().into(), ptr_type.into()],
+                                        false,
+                                    );
+                                    (enum_type.into(), format!("Enum({})", enum_name))
+                                }
                                 _ => {
                                     // Default to i32 for unknown types
                                     (self.context.i32_type().into(), "Int".to_string())
@@ -5582,14 +6016,22 @@ impl<'ctx> CodeGen<'ctx> {
                             (self.context.i32_type().into(), "Int".to_string())
                         };
 
-                    // For pointer types (String, Array, Map), the payload_ptr IS the value
+                    // For pointer types (String, Array, Map, Tuple) and enum types, load the full value
                     // For value types (Int, Float, Bool), we need to load from the pointer
                     let payload_val = match payload_type {
                         Some(crate::parser::ast::TypeNode::String)
                         | Some(crate::parser::ast::TypeNode::Array(_))
-                        | Some(crate::parser::ast::TypeNode::Map(_, _)) => {
+                        | Some(crate::parser::ast::TypeNode::Map(_, _))
+                        | Some(crate::parser::ast::TypeNode::Tuple(_)) => {
                             // Pointer types - just use the pointer directly
                             BasicValueEnum::PointerValue(payload_ptr)
+                        }
+                        Some(crate::parser::ast::TypeNode::TypeRef(_))
+                        | Some(crate::parser::ast::TypeNode::Enum(_, _)) => {
+                            // Enum types - load the full struct from the pointer
+                            self.builder
+                                .build_load(load_type, payload_ptr, &format!("{}_payload", name))
+                                .unwrap()
                         }
                         _ => {
                             // Value types - load from the pointer
@@ -5599,8 +6041,110 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     };
 
+                    // For cross-block variables (those with a pre-allocated symbol), store to the symbol
+                    // This ensures the value is accessible from other blocks via load from symbol
+                    if let Some(sym) = self.symbols.get(name) {
+                        // Convert bool (i1) to i32 if needed for symbol storage
+                        let store_val = if payload_val.is_int_value() {
+                            let int_val = payload_val.into_int_value();
+                            if int_val.get_type().get_bit_width() == 1 {
+                                // Bool (i1) needs to be extended to i32 for symbol storage
+                                self.builder
+                                    .build_int_z_extend(
+                                        int_val,
+                                        self.context.i32_type(),
+                                        "bool_ext",
+                                    )
+                                    .unwrap()
+                                    .into()
+                            } else {
+                                payload_val
+                            }
+                        } else {
+                            payload_val
+                        };
+                        self.builder.build_store(sym.ptr, store_val).unwrap();
+                    }
+
                     self.temp_values.insert(name.clone(), payload_val);
-                    self.variable_types.insert(name.clone(), type_str);
+                    self.variable_types.insert(name.clone(), type_str.clone());
+
+                    // Register array/map metadata for extracted payloads so print works correctly
+                    if let Some(crate::parser::ast::TypeNode::Array(elem_type)) = payload_type {
+                        self.heap_arrays.insert(name.clone());
+                        // Create array metadata with element type
+                        let elem_type_str = match elem_type.as_ref() {
+                            crate::parser::ast::TypeNode::Int => "Int",
+                            crate::parser::ast::TypeNode::Float => "Float",
+                            crate::parser::ast::TypeNode::Bool => "Bool",
+                            crate::parser::ast::TypeNode::String => "Str",
+                            _ => "Int",
+                        };
+                        self.array_metadata.insert(
+                            name.clone(),
+                            crate::codegen::ArrayMetadata {
+                                length: 0, // Runtime length, read from header
+                                element_type: elem_type_str.to_string(),
+                                contains_strings: elem_type_str == "Str",
+                            },
+                        );
+                    }
+
+                    if let Some(crate::parser::ast::TypeNode::Map(key_type, val_type)) =
+                        payload_type
+                    {
+                        self.heap_maps.insert(name.clone());
+                        // Create map metadata with key/value types
+                        let key_type_str = match key_type.as_ref() {
+                            crate::parser::ast::TypeNode::Int => "Int",
+                            crate::parser::ast::TypeNode::Float => "Float",
+                            crate::parser::ast::TypeNode::Bool => "Bool",
+                            crate::parser::ast::TypeNode::String => "Str",
+                            _ => "Str",
+                        };
+                        let val_type_str = match val_type.as_ref() {
+                            crate::parser::ast::TypeNode::Int => "Int",
+                            crate::parser::ast::TypeNode::Float => "Float",
+                            crate::parser::ast::TypeNode::Bool => "Bool",
+                            crate::parser::ast::TypeNode::String => "Str",
+                            _ => "Int",
+                        };
+                        self.map_metadata.insert(
+                            name.clone(),
+                            crate::codegen::MapMetadata {
+                                length: 0, // Runtime length, read from header
+                                key_type: key_type_str.to_string(),
+                                value_type: val_type_str.to_string(),
+                                key_is_string: key_type_str == "Str",
+                                value_is_string: val_type_str == "Str",
+                                key_needs_rc: false,
+                                value_needs_rc: false,
+                            },
+                        );
+                    }
+
+                    // Store tuple type info for later TupleGet operations
+                    if let Some(crate::parser::ast::TypeNode::Tuple(types)) = payload_type {
+                        // Convert TypeNode to LLVM types
+                        let llvm_types: Vec<BasicTypeEnum> = types
+                            .iter()
+                            .map(|t| match t {
+                                crate::parser::ast::TypeNode::Int => self.context.i32_type().into(),
+                                crate::parser::ast::TypeNode::Float => {
+                                    self.context.f64_type().into()
+                                }
+                                crate::parser::ast::TypeNode::Bool => {
+                                    self.context.bool_type().into()
+                                }
+                                crate::parser::ast::TypeNode::String => self
+                                    .context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                                _ => self.context.i32_type().into(),
+                            })
+                            .collect();
+                        self.tuple_field_types.insert(name.clone(), llvm_types);
+                    }
 
                     Some(payload_val)
                 } else {

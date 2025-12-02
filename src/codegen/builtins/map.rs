@@ -509,13 +509,8 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Now search through the copied data to see if key exists
                     // If it exists, update in place. If not, append at the end.
-                    let search_block = self.context.append_basic_block(current_fn, "init_search");
-                    let check_key_block = self
-                        .context
-                        .append_basic_block(current_fn, "init_check_key");
-                    let update_existing_block = self
-                        .context
-                        .append_basic_block(current_fn, "init_update_existing");
+                    // TEMPORARY FIX: Skip update-in-place optimization - always append
+                    // This avoids the heap header corruption issue
                     let append_new_block = self
                         .context
                         .append_basic_block(current_fn, "init_append_new");
@@ -523,8 +518,6 @@ impl<'ctx> CodeGen<'ctx> {
                         .context
                         .append_basic_block(current_fn, "after_init_search");
 
-                    // TEMPORARY FIX: Skip update-in-place optimization - always append
-                    // This avoids the heap header corruption issue
                     self.builder
                         .build_unconditional_branch(append_new_block)
                         .unwrap();
@@ -2110,7 +2103,19 @@ impl<'ctx> CodeGen<'ctx> {
             "keys" => {
                 // Extract all keys from the map into a new array
                 if let Some(metadata) = self.map_metadata.get(object).cloned() {
-                    let map_ptr = self.resolve_value(object).into_pointer_value();
+                    // Load from symbol if it exists (to get current value after set() calls)
+                    let map_ptr = if let Some(sym) = self.symbols.get(object) {
+                        self.builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                sym.ptr,
+                                "map_ptr_keys",
+                            )
+                            .unwrap()
+                            .into_pointer_value()
+                    } else {
+                        self.resolve_value(object).into_pointer_value()
+                    };
                     let is_heap_allocated = self.heap_maps.contains(object);
 
                     // Determine key type
@@ -2135,26 +2140,17 @@ impl<'ctx> CodeGen<'ctx> {
                     // Read runtime length from heap header if heap-allocated
                     let runtime_length = if is_heap_allocated {
                         // Compute heap_ptr from data pointer by subtracting 8 bytes
-                        let data_ptr_int = self
-                            .builder
-                            .build_ptr_to_int(map_ptr, self.context.i64_type(), "map_ptr_int_keys")
-                            .unwrap();
-                        let heap_ptr_int = self
-                            .builder
-                            .build_int_sub(
-                                data_ptr_int,
-                                self.context.i64_type().const_int(8, false),
-                                "heap_ptr_int_keys",
-                            )
-                            .unwrap();
-                        let heap_ptr_for_len = self
-                            .builder
-                            .build_int_to_ptr(
-                                heap_ptr_int,
-                                self.context.ptr_type(inkwell::AddressSpace::default()),
-                                "heap_ptr_for_len_keys",
-                            )
-                            .unwrap();
+                        // Use GEP with negative offset instead of ptrtoint/inttoptr
+                        let heap_ptr_for_len = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    map_ptr,
+                                    &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                                    "heap_ptr_for_len_keys",
+                                )
+                                .unwrap()
+                        };
 
                         // Read length from offset 4
                         let len_field = unsafe {
@@ -2167,16 +2163,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 )
                                 .unwrap()
                         };
-                        let len_ptr = self
-                            .builder
-                            .build_pointer_cast(
-                                len_field,
-                                self.context.ptr_type(inkwell::AddressSpace::default()),
-                                "len_ptr_keys",
-                            )
-                            .unwrap();
                         self.builder
-                            .build_load(self.context.i32_type(), len_ptr, "runtime_len_keys")
+                            .build_load(self.context.i32_type(), len_field, "runtime_len_keys")
                             .unwrap()
                             .into_int_value()
                     } else {
@@ -2414,7 +2402,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     let non_empty_block_end = self.builder.get_insert_block().unwrap();
 
-                    // Merge block: PHI for result pointer
+                    // Merge block: PHI for result pointer and heap pointer
                     self.builder.position_at_end(merge_block);
                     let result_phi = self
                         .builder
@@ -2429,10 +2417,33 @@ impl<'ctx> CodeGen<'ctx> {
                     ]);
                     let result_ptr = result_phi.as_basic_value().into_pointer_value();
 
+                    // PHI for heap pointer (null for empty case, heap_ptr for non-empty)
+                    let heap_phi = self
+                        .builder
+                        .build_phi(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "keys_heap",
+                        )
+                        .unwrap();
+                    let null_heap_ptr = self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null();
+                    heap_phi.add_incoming(&[
+                        (&null_heap_ptr, empty_block_end),
+                        (&heap_ptr, non_empty_block_end),
+                    ]);
+                    let final_heap_ptr = heap_phi.as_basic_value().into_pointer_value();
+
                     // Store result
                     self.temp_values.insert(dest.to_string(), result_ptr.into());
                     self.heap_arrays.insert(dest.to_string());
-                    self.heap_pointers.insert(dest.to_string(), heap_ptr);
+                    self.heap_pointers.insert(dest.to_string(), final_heap_ptr);
+
+                    // CRITICAL: Store into symbol alloca if it exists, so print_array can load it
+                    if let Some(sym) = self.symbols.get(dest) {
+                        self.builder.build_store(sym.ptr, result_ptr).unwrap();
+                    }
 
                     // For array metadata, we use a placeholder length since actual length is runtime
                     // The print_array function will read from heap header
@@ -2458,7 +2469,19 @@ impl<'ctx> CodeGen<'ctx> {
             "values" => {
                 // Extract all values from the map into a new array
                 if let Some(metadata) = self.map_metadata.get(object).cloned() {
-                    let map_ptr = self.resolve_value(object).into_pointer_value();
+                    // Load from symbol if it exists (to get current value after set() calls)
+                    let map_ptr = if let Some(sym) = self.symbols.get(object) {
+                        self.builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                sym.ptr,
+                                "map_ptr_values",
+                            )
+                            .unwrap()
+                            .into_pointer_value()
+                    } else {
+                        self.resolve_value(object).into_pointer_value()
+                    };
                     let is_heap_allocated = self.heap_maps.contains(object);
 
                     // Determine types
@@ -2482,31 +2505,17 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Read runtime length from heap header if heap-allocated
                     let runtime_length = if is_heap_allocated {
-                        // Compute heap_ptr from data pointer by subtracting 8 bytes
-                        let data_ptr_int = self
-                            .builder
-                            .build_ptr_to_int(
-                                map_ptr,
-                                self.context.i64_type(),
-                                "map_ptr_int_values",
-                            )
-                            .unwrap();
-                        let heap_ptr_int = self
-                            .builder
-                            .build_int_sub(
-                                data_ptr_int,
-                                self.context.i64_type().const_int(8, false),
-                                "heap_ptr_int_values",
-                            )
-                            .unwrap();
-                        let heap_ptr_for_len = self
-                            .builder
-                            .build_int_to_ptr(
-                                heap_ptr_int,
-                                self.context.ptr_type(inkwell::AddressSpace::default()),
-                                "heap_ptr_for_len_values",
-                            )
-                            .unwrap();
+                        // Use GEP with negative offset instead of ptrtoint/inttoptr
+                        let heap_ptr_for_len = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    map_ptr,
+                                    &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                                    "heap_ptr_for_len_values",
+                                )
+                                .unwrap()
+                        };
 
                         // Read length from offset 4
                         let len_field = unsafe {
@@ -2519,16 +2528,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 )
                                 .unwrap()
                         };
-                        let len_ptr = self
-                            .builder
-                            .build_pointer_cast(
-                                len_field,
-                                self.context.ptr_type(inkwell::AddressSpace::default()),
-                                "len_ptr_values",
-                            )
-                            .unwrap();
                         self.builder
-                            .build_load(self.context.i32_type(), len_ptr, "runtime_len_values")
+                            .build_load(self.context.i32_type(), len_field, "runtime_len_values")
                             .unwrap()
                             .into_int_value()
                     } else {
@@ -2766,7 +2767,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     let non_empty_block_end = self.builder.get_insert_block().unwrap();
 
-                    // Merge block: PHI for result pointer
+                    // Merge block: PHI for result pointer and heap pointer
                     self.builder.position_at_end(merge_block);
                     let result_phi = self
                         .builder
@@ -2781,10 +2782,33 @@ impl<'ctx> CodeGen<'ctx> {
                     ]);
                     let result_ptr = result_phi.as_basic_value().into_pointer_value();
 
+                    // PHI for heap pointer (null for empty case, heap_ptr for non-empty)
+                    let heap_phi = self
+                        .builder
+                        .build_phi(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "values_heap",
+                        )
+                        .unwrap();
+                    let null_heap_ptr = self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null();
+                    heap_phi.add_incoming(&[
+                        (&null_heap_ptr, empty_block_end),
+                        (&heap_ptr, non_empty_block_end),
+                    ]);
+                    let final_heap_ptr = heap_phi.as_basic_value().into_pointer_value();
+
                     // Store result
                     self.temp_values.insert(dest.to_string(), result_ptr.into());
                     self.heap_arrays.insert(dest.to_string());
-                    self.heap_pointers.insert(dest.to_string(), heap_ptr);
+                    self.heap_pointers.insert(dest.to_string(), final_heap_ptr);
+
+                    // CRITICAL: Store into symbol alloca if it exists, so print_array can load it
+                    if let Some(sym) = self.symbols.get(dest) {
+                        self.builder.build_store(sym.ptr, result_ptr).unwrap();
+                    }
 
                     // For array metadata, we use a placeholder length since actual length is runtime
                     // The print_array function will read from heap header
@@ -2806,213 +2830,6 @@ impl<'ctx> CodeGen<'ctx> {
                 } else {
                     None
                 }
-            }
-            "containsKey" => {
-                // Same as has()
-                if let Some(metadata) = self.map_metadata.get(object) {
-                    if metadata.length == 0 {
-                        let result = self.context.i32_type().const_int(0, false);
-                        self.temp_values.insert(dest.to_string(), result.into());
-                        return Some(result.into());
-                    }
-
-                    let map_ptr = self.resolve_value(object).into_pointer_value();
-                    let key_val = self.resolve_value(&args[0]);
-
-                    let key_type: inkwell::types::BasicTypeEnum = if metadata.key_is_string {
-                        self.context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .into()
-                    } else {
-                        self.context.i32_type().into()
-                    };
-
-                    let val_type: inkwell::types::BasicTypeEnum = if metadata.value_is_string {
-                        self.context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .into()
-                    } else {
-                        self.context.i32_type().into()
-                    };
-
-                    let pair_type = self.context.struct_type(&[key_type, val_type], false);
-                    let map_type = pair_type.array_type(metadata.length as u32);
-
-                    let current_fn = self
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_parent()
-                        .unwrap();
-                    let loop_block = self
-                        .context
-                        .append_basic_block(current_fn, "containsKey_loop");
-                    let body_block = self
-                        .context
-                        .append_basic_block(current_fn, "containsKey_body");
-                    let found_block = self
-                        .context
-                        .append_basic_block(current_fn, "containsKey_found");
-                    let not_found_block = self
-                        .context
-                        .append_basic_block(current_fn, "containsKey_not_found");
-                    let after_block = self
-                        .context
-                        .append_basic_block(current_fn, "containsKey_after");
-
-                    let counter_ptr = self
-                        .builder
-                        .build_alloca(self.context.i32_type(), "counter")
-                        .unwrap();
-                    self.builder
-                        .build_store(counter_ptr, self.context.i32_type().const_int(0, false))
-                        .unwrap();
-
-                    self.builder.build_unconditional_branch(loop_block).unwrap();
-
-                    self.builder.position_at_end(loop_block);
-                    let counter = self
-                        .builder
-                        .build_load(self.context.i32_type(), counter_ptr, "counter")
-                        .unwrap()
-                        .into_int_value();
-                    let length = self
-                        .context
-                        .i32_type()
-                        .const_int(metadata.length as u64, false);
-                    let cmp = self
-                        .builder
-                        .build_int_compare(inkwell::IntPredicate::ULT, counter, length, "cmp")
-                        .unwrap();
-                    self.builder
-                        .build_conditional_branch(cmp, body_block, not_found_block)
-                        .unwrap();
-
-                    self.builder.position_at_end(body_block);
-                    let pair_ptr = unsafe {
-                        self.builder
-                            .build_gep(
-                                map_type,
-                                map_ptr,
-                                &[self.context.i32_type().const_zero(), counter],
-                                "pair_ptr",
-                            )
-                            .unwrap()
-                    };
-                    let key_ptr = self
-                        .builder
-                        .build_struct_gep(pair_type, pair_ptr, 0, "key_ptr")
-                        .unwrap();
-                    let stored_key = self
-                        .builder
-                        .build_load(key_type, key_ptr, "stored_key")
-                        .unwrap();
-
-                    let keys_equal = if stored_key.is_pointer_value() && key_val.is_pointer_value()
-                    {
-                        // For pointer keys (strings), use strcmp
-                        let stored_ptr = stored_key.into_pointer_value();
-                        let key_ptr_val = key_val.into_pointer_value();
-
-                        // Get or declare strcmp
-                        let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
-                            let fn_type = self.context.i32_type().fn_type(
-                                &[
-                                    self.context
-                                        .ptr_type(inkwell::AddressSpace::default())
-                                        .into(),
-                                    self.context
-                                        .ptr_type(inkwell::AddressSpace::default())
-                                        .into(),
-                                ],
-                                false,
-                            );
-                            self.module.add_function("strcmp", fn_type, None)
-                        });
-
-                        let cmp_result = self
-                            .builder
-                            .build_call(
-                                strcmp_fn,
-                                &[stored_ptr.into(), key_ptr_val.into()],
-                                "strcmp_result",
-                            )
-                            .unwrap()
-                            .try_as_basic_value()
-                            .left()
-                            .unwrap()
-                            .into_int_value();
-
-                        self.builder
-                            .build_int_compare(
-                                inkwell::IntPredicate::EQ,
-                                cmp_result,
-                                self.context.i32_type().const_int(0, false),
-                                "keys_equal",
-                            )
-                            .unwrap()
-                    } else {
-                        // For integer keys, direct comparison
-                        let stored_int = stored_key.into_int_value();
-                        let key_int = key_val.into_int_value();
-                        self.builder
-                            .build_int_compare(
-                                inkwell::IntPredicate::EQ,
-                                stored_int,
-                                key_int,
-                                "keys_equal",
-                            )
-                            .unwrap()
-                    };
-
-                    let continue_block = self
-                        .context
-                        .append_basic_block(current_fn, "containsKey_continue");
-                    self.builder
-                        .build_conditional_branch(keys_equal, found_block, continue_block)
-                        .unwrap();
-
-                    self.builder.position_at_end(continue_block);
-                    let next_counter = self
-                        .builder
-                        .build_int_add(counter, self.context.i32_type().const_int(1, false), "next")
-                        .unwrap();
-                    self.builder.build_store(counter_ptr, next_counter).unwrap();
-                    self.builder.build_unconditional_branch(loop_block).unwrap();
-
-                    self.builder.position_at_end(found_block);
-                    let true_val = self.context.i32_type().const_int(1, false);
-                    self.builder
-                        .build_unconditional_branch(after_block)
-                        .unwrap();
-
-                    self.builder.position_at_end(not_found_block);
-                    let false_val = self.context.i32_type().const_int(0, false);
-                    self.builder
-                        .build_unconditional_branch(after_block)
-                        .unwrap();
-
-                    self.builder.position_at_end(after_block);
-                    let phi = self
-                        .builder
-                        .build_phi(self.context.i32_type(), "containsKey_result")
-                        .unwrap();
-                    phi.add_incoming(&[(&true_val, found_block), (&false_val, not_found_block)]);
-                    let result = phi.as_basic_value();
-
-                    self.temp_values.insert(dest.to_string(), result);
-                    Some(result)
-                } else {
-                    let result = self.context.i32_type().const_int(0, false);
-                    self.temp_values.insert(dest.to_string(), result.into());
-                    Some(result.into())
-                }
-            }
-            "containsValue" => {
-                // For now, return false - placeholder
-                let result = self.context.i32_type().const_int(0, false);
-                self.temp_values.insert(dest.to_string(), result.into());
-                Some(result.into())
             }
             _ => None,
         }

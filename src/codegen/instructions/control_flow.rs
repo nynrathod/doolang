@@ -47,9 +47,64 @@ impl<'ctx> CodeGen<'ctx> {
             actual_func_name, func
         ));
 
+        // Check if we have parameter type information for this function
+        let param_types = self
+            .function_param_types
+            .get(&actual_func_name)
+            .cloned()
+            .or_else(|| self.function_param_types.get(func).cloned());
+
+        // Process arguments, converting JSON.parse results to expected types
         let arg_values: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = args
             .iter()
-            .map(|arg| self.resolve_value(arg).into())
+            .enumerate()
+            .map(|(i, arg)| {
+                // Check if this argument is a JSON.parse result (marked as heap_string)
+                // and we know the expected parameter type
+                let is_heap_string = self.heap_strings.contains(arg);
+
+                // DEBUG: Print conversion info
+                if std::env::var("DOO_DEBUG_JSON").is_ok() {
+                    eprintln!(
+                        "[DEBUG] Call arg[{}]: '{}', is_heap_string={}, param_types={:?}",
+                        i, arg, is_heap_string, param_types
+                    );
+                }
+
+                if is_heap_string {
+                    if let Some(ref ptypes) = param_types {
+                        if i < ptypes.len() {
+                            let expected_type = &ptypes[i];
+
+                            if std::env::var("DOO_DEBUG_JSON").is_ok() {
+                                eprintln!("[DEBUG] Converting JSON to type: {}", expected_type);
+                            }
+
+                            // Get the JSON string pointer
+                            let json_str_val = self.resolve_value(arg);
+                            if json_str_val.is_pointer_value() {
+                                let json_str_ptr = json_str_val.into_pointer_value();
+                                // Convert JSON string to the expected type
+                                if let Some(converted) =
+                                    self.convert_json_string_to_type(json_str_ptr, expected_type)
+                                {
+                                    if std::env::var("DOO_DEBUG_JSON").is_ok() {
+                                        eprintln!("[DEBUG] Conversion succeeded");
+                                    }
+                                    return converted.into();
+                                } else if std::env::var("DOO_DEBUG_JSON").is_ok() {
+                                    eprintln!(
+                                        "[DEBUG] Conversion returned None for type: {}",
+                                        expected_type
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                // Otherwise, use the value as-is
+                self.resolve_value(arg).into()
+            })
             .collect();
 
         let call_result = self
@@ -447,6 +502,46 @@ impl<'ctx> CodeGen<'ctx> {
                             // Also track in variable_types so temp variables can resolve back to struct type
                             self.variable_types
                                 .insert(dest_name.clone(), struct_name.to_string());
+                        } else {
+                            // Check if this is an enum type - handle both "Enum(Name)" and bare "Name" formats
+                            let enum_name_opt = if return_type_str.starts_with("Enum(")
+                                && return_type_str.ends_with(")")
+                            {
+                                // Enum(Name) format - extract the name
+                                Some(&return_type_str[5..return_type_str.len() - 1])
+                            } else if !return_type_str.contains('(')
+                                && !return_type_str.contains(',')
+                                && return_type_str != "Int"
+                                && return_type_str != "Float"
+                                && return_type_str != "Bool"
+                                && return_type_str != "Str"
+                                && return_type_str != "Void"
+                                && self.enum_table.contains_key(return_type_str)
+                            {
+                                // Bare enum name format - use as is if it's in enum_table
+                                Some(return_type_str.as_str())
+                            } else {
+                                None
+                            };
+
+                            if let Some(enum_name) = enum_name_opt {
+                                // Track enum type in variable_types so printing works correctly
+                                let normalized_type = format!("Enum({})", enum_name);
+                                self.variable_types
+                                    .insert(dest_name.clone(), normalized_type.clone());
+                                // Also store without % prefix if dest has it
+                                if dest_name.starts_with('%') {
+                                    self.variable_types.insert(
+                                        dest_name.trim_start_matches('%').to_string(),
+                                        normalized_type.clone(),
+                                    );
+                                }
+                                // Also store with % prefix if dest doesn't have it
+                                if !dest_name.starts_with('%') {
+                                    self.variable_types
+                                        .insert(format!("%{}", dest_name), normalized_type);
+                                }
+                            }
                         }
                     }
                 }
@@ -631,6 +726,14 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.heap_strings.insert(dest_name.clone());
                             }
                         }
+                    }
+                }
+
+                // CRITICAL: Store result to symbol if this is a cross-block variable
+                // This ensures the value is accessible from other blocks via load from symbol
+                if self.cross_block_vars.contains(dest_name) {
+                    if let Some(sym) = self.symbols.get(dest_name) {
+                        self.builder.build_store(sym.ptr, result).unwrap();
                     }
                 }
 
@@ -1006,21 +1109,160 @@ impl<'ctx> CodeGen<'ctx> {
                             } else if self.enum_table.contains_key(field_type)
                                 || self.enum_variants.contains_key(field_type)
                             {
-                                // Enum field - print tag value (variant index)
-                                // For simple enums without payload, just print the tag
+                                // Enum field - print variant name (e.g., Status::Active)
                                 let tag_val = field_value.into_int_value();
-                                let format_str = "%d";
-                                let format_global = self
-                                    .builder
-                                    .build_global_string_ptr(format_str, "field_enum_fmt")
-                                    .unwrap();
-                                self.builder
-                                    .build_call(
-                                        printf_fn,
-                                        &[format_global.as_pointer_value().into(), tag_val.into()],
-                                        "print_field_enum",
-                                    )
-                                    .unwrap();
+
+                                // Look up enum variants to get the variant name
+                                if let Some(variants) = self.enum_table.get(field_type) {
+                                    let current_fn = self
+                                        .builder
+                                        .get_insert_block()
+                                        .unwrap()
+                                        .get_parent()
+                                        .unwrap();
+
+                                    // Create blocks for switch
+                                    let ptr_type =
+                                        self.context.ptr_type(inkwell::AddressSpace::default());
+                                    let variant_name_ptr = self
+                                        .builder
+                                        .build_alloca(ptr_type, "field_enum_variant_name_ptr")
+                                        .unwrap();
+
+                                    let default_block = self
+                                        .context
+                                        .append_basic_block(current_fn, "field_enum_default");
+                                    let merge_block = self
+                                        .context
+                                        .append_basic_block(current_fn, "field_enum_merge");
+
+                                    // Build cases from enum variants
+                                    let mut sorted_variants: Vec<_> = variants.iter().collect();
+                                    sorted_variants.sort_by_key(|(name, _)| *name);
+
+                                    let cases: Vec<(
+                                        u32,
+                                        inkwell::basic_block::BasicBlock,
+                                        String,
+                                    )> = sorted_variants
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(idx, (name, _))| {
+                                            let block = self.context.append_basic_block(
+                                                current_fn,
+                                                &format!("field_enum_case_{}", name),
+                                            );
+                                            (idx as u32, block, (*name).clone())
+                                        })
+                                        .collect();
+
+                                    // Build switch instruction
+                                    self.builder
+                                        .build_switch(
+                                            tag_val,
+                                            default_block,
+                                            &cases
+                                                .iter()
+                                                .map(|(tag_val, block, _)| {
+                                                    (
+                                                        self.context
+                                                            .i32_type()
+                                                            .const_int(*tag_val as u64, false),
+                                                        *block,
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>(),
+                                        )
+                                        .unwrap();
+
+                                    // Fill in case blocks
+                                    for (_tag_val, case_block, variant_name) in &cases {
+                                        self.builder.position_at_end(*case_block);
+                                        let variant_str = self
+                                            .builder
+                                            .build_global_string_ptr(
+                                                variant_name,
+                                                "field_variant_str",
+                                            )
+                                            .unwrap();
+                                        self.builder
+                                            .build_store(
+                                                variant_name_ptr,
+                                                variant_str.as_pointer_value(),
+                                            )
+                                            .unwrap();
+                                        self.builder
+                                            .build_unconditional_branch(merge_block)
+                                            .unwrap();
+                                    }
+
+                                    // Default block
+                                    self.builder.position_at_end(default_block);
+                                    let unknown_str = self
+                                        .builder
+                                        .build_global_string_ptr("Unknown", "field_unknown_str")
+                                        .unwrap();
+                                    self.builder
+                                        .build_store(
+                                            variant_name_ptr,
+                                            unknown_str.as_pointer_value(),
+                                        )
+                                        .unwrap();
+                                    self.builder
+                                        .build_unconditional_branch(merge_block)
+                                        .unwrap();
+
+                                    // Continue in merge block
+                                    self.builder.position_at_end(merge_block);
+                                    let variant_name_val = self
+                                        .builder
+                                        .build_load(
+                                            ptr_type,
+                                            variant_name_ptr,
+                                            "field_variant_name",
+                                        )
+                                        .unwrap();
+
+                                    // Print EnumName::VariantName
+                                    let format_str = "%s::%s";
+                                    let format_global = self
+                                        .builder
+                                        .build_global_string_ptr(format_str, "field_enum_fmt")
+                                        .unwrap();
+                                    let enum_name_global = self
+                                        .builder
+                                        .build_global_string_ptr(field_type, "field_enum_name")
+                                        .unwrap();
+
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[
+                                                format_global.as_pointer_value().into(),
+                                                enum_name_global.as_pointer_value().into(),
+                                                variant_name_val.into_pointer_value().into(),
+                                            ],
+                                            "print_field_enum",
+                                        )
+                                        .unwrap();
+                                } else {
+                                    // Fallback: print numeric tag if enum not found
+                                    let format_str = "%d";
+                                    let format_global = self
+                                        .builder
+                                        .build_global_string_ptr(format_str, "field_enum_tag_fmt")
+                                        .unwrap();
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[
+                                                format_global.as_pointer_value().into(),
+                                                tag_val.into(),
+                                            ],
+                                            "print_field_enum_tag",
+                                        )
+                                        .unwrap();
+                                }
                             } else {
                                 // Fallback for truly unknown types - print as integer
                                 let format_str = "%d";
@@ -1133,7 +1375,8 @@ impl<'ctx> CodeGen<'ctx> {
                         .into_int_value();
 
                     // Emit runtime switch to select variant name based on tag
-                    if let Some(variants) = self.enum_table.get(enum_info) {
+                    // Use enum_variant_order for correct declaration order, fallback to enum_table
+                    if let Some(variants) = self.enum_variant_order.get(enum_info) {
                         // Create a pointer to hold the variant name string
                         let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
                         let variant_name_ptr = self
@@ -1151,7 +1394,8 @@ impl<'ctx> CodeGen<'ctx> {
                             .append_basic_block(current_fn, "enum_print_merge");
                         let mut cases = Vec::new();
 
-                        for (tag_idx, (variant_name, _)) in variants.iter().enumerate() {
+                        for (tag_idx, (variant_name, _payload_type)) in variants.iter().enumerate()
+                        {
                             let case_block = self
                                 .context
                                 .append_basic_block(current_fn, &format!("enum_case_{}", tag_idx));
@@ -1303,7 +1547,8 @@ impl<'ctx> CodeGen<'ctx> {
                             .append_basic_block(current_fn, "payload_print_merge");
                         let mut payload_cases = Vec::new();
 
-                        for (tag_idx, (variant_name, payload_type)) in variants.iter().enumerate() {
+                        for (tag_idx, (_variant_name, payload_type)) in variants.iter().enumerate()
+                        {
                             if payload_type.is_some() {
                                 let case_block = self.context.append_basic_block(
                                     current_fn,
@@ -1822,7 +2067,8 @@ impl<'ctx> CodeGen<'ctx> {
                     let int_val = bool_val.into_int_value();
 
                     // Check if value is 0 (false) or non-zero (true)
-                    let zero = self.context.i32_type().const_int(0, false);
+                    // Use the same type as int_val to avoid type mismatch (i1 vs i32)
+                    let zero = int_val.get_type().const_int(0, false);
                     let is_true = self
                         .builder
                         .build_int_compare(inkwell::IntPredicate::NE, int_val, zero, "is_true")

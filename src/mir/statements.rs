@@ -438,20 +438,20 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             fields,
             is_public,
         } => {
-            // Create a placeholder instance showing the structure.
-            let tmp = builder.next_tmp();
-            let field_vals: Vec<(String, String)> = fields
+            // Struct declarations are type definitions only.
+            // Extract field names and types for the StructDecl instruction.
+            let field_names: Vec<String> = fields.iter().map(|field| field.name.clone()).collect();
+
+            let field_types: Vec<String> = fields
                 .iter()
-                .map(|field| {
-                    let val_tmp = builder.next_tmp();
-                    (field.name.clone(), val_tmp)
-                })
+                .map(|field| field.field_type.format_type_string())
                 .collect();
 
-            block.instrs.push(MirInstr::StructInit {
-                name: tmp,
+            // Emit StructDecl (type definition), not StructInit (instance creation)
+            block.instrs.push(MirInstr::StructDecl {
                 struct_name: name.clone(),
-                fields: field_vals,
+                field_names,
+                field_types,
             });
         }
 
@@ -504,12 +504,18 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
             builder.exit_scope(&mut then_mir_block); // DecRefs inserted here
 
+            // Track if then block needs to jump to end (doesn't have its own terminator)
+            let then_needs_end_jump = then_mir_block.terminator.is_none();
+
             // Add jump to end if then block doesn't have a terminator
-            if then_mir_block.terminator.is_none() {
+            if then_needs_end_jump {
                 then_mir_block.terminator = Some(MirInstr::Jump {
                     label: end_label.clone(),
                 });
             }
+
+            // Track if else block needs to jump to end
+            let mut else_needs_end_jump = false;
 
             if let Some(else_stmt) = else_branch {
                 builder.enter_scope();
@@ -535,8 +541,11 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
                 builder.exit_scope(&mut else_mir_block);
 
+                // Track if else block needs to jump to end
+                else_needs_end_jump = else_mir_block.terminator.is_none();
+
                 // Only add jump to end if block doesn't already have a terminator (like Return)
-                if else_mir_block.terminator.is_none() {
+                if else_needs_end_jump {
                     else_mir_block.terminator = Some(MirInstr::Jump {
                         label: end_label.clone(),
                     });
@@ -554,6 +563,9 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     current_func.blocks.push(else_mir_block);
                 }
             } else {
+                // No else branch means we always need end_label (for fallthrough)
+                else_needs_end_jump = true;
+
                 if let Some(current_func) = builder.program.functions.last_mut() {
                     // Save the original block (with CondJump) before modifying it
                     let original_block = MirBlock {
@@ -566,11 +578,25 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 }
             }
 
+            // Check if the continuation block (end_label) is actually reachable
+            // If both branches have terminators (like Return), end_label is unreachable
+            let end_label_reachable = then_needs_end_jump || else_needs_end_jump;
+
             // Replace current block with the end_label continuation
             // This ensures subsequent statements in the same scope go into the continuation block
             block.label = end_label.clone();
             block.instrs.clear();
-            block.terminator = None;
+
+            // If end_label is not reachable (both branches return), mark this block as having
+            // an implicit return terminator to prevent "no terminator" errors
+            if !end_label_reachable {
+                // This block is unreachable - set a dummy return terminator
+                // This will be either unused (if there are no more statements) or
+                // overwritten by subsequent statements
+                block.terminator = Some(MirInstr::Return { values: vec![] });
+            } else {
+                block.terminator = None;
+            }
         }
 
         // Handle return statements.

@@ -1924,10 +1924,17 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             "join" => {
-                // Implement array.join(separator) - concatenates string array with separator
-                if let Some(_) = self.array_metadata.get(object).cloned() {
+                // Implement array.join(separator) - concatenates array elements with separator
+                // Supports both string arrays and non-string arrays (Int, Float, Bool)
+                if let Some(metadata) = self.array_metadata.get(object).cloned() {
                     let array_ptr = self.resolve_value(object).into_pointer_value();
                     let separator = self.resolve_value(&args[0]).into_pointer_value();
+
+                    // Check element type to determine if we need conversion
+                    let is_string_array =
+                        metadata.contains_strings || metadata.element_type == "Str";
+                    let is_float_array = metadata.element_type == "Float";
+                    let is_bool_array = metadata.element_type == "Bool";
 
                     // Read runtime length
                     let heap_ptr = unsafe {
@@ -1967,9 +1974,9 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
 
-                    // Allocate result string buffer (2048 bytes)
+                    // Allocate result string buffer (4096 bytes for safety with numeric conversions)
                     let malloc_fn = self.get_or_declare_malloc();
-                    let buffer_size = self.context.i64_type().const_int(2048, false);
+                    let buffer_size = self.context.i64_type().const_int(4096, false);
                     let result_heap = self
                         .builder
                         .build_call(malloc_fn, &[buffer_size.into()], "join_buffer")
@@ -2013,6 +2020,11 @@ impl<'ctx> CodeGen<'ctx> {
                         )
                         .unwrap();
 
+                    // Initialize result buffer with empty string (null terminator)
+                    self.builder
+                        .build_store(result_data_ptr, self.context.i8_type().const_zero())
+                        .unwrap();
+
                     // Get strcpy function
                     let strcpy_fn = self.module.get_function("strcpy").unwrap_or_else(|| {
                         let fn_type = self
@@ -2051,6 +2063,57 @@ impl<'ctx> CodeGen<'ctx> {
                         self.module.add_function("strcat", fn_type, None)
                     });
 
+                    // Get sprintf function for non-string arrays
+                    let sprintf_fn = self.module.get_function("sprintf").unwrap_or_else(|| {
+                        let fn_type = self.context.i32_type().fn_type(
+                            &[
+                                self.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                                self.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                            ],
+                            true, // variadic
+                        );
+                        self.module.add_function("sprintf", fn_type, None)
+                    });
+
+                    // Get strlen function
+                    let strlen_fn = self.get_or_declare_strlen();
+
+                    // Allocate temp buffer for numeric conversions (32 bytes is enough for any number)
+                    let temp_buffer = self
+                        .builder
+                        .build_alloca(self.context.i8_type().array_type(32), "join_temp_buffer")
+                        .unwrap();
+                    let temp_buffer_ptr = self
+                        .builder
+                        .build_pointer_cast(
+                            temp_buffer,
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "temp_buffer_ptr",
+                        )
+                        .unwrap();
+
+                    // Create format strings for sprintf
+                    let int_fmt = self
+                        .builder
+                        .build_global_string_ptr("%d", "int_fmt_join")
+                        .unwrap();
+                    let float_fmt = self
+                        .builder
+                        .build_global_string_ptr("%g", "float_fmt_join")
+                        .unwrap();
+                    let true_str = self
+                        .builder
+                        .build_global_string_ptr("true", "true_str_join")
+                        .unwrap();
+                    let false_str = self
+                        .builder
+                        .build_global_string_ptr("false", "false_str_join")
+                        .unwrap();
+
                     // Loop: copy first element, then append separator + element
                     let current_fn = self
                         .builder
@@ -2072,6 +2135,18 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     self.builder
                         .build_store(counter_ptr, self.context.i32_type().const_int(0, false))
+                        .unwrap();
+
+                    // Track current write position in result buffer
+                    let write_pos_ptr = self
+                        .builder
+                        .build_alloca(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "write_pos",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(write_pos_ptr, result_ptr_typed)
                         .unwrap();
 
                     self.builder.build_unconditional_branch(loop_block).unwrap();
@@ -2108,64 +2183,293 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // First element: just copy it
                     self.builder.position_at_end(first_elem_block);
-                    let elem_ptr = unsafe {
-                        self.builder
-                            .build_in_bounds_gep(
+
+                    if is_string_array {
+                        // String array: load pointer and strcpy
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_first",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(
                                 self.context.ptr_type(inkwell::AddressSpace::default()),
-                                array_ptr,
-                                &[counter],
-                                "elem_ptr_first",
+                                elem_ptr,
+                                "elem_first",
                             )
                             .unwrap()
-                    };
-                    let elem = self
-                        .builder
-                        .build_load(
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
-                            elem_ptr,
-                            "elem_first",
-                        )
-                        .unwrap()
-                        .into_pointer_value();
+                            .into_pointer_value();
 
-                    self.builder
-                        .build_call(strcpy_fn, &[result_ptr_typed.into(), elem.into()], "")
-                        .unwrap();
+                        self.builder
+                            .build_call(strcpy_fn, &[result_ptr_typed.into(), elem.into()], "")
+                            .unwrap();
+                    } else if is_float_array {
+                        // Float array: load f64, sprintf to temp, strcpy to result
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.f64_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_first_float",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.f64_type(), elem_ptr, "elem_first_float")
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                sprintf_fn,
+                                &[
+                                    temp_buffer_ptr.into(),
+                                    float_fmt.as_pointer_value().into(),
+                                    elem.into(),
+                                ],
+                                "",
+                            )
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                strcpy_fn,
+                                &[result_ptr_typed.into(), temp_buffer_ptr.into()],
+                                "",
+                            )
+                            .unwrap();
+                    } else if is_bool_array {
+                        // Bool array: load i32, select "true" or "false", strcpy to result
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_first_bool",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.i32_type(), elem_ptr, "elem_first_bool")
+                            .unwrap()
+                            .into_int_value();
+                        let is_true = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::NE,
+                                elem,
+                                self.context.i32_type().const_zero(),
+                                "is_true",
+                            )
+                            .unwrap();
+                        let bool_str = self
+                            .builder
+                            .build_select(
+                                is_true,
+                                true_str.as_pointer_value(),
+                                false_str.as_pointer_value(),
+                                "bool_str",
+                            )
+                            .unwrap();
+
+                        self.builder
+                            .build_call(strcpy_fn, &[result_ptr_typed.into(), bool_str.into()], "")
+                            .unwrap();
+                    } else {
+                        // Int array: load i32, sprintf to temp, strcpy to result
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_first_int",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.i32_type(), elem_ptr, "elem_first_int")
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                sprintf_fn,
+                                &[
+                                    temp_buffer_ptr.into(),
+                                    int_fmt.as_pointer_value().into(),
+                                    elem.into(),
+                                ],
+                                "",
+                            )
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                strcpy_fn,
+                                &[result_ptr_typed.into(), temp_buffer_ptr.into()],
+                                "",
+                            )
+                            .unwrap();
+                    }
 
                     let inc_block = self.context.append_basic_block(current_fn, "join_inc");
                     self.builder.build_unconditional_branch(inc_block).unwrap();
 
                     // Other elements: append separator + element
                     self.builder.position_at_end(other_elem_block);
-                    let elem_ptr2 = unsafe {
-                        self.builder
-                            .build_in_bounds_gep(
-                                self.context.ptr_type(inkwell::AddressSpace::default()),
-                                array_ptr,
-                                &[counter],
-                                "elem_ptr_other",
-                            )
-                            .unwrap()
-                    };
-                    let elem2 = self
-                        .builder
-                        .build_load(
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
-                            elem_ptr2,
-                            "elem_other",
-                        )
-                        .unwrap()
-                        .into_pointer_value();
 
-                    // Append separator
+                    // Append separator first
                     self.builder
                         .build_call(strcat_fn, &[result_ptr_typed.into(), separator.into()], "")
                         .unwrap();
 
-                    // Append element
-                    self.builder
-                        .build_call(strcat_fn, &[result_ptr_typed.into(), elem2.into()], "")
-                        .unwrap();
+                    if is_string_array {
+                        // String array: load pointer and strcat
+                        let elem_ptr2 = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_other",
+                                )
+                                .unwrap()
+                        };
+                        let elem2 = self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                elem_ptr2,
+                                "elem_other",
+                            )
+                            .unwrap()
+                            .into_pointer_value();
+
+                        self.builder
+                            .build_call(strcat_fn, &[result_ptr_typed.into(), elem2.into()], "")
+                            .unwrap();
+                    } else if is_float_array {
+                        // Float array: load f64, sprintf to temp, strcat to result
+                        let elem_ptr2 = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.f64_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_other_float",
+                                )
+                                .unwrap()
+                        };
+                        let elem2 = self
+                            .builder
+                            .build_load(self.context.f64_type(), elem_ptr2, "elem_other_float")
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                sprintf_fn,
+                                &[
+                                    temp_buffer_ptr.into(),
+                                    float_fmt.as_pointer_value().into(),
+                                    elem2.into(),
+                                ],
+                                "",
+                            )
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                strcat_fn,
+                                &[result_ptr_typed.into(), temp_buffer_ptr.into()],
+                                "",
+                            )
+                            .unwrap();
+                    } else if is_bool_array {
+                        // Bool array: load i32, select "true" or "false", strcat to result
+                        let elem_ptr2 = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_other_bool",
+                                )
+                                .unwrap()
+                        };
+                        let elem2 = self
+                            .builder
+                            .build_load(self.context.i32_type(), elem_ptr2, "elem_other_bool")
+                            .unwrap()
+                            .into_int_value();
+                        let is_true2 = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::NE,
+                                elem2,
+                                self.context.i32_type().const_zero(),
+                                "is_true2",
+                            )
+                            .unwrap();
+                        let bool_str2 = self
+                            .builder
+                            .build_select(
+                                is_true2,
+                                true_str.as_pointer_value(),
+                                false_str.as_pointer_value(),
+                                "bool_str2",
+                            )
+                            .unwrap();
+
+                        self.builder
+                            .build_call(strcat_fn, &[result_ptr_typed.into(), bool_str2.into()], "")
+                            .unwrap();
+                    } else {
+                        // Int array: load i32, sprintf to temp, strcat to result
+                        let elem_ptr2 = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_other_int",
+                                )
+                                .unwrap()
+                        };
+                        let elem2 = self
+                            .builder
+                            .build_load(self.context.i32_type(), elem_ptr2, "elem_other_int")
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                sprintf_fn,
+                                &[
+                                    temp_buffer_ptr.into(),
+                                    int_fmt.as_pointer_value().into(),
+                                    elem2.into(),
+                                ],
+                                "",
+                            )
+                            .unwrap();
+
+                        self.builder
+                            .build_call(
+                                strcat_fn,
+                                &[result_ptr_typed.into(), temp_buffer_ptr.into()],
+                                "",
+                            )
+                            .unwrap();
+                    }
 
                     self.builder.build_unconditional_branch(inc_block).unwrap();
 

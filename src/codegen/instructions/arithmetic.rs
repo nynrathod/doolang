@@ -641,16 +641,48 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap()
                             .into()
                     }
-                    "and" => self
-                        .builder
-                        .build_and(lhs_int, rhs_int, "and_tmp")
-                        .unwrap()
-                        .into(),
-                    "or" => self
-                        .builder
-                        .build_or(lhs_int, rhs_int, "or_tmp")
-                        .unwrap()
-                        .into(),
+                    "and" => {
+                        // Normalize operands to i32 if they're i1 (bool)
+                        let lhs_normalized = if lhs_int.get_type().get_bit_width() == 1 {
+                            self.builder
+                                .build_int_z_extend(lhs_int, self.context.i32_type(), "and_lhs_ext")
+                                .unwrap()
+                        } else {
+                            lhs_int
+                        };
+                        let rhs_normalized = if rhs_int.get_type().get_bit_width() == 1 {
+                            self.builder
+                                .build_int_z_extend(rhs_int, self.context.i32_type(), "and_rhs_ext")
+                                .unwrap()
+                        } else {
+                            rhs_int
+                        };
+                        self.builder
+                            .build_and(lhs_normalized, rhs_normalized, "and_tmp")
+                            .unwrap()
+                            .into()
+                    }
+                    "or" => {
+                        // Normalize operands to i32 if they're i1 (bool)
+                        let lhs_normalized = if lhs_int.get_type().get_bit_width() == 1 {
+                            self.builder
+                                .build_int_z_extend(lhs_int, self.context.i32_type(), "or_lhs_ext")
+                                .unwrap()
+                        } else {
+                            lhs_int
+                        };
+                        let rhs_normalized = if rhs_int.get_type().get_bit_width() == 1 {
+                            self.builder
+                                .build_int_z_extend(rhs_int, self.context.i32_type(), "or_rhs_ext")
+                                .unwrap()
+                        } else {
+                            rhs_int
+                        };
+                        self.builder
+                            .build_or(lhs_normalized, rhs_normalized, "or_tmp")
+                            .unwrap()
+                            .into()
+                    }
                     _ => {
                         debug_assert!(false, "Unsupported int binary op: {}", op);
                         self.builder

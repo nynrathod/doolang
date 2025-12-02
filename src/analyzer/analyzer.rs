@@ -642,70 +642,116 @@ impl SemanticAnalyzer {
                 iterable,
                 body,
             } => self.analyze_for_stmt(pattern, iterable.as_deref_mut(), body),
-            AstNode::MatchExpr { value, arms } => {
-                // Type check the match value if present
-                if let Some(v) = value {
+            AstNode::MatchExpr { values, arms } => {
+                // Type check the match values if present
+                for v in values {
                     self.infer_type(v)?;
                 }
 
                 // Type check all match arms
-                for arm in arms {
-                    // Type check pattern and analyze body with binding in scope
-                    match &arm.pattern {
+                // We need to handle each arm carefully to support nested matches with proper scope
+                for arm in arms.iter_mut() {
+                    // First, extract pattern info we need (cloning to avoid borrow conflicts)
+                    let pattern_info = match &arm.pattern {
                         crate::parser::ast::MatchPattern::Literal(expr) => {
                             self.infer_type(expr)?;
-                            // No binding, just analyze body
-                            self.infer_type(&arm.body)?;
+                            None // No bindings
                         }
                         crate::parser::ast::MatchPattern::Condition(expr) => {
                             self.infer_type(expr)?;
-                            // No binding, just analyze body
-                            self.infer_type(&arm.body)?;
+                            None // No bindings
                         }
                         crate::parser::ast::MatchPattern::Wildcard => {
-                            // No binding, just analyze body
-                            self.infer_type(&arm.body)?;
+                            None // No bindings
                         }
                         crate::parser::ast::MatchPattern::EnumVariant { enum_name, variant } => {
                             // Type check enum variant exists
-                            // TODO: Add enum validation when enum type system is enhanced
                             let _ = (enum_name, variant);
-                            // No binding, just analyze body
-                            self.infer_type(&arm.body)?;
+                            None // No bindings
                         }
                         crate::parser::ast::MatchPattern::EnumVariantWithPayload {
                             enum_name,
                             variant,
-                            binding,
+                            bindings,
                         } => {
-                            // Type check enum variant with payload
-                            // TODO: Add enum validation and binding type inference
-                            let _ = (enum_name, variant);
+                            // Look up the actual payload type from the enum definition
+                            let payload_type = self
+                                .enum_table
+                                .get(enum_name)
+                                .and_then(|variants| variants.get(variant))
+                                .and_then(|opt_type| opt_type.clone());
 
-                            // Create a new scope for this arm with the binding variable
-                            let parent_scope = self.symbol_table.clone();
+                            // Collect bindings with their types
+                            let mut binding_types: Vec<(String, TypeNode)> = Vec::new();
+                            if let Some(ref ptype) = payload_type {
+                                if let TypeNode::Tuple(types) = ptype {
+                                    // Tuple payload - multiple bindings
+                                    for (i, binding) in bindings.iter().enumerate() {
+                                        let elem_type =
+                                            types.get(i).cloned().unwrap_or(TypeNode::Int);
+                                        binding_types.push((binding.clone(), elem_type));
+                                    }
+                                } else {
+                                    // Single payload - one binding
+                                    if let Some(binding) = bindings.first() {
+                                        binding_types.push((binding.clone(), ptype.clone()));
+                                    }
+                                }
+                            } else {
+                                // Fallback to Int if type lookup fails
+                                for binding in bindings {
+                                    binding_types.push((binding.clone(), TypeNode::Int));
+                                }
+                            }
+                            Some(binding_types)
+                        }
+                        crate::parser::ast::MatchPattern::Tuple(patterns) => {
+                            // Type check each pattern in the tuple
+                            for pattern in patterns {
+                                match pattern {
+                                    crate::parser::ast::MatchPattern::Literal(expr) => {
+                                        self.infer_type(expr)?;
+                                    }
+                                    crate::parser::ast::MatchPattern::Wildcard => {
+                                        // Wildcard matches anything
+                                    }
+                                    _ => {
+                                        // Other nested patterns - just continue
+                                    }
+                                }
+                            }
+                            None // No bindings (tuple patterns don't create bindings)
+                        }
+                    };
 
-                            // Add the binding variable to the scope
-                            // For now, assume Int type for the payload
-                            // TODO: Infer actual payload type from enum variant
+                    // Now analyze the arm body with proper scope
+                    if let Some(binding_types) = pattern_info {
+                        // Create a new scope for this arm with the binding variables
+                        let parent_scope = self.symbol_table.clone();
+
+                        // Add the binding variables to the scope with proper types
+                        for (binding, ty) in binding_types {
                             self.symbol_table.insert(
-                                binding.clone(),
+                                binding,
                                 SymbolInfo {
-                                    ty: TypeNode::Int,
+                                    ty,
                                     mutable: false,
                                     is_parameter: false,
                                     is_ref_counted: false,
                                 },
                             );
-
-                            // Analyze the arm body with the binding in scope
-                            let result = self.infer_type(&arm.body);
-
-                            // Restore the parent scope
-                            self.symbol_table = parent_scope;
-
-                            result?;
                         }
+
+                        // Analyze the arm body - use analyze_node_inner to properly handle nested matches
+                        let result = self.analyze_node_inner(&mut *arm.body);
+
+                        // Restore the parent scope
+                        self.symbol_table = parent_scope;
+
+                        result?;
+                    } else {
+                        // No bindings - still use analyze_node_inner for nested match support
+                        self.analyze_node_inner(&mut *arm.body)?;
                     }
                 }
                 Ok(())
@@ -1350,6 +1396,17 @@ pub(crate) fn types_compatible(
 
     // Any type is compatible with everything (used for JSON.parse)
     if matches!(actual, TypeNode::Any) || matches!(expected, TypeNode::Any) {
+        return true;
+    }
+
+    // Error type is compatible with any error type for generic error handling
+    // This allows functions with ! Error to accept any specific error type
+    if matches!(expected, TypeNode::Error) {
+        // Error type accepts any type as error (Str, Struct, Enum, etc.)
+        return true;
+    }
+    if matches!(actual, TypeNode::Error) {
+        // If actual is Error, it can be used where any specific error is expected
         return true;
     }
 

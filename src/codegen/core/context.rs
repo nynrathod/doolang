@@ -104,6 +104,7 @@ pub struct CodeGen<'ctx> {
     pub cross_block_vars: std::collections::HashSet<String>, // Track variables used across multiple blocks (allocated once in entry block)
     pub current_function_params: Vec<(String, Option<String>)>, // Track current function parameters (name, type) for RC on return
     pub function_return_types: HashMap<String, String>, // Track function return types for proper RC handling on call results
+    pub function_param_types: HashMap<String, Vec<String>>, // Track function parameter types for JSON.parse conversion
     pub functions_returning_heap: std::collections::HashSet<String>, // Track functions that return heap-allocated values
 
     pub boolean_temps: std::collections::HashSet<String>, // Track temporary variables from boolean-returning methods
@@ -130,6 +131,7 @@ pub struct CodeGen<'ctx> {
     // Enum tracking
     pub enum_variants: HashMap<String, Vec<(String, u32)>>, // Maps enum_name to vec of (variant_name, tag_value)
     pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
+    pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
 
     // Current function context
@@ -182,6 +184,7 @@ impl<'ctx> CodeGen<'ctx> {
             cross_block_vars: std::collections::HashSet::new(),
             current_function_params: Vec::new(),
             function_return_types: HashMap::new(),
+            function_param_types: HashMap::new(),
             functions_returning_heap: std::collections::HashSet::new(),
 
             boolean_temps: std::collections::HashSet::new(),
@@ -203,6 +206,7 @@ impl<'ctx> CodeGen<'ctx> {
             result_values: HashMap::new(),
             enum_variants: HashMap::new(),
             enum_table: HashMap::new(),
+            enum_variant_order: HashMap::new(),
             struct_table: HashMap::new(),
             current_function_name: None,
             current_error_type: None,

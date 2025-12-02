@@ -58,6 +58,10 @@ mod lexer_tests {
             ("break", TokenType::Break),
             ("continue", TokenType::Continue),
             ("print", TokenType::Print),
+            ("Ok", TokenType::Ok),
+            ("Err", TokenType::Err),
+            ("nil", TokenType::Nil),
+            ("match", TokenType::Match),
         ];
 
         // Check each keyword individually
@@ -262,6 +266,16 @@ mod lexer_tests {
     }
 
     // ========================================
+    // Symbols
+    // ========================================
+
+    #[test]
+    fn test_symbols() {
+        first_token_is("&", TokenType::At);
+        first_token_is("$", TokenType::Dollar);
+    }
+
+    // ========================================
     // DELIMITERS
     // ========================================
     /// Test delimiters: parentheses, braces, brackets
@@ -311,6 +325,7 @@ mod lexer_tests {
     fn test_range_operators() {
         first_token_is("..", TokenType::RangeExc);
         first_token_is("..=", TokenType::RangeInc);
+        first_token_is("...", TokenType::Spread);
     }
 
     #[test]

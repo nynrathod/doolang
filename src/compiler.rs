@@ -371,6 +371,12 @@ fn compile_to_native(
         .ok_or("Failed to create target machine")?;
 
     let obj_file = format!("{}.o", opts.output_name);
+    if let Err(e) = codegen.module.verify() {
+        return Err(format!(
+            "LLVM Module verification failed: {}",
+            e.to_string()
+        ));
+    }
     target_machine
         .write_to_file(&codegen.module, FileType::Object, Path::new(&obj_file))
         .map_err(|e| format!("Failed to write object file: {}", e))?;

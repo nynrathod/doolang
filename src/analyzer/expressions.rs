@@ -161,9 +161,9 @@ impl SemanticAnalyzer {
                 let right_type = self.infer_type(right)?;
 
                 match op {
-                    // "in" operator for checking key existence in maps
+                    // "in" operator for checking key existence in maps or element in arrays
                     TokenType::In => {
-                        // Left side should be the key type, right side should be a map
+                        // Left side should be the key/element type, right side should be a map or array
                         match &right_type {
                             TypeNode::Map(key_type, _) => {
                                 // Check if left type matches the map's key type
@@ -177,6 +177,28 @@ impl SemanticAnalyzer {
                                     return Err(SemanticError::OperatorTypeMismatch(
                                         TypeMismatch {
                                             expected: (**key_type).clone(),
+                                            found: left_type,
+                                            value: None,
+                                            line,
+                                            col,
+                                        },
+                                    ));
+                                }
+                                // "in" operator returns Bool
+                                Ok(TypeNode::Bool)
+                            }
+                            TypeNode::Array(elem_type) => {
+                                // Check if left type matches the array's element type
+                                if !super::analyzer::types_compatible(
+                                    &left_type,
+                                    elem_type,
+                                    &self.struct_table,
+                                    &self.enum_table,
+                                ) {
+                                    let (line, col) = get_node_location(node);
+                                    return Err(SemanticError::OperatorTypeMismatch(
+                                        TypeMismatch {
+                                            expected: (**elem_type).clone(),
                                             found: left_type,
                                             value: None,
                                             line,
@@ -343,6 +365,42 @@ impl SemanticAnalyzer {
                                 (TypeNode::String, TypeNode::Float) => Ok(TypeNode::String),
                                 // Float + String -> String (concatenation)
                                 (TypeNode::Float, TypeNode::String) => Ok(TypeNode::String),
+                                // String + Bool -> String (for interpolation)
+                                (TypeNode::String, TypeNode::Bool) => Ok(TypeNode::String),
+                                // Bool + String -> String (for interpolation)
+                                (TypeNode::Bool, TypeNode::String) => Ok(TypeNode::String),
+                                // String + Array -> String (for interpolation)
+                                (TypeNode::String, TypeNode::Array(_)) => Ok(TypeNode::String),
+                                // Array + String -> String (for interpolation)
+                                (TypeNode::Array(_), TypeNode::String) => Ok(TypeNode::String),
+                                // String + Map -> String (for interpolation)
+                                (TypeNode::String, TypeNode::Map(_, _)) => Ok(TypeNode::String),
+                                // Map + String -> String (for interpolation)
+                                (TypeNode::Map(_, _), TypeNode::String) => Ok(TypeNode::String),
+                                // String + Struct -> String (for interpolation)
+                                (TypeNode::String, TypeNode::Struct(_, _)) => Ok(TypeNode::String),
+                                // Struct + String -> String (for interpolation)
+                                (TypeNode::Struct(_, _), TypeNode::String) => Ok(TypeNode::String),
+                                // String + TypeRef -> String (for interpolation, struct references)
+                                (TypeNode::String, TypeNode::TypeRef(_)) => Ok(TypeNode::String),
+                                // TypeRef + String -> String (for interpolation)
+                                (TypeNode::TypeRef(_), TypeNode::String) => Ok(TypeNode::String),
+                                // String + Enum -> String (for interpolation)
+                                (TypeNode::String, TypeNode::Enum(_, _)) => Ok(TypeNode::String),
+                                // Enum + String -> String (for interpolation)
+                                (TypeNode::Enum(_, _), TypeNode::String) => Ok(TypeNode::String),
+                                // String + Tuple -> String (for interpolation)
+                                (TypeNode::String, TypeNode::Tuple(_)) => Ok(TypeNode::String),
+                                // Tuple + String -> String (for interpolation)
+                                (TypeNode::Tuple(_), TypeNode::String) => Ok(TypeNode::String),
+                                // String + Result -> String (for interpolation)
+                                (TypeNode::String, TypeNode::Result(_, _)) => Ok(TypeNode::String),
+                                // Result + String -> String (for interpolation)
+                                (TypeNode::Result(_, _), TypeNode::String) => Ok(TypeNode::String),
+                                // String + Any -> String (for dynamic types like JSON)
+                                (TypeNode::String, TypeNode::Any) => Ok(TypeNode::String),
+                                // Any + String -> String (for dynamic types)
+                                (TypeNode::Any, TypeNode::String) => Ok(TypeNode::String),
                                 // Any other type combination is invalid
                                 _ => {
                                     let (line, col) = get_node_location(node);
@@ -1012,9 +1070,9 @@ impl SemanticAnalyzer {
             }
 
             // Match expression
-            AstNode::MatchExpr { value, arms } => {
-                // Type check the match value if present
-                if let Some(v) = value {
+            AstNode::MatchExpr { values, arms } => {
+                // Type check the match values if present
+                for v in values {
                     self.infer_type(v)?;
                 }
 
@@ -1062,9 +1120,32 @@ impl SemanticAnalyzer {
                     if let Some(variant_type) = enum_variants.get(variant) {
                         // Verify payload matches
                         match (payload.is_empty(), variant_type) {
-                            (false, Some(_expected_type)) => {
-                                // Enum variant with payload - should have exactly 1 argument
-                                if payload.len() == 1 {
+                            (false, Some(expected_type)) => {
+                                // Enum variant with payload
+                                // Check if it's a tuple type (multiple arguments expected)
+                                if let TypeNode::Tuple(tuple_types) = expected_type {
+                                    // Tuple payload - expect multiple arguments
+                                    if payload.len() == tuple_types.len() {
+                                        for (arg, _expected_elem_type) in
+                                            payload.iter().zip(tuple_types.iter())
+                                        {
+                                            let _actual_type = self.infer_type(arg)?;
+                                            // TODO: Type compatibility check for each element
+                                        }
+                                        Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))
+                                    } else {
+                                        Err(SemanticError::UndeclaredVariable(NamedError {
+                                            name: format!(
+                                                "Variant '{}::{}' expects {} arguments, got {}",
+                                                enum_name,
+                                                variant,
+                                                tuple_types.len(),
+                                                payload.len()
+                                            ),
+                                        }))
+                                    }
+                                } else if payload.len() == 1 {
+                                    // Single payload
                                     let _actual_type = self.infer_type(&payload[0])?;
                                     // TODO: Type compatibility check
                                     Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))

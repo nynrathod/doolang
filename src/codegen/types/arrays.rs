@@ -284,6 +284,13 @@ impl<'ctx> CodeGen<'ctx> {
         // Store full heap pointer for tuple returns
         self.heap_pointers.insert(name.to_string(), heap_ptr);
 
+        // CRITICAL: If there's already a symbol (alloca) for this name, update it too
+        // This happens for cross-block variables that were pre-allocated
+        // Without this, resolve_value will load from the uninitialized alloca instead of temp_values
+        if let Some(sym) = self.symbols.get(name) {
+            self.builder.build_store(sym.ptr, data_ptr).unwrap();
+        }
+
         Some(data_ptr.into())
     }
 

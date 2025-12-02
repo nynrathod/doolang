@@ -403,8 +403,20 @@ impl<'a> Parser<'a> {
             let mut variant_data = None;
             if self.peek_is(TokenType::OpenParen) {
                 self.advance();
-                let types = self.parse_type_annotation()?;
-                variant_data = Some(types);
+                // Parse first type
+                let first_type = self.parse_type_annotation()?;
+
+                // Check for comma (multiple types = tuple)
+                if self.peek_is(TokenType::Comma) {
+                    let mut types = vec![first_type];
+                    while self.peek_is(TokenType::Comma) {
+                        self.advance(); // consume ','
+                        types.push(self.parse_type_annotation()?);
+                    }
+                    variant_data = Some(TypeNode::Tuple(types));
+                } else {
+                    variant_data = Some(first_type);
+                }
                 self.expect(TokenType::CloseParen)?;
             }
             variants.push(EnumVariant::new(variant_name, variant_data));
@@ -416,8 +428,20 @@ impl<'a> Parser<'a> {
                 let mut variant_data = None;
                 if self.peek_is(TokenType::OpenParen) {
                     self.advance();
-                    let types = self.parse_type_annotation()?;
-                    variant_data = Some(types);
+                    // Parse first type
+                    let first_type = self.parse_type_annotation()?;
+
+                    // Check for comma (multiple types = tuple)
+                    if self.peek_is(TokenType::Comma) {
+                        let mut types = vec![first_type];
+                        while self.peek_is(TokenType::Comma) {
+                            self.advance(); // consume ','
+                            types.push(self.parse_type_annotation()?);
+                        }
+                        variant_data = Some(TypeNode::Tuple(types));
+                    } else {
+                        variant_data = Some(first_type);
+                    }
                     self.expect(TokenType::CloseParen)?;
                 }
                 variants.push(EnumVariant::new(variant_name, variant_data));
@@ -439,8 +463,20 @@ impl<'a> Parser<'a> {
                     if let Some(tok) = p.peek() {
                         if tok.kind == TokenType::OpenParen {
                             p.advance();
-                            let types = p.parse_type_annotation()?;
-                            variant_data = Some(types);
+                            // Parse first type
+                            let first_type = p.parse_type_annotation()?;
+
+                            // Check for comma (multiple types = tuple)
+                            if p.peek_is(TokenType::Comma) {
+                                let mut types = vec![first_type];
+                                while p.peek_is(TokenType::Comma) {
+                                    p.advance(); // consume ','
+                                    types.push(p.parse_type_annotation()?);
+                                }
+                                variant_data = Some(TypeNode::Tuple(types));
+                            } else {
+                                variant_data = Some(first_type);
+                            }
                             p.expect(TokenType::CloseParen)?;
                         }
                     }
@@ -562,6 +598,7 @@ impl<'a> Parser<'a> {
                 "Float" => Ok(TypeNode::Float),
                 "Str" => Ok(TypeNode::String),
                 "Bool" => Ok(TypeNode::Bool),
+                "Error" => Ok(TypeNode::Error),
                 other => {
                     // Accept any previously declared struct as type
                     Ok(TypeNode::TypeRef(other.to_string()))

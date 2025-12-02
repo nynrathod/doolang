@@ -20,8 +20,9 @@ impl<'ctx> CodeGen<'ctx> {
         // Store the global instructions for later use (e.g., initialization).
         self.globals = program.globals.clone();
 
-        // Copy enum_table and struct_table from MirProgram for type metadata access
+        // Copy enum_table, enum_variant_order, and struct_table from MirProgram for type metadata access
         self.enum_table = program.enum_table.clone();
+        self.enum_variant_order = program.enum_variant_order.clone();
         self.struct_table = program.struct_table.clone();
 
         // --- PRE-PROCESSING ---
@@ -189,6 +190,15 @@ impl<'ctx> CodeGen<'ctx> {
         let is_ffi = func.ffi_lib.is_some();
         let symbol_name = func.ffi_symbol.as_ref().unwrap_or(&func.name);
 
+        // Store parameter types as strings for JSON.parse conversion
+        let param_type_strings: Vec<String> = func
+            .param_types
+            .iter()
+            .map(|type_opt| type_opt.clone().unwrap_or_else(|| "Int".to_string()))
+            .collect();
+        self.function_param_types
+            .insert(func.name.clone(), param_type_strings);
+
         // Build parameter types
         let param_types: Vec<BasicMetadataTypeEnum> = func
             .param_types
@@ -201,7 +211,12 @@ impl<'ctx> CodeGen<'ctx> {
             // Force main to be i32 () for C/Clang compatibility
             Some(self.context.i32_type().into())
         } else if let Some(ref ret_type_str) = func.return_type {
-            Some(self.get_llvm_return_type(ret_type_str))
+            // Check for Void return type - these should be declared as void, not i32
+            if ret_type_str == "Void" {
+                None
+            } else {
+                Some(self.get_llvm_return_type(ret_type_str))
+            }
         } else {
             None
         };
@@ -238,6 +253,14 @@ impl<'ctx> CodeGen<'ctx> {
                     BasicTypeEnum::ScalableVectorType(t) => t.fn_type(&param_types, false),
                 }
             }
+        } else if func.error_type.is_some() {
+            // Void return type but has error type - still needs to return Result struct
+            // This handles functions like `fn Validate(x: Int) -> ! Str`
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let result_struct = self
+                .context
+                .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+            result_struct.fn_type(&param_types, false)
         } else {
             self.context.void_type().fn_type(&param_types, false)
         };
@@ -291,7 +314,8 @@ impl<'ctx> CodeGen<'ctx> {
                 } else if type_str.contains("Float") {
                     self.context.f64_type().into()
                 } else if type_str.contains("Bool") {
-                    self.context.bool_type().into()
+                    // Use i32 for Bool to match internal representation
+                    self.context.i32_type().into()
                 } else {
                     self.context.i32_type().into()
                 };
@@ -309,12 +333,19 @@ impl<'ctx> CodeGen<'ctx> {
         } else if ret_type_str.contains("Float") {
             self.context.f64_type().into()
         } else if ret_type_str.contains("Bool") {
-            self.context.bool_type().into()
+            // Use i32 for Bool to match internal representation
+            self.context.i32_type().into()
         } else if ret_type_str.contains("Struct(")
             || self.struct_metadata.contains_key(ret_type_str)
         {
             // Struct return types are pointers to heap-allocated structs
             self.context.ptr_type(AddressSpace::default()).into()
+        } else if ret_type_str.starts_with("Enum(") || self.enum_table.contains_key(ret_type_str) {
+            // Enum return types are { i32 tag, ptr payload } structs
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            self.context
+                .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                .into()
         } else {
             self.context.i32_type().into()
         }
@@ -326,18 +357,30 @@ impl<'ctx> CodeGen<'ctx> {
             let is_struct =
                 type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
 
+            // Check if this is an enum type
+            let is_enum = type_str.starts_with("Enum(") || self.enum_table.contains_key(type_str);
+
             // Primitives (Int, Float, Bool) are passed by value
             // Strings, Arrays, Maps, and Structs are passed by pointer
+            // Enums are passed as struct { i32 tag, ptr payload } by value
             if type_str == "Int" {
                 self.context.i32_type().into()
             } else if type_str == "Float" {
                 self.context.f64_type().into()
             } else if type_str == "Bool" {
-                self.context.bool_type().into()
+                // Use i32 for Bool to match internal representation (bool values stored as i32)
+                self.context.i32_type().into()
             } else if type_str.contains("String") || type_str.contains("Str") {
                 self.context.ptr_type(AddressSpace::default()).into()
             } else if type_str.contains("Array") || type_str.contains("Map") {
                 self.context.ptr_type(AddressSpace::default()).into()
+            } else if is_enum {
+                // Enum is represented as { i32 tag, ptr payload }
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let enum_struct_type = self
+                    .context
+                    .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                enum_struct_type.into()
             } else if is_struct {
                 // Struct parameters are passed as pointers
                 self.context.ptr_type(AddressSpace::default()).into()
@@ -383,6 +426,22 @@ impl<'ctx> CodeGen<'ctx> {
             ("Int", "Float")
         } else if type_str.contains("Map(Int,Bool)") {
             ("Int", "Bool")
+        } else if type_str.contains("Map(Float,Str)") || type_str.contains("Map(Float,String)") {
+            ("Float", "Str")
+        } else if type_str.contains("Map(Float,Int)") {
+            ("Float", "Int")
+        } else if type_str.contains("Map(Float,Float)") {
+            ("Float", "Float")
+        } else if type_str.contains("Map(Float,Bool)") {
+            ("Float", "Bool")
+        } else if type_str.contains("Map(Bool,Str)") || type_str.contains("Map(Bool,String)") {
+            ("Bool", "Str")
+        } else if type_str.contains("Map(Bool,Int)") {
+            ("Bool", "Int")
+        } else if type_str.contains("Map(Bool,Float)") {
+            ("Bool", "Float")
+        } else if type_str.contains("Map(Bool,Bool)") {
+            ("Bool", "Bool")
         } else {
             ("Int", "Int") // default
         }
@@ -398,7 +457,8 @@ impl<'ctx> CodeGen<'ctx> {
         } else if type_str == "Float" || type_str == "f64" {
             self.context.f64_type().into()
         } else if type_str == "Bool" {
-            self.context.bool_type().into()
+            // Use i32 for Bool to match internal representation (all Bools are stored as i32)
+            self.context.i32_type().into()
         } else if type_str == "Str" || type_str == "String" {
             self.context.ptr_type(AddressSpace::default()).into()
         } else if type_str.starts_with("Array") {
@@ -647,6 +707,26 @@ impl<'ctx> CodeGen<'ctx> {
         let entry_block = self.context.append_basic_block(llvm_func, "entry");
         self.builder.position_at_end(entry_block);
 
+        // DEBUG: Print MIR blocks for main function
+        // if func.name == "main" {
+        //     eprintln!("DEBUG: MIR blocks for main function:");
+        //     for (i, block) in func.blocks.iter().enumerate() {
+        //         eprintln!(
+        //             "  Block {} [{}]: {} instrs, terminator: {:?}",
+        //             i,
+        //             block.label,
+        //             block.instrs.len(),
+        //             block
+        //                 .terminator
+        //                 .as_ref()
+        //                 .map(|t| format!("{:?}", t).chars().take(50).collect::<String>())
+        //         );
+        //         for (j, instr) in block.instrs.iter().enumerate() {
+        //             eprintln!("    [{}] {:?}", j, instr);
+        //         }
+        //     }
+        // }
+
         // Create all necessary basic blocks within the function (e.g., entry, if.then, loop.body).
         let mut bb_map = HashMap::new();
         for block in &func.blocks {
@@ -667,6 +747,8 @@ impl<'ctx> CodeGen<'ctx> {
         self.composite_string_ptrs.clear();
         self.loop_stack.clear();
         self.loop_local_vars.clear();
+        self.struct_instance_types.clear();
+        self.variable_types.clear();
 
         // Allocate space for parameters and store their incoming values in the entry block.
         // This ensures parameters are available as local variables in the function scope.
@@ -679,21 +761,33 @@ impl<'ctx> CodeGen<'ctx> {
                 let is_struct =
                     type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
 
+                // Check if this is an enum type
+                let is_enum =
+                    type_str.starts_with("Enum(") || self.enum_table.contains_key(type_str);
+
                 // Map MIR type strings to LLVM types
                 // Primitives (Int, Float, Bool) are passed by value
                 // Strings, Arrays, Maps, and Structs are passed by pointer
+                // Enums are passed as struct { i32 tag, ptr payload } by value
                 if type_str == "Int" {
                     self.context.i32_type().into()
                 } else if type_str == "Float" {
                     self.context.f64_type().into()
                 } else if type_str == "Bool" {
-                    self.context.bool_type().into()
+                    // Use i32 for Bool to match parameter type (now i32 not i1)
+                    self.context.i32_type().into()
                 } else if type_str.contains("String") || type_str.contains("Str") {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Array") {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Map") {
                     self.context.ptr_type(AddressSpace::default()).into()
+                } else if is_enum {
+                    // Enum is represented as { i32 tag, ptr payload }
+                    let ptr_type = self.context.ptr_type(AddressSpace::default());
+                    self.context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                        .into()
                 } else if is_struct {
                     // Struct parameters are passed as pointers
                     self.context.ptr_type(AddressSpace::default()).into()
@@ -775,6 +869,23 @@ impl<'ctx> CodeGen<'ctx> {
                 } else if type_str == "Int" || type_str == "Float" || type_str == "Bool" {
                     // Store primitive parameters in temp_values for direct resolution
                     self.temp_values.insert(param.clone(), param_val);
+                    // Track variable types for print formatting
+                    self.variable_types.insert(param.clone(), type_str.clone());
+                    // Mark Bool parameters for proper "true"/"false" printing
+                    if type_str == "Bool" {
+                        self.boolean_temps.insert(param.clone());
+                    }
+                } else if type_str.starts_with("Enum(") || self.enum_table.contains_key(type_str) {
+                    // Enum parameter - store in temp_values and track type
+                    self.temp_values.insert(param.clone(), param_val);
+
+                    // Normalize the type string to "Enum(Name)" format
+                    let normalized_type = if type_str.starts_with("Enum(") {
+                        type_str.clone()
+                    } else {
+                        format!("Enum({})", type_str)
+                    };
+                    self.variable_types.insert(param.clone(), normalized_type);
                 } else if is_struct {
                     // Extract the actual struct name from type string
                     let struct_name = if type_str.starts_with("Struct(") && type_str.ends_with(")")
@@ -852,6 +963,105 @@ impl<'ctx> CodeGen<'ctx> {
                         block_uses.insert(array.clone());
                         block_uses.insert(index.clone());
                     }
+                    // TupleGet defines a variable from a tuple element
+                    // This is critical for match arm payload bindings
+                    crate::mir::MirInstr::TupleGet { name, tuple, .. } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(tuple.clone());
+                    }
+                    // EnumGetPayload defines a variable from enum payload
+                    crate::mir::MirInstr::EnumGetPayload {
+                        name, enum_value, ..
+                    } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(enum_value.clone());
+                    }
+                    // ConstInt/ConstString/ConstBool/ConstFloat define variables
+                    crate::mir::MirInstr::ConstInt { name, .. } => {
+                        block_defs.insert(name.clone());
+                    }
+                    crate::mir::MirInstr::ConstFloat { name, .. } => {
+                        block_defs.insert(name.clone());
+                    }
+                    crate::mir::MirInstr::ConstBool { name, .. } => {
+                        block_defs.insert(name.clone());
+                    }
+                    crate::mir::MirInstr::ConstString { name, .. } => {
+                        block_defs.insert(name.clone());
+                    }
+                    // Call defines destination variables
+                    crate::mir::MirInstr::Call { dest, args, .. } => {
+                        for d in dest {
+                            block_defs.insert(d.clone());
+                        }
+                        for arg in args {
+                            if !arg.parse::<i32>().is_ok() && arg != "true" && arg != "false" {
+                                block_uses.insert(arg.clone());
+                            }
+                        }
+                    }
+                    // StructInit defines a variable
+                    crate::mir::MirInstr::StructInit { name, fields, .. } => {
+                        block_defs.insert(name.clone());
+                        for (_, val) in fields {
+                            if !val.parse::<i32>().is_ok() && val != "true" && val != "false" {
+                                block_uses.insert(val.clone());
+                            }
+                        }
+                    }
+                    // StructGet defines a variable and uses the struct instance
+                    crate::mir::MirInstr::StructGet {
+                        name,
+                        struct_instance,
+                        ..
+                    } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(struct_instance.clone());
+                    }
+                    // EnumInit defines a variable
+                    crate::mir::MirInstr::EnumInit { name, value, .. } => {
+                        block_defs.insert(name.clone());
+                        if let Some(v) = value {
+                            if !v.parse::<i32>().is_ok() && v != "true" && v != "false" {
+                                block_uses.insert(v.clone());
+                            }
+                        }
+                    }
+                    // EnumGetTag defines a variable
+                    crate::mir::MirInstr::EnumGetTag {
+                        name, enum_value, ..
+                    } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(enum_value.clone());
+                    }
+                    // Print uses variables
+                    crate::mir::MirInstr::Print { values } => {
+                        for val in values {
+                            if !val.parse::<i32>().is_ok() && val != "true" && val != "false" {
+                                block_uses.insert(val.clone());
+                            }
+                        }
+                    }
+                    // StringConcat defines a variable and uses operands
+                    crate::mir::MirInstr::StringConcat { name, left, right } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(left.clone());
+                        block_uses.insert(right.clone());
+                    }
+                    // Cast defines a variable and uses the source
+                    crate::mir::MirInstr::Cast { name, value, .. } => {
+                        block_defs.insert(name.clone());
+                        if !value.parse::<i32>().is_ok() && value != "true" && value != "false" {
+                            block_uses.insert(value.clone());
+                        }
+                    }
+                    // TryPropagate defines a variable and uses the result
+                    crate::mir::MirInstr::TryPropagate { name, result, .. } => {
+                        block_defs.insert(name.clone());
+                        if !result.parse::<i32>().is_ok() && result != "true" && result != "false" {
+                            block_uses.insert(result.clone());
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -888,6 +1098,12 @@ impl<'ctx> CodeGen<'ctx> {
                 if defined_elsewhere {
                     cross_block_vars.insert(var.clone());
                 }
+                // Also check: if var starts with % and is NOT defined in ANY block,
+                // it's a temp from nested expression that needs allocation
+                if var.starts_with('%') && !defined_vars.values().any(|defs| defs.contains(var)) {
+                    // This temp is used but never defined - likely from nested match
+                    cross_block_vars.insert(var.clone());
+                }
             }
         }
 
@@ -895,11 +1111,40 @@ impl<'ctx> CodeGen<'ctx> {
         let mut var_types: HashMap<String, BasicTypeEnum<'ctx>> = HashMap::new();
         // Track which function produced each tuple (for TupleExtract type resolution)
         let mut tuple_sources: HashMap<String, String> = HashMap::new();
+        // Track which function call produced each temp result (for TryPropagate to trace back)
+        let mut call_sources: HashMap<String, String> = HashMap::new();
+        // Track tuple element types from EnumGetPayload (for TupleGet type resolution)
+        let mut tuple_element_types: HashMap<String, Vec<BasicTypeEnum<'ctx>>> = HashMap::new();
 
         // First pass: process all instructions except Assign
         for block in &func.blocks {
             for instr in &block.instrs {
                 match instr {
+                    // StructDecl - register struct metadata and canonical type for local structs
+                    crate::mir::MirInstr::StructDecl {
+                        struct_name,
+                        field_names,
+                        field_types,
+                    } => {
+                        // Only register if not already registered (e.g., from globals)
+                        if !self.struct_metadata.contains_key(struct_name) {
+                            let metadata = crate::codegen::core::context::StructMetadata {
+                                field_names: field_names.clone(),
+                                field_types: field_types.clone(),
+                            };
+                            self.struct_metadata.insert(struct_name.clone(), metadata);
+
+                            // Create the canonical LLVM struct type
+                            let llvm_field_types: Vec<BasicTypeEnum> = field_types
+                                .iter()
+                                .map(|type_str| self.type_string_to_llvm_type(type_str))
+                                .collect();
+
+                            let struct_type = self.context.struct_type(&llvm_field_types, false);
+                            self.canonical_struct_types
+                                .insert(struct_name.clone(), struct_type);
+                        }
+                    }
                     // Arrays are always pointers
                     crate::mir::MirInstr::Array { name, .. } => {
                         var_types.insert(
@@ -909,6 +1154,13 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                     // Maps are always pointers
                     crate::mir::MirInstr::Map { name, .. } => {
+                        var_types.insert(
+                            name.clone(),
+                            self.context.ptr_type(AddressSpace::default()).into(),
+                        );
+                    }
+                    // ArraySlice results are always pointers (heap-allocated arrays)
+                    crate::mir::MirInstr::ArraySlice { name, .. } => {
                         var_types.insert(
                             name.clone(),
                             self.context.ptr_type(AddressSpace::default()).into(),
@@ -966,6 +1218,42 @@ impl<'ctx> CodeGen<'ctx> {
                     crate::mir::MirInstr::ConstBool { name, .. } => {
                         var_types.insert(name.clone(), self.context.i32_type().into());
                     }
+                    // EnumInit - enums are represented as { i32, ptr } structs
+                    crate::mir::MirInstr::EnumInit { name, .. } => {
+                        let ptr_type = self.context.ptr_type(AddressSpace::default());
+                        let enum_struct_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                        var_types.insert(name.clone(), enum_struct_type.into());
+                    }
+                    // TupleCreate - tuples are stored as pointers to heap-allocated structs
+                    crate::mir::MirInstr::TupleCreate { name, .. } => {
+                        var_types.insert(
+                            name.clone(),
+                            self.context.ptr_type(AddressSpace::default()).into(),
+                        );
+                    }
+                    // StructInit - structs are stored as pointers (heap-allocated)
+                    crate::mir::MirInstr::StructInit { name, .. } => {
+                        var_types.insert(
+                            name.clone(),
+                            self.context.ptr_type(AddressSpace::default()).into(),
+                        );
+                    }
+                    // StructGet - field access, type depends on field
+                    // For now, default to i32; actual type is determined at codegen
+                    crate::mir::MirInstr::StructGet { name, .. } => {
+                        // Most struct fields are primitives (Int) by default
+                        // Pointer fields will be handled specially at codegen time
+                        var_types.insert(name.clone(), self.context.i32_type().into());
+                    }
+                    // StringConcat - result is a string pointer
+                    crate::mir::MirInstr::StringConcat { name, .. } => {
+                        var_types.insert(
+                            name.clone(),
+                            self.context.ptr_type(AddressSpace::default()).into(),
+                        );
+                    }
                     // TupleExtract - determine type from tuple element
                     crate::mir::MirInstr::TupleExtract {
                         name,
@@ -1021,6 +1309,8 @@ impl<'ctx> CodeGen<'ctx> {
                         if let Some(return_type_str) = self.function_return_types.get(func) {
                             if dest.len() == 1 {
                                 let dest_name = &dest[0];
+                                // Track which function produced this result (for TryPropagate)
+                                call_sources.insert(dest_name.clone(), func.clone());
                                 // Check if this is a tuple return by parsing the type
                                 // Strip Tuple() wrapper if present
                                 let inner = if return_type_str.starts_with("Tuple(")
@@ -1064,13 +1354,79 @@ impl<'ctx> CodeGen<'ctx> {
                             }
                         }
                     }
+                    // MethodCall - determine type from method (especially JSON.stringify/parse)
+                    crate::mir::MirInstr::MethodCall {
+                        dest,
+                        object,
+                        method,
+                        ..
+                    } => {
+                        // JSON methods return strings (pointers)
+                        if object == "JSON" {
+                            if method == "stringify" || method == "parse" {
+                                var_types.insert(
+                                    dest.clone(),
+                                    self.context.ptr_type(AddressSpace::default()).into(),
+                                );
+                            }
+                        }
+                        // String methods that return strings
+                        else if method == "trim"
+                            || method == "toLowerCase"
+                            || method == "toUpperCase"
+                            || method == "toUpper"
+                            || method == "toLower"
+                            || method == "replace"
+                            || method == "substring"
+                            || method == "slice"
+                            || method == "split"
+                            || method == "join"
+                            || method == "concat"
+                            || method == "repeat"
+                            || method == "padStart"
+                            || method == "padEnd"
+                            || method == "charAt"
+                            || method == "reverse"
+                        {
+                            var_types.insert(
+                                dest.clone(),
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                            );
+                        }
+                        // String methods that return integers
+                        else if method == "length"
+                            || method == "indexOf"
+                            || method == "lastIndexOf"
+                        {
+                            var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
+                        // Int.toString returns string
+                        else if method == "toString" {
+                            var_types.insert(
+                                dest.clone(),
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                            );
+                        }
+                    }
                     // Binary operations - determine type from op string
                     crate::mir::MirInstr::BinaryOp(op, name, ..) => {
-                        // Op format is "operator:type" e.g. "add:float", "mul:int"
-                        let op_type = if op.contains(":float") {
-                            self.context.f64_type().into()
-                        } else if op.contains(":bool") {
+                        // Op format is "operator:type" e.g. "add:float", "mul:int", "ge:int"
+                        // Comparison and logical operators ALWAYS return Bool (stored as i32)
+                        // regardless of operand type
+                        let is_comparison = op.starts_with("eq:")
+                            || op.starts_with("ne:")
+                            || op.starts_with("lt:")
+                            || op.starts_with("le:")
+                            || op.starts_with("gt:")
+                            || op.starts_with("ge:")
+                            || op.starts_with("and:")
+                            || op.starts_with("or:");
+
+                        let op_type = if is_comparison {
+                            // Comparisons and logical ops return Bool (i32)
                             self.context.i32_type().into()
+                        } else if op.contains(":float") {
+                            self.context.f64_type().into()
                         } else {
                             // Default to i32 for int operations
                             self.context.i32_type().into()
@@ -1088,6 +1444,156 @@ impl<'ctx> CodeGen<'ctx> {
                             _ => self.context.i32_type().into(),
                         };
                         var_types.insert(name.clone(), cast_type);
+                    }
+                    // TupleGet - determine type from tuple_element_types tracked from EnumGetPayload
+                    // This is critical for match arm payload bindings that use tuple elements
+                    crate::mir::MirInstr::TupleGet { name, tuple, index } => {
+                        // Look up the tuple element types from the source tuple
+                        if let Some(elem_types) = tuple_element_types.get(tuple) {
+                            if let Some(elem_type) = elem_types.get(*index) {
+                                var_types.insert(name.clone(), *elem_type);
+                            } else {
+                                // Index out of bounds - default to i32
+                                var_types.insert(name.clone(), self.context.i32_type().into());
+                            }
+                        } else {
+                            // No tuple element types found - default to i32
+                            var_types.insert(name.clone(), self.context.i32_type().into());
+                        }
+                    }
+                    // EnumGetPayload - determine type from payload_type
+                    crate::mir::MirInstr::EnumGetPayload {
+                        name, payload_type, ..
+                    } => {
+                        let payload_llvm_type: BasicTypeEnum = if let Some(ref ptype) = payload_type
+                        {
+                            match ptype {
+                                crate::parser::ast::TypeNode::Int => self.context.i32_type().into(),
+                                crate::parser::ast::TypeNode::Float => {
+                                    self.context.f64_type().into()
+                                }
+                                crate::parser::ast::TypeNode::Bool => {
+                                    // Bool is stored as i32 in symbols
+                                    self.context.i32_type().into()
+                                }
+                                crate::parser::ast::TypeNode::String => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::Array(_) => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::Map(_, _) => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::Tuple(_) => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::TypeRef(_) => {
+                                    // Nested enum - stored as struct pointer
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::Enum(_, _) => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                _ => self.context.i32_type().into(),
+                            }
+                        } else {
+                            // No payload type info - default to i32
+                            self.context.i32_type().into()
+                        };
+                        var_types.insert(name.clone(), payload_llvm_type);
+
+                        // If this is a tuple payload, also track the element types for TupleGet
+                        if let Some(crate::parser::ast::TypeNode::Tuple(types)) = payload_type {
+                            let elem_types: Vec<BasicTypeEnum<'ctx>> = types
+                                .iter()
+                                .map(|t| match t {
+                                    crate::parser::ast::TypeNode::Int => {
+                                        self.context.i32_type().into()
+                                    }
+                                    crate::parser::ast::TypeNode::Float => {
+                                        self.context.f64_type().into()
+                                    }
+                                    crate::parser::ast::TypeNode::Bool => {
+                                        // Bool is stored as i32 in symbols
+                                        self.context.i32_type().into()
+                                    }
+                                    crate::parser::ast::TypeNode::String => {
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    }
+                                    crate::parser::ast::TypeNode::Array(_) => {
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    }
+                                    crate::parser::ast::TypeNode::Map(_, _) => {
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    }
+                                    _ => self.context.i32_type().into(),
+                                })
+                                .collect();
+                            tuple_element_types.insert(name.clone(), elem_types);
+                        }
+                    }
+                    // TryPropagate - the result is a Result struct { i32, ptr }
+                    // The unwrapped value type depends on the Ok type of the Result
+                    crate::mir::MirInstr::TryPropagate { name, result, .. } => {
+                        // The TryPropagate instruction produces the unwrapped Ok value
+                        // Try to trace back to the function that produced this result
+                        if let Some(func_name) = call_sources.get(result) {
+                            // Found the source function - check its return type
+                            if let Some(return_type_str) = self.function_return_types.get(func_name)
+                            {
+                                // Strip Tuple() wrapper if present
+                                let inner = if return_type_str.starts_with("Tuple(")
+                                    && return_type_str.ends_with(')')
+                                {
+                                    &return_type_str[6..return_type_str.len() - 1]
+                                } else {
+                                    return_type_str.as_str()
+                                };
+                                let types = crate::codegen::core::helpers::parse_tuple_types(inner);
+                                if types.len() > 1 {
+                                    // Multi-value return - TryPropagate produces a tuple pointer
+                                    // Track this so TupleExtract can resolve element types
+                                    tuple_sources.insert(name.clone(), func_name.clone());
+                                    var_types.insert(
+                                        name.clone(),
+                                        self.context.ptr_type(AddressSpace::default()).into(),
+                                    );
+                                } else if types.len() == 1 {
+                                    // Single value return
+                                    let type_str = &types[0];
+                                    if type_str.contains("Str") || type_str.contains("String") {
+                                        var_types.insert(
+                                            name.clone(),
+                                            self.context.ptr_type(AddressSpace::default()).into(),
+                                        );
+                                    } else if type_str.contains("Float") {
+                                        var_types
+                                            .insert(name.clone(), self.context.f64_type().into());
+                                    } else if type_str.contains("Array") || type_str.contains("Map")
+                                    {
+                                        var_types.insert(
+                                            name.clone(),
+                                            self.context.ptr_type(AddressSpace::default()).into(),
+                                        );
+                                    } else {
+                                        var_types
+                                            .insert(name.clone(), self.context.i32_type().into());
+                                    }
+                                } else {
+                                    var_types.insert(name.clone(), self.context.i32_type().into());
+                                }
+                            } else {
+                                var_types.insert(name.clone(), self.context.i32_type().into());
+                            }
+                        } else if let Some(result_type) = var_types.get(result) {
+                            // If result is a Result struct, the unwrapped value could be various types
+                            // For now, propagate the type or default to i32
+                            var_types.insert(name.clone(), *result_type);
+                        } else {
+                            // Default to i32 for simple Ok values
+                            var_types.insert(name.clone(), self.context.i32_type().into());
+                        }
                     }
                     // Skip Assign in first pass
                     crate::mir::MirInstr::Assign { .. } => {}
@@ -1420,51 +1926,21 @@ impl<'ctx> CodeGen<'ctx> {
             self.emit_decref(&var_name);
         }
 
-        // Cleanup temporary heap strings (intermediate concat results, etc.)
-        // These are heap-allocated strings that are NOT in symbols (no alloca)
-        // but ARE tracked in heap_strings (e.g., intermediate concat results)
-        let mut temp_heap_strs: Vec<String> = self
-            .heap_strings
-            .iter()
-            .filter(|name| {
-                // Only temps (not in symbols, not loop-local vars)
-                !self.symbols.contains_key(*name)
-                    && !self.loop_local_vars.contains(*name)
-                    && !is_compiler_temp(name)
-                    && self.temp_values.contains_key(*name)
-            })
-            .cloned()
-            .collect();
-        temp_heap_strs.reverse();
-
-        for temp_name in temp_heap_strs {
-            // For temps, we need to get the pointer from temp_values and decref
-            if let Some(val) = self.temp_values.get(&temp_name) {
-                if val.is_pointer_value() {
-                    let data_ptr = val.into_pointer_value();
-                    let rc_header = unsafe {
-                        self.builder.build_in_bounds_gep(
-                            self.context.i8_type(),
-                            data_ptr,
-                            &[self.context.i32_type().const_int((-8_i32) as u64, true)],
-                            "rc_header",
-                        )
-                    }
-                    .unwrap();
-
-                    let decref = self.decref_fn.unwrap();
-                    self.builder
-                        .build_call(decref, &[rc_header.into()], "")
-                        .unwrap();
-                }
-            }
-        }
-
-        // NOTE: Other temp_values (non-heap) are NOT cleaned here.
-        // temp_values contains temporary SSA values (GEP results, block-local pointers).
-        // These either:
-        //  1. Are already covered by symbols (if they were stored), OR
-        //  2. Are block-local and should not be accessed in cleanup (would cause segfault)
+        // NOTE: We intentionally DO NOT cleanup temporary heap strings that only exist in temp_values.
+        // These are SSA values created inside conditional blocks (if/else, match arms) and using them
+        // at function exit would cause LLVM verification errors ("Instruction does not dominate all uses!")
+        // because the cleanup code is in a block that doesn't dominate the conditional blocks where
+        // the temps were created.
+        //
+        // Heap strings that need cleanup MUST be stored into symbols (allocas) at creation time.
+        // Only symbols can be safely accessed at function exit because allocas are in the entry block.
+        //
+        // The proper fix for leaking temps would be to:
+        // 1. Store concat results into allocas when inside conditional contexts, OR
+        // 2. Track which temps were created in which blocks and only cleanup those that dominate exit
+        //
+        // For now, we accept the minor leak for intermediate concat results in conditionals.
+        // The strings will be freed when the process exits.
     }
 
     /// Generates LLVM IR for a single MIR block.
@@ -1810,45 +2286,14 @@ impl<'ctx> CodeGen<'ctx> {
                     self.emit_decref(&var_name);
                 }
 
-                // 5. Free temporary heap strings (intermediate concat results, etc.)
-                // These are heap-allocated strings that are NOT in symbols (no alloca)
-                // but ARE tracked in heap_strings (e.g., intermediate concat results)
-                let mut temp_heap_strs: Vec<String> = self
-                    .heap_strings
-                    .iter()
-                    .filter(|name| {
-                        // Only temps (not in symbols), and not the return value
-                        !self.symbols.contains_key(*name)
-                            && !self.loop_local_vars.contains(*name)
-                            && return_value_name.map_or(true, |ret| ret != *name)
-                            && self.temp_values.contains_key(*name)
-                    })
-                    .cloned()
-                    .collect();
-                temp_heap_strs.reverse();
-
-                for temp_name in temp_heap_strs {
-                    // For temps, we need to get the pointer from temp_values and decref
-                    if let Some(val) = self.temp_values.get(&temp_name) {
-                        if val.is_pointer_value() {
-                            let data_ptr = val.into_pointer_value();
-                            let rc_header = unsafe {
-                                self.builder.build_in_bounds_gep(
-                                    self.context.i8_type(),
-                                    data_ptr,
-                                    &[self.context.i32_type().const_int((-8_i32) as u64, true)],
-                                    "rc_header",
-                                )
-                            }
-                            .unwrap();
-
-                            let decref = self.decref_fn.unwrap();
-                            self.builder
-                                .build_call(decref, &[rc_header.into()], "")
-                                .unwrap();
-                        }
-                    }
-                }
+                // NOTE: We intentionally DO NOT cleanup temporary heap strings that only exist in temp_values.
+                // These are SSA values created inside conditional blocks (if/else, match arms) and using them
+                // at function exit would cause LLVM verification errors ("Instruction does not dominate all uses!")
+                // because the cleanup code is in a block that doesn't dominate the conditional blocks where
+                // the temps were created.
+                //
+                // Heap strings that need cleanup MUST be stored into symbols (allocas) at creation time.
+                // Only symbols can be safely accessed at function exit because allocas are in the entry block.
 
                 if values.is_empty() {
                     // Check if this is the main function - it must return i32 0
@@ -1909,7 +2354,91 @@ impl<'ctx> CodeGen<'ctx> {
                         self.functions_returning_heap.insert(fn_name.to_string());
                     }
 
-                    let val = self.resolve_value(return_value_name);
+                    let mut val = self.resolve_value(return_value_name);
+
+                    // Check if we need to convert JSON.parse result (heap string) to expected return type
+                    let fn_name = func.get_name().to_str().unwrap();
+                    if self.heap_strings.contains(return_value_name) && val.is_pointer_value() {
+                        if let Some(return_type_str) = self.function_return_types.get(fn_name) {
+                            let json_str_ptr = val.into_pointer_value();
+                            if return_type_str == "Int" {
+                                // Convert JSON string to Int using atoi
+                                let atoi_fn =
+                                    self.module.get_function("atoi").unwrap_or_else(|| {
+                                        let fn_type = self.context.i32_type().fn_type(
+                                            &[self
+                                                .context
+                                                .ptr_type(AddressSpace::default())
+                                                .into()],
+                                            false,
+                                        );
+                                        self.module.add_function("atoi", fn_type, None)
+                                    });
+                                val = self
+                                    .builder
+                                    .build_call(atoi_fn, &[json_str_ptr.into()], "parsed_int")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap();
+                            } else if return_type_str == "Float" {
+                                // Convert JSON string to Float using atof
+                                let atof_fn =
+                                    self.module.get_function("atof").unwrap_or_else(|| {
+                                        let fn_type = self.context.f64_type().fn_type(
+                                            &[self
+                                                .context
+                                                .ptr_type(AddressSpace::default())
+                                                .into()],
+                                            false,
+                                        );
+                                        self.module.add_function("atof", fn_type, None)
+                                    });
+                                val = self
+                                    .builder
+                                    .build_call(atof_fn, &[json_str_ptr.into()], "parsed_float")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap();
+                            } else if return_type_str == "Bool" {
+                                // Convert JSON string to Bool - check first char
+                                let first_char = self
+                                    .builder
+                                    .build_load(self.context.i8_type(), json_str_ptr, "first_char")
+                                    .unwrap()
+                                    .into_int_value();
+                                let is_t = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        first_char,
+                                        self.context.i8_type().const_int(b't' as u64, false),
+                                        "is_t",
+                                    )
+                                    .unwrap();
+                                let is_1 = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        first_char,
+                                        self.context.i8_type().const_int(b'1' as u64, false),
+                                        "is_1",
+                                    )
+                                    .unwrap();
+                                let bool_i1 = self.builder.build_or(is_t, is_1, "bool_i1").unwrap();
+                                let bool_val = self
+                                    .builder
+                                    .build_int_z_extend(
+                                        bool_i1,
+                                        self.context.i32_type(),
+                                        "bool_val",
+                                    )
+                                    .unwrap();
+                                val = bool_val.into();
+                            }
+                        }
+                    }
 
                     // Check if we're returning a locally-created heap value (not a parameter)
                     // Only locally-created heap values have RC headers that we should increment
@@ -2072,7 +2601,31 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     } else {
                         // Normal return (no error type)
-                        self.builder.build_return(Some(&val)).unwrap();
+                        // Check if we need to convert Bool type (i32 -> i1)
+                        let return_type = func.get_type().get_return_type();
+                        let final_val = if let Some(ret_type) = return_type {
+                            if ret_type.is_int_type() && val.is_int_value() {
+                                let ret_int_type = ret_type.into_int_type();
+                                let val_int = val.into_int_value();
+                                // Convert i32 to i1 if needed (Bool return type)
+                                if ret_int_type.get_bit_width() == 1
+                                    && val_int.get_type().get_bit_width() == 32
+                                {
+                                    let i1_val = self
+                                        .builder
+                                        .build_int_truncate(val_int, ret_int_type, "bool_trunc")
+                                        .unwrap();
+                                    i1_val.into()
+                                } else {
+                                    val
+                                }
+                            } else {
+                                val
+                            }
+                        } else {
+                            val
+                        };
+                        self.builder.build_return(Some(&final_val)).unwrap();
                     }
                 } else {
                     // Multiple return values - build a struct
