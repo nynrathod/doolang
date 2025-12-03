@@ -27,7 +27,7 @@ impl SemanticAnalyzer {
             } => {
                 // Check if immutable variable is initialized with empty collection
                 // Only error if there's no type annotation (type annotation makes it valid)
-                if !*mutable && type_annotation.is_none() {
+                if !*mutable {
                     match &**value {
                         AstNode::ArrayLiteral(elements) if elements.is_empty() => {
                             return Err(SemanticError::ImmutableEmptyCollection {

@@ -38,10 +38,14 @@ impl<'ctx> CodeGen<'ctx> {
         let entry_block = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry_block);
 
-        // Store old parameter mappings
-        let old_params: Vec<(String, BasicValueEnum)> = params
+        // Store ALL current temp_values keys to detect what gets added during closure generation
+        let keys_before: std::collections::HashSet<String> =
+            self.temp_values.keys().cloned().collect();
+
+        // Store old parameter mappings (including None for params that didn't exist)
+        let old_params: Vec<(String, Option<BasicValueEnum>)> = params
             .iter()
-            .filter_map(|p| self.temp_values.get(p).map(|v| (p.clone(), *v)))
+            .map(|p| (p.clone(), self.temp_values.get(p).copied()))
             .collect();
 
         // Map function parameters to the closure parameter names
@@ -108,9 +112,21 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
         }
 
-        // Restore parameter mappings
-        for (param_name, _) in old_params {
-            self.temp_values.remove(&param_name);
+        // Remove ALL variables that were added during closure generation (including locals like 'result')
+        let keys_after: Vec<String> = self.temp_values.keys().cloned().collect();
+        for key in keys_after {
+            if !keys_before.contains(&key) {
+                self.temp_values.remove(&key);
+            }
+        }
+
+        // Restore parameter mappings (restore old values or remove if none existed)
+        for (param_name, old_val) in old_params {
+            if let Some(val) = old_val {
+                self.temp_values.insert(param_name, val);
+            } else {
+                self.temp_values.remove(&param_name);
+            }
         }
 
         // Restore insert position
@@ -169,10 +185,14 @@ impl<'ctx> CodeGen<'ctx> {
         let entry_block = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry_block);
 
-        // Store old parameter mappings and heap_strings state
-        let old_params: Vec<(String, BasicValueEnum)> = params
+        // Store ALL current temp_values keys to detect what gets added during closure generation
+        let keys_before: std::collections::HashSet<String> =
+            self.temp_values.keys().cloned().collect();
+
+        // Store old parameter mappings and heap_strings state (including None for params that didn't exist)
+        let old_params: Vec<(String, Option<BasicValueEnum>)> = params
             .iter()
-            .filter_map(|p| self.temp_values.get(p).map(|v| (p.clone(), *v)))
+            .map(|p| (p.clone(), self.temp_values.get(p).copied()))
             .collect();
 
         // Map function parameters to the closure parameter names
@@ -237,9 +257,21 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
         }
 
-        // Restore parameter mappings
-        for (param_name, _) in &old_params {
-            self.temp_values.remove(param_name);
+        // Remove ALL variables that were added during closure generation
+        let keys_after: Vec<String> = self.temp_values.keys().cloned().collect();
+        for key in keys_after {
+            if !keys_before.contains(&key) {
+                self.temp_values.remove(&key);
+            }
+        }
+
+        // Restore parameter mappings (restore old values or remove if none existed)
+        for (param_name, old_val) in &old_params {
+            if let Some(val) = old_val {
+                self.temp_values.insert(param_name.clone(), *val);
+            } else {
+                self.temp_values.remove(param_name);
+            }
             self.heap_strings.remove(param_name);
         }
 
@@ -287,9 +319,13 @@ impl<'ctx> CodeGen<'ctx> {
         let entry_block = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry_block);
 
-        let old_params: Vec<(String, BasicValueEnum)> = params
+        // Store ALL current temp_values keys to detect what gets added during closure generation
+        let keys_before: std::collections::HashSet<String> =
+            self.temp_values.keys().cloned().collect();
+
+        let old_params: Vec<(String, Option<BasicValueEnum>)> = params
             .iter()
-            .filter_map(|p| self.temp_values.get(p).map(|v| (p.clone(), *v)))
+            .map(|p| (p.clone(), self.temp_values.get(p).copied()))
             .collect();
 
         for (i, param_name) in params.iter().enumerate() {
@@ -346,8 +382,20 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
         }
 
-        for (param_name, _) in &old_params {
-            self.temp_values.remove(param_name);
+        // Remove ALL variables that were added during closure generation
+        let keys_after: Vec<String> = self.temp_values.keys().cloned().collect();
+        for key in keys_after {
+            if !keys_before.contains(&key) {
+                self.temp_values.remove(&key);
+            }
+        }
+
+        for (param_name, old_val) in &old_params {
+            if let Some(val) = old_val {
+                self.temp_values.insert(param_name.clone(), *val);
+            } else {
+                self.temp_values.remove(param_name);
+            }
             self.heap_strings.remove(param_name);
         }
 
@@ -370,14 +418,481 @@ impl<'ctx> CodeGen<'ctx> {
         Some(fn_ptr.into())
     }
 
+    /// Generate LLVM IR for a float closure (takes and returns f64)
+    /// Used for float array map/filter/reduce operations
+    pub fn generate_float_closure(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body_ast: &Option<Box<AstNode>>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        // Generate a unique function name for this float closure
+        let closure_fn_name = format!("float_closure_{}", name);
+
+        // Float closures take f64 parameters and return f64
+        let f64_type = self.context.f64_type();
+        let mut param_llvm_types: Vec<BasicMetadataTypeEnum> = Vec::new();
+        for _ in params {
+            param_llvm_types.push(f64_type.into());
+        }
+
+        // Create function type (returns f64)
+        let fn_type = f64_type.fn_type(&param_llvm_types, false);
+
+        // Create the function
+        let function = self.module.add_function(&closure_fn_name, fn_type, None);
+
+        // Save current insert block
+        let saved_block = self.builder.get_insert_block();
+
+        // Create entry block for closure function
+        let entry_block = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry_block);
+
+        // Store ALL current temp_values keys to detect what gets added during closure generation
+        let keys_before: std::collections::HashSet<String> =
+            self.temp_values.keys().cloned().collect();
+
+        // Store old parameter mappings (including None for params that didn't exist)
+        let old_params: Vec<(String, Option<BasicValueEnum>)> = params
+            .iter()
+            .map(|p| (p.clone(), self.temp_values.get(p).copied()))
+            .collect();
+
+        // Map function parameters to the closure parameter names
+        for (i, param_name) in params.iter().enumerate() {
+            if let Some(param_value) = function.get_nth_param(i as u32) {
+                self.temp_values.insert(param_name.clone(), param_value);
+            }
+        }
+
+        // Generate the body expression from AST
+        let result_value = if let Some(ast_body) = body_ast {
+            match ast_body.as_ref() {
+                AstNode::Block(statements) => {
+                    let mut last_result: Option<BasicValueEnum> = None;
+                    for stmt in statements {
+                        match stmt {
+                            AstNode::Return { values } => {
+                                if !values.is_empty() {
+                                    last_result = self.eval_float_ast_expr(&values[0]);
+                                }
+                            }
+                            AstNode::LetDecl { pattern, value, .. } => {
+                                if let Some(val) = self.eval_float_ast_expr(value) {
+                                    if let crate::parser::ast::Pattern::Identifier(name) = pattern {
+                                        self.temp_values.insert(name.clone(), val);
+                                    }
+                                }
+                            }
+                            _ => {
+                                self.eval_float_ast_expr(stmt);
+                            }
+                        }
+                    }
+                    last_result.unwrap_or_else(|| f64_type.const_float(0.0).into())
+                }
+                _ => self
+                    .eval_float_ast_expr(ast_body)
+                    .unwrap_or_else(|| f64_type.const_float(0.0).into()),
+            }
+        } else {
+            f64_type.const_float(0.0).into()
+        };
+
+        // Return the result
+        if result_value.is_float_value() {
+            let float_val = result_value.into_float_value();
+            self.builder.build_return(Some(&float_val)).unwrap();
+        } else if result_value.is_int_value() {
+            // Convert int to float if needed
+            let int_val = result_value.into_int_value();
+            let float_val = self
+                .builder
+                .build_signed_int_to_float(int_val, f64_type, "int_to_float")
+                .unwrap();
+            self.builder.build_return(Some(&float_val)).unwrap();
+        } else {
+            self.builder
+                .build_return(Some(&f64_type.const_float(0.0)))
+                .unwrap();
+        }
+
+        // Remove ALL variables that were added during closure generation
+        let keys_after: Vec<String> = self.temp_values.keys().cloned().collect();
+        for key in keys_after {
+            if !keys_before.contains(&key) {
+                self.temp_values.remove(&key);
+            }
+        }
+
+        // Restore parameter mappings (restore old values or remove if none existed)
+        for (param_name, old_val) in old_params {
+            if let Some(val) = old_val {
+                self.temp_values.insert(param_name, val);
+            } else {
+                self.temp_values.remove(&param_name);
+            }
+        }
+
+        // Restore insert position
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+
+        // Store the function reference
+        self.temp_strings.insert(
+            format!("float_closure_{}_fn_name", name),
+            closure_fn_name.clone(),
+        );
+        self.temp_strings
+            .insert(format!("float_closure_{}_params", name), params.join(","));
+
+        let fn_ptr = function.as_global_value().as_pointer_value();
+        self.temp_values
+            .insert(format!("{}_float", name), fn_ptr.into());
+
+        Some(fn_ptr.into())
+    }
+
+    /// Generate LLVM IR for a float filter closure (takes f64, returns i32 for bool)
+    /// Used for float array filter operations
+    pub fn generate_float_filter_closure(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body_ast: &Option<Box<AstNode>>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        // Generate a unique function name for this float filter closure
+        let closure_fn_name = format!("float_filter_closure_{}", name);
+
+        // Float filter closures take f64 parameter and return i32 (bool)
+        let f64_type = self.context.f64_type();
+        let i32_type = self.context.i32_type();
+        let mut param_llvm_types: Vec<BasicMetadataTypeEnum> = Vec::new();
+        for _ in params {
+            param_llvm_types.push(f64_type.into());
+        }
+
+        // Create function type (returns i32 for bool)
+        let fn_type = i32_type.fn_type(&param_llvm_types, false);
+
+        // Create the function
+        let function = self.module.add_function(&closure_fn_name, fn_type, None);
+
+        // Save current insert block
+        let saved_block = self.builder.get_insert_block();
+
+        // Create entry block for closure function
+        let entry_block = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry_block);
+
+        // Store ALL current temp_values keys to detect what gets added during closure generation
+        let keys_before: std::collections::HashSet<String> =
+            self.temp_values.keys().cloned().collect();
+
+        // Store old parameter mappings (including None for params that didn't exist)
+        let old_params: Vec<(String, Option<BasicValueEnum>)> = params
+            .iter()
+            .map(|p| (p.clone(), self.temp_values.get(p).copied()))
+            .collect();
+
+        // Map function parameters to the closure parameter names
+        for (i, param_name) in params.iter().enumerate() {
+            if let Some(param_value) = function.get_nth_param(i as u32) {
+                self.temp_values.insert(param_name.clone(), param_value);
+            }
+        }
+
+        // Generate the body expression from AST
+        let result_value = if let Some(ast_body) = body_ast {
+            match ast_body.as_ref() {
+                AstNode::Block(statements) => {
+                    let mut last_result: Option<BasicValueEnum> = None;
+                    for stmt in statements {
+                        match stmt {
+                            AstNode::Return { values } => {
+                                if !values.is_empty() {
+                                    last_result = self.eval_float_filter_ast_expr(&values[0]);
+                                }
+                            }
+                            AstNode::LetDecl { pattern, value, .. } => {
+                                if let Some(val) = self.eval_float_filter_ast_expr(value) {
+                                    if let crate::parser::ast::Pattern::Identifier(name) = pattern {
+                                        self.temp_values.insert(name.clone(), val);
+                                    }
+                                }
+                            }
+                            _ => {
+                                self.eval_float_filter_ast_expr(stmt);
+                            }
+                        }
+                    }
+                    last_result.unwrap_or_else(|| i32_type.const_int(0, false).into())
+                }
+                _ => self
+                    .eval_float_filter_ast_expr(ast_body)
+                    .unwrap_or_else(|| i32_type.const_int(0, false).into()),
+            }
+        } else {
+            i32_type.const_int(0, false).into()
+        };
+
+        // Return the result as i32
+        if result_value.is_int_value() {
+            let int_val = result_value.into_int_value();
+            // Ensure it's i32
+            let result_i32 = if int_val.get_type().get_bit_width() == 32 {
+                int_val
+            } else {
+                self.builder
+                    .build_int_z_extend_or_bit_cast(int_val, i32_type, "to_i32")
+                    .unwrap()
+            };
+            self.builder.build_return(Some(&result_i32)).unwrap();
+        } else {
+            self.builder
+                .build_return(Some(&i32_type.const_int(0, false)))
+                .unwrap();
+        }
+
+        // Remove ALL variables that were added during closure generation
+        let keys_after: Vec<String> = self.temp_values.keys().cloned().collect();
+        for key in keys_after {
+            if !keys_before.contains(&key) {
+                self.temp_values.remove(&key);
+            }
+        }
+
+        // Restore parameter mappings (restore old values or remove if none existed)
+        for (param_name, old_val) in old_params {
+            if let Some(val) = old_val {
+                self.temp_values.insert(param_name, val);
+            } else {
+                self.temp_values.remove(&param_name);
+            }
+        }
+
+        // Restore insert position
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+
+        // Store the function reference
+        self.temp_strings.insert(
+            format!("float_filter_closure_{}_fn_name", name),
+            closure_fn_name.clone(),
+        );
+
+        let fn_ptr = function.as_global_value().as_pointer_value();
+        Some(fn_ptr.into())
+    }
+
+    /// Evaluate an AST expression for float closures
+    fn eval_float_ast_expr(&mut self, node: &AstNode) -> Option<BasicValueEnum<'ctx>> {
+        let f64_type = self.context.f64_type();
+        match node {
+            AstNode::NumberLiteral(n) => Some(f64_type.const_float(*n as f64).into()),
+            AstNode::FloatLiteral(f) => Some(f64_type.const_float(*f).into()),
+            AstNode::Identifier(name) => self.temp_values.get(name).copied(),
+            AstNode::BinaryExpr { left, op, right } => {
+                let left_val = self.eval_float_ast_expr(left)?;
+                let right_val = self.eval_float_ast_expr(right)?;
+
+                // Convert to float if needed
+                let left_float = if left_val.is_float_value() {
+                    left_val.into_float_value()
+                } else if left_val.is_int_value() {
+                    self.builder
+                        .build_signed_int_to_float(left_val.into_int_value(), f64_type, "l_to_f")
+                        .unwrap()
+                } else {
+                    return None;
+                };
+
+                let right_float = if right_val.is_float_value() {
+                    right_val.into_float_value()
+                } else if right_val.is_int_value() {
+                    self.builder
+                        .build_signed_int_to_float(right_val.into_int_value(), f64_type, "r_to_f")
+                        .unwrap()
+                } else {
+                    return None;
+                };
+
+                use crate::lexer::token::TokenType;
+                match op {
+                    TokenType::Plus => Some(
+                        self.builder
+                            .build_float_add(left_float, right_float, "fadd")
+                            .unwrap()
+                            .into(),
+                    ),
+                    TokenType::Minus => Some(
+                        self.builder
+                            .build_float_sub(left_float, right_float, "fsub")
+                            .unwrap()
+                            .into(),
+                    ),
+                    TokenType::Star => Some(
+                        self.builder
+                            .build_float_mul(left_float, right_float, "fmul")
+                            .unwrap()
+                            .into(),
+                    ),
+                    TokenType::Slash => Some(
+                        self.builder
+                            .build_float_div(left_float, right_float, "fdiv")
+                            .unwrap()
+                            .into(),
+                    ),
+                    TokenType::Gt => {
+                        let cmp = self
+                            .builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::OGT,
+                                left_float,
+                                right_float,
+                                "fgt",
+                            )
+                            .unwrap();
+                        Some(
+                            self.builder
+                                .build_int_z_extend(cmp, self.context.i32_type(), "fgt_ext")
+                                .unwrap()
+                                .into(),
+                        )
+                    }
+                    TokenType::Lt => {
+                        let cmp = self
+                            .builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::OLT,
+                                left_float,
+                                right_float,
+                                "flt",
+                            )
+                            .unwrap();
+                        Some(
+                            self.builder
+                                .build_int_z_extend(cmp, self.context.i32_type(), "flt_ext")
+                                .unwrap()
+                                .into(),
+                        )
+                    }
+                    TokenType::GtEq => {
+                        let cmp = self
+                            .builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::OGE,
+                                left_float,
+                                right_float,
+                                "fge",
+                            )
+                            .unwrap();
+                        Some(
+                            self.builder
+                                .build_int_z_extend(cmp, self.context.i32_type(), "fge_ext")
+                                .unwrap()
+                                .into(),
+                        )
+                    }
+                    TokenType::LtEq => {
+                        let cmp = self
+                            .builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::OLE,
+                                left_float,
+                                right_float,
+                                "fle",
+                            )
+                            .unwrap();
+                        Some(
+                            self.builder
+                                .build_int_z_extend(cmp, self.context.i32_type(), "fle_ext")
+                                .unwrap()
+                                .into(),
+                        )
+                    }
+                    TokenType::EqEq => {
+                        let cmp = self
+                            .builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::OEQ,
+                                left_float,
+                                right_float,
+                                "feq",
+                            )
+                            .unwrap();
+                        Some(
+                            self.builder
+                                .build_int_z_extend(cmp, self.context.i32_type(), "feq_ext")
+                                .unwrap()
+                                .into(),
+                        )
+                    }
+                    TokenType::NotEq => {
+                        let cmp = self
+                            .builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::ONE,
+                                left_float,
+                                right_float,
+                                "fne",
+                            )
+                            .unwrap();
+                        Some(
+                            self.builder
+                                .build_int_z_extend(cmp, self.context.i32_type(), "fne_ext")
+                                .unwrap()
+                                .into(),
+                        )
+                    }
+                    _ => None,
+                }
+            }
+            AstNode::UnaryExpr { op, expr } => {
+                let val = self.eval_float_ast_expr(expr)?;
+                use crate::lexer::token::TokenType;
+                match op {
+                    TokenType::Minus => {
+                        if val.is_float_value() {
+                            Some(
+                                self.builder
+                                    .build_float_neg(val.into_float_value(), "fneg")
+                                    .unwrap()
+                                    .into(),
+                            )
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Evaluate an AST expression for float filter closures (returns i32 for bool)
+    fn eval_float_filter_ast_expr(&mut self, node: &AstNode) -> Option<BasicValueEnum<'ctx>> {
+        // For filter, we need comparison results as i32
+        // Delegate to eval_float_ast_expr which already returns i32 for comparisons
+        self.eval_float_ast_expr(node)
+    }
+
     /// Check if a value is a closure
     pub fn is_closure(&self, value_name: &str) -> bool {
         let closure_key = format!("closure_{}_fn_name", value_name);
         let str_closure_key = format!("str_closure_{}_fn_name", value_name);
         let str_filter_key = format!("str_filter_closure_{}_fn_name", value_name);
+        let float_closure_key = format!("float_closure_{}_fn_name", value_name);
+        let float_filter_key = format!("float_filter_closure_{}_fn_name", value_name);
         self.temp_strings.contains_key(&closure_key)
             || self.temp_strings.contains_key(&str_closure_key)
             || self.temp_strings.contains_key(&str_filter_key)
+            || self.temp_strings.contains_key(&float_closure_key)
+            || self.temp_strings.contains_key(&float_filter_key)
     }
 
     /// Check if a closure is a string closure
@@ -414,6 +929,24 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn get_string_filter_closure_function(&self, name: &str) -> Option<FunctionValue<'ctx>> {
         let str_filter_key = format!("str_filter_closure_{}_fn_name", name);
         if let Some(fn_name) = self.temp_strings.get(&str_filter_key) {
+            return self.module.get_function(fn_name);
+        }
+        None
+    }
+
+    /// Get the LLVM function for a float closure
+    pub fn get_float_closure_function(&self, name: &str) -> Option<FunctionValue<'ctx>> {
+        let float_closure_key = format!("float_closure_{}_fn_name", name);
+        if let Some(fn_name) = self.temp_strings.get(&float_closure_key) {
+            return self.module.get_function(fn_name);
+        }
+        None
+    }
+
+    /// Get the LLVM function for a float filter closure
+    pub fn get_float_filter_closure_function(&self, name: &str) -> Option<FunctionValue<'ctx>> {
+        let float_filter_key = format!("float_filter_closure_{}_fn_name", name);
+        if let Some(fn_name) = self.temp_strings.get(&float_filter_key) {
             return self.module.get_function(fn_name);
         }
         None
@@ -536,6 +1069,115 @@ impl<'ctx> CodeGen<'ctx> {
                     closure_fn,
                     &[arg1_int.into(), arg2_int.into()],
                     "closure_call_2",
+                )
+                .unwrap();
+
+            call_result.try_as_basic_value().left()
+        } else {
+            None
+        }
+    }
+
+    /// Execute a float closure with one argument and return the result
+    pub fn call_float_closure_with_one_arg(
+        &mut self,
+        closure_name: &str,
+        arg: BasicValueEnum<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        if let Some(closure_fn) = self.get_float_closure_function(closure_name) {
+            let arg_float = if arg.is_float_value() {
+                arg.into_float_value()
+            } else if arg.is_int_value() {
+                self.builder
+                    .build_signed_int_to_float(
+                        arg.into_int_value(),
+                        self.context.f64_type(),
+                        "int_to_float_arg",
+                    )
+                    .unwrap()
+            } else {
+                return None;
+            };
+
+            let call_result = self
+                .builder
+                .build_call(closure_fn, &[arg_float.into()], "float_closure_call")
+                .unwrap();
+
+            call_result.try_as_basic_value().left()
+        } else {
+            None
+        }
+    }
+
+    /// Execute a float filter closure with one argument and return i32 result
+    pub fn call_float_filter_closure_with_one_arg(
+        &mut self,
+        closure_name: &str,
+        arg: BasicValueEnum<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        if let Some(closure_fn) = self.get_float_filter_closure_function(closure_name) {
+            let arg_float = if arg.is_float_value() {
+                arg.into_float_value()
+            } else if arg.is_int_value() {
+                self.builder
+                    .build_signed_int_to_float(
+                        arg.into_int_value(),
+                        self.context.f64_type(),
+                        "int_to_float_arg",
+                    )
+                    .unwrap()
+            } else {
+                return None;
+            };
+
+            let call_result = self
+                .builder
+                .build_call(closure_fn, &[arg_float.into()], "float_filter_closure_call")
+                .unwrap();
+
+            call_result.try_as_basic_value().left()
+        } else {
+            None
+        }
+    }
+
+    /// Execute a float closure with two arguments and return the result
+    pub fn call_float_closure_with_two_args(
+        &mut self,
+        closure_name: &str,
+        arg1: BasicValueEnum<'ctx>,
+        arg2: BasicValueEnum<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        if let Some(closure_fn) = self.get_float_closure_function(closure_name) {
+            let f64_type = self.context.f64_type();
+
+            let arg1_float = if arg1.is_float_value() {
+                arg1.into_float_value()
+            } else if arg1.is_int_value() {
+                self.builder
+                    .build_signed_int_to_float(arg1.into_int_value(), f64_type, "arg1_to_float")
+                    .unwrap()
+            } else {
+                return None;
+            };
+
+            let arg2_float = if arg2.is_float_value() {
+                arg2.into_float_value()
+            } else if arg2.is_int_value() {
+                self.builder
+                    .build_signed_int_to_float(arg2.into_int_value(), f64_type, "arg2_to_float")
+                    .unwrap()
+            } else {
+                return None;
+            };
+
+            let call_result = self
+                .builder
+                .build_call(
+                    closure_fn,
+                    &[arg1_float.into(), arg2_float.into()],
+                    "float_closure_call_2",
                 )
                 .unwrap();
 

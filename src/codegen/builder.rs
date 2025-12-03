@@ -119,9 +119,50 @@ impl<'ctx> CodeGen<'ctx> {
                 // This ensures that when the value is later loaded (e.g., for print), we get the
                 // actual computed result, not the default-initialized zero value
                 if let Some(result_val) = result {
-                    if let Some(sym) = self.symbols.get(dest) {
-                        // Check if the result type matches the symbol type before storing
-                        let result_type = result_val.get_type();
+                    let result_type = result_val.get_type();
+
+                    // Check if symbol exists and has correct type
+                    let needs_new_symbol = if let Some(sym) = self.symbols.get(dest) {
+                        let sym_type = sym.ty;
+                        // Check if types are compatible
+                        if result_type.is_float_type() && !sym_type.is_float_type() {
+                            true // Need new symbol for float result
+                        } else if result_type.is_int_type() && sym_type.is_float_type() {
+                            true // Type mismatch
+                        } else {
+                            false
+                        }
+                    } else {
+                        true // No symbol exists
+                    };
+
+                    if needs_new_symbol {
+                        // Create new symbol with correct type
+                        let alloca = if result_type.is_float_type() {
+                            self.builder
+                                .build_alloca(self.context.f64_type(), dest)
+                                .unwrap()
+                        } else if result_type.is_int_type() {
+                            self.builder
+                                .build_alloca(result_type.into_int_type(), dest)
+                                .unwrap()
+                        } else if result_type.is_pointer_type() {
+                            self.builder
+                                .build_alloca(result_type.into_pointer_type(), dest)
+                                .unwrap()
+                        } else {
+                            return result;
+                        };
+                        self.builder.build_store(alloca, result_val).unwrap();
+                        self.symbols.insert(
+                            dest.clone(),
+                            Symbol {
+                                ptr: alloca,
+                                ty: result_type,
+                            },
+                        );
+                    } else if let Some(sym) = self.symbols.get(dest) {
+                        // Symbol exists with compatible type
                         let sym_type = sym.ty;
 
                         // Handle type conversions if needed

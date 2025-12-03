@@ -1237,18 +1237,30 @@ impl<'ctx> CodeGen<'ctx> {
                     let array_ptr = self.resolve_value(object).into_pointer_value();
                     let is_string_array =
                         metadata.contains_strings || metadata.element_type == "Str";
+                    let is_float_array = metadata.element_type == "Float";
 
                     // Check if the argument is a closure
                     if !self.is_closure(&args[0]) {
                         return None;
                     }
 
-                    // Generate string filter closure on-demand if needed for string arrays
+                    // Generate appropriate closure on-demand
                     if is_string_array {
                         if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
                         {
                             if self.get_string_filter_closure_function(&args[0]).is_none() {
                                 self.generate_string_filter_closure(
+                                    &args[0],
+                                    &params,
+                                    &Some(body_ast),
+                                );
+                            }
+                        }
+                    } else if is_float_array {
+                        if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
+                        {
+                            if self.get_float_filter_closure_function(&args[0]).is_none() {
+                                self.generate_float_filter_closure(
                                     &args[0],
                                     &params,
                                     &Some(body_ast),
@@ -1301,7 +1313,13 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Allocate new result array - use pointer type for string arrays
                     let malloc_fn = self.get_or_declare_malloc();
-                    let elem_size = if is_string_array { 8u64 } else { 4u64 };
+                    let elem_size = if is_string_array {
+                        8u64
+                    } else if is_float_array {
+                        8u64
+                    } else {
+                        4u64
+                    };
                     let array_size = self.context.i64_type().const_int(elem_size * 100, false);
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
@@ -1432,7 +1450,7 @@ impl<'ctx> CodeGen<'ctx> {
                     // Check element value by calling closure
                     self.builder.position_at_end(check_block);
 
-                    // Create alloca for element to use after phi (needed for string case)
+                    // Create alloca for element to use after phi (needed for string and float cases)
                     let elem_alloca = if is_string_array {
                         Some(
                             self.builder
@@ -1440,6 +1458,12 @@ impl<'ctx> CodeGen<'ctx> {
                                     self.context.ptr_type(inkwell::AddressSpace::default()),
                                     "elem_store_filter",
                                 )
+                                .unwrap(),
+                        )
+                    } else if is_float_array {
+                        Some(
+                            self.builder
+                                .build_alloca(self.context.f64_type(), "elem_store_filter_float")
                                 .unwrap(),
                         )
                     } else {
@@ -1485,6 +1509,49 @@ impl<'ctx> CodeGen<'ctx> {
                                         result_int,
                                         self.context.i32_type().const_int(0, false),
                                         "should_include_str",
+                                    )
+                                    .unwrap()
+                            } else {
+                                self.context.bool_type().const_int(0, false)
+                            }
+                        } else {
+                            self.context.bool_type().const_int(0, false)
+                        }
+                    } else if is_float_array {
+                        // Float array filter: load f64, call float filter closure
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.f64_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_filter_float",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.f64_type(), elem_ptr, "elem_filter_float")
+                            .unwrap();
+
+                        // Store element for later use
+                        self.builder
+                            .build_store(elem_alloca.unwrap(), elem)
+                            .unwrap();
+
+                        // Call the float filter closure
+                        let closure_result =
+                            self.call_float_filter_closure_with_one_arg(&args[0], elem);
+
+                        if let Some(result) = closure_result {
+                            if result.is_int_value() {
+                                let result_int = result.into_int_value();
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::NE,
+                                        result_int,
+                                        self.context.i32_type().const_int(0, false),
+                                        "should_include_float",
                                     )
                                     .unwrap()
                             } else {
@@ -1565,6 +1632,28 @@ impl<'ctx> CodeGen<'ctx> {
                                     new_array_ptr,
                                     &[result_idx],
                                     "result_elem_ptr_str",
+                                )
+                                .unwrap()
+                        };
+                        self.builder.build_store(result_elem_ptr, elem).unwrap();
+                    } else if is_float_array {
+                        // Load element from alloca and store to result for float arrays
+                        let elem = self
+                            .builder
+                            .build_load(
+                                self.context.f64_type(),
+                                elem_alloca.unwrap(),
+                                "elem_reload_float",
+                            )
+                            .unwrap();
+
+                        let result_elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.f64_type(),
+                                    new_array_ptr,
+                                    &[result_idx],
+                                    "result_elem_ptr_float",
                                 )
                                 .unwrap()
                         };
@@ -1654,18 +1743,26 @@ impl<'ctx> CodeGen<'ctx> {
                     let array_ptr = self.resolve_value(object).into_pointer_value();
                     let is_string_array =
                         metadata.contains_strings || metadata.element_type == "Str";
+                    let is_float_array = metadata.element_type == "Float";
 
                     // Check if the argument is a closure
                     if !self.is_closure(&args[0]) {
                         return None;
                     }
 
-                    // Generate string closure on-demand if needed for string arrays
+                    // Generate appropriate closure on-demand
                     if is_string_array {
                         if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
                         {
                             if self.get_string_closure_function(&args[0]).is_none() {
                                 self.generate_string_closure(&args[0], &params, &Some(body_ast));
+                            }
+                        }
+                    } else if is_float_array {
+                        if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
+                        {
+                            if self.get_float_closure_function(&args[0]).is_none() {
+                                self.generate_float_closure(&args[0], &params, &Some(body_ast));
                             }
                         }
                     }
@@ -1710,7 +1807,13 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Allocate new array - use pointer type for string arrays
                     let malloc_fn = self.get_or_declare_malloc();
-                    let elem_size = if is_string_array { 8u64 } else { 4u64 }; // ptr is 8 bytes, i32 is 4 bytes
+                    let elem_size = if is_string_array {
+                        8u64
+                    } else if is_float_array {
+                        8u64
+                    } else {
+                        4u64
+                    }; // ptr/f64 is 8 bytes, i32 is 4 bytes
                     let array_size = self.context.i64_type().const_int(elem_size * 100, false);
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
@@ -1875,6 +1978,58 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder
                             .build_store(result_elem_ptr, transformed)
                             .unwrap();
+                    } else if is_float_array {
+                        // Float array map: load f64, call float closure, store f64 result
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.f64_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_map_float",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.f64_type(), elem_ptr, "elem_map_float")
+                            .unwrap();
+
+                        // Call the float closure with the element
+                        let closure_result = self.call_float_closure_with_one_arg(&args[0], elem);
+
+                        let transformed = if let Some(result) = closure_result {
+                            if result.is_float_value() {
+                                result.into_float_value()
+                            } else if result.is_int_value() {
+                                self.builder
+                                    .build_signed_int_to_float(
+                                        result.into_int_value(),
+                                        self.context.f64_type(),
+                                        "int_to_float_map",
+                                    )
+                                    .unwrap()
+                            } else {
+                                self.context.f64_type().const_float(0.0)
+                            }
+                        } else {
+                            self.context.f64_type().const_float(0.0)
+                        };
+
+                        // Store transformed element (f64)
+                        let result_elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.f64_type(),
+                                    new_array_ptr,
+                                    &[counter],
+                                    "result_elem_ptr_map_float",
+                                )
+                                .unwrap()
+                        };
+                        self.builder
+                            .build_store(result_elem_ptr, transformed)
+                            .unwrap();
                     } else {
                         // Int/Bool array map: load i32, call int closure, store i32 result
                         let elem_ptr = unsafe {
@@ -1949,13 +2104,24 @@ impl<'ctx> CodeGen<'ctx> {
             }
             "reduce" => {
                 // Implement array.reduce(init, closure) with proper closure execution
-                if let Some(_) = self.array_metadata.get(object).cloned() {
+                if let Some(metadata) = self.array_metadata.get(object).cloned() {
                     let array_ptr = self.resolve_value(object).into_pointer_value();
-                    let initial_val = self.resolve_value(&args[0]).into_int_value();
+                    let initial_val = self.resolve_value(&args[0]);
+                    let is_float_array = metadata.element_type == "Float";
 
                     // Check if the second argument is a closure
                     if args.len() < 2 || !self.is_closure(&args[1]) {
                         return None;
+                    }
+
+                    // Generate float closure on-demand if needed for float arrays
+                    if is_float_array {
+                        if let Some((params, body_ast)) = self.closure_bodies.get(&args[1]).cloned()
+                        {
+                            if self.get_float_closure_function(&args[1]).is_none() {
+                                self.generate_float_closure(&args[1], &params, &Some(body_ast));
+                            }
+                        }
                     }
 
                     // Read runtime length
@@ -2015,101 +2181,256 @@ impl<'ctx> CodeGen<'ctx> {
                         .builder
                         .build_alloca(self.context.i32_type(), "reduce_counter")
                         .unwrap();
-                    let accumulator_ptr = self
-                        .builder
-                        .build_alloca(self.context.i32_type(), "reduce_accumulator")
-                        .unwrap();
 
-                    self.builder
-                        .build_store(counter_ptr, self.context.i32_type().const_int(0, false))
-                        .unwrap();
-                    self.builder
-                        .build_store(accumulator_ptr, initial_val)
-                        .unwrap();
+                    if is_float_array {
+                        // Float array reduce
+                        let accumulator_ptr = self
+                            .builder
+                            .build_alloca(self.context.f64_type(), "reduce_accumulator_float")
+                            .unwrap();
 
-                    self.builder.build_unconditional_branch(loop_block).unwrap();
+                        let init_float = if initial_val.is_float_value() {
+                            initial_val.into_float_value()
+                        } else if initial_val.is_int_value() {
+                            self.builder
+                                .build_signed_int_to_float(
+                                    initial_val.into_int_value(),
+                                    self.context.f64_type(),
+                                    "init_to_float",
+                                )
+                                .unwrap()
+                        } else {
+                            self.context.f64_type().const_float(0.0)
+                        };
 
-                    // Loop body
-                    self.builder.position_at_end(loop_block);
-                    let counter = self
-                        .builder
-                        .build_load(self.context.i32_type(), counter_ptr, "counter_reduce")
-                        .unwrap()
-                        .into_int_value();
-                    let cmp = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::ULT,
-                            counter,
-                            length,
-                            "cmp_reduce",
-                        )
-                        .unwrap();
-                    self.builder
-                        .build_conditional_branch(cmp, check_block, after_block)
-                        .unwrap();
-
-                    // Accumulate using closure
-                    self.builder.position_at_end(check_block);
-                    let accumulator = self
-                        .builder
-                        .build_load(self.context.i32_type(), accumulator_ptr, "accumulator")
-                        .unwrap()
-                        .into_int_value();
-
-                    let elem_ptr = unsafe {
                         self.builder
-                            .build_in_bounds_gep(
-                                self.context.i32_type(),
-                                array_ptr,
-                                &[counter],
-                                "elem_ptr_reduce",
-                            )
+                            .build_store(counter_ptr, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder
+                            .build_store(accumulator_ptr, init_float)
+                            .unwrap();
+
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        // Loop body
+                        self.builder.position_at_end(loop_block);
+
+                        let counter = self
+                            .builder
+                            .build_load(self.context.i32_type(), counter_ptr, "counter_reduce")
                             .unwrap()
-                    };
-                    let elem = self
-                        .builder
-                        .build_load(self.context.i32_type(), elem_ptr, "elem_reduce")
-                        .unwrap()
-                        .into_int_value();
+                            .into_int_value();
+                        let cmp = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                counter,
+                                length,
+                                "cmp_reduce",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(cmp, check_block, after_block)
+                            .unwrap();
 
-                    // Call the closure with accumulator and element
-                    let closure_result =
-                        self.call_closure_with_two_args(&args[1], accumulator.into(), elem.into());
+                        // Accumulate using closure
+                        self.builder.position_at_end(check_block);
 
-                    let new_accumulator = if let Some(result) = closure_result {
-                        if result.is_int_value() {
-                            result.into_int_value()
+                        // Reload counter in check_block to satisfy LLVM SSA requirements
+                        let counter_in_check = self
+                            .builder
+                            .build_load(self.context.i32_type(), counter_ptr, "counter_in_check")
+                            .unwrap()
+                            .into_int_value();
+
+                        let accumulator = self
+                            .builder
+                            .build_load(
+                                self.context.f64_type(),
+                                accumulator_ptr,
+                                "accumulator_float",
+                            )
+                            .unwrap();
+
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.f64_type(),
+                                    array_ptr,
+                                    &[counter_in_check],
+                                    "elem_ptr_reduce_float",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.f64_type(), elem_ptr, "elem_reduce_float")
+                            .unwrap();
+
+                        // Call the float closure with accumulator and element
+                        let closure_result =
+                            self.call_float_closure_with_two_args(&args[1], accumulator, elem);
+
+                        let new_accumulator = if let Some(result) = closure_result {
+                            if result.is_float_value() {
+                                result.into_float_value()
+                            } else if result.is_int_value() {
+                                self.builder
+                                    .build_signed_int_to_float(
+                                        result.into_int_value(),
+                                        self.context.f64_type(),
+                                        "result_to_float",
+                                    )
+                                    .unwrap()
+                            } else {
+                                accumulator.into_float_value()
+                            }
+                        } else {
+                            accumulator.into_float_value()
+                        };
+
+                        self.builder
+                            .build_store(accumulator_ptr, new_accumulator)
+                            .unwrap();
+
+                        let next_counter = self
+                            .builder
+                            .build_int_add(
+                                counter_in_check,
+                                self.context.i32_type().const_int(1, false),
+                                "next_counter_reduce",
+                            )
+                            .unwrap();
+                        self.builder.build_store(counter_ptr, next_counter).unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        self.builder.position_at_end(after_block);
+                        let result = self
+                            .builder
+                            .build_load(
+                                self.context.f64_type(),
+                                accumulator_ptr,
+                                "reduce_result_float",
+                            )
+                            .unwrap();
+
+                        self.temp_values.insert(dest.to_string(), result);
+                        self.variable_types
+                            .insert(dest.to_string(), "Float".to_string());
+                        Some(result)
+                    } else {
+                        // Int/Bool array reduce
+                        let accumulator_ptr = self
+                            .builder
+                            .build_alloca(self.context.i32_type(), "reduce_accumulator")
+                            .unwrap();
+
+                        let init_int = if initial_val.is_int_value() {
+                            initial_val.into_int_value()
+                        } else {
+                            self.context.i32_type().const_int(0, false)
+                        };
+
+                        self.builder
+                            .build_store(counter_ptr, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder.build_store(accumulator_ptr, init_int).unwrap();
+
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        // Loop body
+                        self.builder.position_at_end(loop_block);
+                        let counter = self
+                            .builder
+                            .build_load(self.context.i32_type(), counter_ptr, "counter_reduce")
+                            .unwrap()
+                            .into_int_value();
+                        let cmp = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                counter,
+                                length,
+                                "cmp_reduce",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(cmp, check_block, after_block)
+                            .unwrap();
+
+                        // Accumulate using closure
+                        self.builder.position_at_end(check_block);
+
+                        // Reload counter in check_block to satisfy LLVM SSA requirements
+                        let counter_in_check = self
+                            .builder
+                            .build_load(self.context.i32_type(), counter_ptr, "counter_in_check")
+                            .unwrap()
+                            .into_int_value();
+
+                        let accumulator = self
+                            .builder
+                            .build_load(self.context.i32_type(), accumulator_ptr, "accumulator")
+                            .unwrap()
+                            .into_int_value();
+
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[counter_in_check],
+                                    "elem_ptr_reduce",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.i32_type(), elem_ptr, "elem_reduce")
+                            .unwrap()
+                            .into_int_value();
+
+                        // Call the closure with accumulator and element
+                        let closure_result = self.call_closure_with_two_args(
+                            &args[1],
+                            accumulator.into(),
+                            elem.into(),
+                        );
+
+                        let new_accumulator = if let Some(result) = closure_result {
+                            if result.is_int_value() {
+                                result.into_int_value()
+                            } else {
+                                accumulator
+                            }
                         } else {
                             accumulator
-                        }
-                    } else {
-                        accumulator
-                    };
+                        };
 
-                    self.builder
-                        .build_store(accumulator_ptr, new_accumulator)
-                        .unwrap();
+                        self.builder
+                            .build_store(accumulator_ptr, new_accumulator)
+                            .unwrap();
 
-                    let next_counter = self
-                        .builder
-                        .build_int_add(
-                            counter,
-                            self.context.i32_type().const_int(1, false),
-                            "next_counter_reduce",
-                        )
-                        .unwrap();
-                    self.builder.build_store(counter_ptr, next_counter).unwrap();
-                    self.builder.build_unconditional_branch(loop_block).unwrap();
+                        let next_counter = self
+                            .builder
+                            .build_int_add(
+                                counter_in_check,
+                                self.context.i32_type().const_int(1, false),
+                                "next_counter_reduce",
+                            )
+                            .unwrap();
+                        self.builder.build_store(counter_ptr, next_counter).unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
 
-                    self.builder.position_at_end(after_block);
-                    let result = self
-                        .builder
-                        .build_load(self.context.i32_type(), accumulator_ptr, "reduce_result")
-                        .unwrap();
+                        self.builder.position_at_end(after_block);
+                        let result = self
+                            .builder
+                            .build_load(self.context.i32_type(), accumulator_ptr, "reduce_result")
+                            .unwrap();
 
-                    self.temp_values.insert(dest.to_string(), result);
-                    Some(result)
+                        self.temp_values.insert(dest.to_string(), result);
+                        Some(result)
+                    }
                 } else {
                     None
                 }

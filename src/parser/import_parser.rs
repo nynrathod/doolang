@@ -51,16 +51,27 @@ impl<'a> Parser<'a> {
                 } else if self.peek_is(TokenType::Semi) {
                     // End of import after ::
                     // This could be either:
-                    // 1. Specific symbol import: import std::File::Write;
-                    // 2. Namespace import: import std::File;
-                    // We treat the last component as part of the path for namespace import
+                    // 1. Specific symbol import: import std::Math::Abs; (path has 2+ components)
+                    // 2. Namespace import: import std::File; (path has 1 component)
+                    // If path already has 2+ components, treat last identifier as a symbol import
+                    // Otherwise, treat as namespace import
                     self.advance(); // consume ;
-                    path.push(ident_str);
-                    // Return namespace import (empty items means import the module itself)
-                    return Ok(AstNode::Import {
-                        path,
-                        items: vec![],
-                    });
+                    if path.len() >= 2 {
+                        // Single symbol import without braces: import std::Math::Abs;
+                        // path = ["std", "Math"], items = [Symbol("Abs")]
+                        return Ok(AstNode::Import {
+                            path,
+                            items: vec![ImportItem::Symbol(ident_str)],
+                        });
+                    } else {
+                        // Namespace import: import std::File;
+                        // path = ["std", "File"], items = []
+                        path.push(ident_str);
+                        return Ok(AstNode::Import {
+                            path,
+                            items: vec![],
+                        });
+                    }
                 } else if self.peek_is(TokenType::As) {
                     // Namespace aliased import: import std::Array as Arr;
                     // Add the module name to the path first
