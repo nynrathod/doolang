@@ -2023,24 +2023,21 @@ impl SemanticAnalyzer {
             },
             TypeNode::Map(_key_type, value_type) => match method {
                 "get" => {
-                    if args.len() != 1 {
-                        return Err(SemanticError::FunctionArgumentMismatch {
-                            name: format!("Map.{}", method),
-                            expected: 1,
-                            found: args.len(),
-                        });
-                    }
-                    Ok(*value_type.clone())
+                    // map.get() is removed - use map[key] syntax instead
+                    return Err(SemanticError::InvalidMethodCall {
+                        method: "get".to_string(),
+                        type_name: "Map".to_string(),
+                        message: "map.get() is removed. Use map[key] syntax instead.".to_string(),
+                    });
                 }
                 "set" => {
-                    if args.len() != 2 {
-                        return Err(SemanticError::FunctionArgumentMismatch {
-                            name: format!("Map.{}", method),
-                            expected: 2,
-                            found: args.len(),
-                        });
-                    }
-                    Ok(TypeNode::Void)
+                    // map.set() is removed - use map[key] = value syntax instead
+                    return Err(SemanticError::InvalidMethodCall {
+                        method: "set".to_string(),
+                        type_name: "Map".to_string(),
+                        message: "map.set() is removed. Use map[key] = value syntax instead."
+                            .to_string(),
+                    });
                 }
                 "has" => {
                     if args.len() != 1 {

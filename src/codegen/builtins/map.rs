@@ -13,7 +13,11 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Option<BasicValueEnum<'ctx>> {
         match method {
             "get" => {
-                // Implement map.get(key) with linear search through key-value pairs
+                // map.get() is removed - use map[key] syntax instead
+                panic!("map.get() is removed. Use map[key] syntax instead for map access.");
+            }
+            "_get_internal" => {
+                // Internal implementation kept for [] syntax
                 if let Some(metadata) = self.map_metadata.get(object) {
                     let key_val = self.resolve_value(&args[0]);
                     let map_ptr = self.resolve_value(object).into_pointer_value();
@@ -340,7 +344,13 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             "set" => {
-                // Implement map.set(key, value) with runtime length support
+                // map.set() is removed - use map[key] = value syntax instead
+                panic!(
+                    "map.set() is removed. Use map[key] = value syntax instead for map assignment."
+                );
+            }
+            "_set_internal" => {
+                // Internal implementation kept for [] syntax
                 if let Some(metadata) = self.map_metadata.get(object).cloned() {
                     let key_val = self.resolve_value(&args[0]);
                     let value_val = self.resolve_value(&args[1]);

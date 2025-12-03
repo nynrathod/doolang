@@ -49,6 +49,11 @@ pub enum SemanticError {
         method_name: String,
         correct_type: Option<String>,
     },
+    InvalidMethodCall {
+        method: String,
+        type_name: String,
+        message: String,
+    },
     FunctionArgumentMismatch {
         name: String,
         expected: usize,
@@ -225,6 +230,7 @@ impl SemanticError {
             SemanticError::InvalidFunctionCall { .. } => "E0105",
             SemanticError::FunctionArgumentMismatch { .. } => "E0106",
             SemanticError::MethodNotFoundOnType { .. } => "E0112",
+            SemanticError::InvalidMethodCall { .. } => "E0113",
             SemanticError::FunctionArgumentTypeMismatch { .. } => "E0107",
             SemanticError::MissingFunctionReturn { .. } => "E0108",
             SemanticError::InvalidReturnInVoidFunction { .. } => "E0109",
@@ -380,6 +386,16 @@ impl fmt::Display for SemanticError {
                         method_name
                     )
                 }
+            }
+            E::InvalidMethodCall { method, type_name, message } => {
+                write!(
+                    f,
+                    "error[{}]: {}.{}() is not allowed: {}",
+                    self.code(),
+                    type_name,
+                    method,
+                    message
+                )
             }
             E::FunctionArgumentMismatch {
                 name,

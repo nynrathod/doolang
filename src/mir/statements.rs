@@ -420,15 +420,27 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             // Get the array/map variable name
             if let AstNode::Identifier(array_name) = &**array {
                 // Check if it's an array or map based on the MIR symbol table type
-                // For now, we'll emit both ArraySet and MapSet and let codegen handle it
-                // We can determine the type from builder.mir_symbol_table if available
+                let is_map = builder
+                    .mir_symbol_table
+                    .get(array_name)
+                    .map(|ty| matches!(ty, crate::parser::ast::TypeNode::Map(_, _)))
+                    .unwrap_or(false);
 
-                // Emit ArraySet instruction (works for both arrays and maps at MIR level)
-                block.instrs.push(MirInstr::ArraySet {
-                    array: array_name.clone(),
-                    index: index_tmp,
-                    value: value_tmp,
-                });
+                if is_map {
+                    // Emit MapSet for maps
+                    block.instrs.push(MirInstr::MapSet {
+                        map: array_name.clone(),
+                        key: index_tmp,
+                        value: value_tmp,
+                    });
+                } else {
+                    // Emit ArraySet for arrays
+                    block.instrs.push(MirInstr::ArraySet {
+                        array: array_name.clone(),
+                        index: index_tmp,
+                        value: value_tmp,
+                    });
+                }
             }
         }
 

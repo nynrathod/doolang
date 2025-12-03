@@ -130,9 +130,16 @@ impl<'ctx> CodeGen<'ctx> {
         // which functions return heap values and what their return types are
         for func in &program.functions {
             if let Some(ref ret_type_str) = func.return_type {
-                // Store the return type for all functions
+                // Store the return type for all functions under Doo name
                 self.function_return_types
                     .insert(func.name.clone(), ret_type_str.clone());
+
+                // For FFI functions, also store under the FFI symbol name
+                // This ensures lookup works when we resolve File::Exists -> doo_file_exists
+                if let Some(ref ffi_symbol) = func.ffi_symbol {
+                    self.function_return_types
+                        .insert(ffi_symbol.clone(), ret_type_str.clone());
+                }
 
                 // Mark functions that return heap-allocated types
                 if ret_type_str.contains("Array")
@@ -140,6 +147,9 @@ impl<'ctx> CodeGen<'ctx> {
                     || ret_type_str.contains("Str")
                 {
                     self.functions_returning_heap.insert(func.name.clone());
+                    if let Some(ref ffi_symbol) = func.ffi_symbol {
+                        self.functions_returning_heap.insert(ffi_symbol.clone());
+                    }
                 }
             }
 
@@ -147,6 +157,11 @@ impl<'ctx> CodeGen<'ctx> {
             if let Some(ref err_type_str) = func.error_type {
                 self.function_error_types
                     .insert(func.name.clone(), err_type_str.clone());
+                // Also store under FFI symbol name
+                if let Some(ref ffi_symbol) = func.ffi_symbol {
+                    self.function_error_types
+                        .insert(ffi_symbol.clone(), err_type_str.clone());
+                }
             }
         }
 

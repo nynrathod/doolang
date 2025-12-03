@@ -1098,6 +1098,136 @@ impl<'ctx> CodeGen<'ctx> {
 
                 let index_val = self.resolve_value(index).into_int_value();
 
+                // === BOUNDS CHECKING FOR ARRAY ACCESS ===
+                // Array layout: [RC (i32)] [Length (i32)] [Elements...] at offset +8
+                // Data pointer points to Elements, so length is at offset -4
+                let heap_ptr = unsafe {
+                    self.builder
+                        .build_gep(
+                            self.context.i8_type(),
+                            array_ptr,
+                            &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                            "heap_ptr_bounds",
+                        )
+                        .unwrap()
+                };
+
+                let len_field_ptr = unsafe {
+                    self.builder
+                        .build_gep(
+                            self.context.i8_type(),
+                            heap_ptr,
+                            &[self.context.i32_type().const_int(4, false)],
+                            "len_field_ptr_bounds",
+                        )
+                        .unwrap()
+                };
+
+                let len_ptr_cast = self
+                    .builder
+                    .build_pointer_cast(
+                        len_field_ptr,
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        "len_ptr_cast_bounds",
+                    )
+                    .unwrap();
+
+                let array_length = self
+                    .builder
+                    .build_load(self.context.i32_type(), len_ptr_cast, "array_length_bounds")
+                    .unwrap()
+                    .into_int_value();
+
+                // Check if index >= length (unsigned comparison handles negative indices too)
+                let is_out_of_bounds = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::UGE,
+                        index_val,
+                        array_length,
+                        "is_out_of_bounds",
+                    )
+                    .unwrap();
+
+                // Create blocks for bounds check
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let panic_block = self
+                    .context
+                    .append_basic_block(current_fn, "array_bounds_panic");
+                let continue_block = self
+                    .context
+                    .append_basic_block(current_fn, "array_bounds_ok");
+
+                self.builder
+                    .build_conditional_branch(is_out_of_bounds, panic_block, continue_block)
+                    .unwrap();
+
+                // Panic block: print error and exit
+                self.builder.position_at_end(panic_block);
+
+                // Get printf function
+                let printf_type = self.context.i32_type().fn_type(
+                    &[self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .into()],
+                    true,
+                );
+                let printf_fn = self
+                    .module
+                    .get_function("printf")
+                    .unwrap_or_else(|| self.module.add_function("printf", printf_type, None));
+
+                // Create error message format string
+                let error_fmt = self
+                    .builder
+                    .build_global_string_ptr(
+                        "panic: array index out of bounds: index %d, length %d\n",
+                        "array_bounds_error_fmt",
+                    )
+                    .unwrap();
+
+                self.builder
+                    .build_call(
+                        printf_fn,
+                        &[
+                            error_fmt.as_pointer_value().into(),
+                            index_val.into(),
+                            array_length.into(),
+                        ],
+                        "print_bounds_error",
+                    )
+                    .unwrap();
+
+                // Call exit(1)
+                let exit_type = self
+                    .context
+                    .void_type()
+                    .fn_type(&[self.context.i32_type().into()], false);
+                let exit_fn = self
+                    .module
+                    .get_function("exit")
+                    .unwrap_or_else(|| self.module.add_function("exit", exit_type, None));
+
+                self.builder
+                    .build_call(
+                        exit_fn,
+                        &[self.context.i32_type().const_int(1, false).into()],
+                        "exit_bounds",
+                    )
+                    .unwrap();
+
+                self.builder.build_unreachable().unwrap();
+
+                // Continue block: proceed with element access
+                self.builder.position_at_end(continue_block);
+                // === END BOUNDS CHECKING ===
+
                 // Track that this ArrayGet result came from this source array
                 self.arrayget_sources.insert(name.clone(), array.clone());
 
@@ -1141,7 +1271,8 @@ impl<'ctx> CodeGen<'ctx> {
                     match metadata.element_type.as_str() {
                         "Int" => self.context.i32_type().into(),
                         "Float" => self.context.f64_type().into(),
-                        "Bool" => self.context.bool_type().into(),
+                        // Bool arrays store bools as i32 (not i1) for consistency with ConstBool
+                        "Bool" => self.context.i32_type().into(),
                         "Str" => self
                             .context
                             .ptr_type(inkwell::AddressSpace::default())
@@ -1172,7 +1303,8 @@ impl<'ctx> CodeGen<'ctx> {
                             found_type = match metadata.element_type.as_str() {
                                 "Int" => self.context.i32_type().into(),
                                 "Float" => self.context.f64_type().into(),
-                                "Bool" => self.context.bool_type().into(),
+                                // Bool arrays store bools as i32 (not i1) for consistency with ConstBool
+                                "Bool" => self.context.i32_type().into(),
                                 "Str" => self
                                     .context
                                     .ptr_type(inkwell::AddressSpace::default())
@@ -1215,10 +1347,16 @@ impl<'ctx> CodeGen<'ctx> {
                         .insert(name.clone(), "Float".to_string());
                     // eprintln!("[DEBUG] ArrayGet result {} is Float", name);
                 } else if elem_type.is_int_type() {
-                    let int_type = elem_type.into_int_type();
-                    if int_type.get_bit_width() == 1 {
+                    // Check if this is a Bool array element (stored as i32 but typed as Bool)
+                    let is_bool_array = self
+                        .array_metadata
+                        .get(array)
+                        .map(|m| m.element_type == "Bool")
+                        .unwrap_or(false);
+                    if is_bool_array {
                         self.variable_types.insert(name.clone(), "Bool".to_string());
-                        // eprintln!("[DEBUG] ArrayGet result {} is Bool", name);
+                        self.boolean_temps.insert(name.clone());
+                        // eprintln!("[DEBUG] ArrayGet result {} is Bool (from Bool array)", name);
                     } else {
                         self.variable_types.insert(name.clone(), "Int".to_string());
                         // eprintln!("[DEBUG] ArrayGet result {} is Int", name);
@@ -1231,19 +1369,19 @@ impl<'ctx> CodeGen<'ctx> {
                 }
 
                 // Track if this is a heap-allocated value and increment RC
+                // IMPORTANT: Do NOT track string array elements for RC cleanup!
+                // String arrays contain pointers to string constants (global data),
+                // NOT heap-allocated strings. These constants don't have RC headers,
+                // and trying to decref them causes segfaults.
+                // Only track for heap_strings if this is from a heap-allocated source
+                // (not from a string literal array).
                 if elem_type.is_pointer_type() && self.array_contains_strings(array) {
-                    self.heap_strings.insert(name.clone());
-
-                    // Mark ALL ArrayGet results as loop-local
-                    // This is safe because ArrayGet is primarily used in loop contexts
-                    // Even if not technically in a loop, these are temporary extracted values
-                    // that should not be cleaned up at function level (they'll be cleaned at loop exit)
+                    // Mark as loop-local so it doesn't get cleaned up at function exit
+                    // but do NOT add to heap_strings - string constants don't have RC headers
                     self.loop_local_vars.insert(name.clone());
 
-                    // TEMPORARILY DISABLED: Skip incref for debugging
-                    // The issue is that string constants don't have RC headers
-                    // and we're crashing when trying to incref them
-                    // TODO: Fix this properly by detecting constants vs heap strings
+                    // Track variable type for proper printing
+                    self.variable_types.insert(name.clone(), "Str".to_string());
                 }
 
                 Some(elem_val)
@@ -3406,6 +3544,144 @@ impl<'ctx> CodeGen<'ctx> {
                 let index_val = self.resolve_value(index).into_int_value();
                 let value_val = self.resolve_value(value);
 
+                // === BOUNDS CHECKING FOR ARRAY SET ===
+                // Array layout: [RC (i32)] [Length (i32)] [Elements...] at offset +8
+                // Data pointer points to Elements, so length is at offset -4
+                let heap_ptr_set = unsafe {
+                    self.builder
+                        .build_gep(
+                            self.context.i8_type(),
+                            array_ptr,
+                            &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                            "heap_ptr_set_bounds",
+                        )
+                        .unwrap()
+                };
+
+                let len_field_ptr_set = unsafe {
+                    self.builder
+                        .build_gep(
+                            self.context.i8_type(),
+                            heap_ptr_set,
+                            &[self.context.i32_type().const_int(4, false)],
+                            "len_field_ptr_set_bounds",
+                        )
+                        .unwrap()
+                };
+
+                let len_ptr_cast_set = self
+                    .builder
+                    .build_pointer_cast(
+                        len_field_ptr_set,
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        "len_ptr_cast_set_bounds",
+                    )
+                    .unwrap();
+
+                let array_length_set = self
+                    .builder
+                    .build_load(
+                        self.context.i32_type(),
+                        len_ptr_cast_set,
+                        "array_length_set_bounds",
+                    )
+                    .unwrap()
+                    .into_int_value();
+
+                // Check if index >= length (unsigned comparison handles negative indices too)
+                let is_out_of_bounds_set = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::UGE,
+                        index_val,
+                        array_length_set,
+                        "is_out_of_bounds_set",
+                    )
+                    .unwrap();
+
+                // Create blocks for bounds check
+                let current_fn_set = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let panic_block_set = self
+                    .context
+                    .append_basic_block(current_fn_set, "array_set_bounds_panic");
+                let continue_block_set = self
+                    .context
+                    .append_basic_block(current_fn_set, "array_set_bounds_ok");
+
+                self.builder
+                    .build_conditional_branch(
+                        is_out_of_bounds_set,
+                        panic_block_set,
+                        continue_block_set,
+                    )
+                    .unwrap();
+
+                // Panic block: print error and exit
+                self.builder.position_at_end(panic_block_set);
+
+                // Get printf function
+                let printf_type_set = self.context.i32_type().fn_type(
+                    &[self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .into()],
+                    true,
+                );
+                let printf_fn_set = self
+                    .module
+                    .get_function("printf")
+                    .unwrap_or_else(|| self.module.add_function("printf", printf_type_set, None));
+
+                // Create error message format string
+                let error_fmt_set = self
+                    .builder
+                    .build_global_string_ptr(
+                        "panic: array index out of bounds on assignment: index %d, length %d\n",
+                        "array_set_bounds_error_fmt",
+                    )
+                    .unwrap();
+
+                self.builder
+                    .build_call(
+                        printf_fn_set,
+                        &[
+                            error_fmt_set.as_pointer_value().into(),
+                            index_val.into(),
+                            array_length_set.into(),
+                        ],
+                        "print_set_bounds_error",
+                    )
+                    .unwrap();
+
+                // Call exit(1)
+                let exit_type_set = self
+                    .context
+                    .void_type()
+                    .fn_type(&[self.context.i32_type().into()], false);
+                let exit_fn_set = self
+                    .module
+                    .get_function("exit")
+                    .unwrap_or_else(|| self.module.add_function("exit", exit_type_set, None));
+
+                self.builder
+                    .build_call(
+                        exit_fn_set,
+                        &[self.context.i32_type().const_int(1, false).into()],
+                        "exit_set_bounds",
+                    )
+                    .unwrap();
+
+                self.builder.build_unreachable().unwrap();
+
+                // Continue block: proceed with element assignment
+                self.builder.position_at_end(continue_block_set);
+                // === END BOUNDS CHECKING ===
+
                 // Get array metadata
                 if let Some(metadata) = self.array_metadata.get(array).cloned() {
                     let elem_type = self.get_array_element_type(array);
@@ -3451,33 +3727,240 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // Get map metadata
                 if let Some(map_metadata) = self.map_metadata.get(map).cloned() {
-                    let value_type: BasicTypeEnum = match map_metadata.value_type.as_str() {
+                    let key_type_str = map_metadata.key_type.clone();
+                    let value_type_str = map_metadata.value_type.clone();
+                    let key_is_string = map_metadata.key_is_string;
+
+                    let value_type: BasicTypeEnum = match value_type_str.as_str() {
                         "Str" => self
                             .context
                             .ptr_type(inkwell::AddressSpace::default())
                             .into(),
                         "Int" => self.context.i32_type().into(),
-                        "Bool" => self.context.bool_type().into(),
+                        "Bool" => self.context.i32_type().into(), // Use i32 for Bool
                         "Float" => self.context.f64_type().into(),
                         _ => self.context.i32_type().into(),
                     };
 
-                    // For now, simplified implementation: use the key_val as an index
-                    let index_val = key_val.into_int_value();
+                    let key_type_llvm: BasicTypeEnum = if key_is_string {
+                        self.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into()
+                    } else if key_type_str == "Float" {
+                        self.context.f64_type().into()
+                    } else if key_type_str == "Bool" {
+                        self.context.i32_type().into()
+                    } else {
+                        self.context.i32_type().into()
+                    };
 
-                    // GEP to get element pointer in map values array
-                    let elem_ptr = unsafe {
+                    let pair_type = self
+                        .context
+                        .struct_type(&[key_type_llvm, value_type], false);
+
+                    let index_val = if key_is_string {
+                        // String key: use linear search with strcmp
+                        let key_ptr = key_val.into_pointer_value();
+
+                        let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
+                            let i8_ptr_type =
+                                self.context.ptr_type(inkwell::AddressSpace::default());
+                            let fn_type = self
+                                .context
+                                .i32_type()
+                                .fn_type(&[i8_ptr_type.into(), i8_ptr_type.into()], false);
+                            self.module.add_function("strcmp", fn_type, None)
+                        });
+
+                        let map_length = map_metadata.length;
+
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let loop_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_search_loop");
+                        let found_block =
+                            self.context.append_basic_block(current_fn, "mapset_found");
+                        let not_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_not_found");
+                        let continue_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_continue");
+
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let entry_block = current_fn.get_first_basic_block().unwrap();
+                        if let Some(terminator) = entry_block.get_terminator() {
+                            self.builder.position_before(&terminator);
+                        } else {
+                            self.builder.position_at_end(entry_block);
+                        }
+
+                        let index_alloca = self
+                            .builder
+                            .build_alloca(self.context.i32_type(), "mapset_search_index")
+                            .unwrap();
+
+                        self.builder.position_at_end(current_block);
+
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        self.builder.position_at_end(loop_block);
+                        let current_index = self
+                            .builder
+                            .build_load(
+                                self.context.i32_type(),
+                                index_alloca,
+                                "mapset_current_index",
+                            )
+                            .unwrap()
+                            .into_int_value();
+                        let length_val =
+                            self.context.i32_type().const_int(map_length as u64, false);
+                        let is_in_bounds = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                current_index,
+                                length_val,
+                                "mapset_is_in_bounds",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(is_in_bounds, found_block, not_found_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(found_block);
+
+                        let pair_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    pair_type,
+                                    map_ptr,
+                                    &[current_index],
+                                    "mapset_pair_ptr",
+                                )
+                                .unwrap()
+                        };
+
+                        let stored_key_ptr = self
+                            .builder
+                            .build_struct_gep(pair_type, pair_ptr, 0, "mapset_stored_key_ptr")
+                            .unwrap();
+
+                        let stored_key = self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                stored_key_ptr,
+                                "mapset_stored_key",
+                            )
+                            .unwrap()
+                            .into_pointer_value();
+
+                        let cmp_result = self
+                            .builder
+                            .build_call(
+                                strcmp_fn,
+                                &[stored_key.into(), key_ptr.into()],
+                                "mapset_strcmp_result",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_int_value();
+
+                        let zero = self.context.i32_type().const_int(0, false);
+                        let keys_match = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                cmp_result,
+                                zero,
+                                "mapset_keys_match",
+                            )
+                            .unwrap();
+
+                        let match_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_match_found");
+                        let increment_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_increment");
+                        self.builder
+                            .build_conditional_branch(
+                                keys_match,
+                                match_found_block,
+                                increment_block,
+                            )
+                            .unwrap();
+
+                        self.builder.position_at_end(match_found_block);
+                        self.builder
+                            .build_store(index_alloca, current_index)
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(increment_block);
+                        let next_index = self
+                            .builder
+                            .build_int_add(
+                                current_index,
+                                self.context.i32_type().const_int(1, false),
+                                "mapset_next_index",
+                            )
+                            .unwrap();
+                        self.builder.build_store(index_alloca, next_index).unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        // Not found: use index 0 as fallback (key not in map)
+                        self.builder.position_at_end(not_found_block);
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(continue_block);
+                        self.builder
+                            .build_load(self.context.i32_type(), index_alloca, "mapset_final_index")
+                            .unwrap()
+                            .into_int_value()
+                    } else {
+                        // Non-string key: use directly as index
+                        key_val.into_int_value()
+                    };
+
+                    // GEP to get pair pointer, then value field
+                    let pair_ptr = unsafe {
                         self.builder.build_in_bounds_gep(
-                            value_type,
+                            pair_type,
                             map_ptr,
                             &[index_val],
-                            "elem_ptr",
+                            "mapset_elem_pair_ptr",
                         )
                     }
                     .unwrap();
 
+                    // Get value field pointer (index 1 in pair struct)
+                    let value_ptr = self
+                        .builder
+                        .build_struct_gep(pair_type, pair_ptr, 1, "mapset_value_ptr")
+                        .unwrap();
+
                     // Store value at element pointer
-                    self.builder.build_store(elem_ptr, value_val).unwrap();
+                    self.builder.build_store(value_ptr, value_val).unwrap();
 
                     None
                 } else {

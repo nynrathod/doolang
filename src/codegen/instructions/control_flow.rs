@@ -114,7 +114,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         if let Some(result) = call_result.try_as_basic_value().left() {
             if !dest.is_empty() {
-                // Check if this is an FFI function with error type</parameter>
+                // Check if this is an FFI function with error type
                 // FFI functions return a pointer to Result struct, not struct by value
                 let is_ffi_result = {
                     // Check both the original Doo function name and the resolved C symbol name</parameter>
@@ -643,7 +643,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                             if let Some(return_type_str) = return_type_str {
                                 // Extract the base type for single-value returns
-                                if return_type_str.contains("Bool") {
+                                if return_type_str == "Bool" || return_type_str.contains("Bool") {
                                     self.variable_types
                                         .insert(dest_name.clone(), "Bool".to_string());
                                     self.boolean_temps.insert(dest_name.clone());

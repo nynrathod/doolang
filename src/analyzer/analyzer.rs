@@ -1295,6 +1295,13 @@ impl SemanticAnalyzer {
                             // Copy enum definition to current enum table
                             if let Some(variants) = imported_analyzer.enum_table.get(name) {
                                 self.enum_table.insert(name.clone(), variants.clone());
+                                // Also copy enum_variant_order for proper printing
+                                if let Some(variant_order) =
+                                    imported_analyzer.enum_variant_order.get(name)
+                                {
+                                    self.enum_variant_order
+                                        .insert(name.clone(), variant_order.clone());
+                                }
                                 // Also add to symbol_table for type resolution
                                 self.symbol_table.insert(
                                     name.clone(),

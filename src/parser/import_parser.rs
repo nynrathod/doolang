@@ -62,11 +62,14 @@ impl<'a> Parser<'a> {
                         items: vec![],
                     });
                 } else if self.peek_is(TokenType::As) {
-                    // Aliased import
+                    // Namespace aliased import: import std::Array as Arr;
+                    // Add the module name to the path first
+                    path.push(ident_str.clone());
                     self.advance(); // consume 'as'
                     let alias_tok = self.expect(TokenType::Identifier)?;
                     let alias = alias_tok.value.to_string();
                     self.expect(TokenType::Semi)?;
+                    // Use SymbolWithAlias where symbol is module name and alias is the alias
                     return Ok(AstNode::Import {
                         path,
                         items: vec![ImportItem::SymbolWithAlias(ident_str, alias)],
