@@ -3,128 +3,76 @@
 // This file contains only stdlib-specific array utilities
 
 fn Unique(arr: [Int]) -> [Int] {
-   let mut result: [Int] = [];
-   let len: Int = arr.len();
+    let mut result: [Int] = [];
+    let len: Int = arr.len();
 
-   for i in 0..len {
-       let item: Int = arr[i];
-       if result.contains(item) == false {
-           result.push(item);
-       }
-   }
+    for i in 0..len {
+        let item: Int = arr[i];
+        if result.contains(item) == false {
+            result.push(item);
+        }
+    }
 
-   return result;
-}
-
-fn Fill(length: Int, value: Int) -> [Int] {
-   let mut result: [Int] = [];
-
-   for i in 0..length {
-       result.push(value);
-   }
-
-   return result;
+    return result;
 }
 
 fn Range(start: Int, end: Int) -> [Int] {
-   let mut result: [Int] = [];
+    let mut result: [Int] = [];
 
-   if start > end {
-       return result;
-   }
+    if start > end {
+        return result;
+    }
 
-   for i in start..end {
-       result.push(i);
-   }
+    for i in start..end {
+        result.push(i);
+    }
 
-   return result;
+    return result;
 }
 
 fn Sum(arr: [Int]) -> Int {
-   let mut total: Int = 0;
-   let len: Int = arr.len();
+    let mut total: Int = 0;
+    let len: Int = arr.len();
 
-   for i in 0..len {
-       total = total + arr[i];
-   }
+    for i in 0..len {
+        total = total + arr[i];
+    }
 
-   return total;
+    return total;
 }
 
-fn Average(arr: [Int]) -> Int {
-   let len: Int = arr.len();
-   if len == 0 {
-       return 0;
-   }
+fn MinArr(arr: [Int]) -> Int {
+    let len: Int = arr.len();
+    if len == 0 {
+        return 0;
+    }
 
-   let total: Int = Sum(arr);
-   return total / len;
+    let mut minVal: Int = arr[0];
+
+    for i in 1..len {
+        let item: Int = arr[i];
+        if item < minVal {
+            minVal = item;
+        }
+    }
+
+    return minVal;
 }
 
-fn MinA(arr: [Int]) -> Int {
-   let len: Int = arr.len();
-   if len == 0 {
-       return 0;
-   }
+fn MaxArr(arr: [Int]) -> Int {
+    let len: Int = arr.len();
+    if len == 0 {
+        return 0;
+    }
 
-   let mut minVal: Int = arr[0];
+    let mut maxVal: Int = arr[0];
 
-   for i in 1..len {
-       let item: Int = arr[i];
-       if item < minVal {
-           minVal = item;
-       }
-   }
+    for i in 1..len {
+        let item: Int = arr[i];
+        if item > maxVal {
+            maxVal = item;
+        }
+    }
 
-   return minVal;
-}
-
-fn MaxA(arr: [Int]) -> Int {
-   let len: Int = arr.len();
-   if len == 0 {
-       return 0;
-   }
-
-   let mut maxVal: Int = arr[0];
-
-   for i in 1..len {
-       let item: Int = arr[i];
-       if item > maxVal {
-           maxVal = item;
-       }
-   }
-
-   return maxVal;
-}
-
-fn Flatten(arr: [[Int]]) -> [Int] {
-   let mut result: [Int] = [];
-   let len: Int = arr.len();
-
-   for i in 0..len {
-       let subArr: [Int] = arr[i];
-       let subLen: Int = subArr.len();
-
-       for j in 0..subLen {
-           result.push(subArr[j]);
-       }
-   }
-
-   return result;
-}
-
-fn Concat(arr1: [Int], arr2: [Int]) -> [Int] {
-   let mut result: [Int] = [];
-   let len1: Int = arr1.len();
-   let len2: Int = arr2.len();
-
-   for i in 0..len1 {
-       result.push(arr1[i]);
-   }
-
-   for i in 0..len2 {
-       result.push(arr2[i]);
-   }
-
-   return result;
+    return maxVal;
 }

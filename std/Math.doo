@@ -55,16 +55,6 @@ fn Max(a: Int, b: Int) -> Int {
     return b;
 }
 
-fn Clamp(value: Int, minVal: Int, maxVal: Int) -> Int {
-    if value < minVal {
-        return minVal;
-    }
-    if value > maxVal {
-        return maxVal;
-    }
-    return value;
-}
-
 fn Floor(x: Float) -> Int {
     return x as Int;
 }
@@ -87,12 +77,4 @@ fn Round(x: Float) -> Int {
     }
     let adjusted = x - 0.5;
     return adjusted as Int;
-}
-
-fn IsEven(x: Int) -> Bool {
-    return x % 2 == 0;
-}
-
-fn IsOdd(x: Int) -> Bool {
-    return x % 2 != 0;
 }
