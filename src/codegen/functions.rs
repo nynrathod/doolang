@@ -1407,6 +1407,29 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.context.ptr_type(AddressSpace::default()).into(),
                             );
                         }
+                        // Array methods that return arrays (pointers)
+                        else if method == "map" || method == "filter" {
+                            var_types.insert(
+                                dest.clone(),
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                            );
+                        }
+                        // Array reduce returns the accumulator type (default to i32)
+                        else if method == "reduce" {
+                            var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
+                        // String startsWith/endsWith/contains/includes return bool (i32)
+                        else if method == "startsWith"
+                            || method == "endsWith"
+                            || method == "contains"
+                            || method == "includes"
+                        {
+                            var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
+                        // String len returns i32
+                        else if method == "len" {
+                            var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
                     }
                     // Binary operations - determine type from op string
                     crate::mir::MirInstr::BinaryOp(op, name, ..) => {

@@ -1235,10 +1235,26 @@ impl<'ctx> CodeGen<'ctx> {
                 // Implement array.filter(closure) with proper closure execution
                 if let Some(metadata) = self.array_metadata.get(object).cloned() {
                     let array_ptr = self.resolve_value(object).into_pointer_value();
+                    let is_string_array =
+                        metadata.contains_strings || metadata.element_type == "Str";
 
                     // Check if the argument is a closure
                     if !self.is_closure(&args[0]) {
                         return None;
+                    }
+
+                    // Generate string filter closure on-demand if needed for string arrays
+                    if is_string_array {
+                        if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
+                        {
+                            if self.get_string_filter_closure_function(&args[0]).is_none() {
+                                self.generate_string_filter_closure(
+                                    &args[0],
+                                    &params,
+                                    &Some(body_ast),
+                                );
+                            }
+                        }
                     }
 
                     // Read runtime length
@@ -1283,10 +1299,10 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
 
-                    // Allocate new result array
+                    // Allocate new result array - use pointer type for string arrays
                     let malloc_fn = self.get_or_declare_malloc();
-                    let array_type = self.context.i32_type().array_type(100);
-                    let array_size = array_type.size_of().unwrap();
+                    let elem_size = if is_string_array { 8u64 } else { 4u64 };
+                    let array_size = self.context.i64_type().const_int(elem_size * 100, false);
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
                         .builder
@@ -1415,42 +1431,107 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Check element value by calling closure
                     self.builder.position_at_end(check_block);
-                    let elem_ptr = unsafe {
-                        self.builder
-                            .build_in_bounds_gep(
-                                self.context.i32_type(),
-                                array_ptr,
-                                &[counter],
-                                "elem_ptr_filter",
-                            )
-                            .unwrap()
-                    };
-                    let elem = self
-                        .builder
-                        .build_load(self.context.i32_type(), elem_ptr, "elem_filter")
-                        .unwrap()
-                        .into_int_value();
 
-                    // Call the closure with the element
-                    let closure_result = self.call_closure_with_one_arg(&args[0], elem.into());
-
-                    let should_include = if let Some(result) = closure_result {
-                        if result.is_int_value() {
-                            let result_int = result.into_int_value();
-                            // Treat non-zero as true
+                    // Create alloca for element to use after phi (needed for string case)
+                    let elem_alloca = if is_string_array {
+                        Some(
                             self.builder
-                                .build_int_compare(
-                                    inkwell::IntPredicate::NE,
-                                    result_int,
-                                    self.context.i32_type().const_int(0, false),
-                                    "should_include",
+                                .build_alloca(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    "elem_store_filter",
+                                )
+                                .unwrap(),
+                        )
+                    } else {
+                        None
+                    };
+
+                    let should_include = if is_string_array {
+                        // String array filter: load pointer, call string filter closure
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_filter_str",
                                 )
                                 .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                elem_ptr,
+                                "elem_filter_str",
+                            )
+                            .unwrap();
+
+                        // Store element for later use
+                        self.builder
+                            .build_store(elem_alloca.unwrap(), elem)
+                            .unwrap();
+
+                        // Call the string filter closure
+                        let closure_result =
+                            self.call_string_filter_closure_with_one_arg(&args[0], elem);
+
+                        if let Some(result) = closure_result {
+                            if result.is_int_value() {
+                                let result_int = result.into_int_value();
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::NE,
+                                        result_int,
+                                        self.context.i32_type().const_int(0, false),
+                                        "should_include_str",
+                                    )
+                                    .unwrap()
+                            } else {
+                                self.context.bool_type().const_int(0, false)
+                            }
                         } else {
                             self.context.bool_type().const_int(0, false)
                         }
                     } else {
-                        self.context.bool_type().const_int(0, false)
+                        // Int/Bool array filter
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_filter",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.i32_type(), elem_ptr, "elem_filter")
+                            .unwrap()
+                            .into_int_value();
+
+                        // Call the closure with the element
+                        let closure_result = self.call_closure_with_one_arg(&args[0], elem.into());
+
+                        if let Some(result) = closure_result {
+                            if result.is_int_value() {
+                                let result_int = result.into_int_value();
+                                // Treat non-zero as true
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::NE,
+                                        result_int,
+                                        self.context.i32_type().const_int(0, false),
+                                        "should_include",
+                                    )
+                                    .unwrap()
+                            } else {
+                                self.context.bool_type().const_int(0, false)
+                            }
+                        } else {
+                            self.context.bool_type().const_int(0, false)
+                        }
                     };
 
                     let skip_block = self.context.append_basic_block(current_fn, "filter_skip");
@@ -1466,17 +1547,57 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
 
-                    let result_elem_ptr = unsafe {
-                        self.builder
-                            .build_in_bounds_gep(
-                                self.context.i32_type(),
-                                new_array_ptr,
-                                &[result_idx],
-                                "result_elem_ptr",
+                    if is_string_array {
+                        // Load element from alloca and store to result
+                        let elem = self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                elem_alloca.unwrap(),
+                                "elem_reload_str",
                             )
-                            .unwrap()
-                    };
-                    self.builder.build_store(result_elem_ptr, elem).unwrap();
+                            .unwrap();
+
+                        let result_elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    new_array_ptr,
+                                    &[result_idx],
+                                    "result_elem_ptr_str",
+                                )
+                                .unwrap()
+                        };
+                        self.builder.build_store(result_elem_ptr, elem).unwrap();
+                    } else {
+                        // Re-load element for int arrays
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_filter_reload",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.i32_type(), elem_ptr, "elem_filter_reload")
+                            .unwrap();
+
+                        let result_elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    new_array_ptr,
+                                    &[result_idx],
+                                    "result_elem_ptr",
+                                )
+                                .unwrap()
+                        };
+                        self.builder.build_store(result_elem_ptr, elem).unwrap();
+                    }
 
                     let new_result_idx = self
                         .builder
@@ -1517,6 +1638,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                     let mut new_metadata = metadata.clone();
                     new_metadata.length = 100;
+                    new_metadata.contains_strings = is_string_array;
                     self.temp_values
                         .insert(dest.to_string(), result_data_ptr.into());
                     self.heap_arrays.insert(dest.to_string());
@@ -1530,10 +1652,22 @@ impl<'ctx> CodeGen<'ctx> {
                 // Implement array.map(closure) with proper closure execution
                 if let Some(metadata) = self.array_metadata.get(object).cloned() {
                     let array_ptr = self.resolve_value(object).into_pointer_value();
+                    let is_string_array =
+                        metadata.contains_strings || metadata.element_type == "Str";
 
                     // Check if the argument is a closure
                     if !self.is_closure(&args[0]) {
                         return None;
+                    }
+
+                    // Generate string closure on-demand if needed for string arrays
+                    if is_string_array {
+                        if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
+                        {
+                            if self.get_string_closure_function(&args[0]).is_none() {
+                                self.generate_string_closure(&args[0], &params, &Some(body_ast));
+                            }
+                        }
                     }
 
                     // Read runtime length
@@ -1574,10 +1708,10 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
 
-                    // Allocate new array
+                    // Allocate new array - use pointer type for string arrays
                     let malloc_fn = self.get_or_declare_malloc();
-                    let array_type = self.context.i32_type().array_type(100);
-                    let array_size = array_type.size_of().unwrap();
+                    let elem_size = if is_string_array { 8u64 } else { 4u64 }; // ptr is 8 bytes, i32 is 4 bytes
+                    let array_size = self.context.i64_type().const_int(elem_size * 100, false);
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
                         .builder
@@ -1688,49 +1822,105 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Load and transform element using closure
                     self.builder.position_at_end(check_block);
-                    let elem_ptr = unsafe {
-                        self.builder
-                            .build_in_bounds_gep(
-                                self.context.i32_type(),
-                                array_ptr,
-                                &[counter],
-                                "elem_ptr_map",
+
+                    if is_string_array {
+                        // String array map: load pointer, call string closure, store pointer result
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_map_str",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                elem_ptr,
+                                "elem_map_str",
                             )
+                            .unwrap();
+
+                        // Call the string closure with the element
+                        let closure_result = self.call_string_closure_with_one_arg(&args[0], elem);
+
+                        let transformed = if let Some(result) = closure_result {
+                            if result.is_pointer_value() {
+                                result.into_pointer_value()
+                            } else {
+                                self.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .const_null()
+                            }
+                        } else {
+                            self.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null()
+                        };
+
+                        // Store transformed element (pointer)
+                        let result_elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    new_array_ptr,
+                                    &[counter],
+                                    "result_elem_ptr_map_str",
+                                )
+                                .unwrap()
+                        };
+                        self.builder
+                            .build_store(result_elem_ptr, transformed)
+                            .unwrap();
+                    } else {
+                        // Int/Bool array map: load i32, call int closure, store i32 result
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_map",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(self.context.i32_type(), elem_ptr, "elem_map")
                             .unwrap()
-                    };
-                    let elem = self
-                        .builder
-                        .build_load(self.context.i32_type(), elem_ptr, "elem_map")
-                        .unwrap()
-                        .into_int_value();
+                            .into_int_value();
 
-                    // Call the closure with the element
-                    let closure_result = self.call_closure_with_one_arg(&args[0], elem.into());
+                        // Call the closure with the element
+                        let closure_result = self.call_closure_with_one_arg(&args[0], elem.into());
 
-                    let transformed = if let Some(result) = closure_result {
-                        if result.is_int_value() {
-                            result.into_int_value()
+                        let transformed = if let Some(result) = closure_result {
+                            if result.is_int_value() {
+                                result.into_int_value()
+                            } else {
+                                self.context.i32_type().const_int(0, false)
+                            }
                         } else {
                             self.context.i32_type().const_int(0, false)
-                        }
-                    } else {
-                        self.context.i32_type().const_int(0, false)
-                    };
+                        };
 
-                    // Store transformed element
-                    let result_elem_ptr = unsafe {
+                        // Store transformed element
+                        let result_elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.i32_type(),
+                                    new_array_ptr,
+                                    &[counter],
+                                    "result_elem_ptr_map",
+                                )
+                                .unwrap()
+                        };
                         self.builder
-                            .build_in_bounds_gep(
-                                self.context.i32_type(),
-                                new_array_ptr,
-                                &[counter],
-                                "result_elem_ptr_map",
-                            )
-                            .unwrap()
-                    };
-                    self.builder
-                        .build_store(result_elem_ptr, transformed)
-                        .unwrap();
+                            .build_store(result_elem_ptr, transformed)
+                            .unwrap();
+                    }
 
                     let next_counter = self
                         .builder
@@ -1747,6 +1937,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                     let mut new_metadata = metadata.clone();
                     new_metadata.length = 100;
+                    new_metadata.contains_strings = is_string_array;
                     self.temp_values
                         .insert(dest.to_string(), result_data_ptr.into());
                     self.heap_arrays.insert(dest.to_string());

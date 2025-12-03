@@ -1,5 +1,5 @@
 use crate::limits::CODEGEN_MAX_DEPTH;
-use crate::parser::ast::TypeNode;
+use crate::parser::ast::{AstNode, TypeNode};
 use inkwell::{
     builder::Builder,
     context::Context,
@@ -137,6 +137,9 @@ pub struct CodeGen<'ctx> {
     // Current function context
     pub current_function_name: Option<String>, // Track the name of the function being currently generated
     pub current_error_type: Option<String>, // Track the error type of the current function (for Result handling)
+
+    // Closure body storage for on-demand string closure generation
+    pub closure_bodies: HashMap<String, (Vec<String>, Box<AstNode>)>, // Maps closure name to (params, body_ast)
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -210,6 +213,7 @@ impl<'ctx> CodeGen<'ctx> {
             struct_table: HashMap::new(),
             current_function_name: None,
             current_error_type: None,
+            closure_bodies: HashMap::new(),
         }
     }
 
