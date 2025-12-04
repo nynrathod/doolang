@@ -74,11 +74,6 @@ pub fn build_let_decl(builder: &mut MirBuilder, node: &AstNode) -> Vec<MirInstr>
 
                 // Insert IncRef ONLY when copying from an existing variable.
                 // Don't incref for newly created temps (they already have RC=1).
-                // DEBUG: trace incref generation
-                eprintln!(
-                    "[DEBUG] needs_rc={}, is_copying_variable={}, value_tmp='{}', name='{}'",
-                    needs_rc, is_copying_variable, value_tmp, name
-                );
                 if needs_rc && is_copying_variable {
                     instrs.push(MirInstr::IncRef {
                         value: name.clone(),

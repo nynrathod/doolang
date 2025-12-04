@@ -63,22 +63,10 @@ impl<'ctx> CodeGen<'ctx> {
                 // and we know the expected parameter type
                 let is_heap_string = self.heap_strings.contains(arg);
 
-                // DEBUG: Print conversion info
-                if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                    eprintln!(
-                        "[DEBUG] Call arg[{}]: '{}', is_heap_string={}, param_types={:?}",
-                        i, arg, is_heap_string, param_types
-                    );
-                }
-
                 if is_heap_string {
                     if let Some(ref ptypes) = param_types {
                         if i < ptypes.len() {
                             let expected_type = &ptypes[i];
-
-                            if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                                eprintln!("[DEBUG] Converting JSON to type: {}", expected_type);
-                            }
 
                             // Get the JSON string pointer
                             let json_str_val = self.resolve_value(arg);
@@ -88,15 +76,7 @@ impl<'ctx> CodeGen<'ctx> {
                                 if let Some(converted) =
                                     self.convert_json_string_to_type(json_str_ptr, expected_type)
                                 {
-                                    if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                                        eprintln!("[DEBUG] Conversion succeeded");
-                                    }
                                     return converted.into();
-                                } else if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                                    eprintln!(
-                                        "[DEBUG] Conversion returned None for type: {}",
-                                        expected_type
-                                    );
                                 }
                             }
                         }

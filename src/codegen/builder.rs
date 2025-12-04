@@ -1094,10 +1094,6 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             MirInstr::ArrayGet { name, array, index } => {
-                // eprintln!(
-                //     "[DEBUG] ArrayGet: name={}, array={}, index={}",
-                //     name, array, index
-                // );
                 let array_val = self.resolve_value(array);
 
                 // Handle case where array might be loaded from a symbol (e.g., a slice assigned to a variable)
@@ -1289,10 +1285,6 @@ impl<'ctx> CodeGen<'ctx> {
                 // Normal array element access
                 // Try multiple name variations to find metadata for array iteration
                 let elem_type = if let Some(metadata) = self.array_metadata.get(array) {
-                    // eprintln!(
-                    //     "[DEBUG] Found array metadata for {}: element_type={}",
-                    //     array, metadata.element_type
-                    // );
                     match metadata.element_type.as_str() {
                         "Int" => self.context.i32_type().into(),
                         "Float" => self.context.f64_type().into(),
@@ -1305,10 +1297,6 @@ impl<'ctx> CodeGen<'ctx> {
                         _ => self.context.i32_type().into(),
                     }
                 } else {
-                    // eprintln!(
-                    //     "[DEBUG] No array metadata found for {}, trying variations",
-                    //     array
-                    // );
                     // Try array name variations (without _array suffix, with % prefix, etc)
                     let base_name = array.trim_start_matches('%').trim_end_matches("_array");
                     let variations = vec![
@@ -1321,10 +1309,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let mut found_type = self.context.i32_type().as_basic_type_enum();
                     for var in variations {
                         if let Some(metadata) = self.array_metadata.get(&var) {
-                            // eprintln!(
-                            //     "[DEBUG] Found metadata for variation {}: element_type={}",
-                            //     var, metadata.element_type
-                            // );
                             found_type = match metadata.element_type.as_str() {
                                 "Int" => self.context.i32_type().into(),
                                 "Float" => self.context.f64_type().into(),
@@ -1339,10 +1323,6 @@ impl<'ctx> CodeGen<'ctx> {
                             break;
                         }
                     }
-                    // if found_type.is_int_type() && found_type.into_int_type().get_bit_width() == 32
-                    // {
-                    //     eprintln!("[DEBUG] Using default Int type for array {}", array);
-                    // }
                     found_type
                 };
 
@@ -1366,11 +1346,9 @@ impl<'ctx> CodeGen<'ctx> {
                 // Track the type of this result
                 if elem_type.is_pointer_type() {
                     self.variable_types.insert(name.clone(), "Str".to_string());
-                    // eprintln!("[DEBUG] ArrayGet result {} is Str", name);
                 } else if elem_type.is_float_type() {
                     self.variable_types
                         .insert(name.clone(), "Float".to_string());
-                    // eprintln!("[DEBUG] ArrayGet result {} is Float", name);
                 } else if elem_type.is_int_type() {
                     // Check if this is a Bool array element (stored as i32 but typed as Bool)
                     let is_bool_array = self
@@ -1381,10 +1359,8 @@ impl<'ctx> CodeGen<'ctx> {
                     if is_bool_array {
                         self.variable_types.insert(name.clone(), "Bool".to_string());
                         self.boolean_temps.insert(name.clone());
-                        // eprintln!("[DEBUG] ArrayGet result {} is Bool (from Bool array)", name);
                     } else {
                         self.variable_types.insert(name.clone(), "Int".to_string());
-                        // eprintln!("[DEBUG] ArrayGet result {} is Int", name);
                     }
                 }
 
@@ -2786,7 +2762,6 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             MirInstr::MapGet { name, map, key } => {
-                // eprintln!("[DEBUG] MapGet: name={}, map={}, key={}", name, map, key);
                 let map_ptr = self.resolve_value(map).into_pointer_value();
                 let key_val = self.resolve_value(key);
 
@@ -2797,9 +2772,6 @@ impl<'ctx> CodeGen<'ctx> {
                     let key_is_string = map_metadata_clone.key_is_string;
                     let value_is_string = map_metadata_clone.value_is_string;
                     let value_needs_rc = map_metadata_clone.value_needs_rc;
-
-                    // eprintln!("[DEBUG] Map metadata: key_type={}, value_type={}, key_is_string={}, value_is_string={}",
-                    //           key_type_str, value_type_str, key_is_string, value_is_string);
 
                     let value_type: BasicTypeEnum = match value_type_str.as_str() {
                         "Str" => self
@@ -2833,11 +2805,7 @@ impl<'ctx> CodeGen<'ctx> {
                     let index_val = if key_is_string {
                         // String key: use linear search with strcmp
                         // Maps are stored as arrays of (key, value) pairs
-                        // eprintln!("[DEBUG] String-keyed map search starting for map={}, key_val type={:?}", map, key_val.get_type());
-
                         let key_ptr = key_val.into_pointer_value();
-                        // eprintln!("[DEBUG] key_ptr obtained");
-
                         // Get strcmp function
                         let strcmp_fn = self.module.get_function("strcmp").unwrap_or_else(|| {
                             let i8_ptr_type =
@@ -2851,17 +2819,14 @@ impl<'ctx> CodeGen<'ctx> {
 
                         // Get map metadata for length
                         let map_length = map_metadata_clone.length;
-                        // eprintln!("[DEBUG] Map length: {}", map_length);
 
                         // Create blocks for the search loop
-                        // eprintln!("[DEBUG] Creating search blocks...");
                         let current_fn = self
                             .builder
                             .get_insert_block()
                             .unwrap()
                             .get_parent()
                             .unwrap();
-                        // eprintln!("[DEBUG] Got current function");
                         let loop_block = self
                             .context
                             .append_basic_block(current_fn, "map_search_loop");
@@ -3021,7 +2986,6 @@ impl<'ctx> CodeGen<'ctx> {
 
                         // Continue block: load final index
                         self.builder.position_at_end(continue_block);
-                        // eprintln!("[DEBUG] Loading final index from search");
                         self.builder
                             .build_load(self.context.i32_type(), index_alloca, "final_index")
                             .unwrap()
@@ -3548,10 +3512,8 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder.build_store(sym.ptr, result_val).unwrap();
                     }
 
-                    // eprintln!("[DEBUG] MapGet result stored for {}", name);
                     Some(result_val)
                 } else {
-                    // eprintln!("[DEBUG] MapGet: No metadata found for map {}", map);
                     // Fallback: return 0
                     let default = self.context.i32_type().const_int(0, false);
                     self.temp_values.insert(name.clone(), default.into());
@@ -5673,11 +5635,6 @@ impl<'ctx> CodeGen<'ctx> {
                             .get(result_tmp)
                             .map(|(_, e)| e.clone())
                             .unwrap_or_else(|| "Str".to_string());
-
-                        // eprintln!(
-                        //     "DEBUG: ManualErrorExtract phi - error_name='{}', err_type='{}'",
-                        //     error_name, err_type
-                        // );
                         // eprintln!("  err_from_ok_path type: {:?}", err_from_ok_path.get_type());
                         // eprintln!(
                         //     "  err_from_err_path type: {:?}",
@@ -6132,12 +6089,6 @@ impl<'ctx> CodeGen<'ctx> {
                         ""
                     };
 
-                // eprintln!("DEBUG: StructGet - extracted struct_name='{}'", struct_name);
-                // eprintln!(
-                //     "  Available struct_metadata: {:?}",
-                //     self.struct_metadata.keys().collect::<Vec<_>>()
-                // );
-
                 // Look up field index from metadata
                 let (field_index, field_type_name) =
                     if let Some(metadata) = self.struct_metadata.get(struct_name) {
@@ -6145,41 +6096,21 @@ impl<'ctx> CodeGen<'ctx> {
                             .field_names
                             .iter()
                             .position(|f| f == field)
-                            .unwrap_or_else(|| {
-                                // eprintln!("DEBUG: StructGet - field '{}' not found in struct '{}' fields: {:?}", field, struct_name, metadata.field_names);
-                                0
-                            });
+                            .unwrap_or_else(|| 0);
                         let type_name = metadata
                             .field_types
                             .get(index)
                             .cloned()
                             .unwrap_or_else(|| "Int".to_string());
-                        // eprintln!(
-                        //     "DEBUG: StructGet - found field '{}' at index {} with type '{}'",
-                        //     field, index, type_name
-                        // );
                         (index, type_name)
                     } else {
-                        // eprintln!(
-                        //     "ERROR: StructGet - struct '{}' not found in metadata!",
-                        //     struct_name
-                        // );
-                        // eprintln!("  This may cause incorrect field access or crash");
                         (0, "Int".to_string())
                     };
                 // Use the canonical struct type if available
                 let struct_type =
                     if let Some(canonical_type) = self.canonical_struct_types.get(struct_name) {
-                        // eprintln!(
-                        //     "DEBUG: StructGet - using canonical struct type for '{}'",
-                        //     struct_name
-                        // );
                         *canonical_type
                     } else if let Some(metadata) = self.struct_metadata.get(struct_name) {
-                        // eprintln!(
-                        //     "DEBUG: StructGet - reconstructing struct type from metadata for '{}'",
-                        //     struct_name
-                        // );
                         // Fallback: reconstruct from metadata
                         let field_llvm_types: Vec<inkwell::types::BasicTypeEnum> = metadata
                             .field_types

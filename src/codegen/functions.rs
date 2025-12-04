@@ -722,26 +722,6 @@ impl<'ctx> CodeGen<'ctx> {
         let entry_block = self.context.append_basic_block(llvm_func, "entry");
         self.builder.position_at_end(entry_block);
 
-        // DEBUG: Print MIR blocks for main function
-        // if func.name == "main" {
-        //     eprintln!("DEBUG: MIR blocks for main function:");
-        //     for (i, block) in func.blocks.iter().enumerate() {
-        //         eprintln!(
-        //             "  Block {} [{}]: {} instrs, terminator: {:?}",
-        //             i,
-        //             block.label,
-        //             block.instrs.len(),
-        //             block
-        //                 .terminator
-        //                 .as_ref()
-        //                 .map(|t| format!("{:?}", t).chars().take(50).collect::<String>())
-        //         );
-        //         for (j, instr) in block.instrs.iter().enumerate() {
-        //             eprintln!("    [{}] {:?}", j, instr);
-        //         }
-        //     }
-        // }
-
         // Create all necessary basic blocks within the function (e.g., entry, if.then, loop.body).
         let mut bb_map = HashMap::new();
         for block in &func.blocks {

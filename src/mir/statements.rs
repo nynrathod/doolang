@@ -263,12 +263,6 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                             .insert(name.clone(), type_ann.clone());
                     }
 
-                    // DEBUG: trace RC variable tracking
-                    eprintln!(
-                        "[DEBUG-stmt] needs_rc={}, is_copying_variable={}, value_tmp='{}', name='{}'",
-                        needs_rc, is_copying_variable, value_tmp, name
-                    );
-
                     // Insert IncRef ONLY when copying from an existing variable.
                     // Don't incref for newly created temps (they already have RC=1).
                     if needs_rc && is_copying_variable {
@@ -279,7 +273,6 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
 
                     // Always track RC variables for cleanup at scope end
                     if needs_rc {
-                        eprintln!("[DEBUG-stmt] Tracking RC var: {}", name);
                         builder.track_rc_var(name.clone());
                     }
                 }
