@@ -8,6 +8,7 @@ use doo::mir::builder::MirBuilder;
 use doo::parser::ast::AstNode;
 use doo::parser::Parser;
 use inkwell::context::Context;
+use std::path::PathBuf;
 
 /// Compile code through full pipeline: lex → parse → analyze → mir → codegen
 pub fn compile_snippet(input: &str) -> Result<String, String> {
@@ -26,7 +27,67 @@ pub fn compile_snippet(input: &str) -> Result<String, String> {
 
                 let mut mir_builder = MirBuilder::new();
 
-                // Build imported functions first (from analyzer)
+                // Build imported structs first (from analyzer)
+                for imported_struct in &analyzer.imported_structs {
+                    mir_builder.build_program(&[imported_struct.clone()]);
+                }
+
+                // Build imported functions (from analyzer)
+                for imported_fn in &analyzer.imported_functions {
+                    mir_builder.build_program(&[imported_fn.clone()]);
+                }
+
+                // Then build the main program
+                mir_builder.build_program(nodes);
+                mir_builder.finalize();
+
+                let context = Context::create();
+                let mut codegen = CodeGen::new("test", &context);
+                codegen.generate_program(&mir_builder.program);
+
+                Ok(codegen.module.print_to_string().to_string())
+            } else {
+                Err("Not a program".to_string())
+            }
+        }
+        Err(e) => Err(format!("Parse error: {}", e)),
+    }
+}
+
+/// Compile a project file with support for imports
+/// Pass the directory containing the project (where main.doo is located)
+pub fn compile_project_file(file_path: &std::path::Path) -> Result<String, String> {
+    let content = std::fs::read_to_string(file_path)
+        .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))?;
+
+    // Get the project root (directory of the file)
+    let project_root = file_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let arena = Bump::new();
+    let tokens = lex(&content, &arena);
+    let mut parser = Parser::new(&tokens);
+    let result = parser.parse_program();
+
+    match result {
+        Ok(mut ast) => {
+            // Create analyzer with the project root so it can find imports
+            let mut analyzer = SemanticAnalyzer::new(Some(project_root));
+            if let AstNode::Program(ref mut nodes) = ast {
+                analyzer
+                    .analyze_program(nodes)
+                    .map_err(|e| format!("{}", e))?;
+
+                let mut mir_builder = MirBuilder::new();
+
+                // Build imported structs first (from analyzer)
+                for imported_struct in &analyzer.imported_structs {
+                    mir_builder.build_program(&[imported_struct.clone()]);
+                }
+
+                // Build imported functions (from analyzer)
                 for imported_fn in &analyzer.imported_functions {
                     mir_builder.build_program(&[imported_fn.clone()]);
                 }
@@ -197,7 +258,7 @@ pub fn assert_expr_type(expr: &str, expected: &str) {
     }
 }
 
-pub fn assert_typeof(expr: &str, expected: &str) {
+pub fn assert_typeof(expr: &str, _expected: &str) {
     // Verify typeOf(expr) RETURNS Str
     assert_expr_type(&format!("typeOf({})", expr), "Str");
 }
