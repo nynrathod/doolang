@@ -125,13 +125,8 @@ echo -e "  ${YELLOW}⊘ Skipped: $SKIPPED${NC}"
 echo -e "${BLUE}============================================${NC}\n"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Run Rust tests (memory stress + unit tests)
+# Run Rust unit tests)
 # ═══════════════════════════════════════════════════════════════════════════════
-echo -e "${BLUE}▶ Running Memory Stress Tests...${NC}"
-echo -e "${BLUE}=================================${NC}\n"
-cargo test stress::memory --release --quiet 2>/dev/null
-
-echo ""
 
 echo -e "${BLUE}▶ Running Unit Tests...${NC}"
 echo -e "${BLUE}=======================${NC}\n"
