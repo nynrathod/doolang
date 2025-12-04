@@ -2,8 +2,8 @@
 # will have compiled files and executables
 debug
 target
-/fuzz/corpus
-/fuzz/artifacts
+/tests/fuzz/corpus
+/tests/fuzz/artifacts
 /fuzz_logs
 output.*
 /linkers
