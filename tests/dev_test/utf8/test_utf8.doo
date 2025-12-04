@@ -1,0 +1,148 @@
+fn main() {
+    print("=== UTF-8 String Support Test ===");
+    print("");
+
+    // Test 1: Basic ASCII
+    print("Test 1: Basic ASCII");
+    let ascii = "Hello World";
+    print(ascii);
+    print("");
+
+    // Test 2: Emoji support (simple)
+    print("Test 2: Emoji support (simple)");
+    let emoji = "Hello 👋 World 🌍";
+    print(emoji);
+    print("");
+
+    // Test 3: Chinese characters
+    print("Test 3: Chinese characters");
+    let chinese = "你好世界";
+    print(chinese);
+    print("");
+
+    // Test 4: Mixed languages (Latin, Chinese, Arabic, Hebrew)
+    print("Test 4: Mixed languages");
+    let mixed = "Hello 你好 مرحبا שלום";
+    print(mixed);
+    print("");
+
+    // Test 5: Various emojis
+    print("Test 5: Various emojis");
+    let emojis = "🚀 🎉 ❤️ 😊 🔥";
+    print(emojis);
+    print("");
+
+    // Test 6: Japanese
+    print("Test 6: Japanese");
+    let japanese = "こんにちは世界";
+    print(japanese);
+    print("");
+
+    // Test 7: Korean
+    print("Test 7: Korean");
+    let korean = "안녕하세요";
+    print(korean);
+    print("");
+
+    // Test 8: String with name + emoji
+    print("Test 8: String variable with emoji");
+    let name = "Alice 👋";
+    print(name);
+    print("");
+
+    // Additional UTF-8 edge cases and differences
+
+    // Test 9: Empty string
+    print("Test 9: Empty string");
+    let empty = "";
+    print(empty);
+    print("");
+
+    // Test 10: Null character inside string
+    print("Test 10: Embedded null character");
+    let withNull = "Null here ->\0<- did it print?";
+    print(withNull);
+    print("");
+
+    // Test 11: Combining diacritics vs precomposed character
+    print("Test 11: Combining diacritics vs precomposed");
+    let precomposed = "é"; // U+00E9
+    let combining = "e\u{0301}"; // 'e' + U+0301 COMBINING ACUTE ACCENT
+    print(precomposed);
+    print(combining);
+    print("");
+
+    // Test 12: Latin-1 extended characters
+    print("Test 12: Latin-1 extended characters");
+    let latin1 = "Café, año, señor, façade, naïve";
+    print(latin1);
+    print("");
+
+    // Test 13: Case differences & locale-sensitive cases
+    print("Test 13: Case differences (German ß, Turkish dotted/dotless i)");
+    let german = "straße";
+    let germanUpper = "STRASSE"; // expected uppercase mapping for ß in many contexts
+    let turkish = "İstanbul"; // capital dotted I + rest
+    let turkishLower = "istanbul"; // lowercase dotted i
+    print(german);
+    print(germanUpper);
+    print(turkish);
+    print(turkishLower);
+    print("");
+
+    // Test 14: Variation selectors (text vs emoji presentation)
+    print("Test 14: Variation selectors");
+    let vtext = "✌"; // may render text
+    let vemoji = "✌\u{FE0F}"; // U+FE0F forces emoji presentation
+    print(vtext);
+    print(vemoji);
+    print("");
+
+    // Test 15: Zero Width Joiner (ZWJ) sequences & skin tones
+    print("Test 15: ZWJ sequences & modifiers");
+    let family = "👩‍👩‍👧‍👦"; // family ZWJ sequence
+    let thumbs = "👍🏽 👍🏻 👍🏿"; // skin tone modifiers
+    print(family);
+    print(thumbs);
+    print("");
+
+    // Test 16: Regional indicator symbols (flags)
+    print("Test 16: Regional indicator flags");
+    let flagUs = "🇺🇸";
+    let flagJp = "🇯🇵";
+    print(flagUs);
+    print(flagJp);
+    print("");
+
+    // Test 17: Long multi-byte sequence (repeated emoji)
+    print("Test 17: Long multi-byte sequence");
+    let longEmoji = "🚀".repeat(20);
+    print(longEmoji);
+    print("");
+
+    // Test 18: Right-to-left and bidi marks
+    print("Test 18: Right-to-left and bidi marks");
+    let rtl = "English אבגדה English";
+    let rtlMark = "LTR\u{200F}RTL"; // U+200F RIGHT-TO-LEFT MARK embedded
+    print(rtl);
+    print(rtlMark);
+    print("");
+
+    // Test 19: Decomposed Hangul (Jamo) vs precomposed syllable
+    print("Test 19: Hangul decomposed vs precomposed");
+    let hangulPrecomposed = "가"; // U+AC00
+    let hangulDecomposed = "\u{1100}\u{1161}"; // choseong kiyeok + jungseong a
+    print(hangulPrecomposed);
+    print(hangulDecomposed);
+    print("");
+
+    // Test 20: Other scripts (Devanagari, Thai)
+    print("Test 20: Devanagari and Thai");
+    let dev = "नमस्ते";
+    let thai = "สวัสดี";
+    print(dev);
+    print(thai);
+    print("");
+
+    print("=== All UTF-8 tests completed ===");
+}

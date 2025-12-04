@@ -1,0 +1,120 @@
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+enum HttpCode {
+    Success(Int),
+    NotFound(Int),
+    ServerError(Str),
+}
+
+enum Flag {
+    On(Bool),
+    Off(Bool),
+}
+
+enum Value {
+    Number(Float),
+    Text(Str),
+}
+
+fn main() {
+    print("========================================");
+    print("ENUM VARIANT AND PAYLOAD MATCHING TESTS");
+    print("========================================");
+
+    // Simple variant match
+    print("\n[Status Enum]");
+    let status = Status::Active;
+    match status {
+        Status::Active => print("Status: Active"),
+        Status::Inactive => print("Status: Inactive"),
+        Status::Pending => print("Status: Pending"),
+        _ => print("Unknown"),
+    }
+
+    let status2 = Status::Inactive;
+    match status2 {
+        Status::Active => print("Status: Active"),
+        Status::Inactive => print("Status: Inactive"),
+        Status::Pending => print("Status: Pending"),
+        _ => print("Unknown"),
+    }
+
+    let status3 = Status::Pending;
+    let message = match status3 {
+        Status::Active => "active",
+        Status::Inactive => "inactive",
+        Status::Pending => "pending",
+        _ => "unknown",
+    };
+    print("Message:", message);
+
+    // Enum with Int payload
+    print("\n[HttpCode Enum - Int Payload]");
+    let code = HttpCode::Success(200);
+    match code {
+        HttpCode::Success(val) => print("Success code:", val),
+        HttpCode::NotFound(val) => print("Not found code:", val),
+        HttpCode::ServerError(msg) => print("Server error:", msg),
+        _ => print("Unknown"),
+    }
+
+    let notFound = HttpCode::NotFound(404);
+    match notFound {
+        HttpCode::Success(val) => print("Success code:", val),
+        HttpCode::NotFound(val) => print("Not found code:", val),
+        HttpCode::ServerError(msg) => print("Server error:", msg),
+        _ => print("Unknown"),
+    }
+
+    // Enum with Str payload
+    print("\n[HttpCode Enum - Str Payload]");
+    let err = HttpCode::ServerError("Timeout");
+    match err {
+        HttpCode::Success(val) => print("Success code:", val),
+        HttpCode::NotFound(val) => print("Not found code:", val),
+        HttpCode::ServerError(msg) => print("Server error:", msg),
+        _ => print("Unknown"),
+    }
+
+    // Enum with Bool payload
+    print("\n[Flag Enum - Bool Payload]");
+    let flag = Flag::On(true);
+    match flag {
+        Flag::On(b) => print("Flag is On:", b),
+        Flag::Off(b) => print("Flag is Off:", b),
+        _ => print("Unknown"),
+    }
+
+    let flag2 = Flag::Off(false);
+    match flag2 {
+        Flag::On(b) => print("Flag is On:", b),
+        Flag::Off(b) => print("Flag is Off:", b),
+        _ => print("Unknown"),
+    }
+
+    // Enum with Float payload
+    print("\n[Value Enum - Float Payload]");
+    let val = Value::Number(3.14);
+    match val {
+        Value::Number(f) => print("Float value:", f),
+        Value::Text(s) => print("Text value:", s),
+        _ => print("Unknown"),
+    }
+
+    // Enum with Str payload (Value)
+    print("\n[Value Enum - Str Payload]");
+    let val2 = Value::Text("Hello");
+    match val2 {
+        Value::Number(f) => print("Float value:", f),
+        Value::Text(s) => print("Text value:", s),
+        _ => print("Unknown"),
+    }
+
+    print("\n========================================");
+    print("ALL ENUM MATCHING TESTS COMPLETED");
+    print("========================================");
+}

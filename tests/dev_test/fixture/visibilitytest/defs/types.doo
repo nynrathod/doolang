@@ -1,0 +1,77 @@
+// types.doo - Module with public and private types
+// Visibility is determined by naming convention:
+// - PascalCase = public (can be imported from other modules)
+// - camelCase = private (only accessible within this module)
+
+// ============================================
+// PUBLIC STRUCT (PascalCase) - can be imported
+// ============================================
+struct PublicUser {
+    Id: Int,
+    Name: Str,
+    Email: Str,
+    internalId: Int,
+}
+
+// ============================================
+// PRIVATE STRUCT (camelCase) - cannot be imported
+// ============================================
+struct privateConfig {
+    apiKey: Str,
+    timeout: Int,
+}
+
+// ============================================
+// PUBLIC ENUM (PascalCase) - can be imported
+// ============================================
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+// ============================================
+// PRIVATE ENUM (camelCase) - cannot be imported
+// ============================================
+enum internalState {
+    Ready,
+    Processing,
+    Done,
+}
+
+// ============================================
+// PUBLIC FUNCTIONS (PascalCase) - can be imported
+// ============================================
+
+fn CreateUser(id: Int, name: Str, email: Str) -> PublicUser {
+    Ok PublicUser {
+        Id: id,
+        Name: name,
+        Email: email,
+        internalId: 0,
+    };
+}
+
+fn GetDefaultStatus() -> Status {
+    Ok Status::Active;
+}
+
+fn GetTimeout() -> Int {
+    Ok 30;
+}
+
+fn IsReady() -> Bool {
+    Ok true;
+}
+
+// ============================================
+// PRIVATE FUNCTIONS (camelCase) - cannot be imported
+// ============================================
+
+fn createDefaultConfig() -> Int {
+    Ok 60;
+}
+
+fn getInternalState() -> Int {
+    Ok 0;
+}

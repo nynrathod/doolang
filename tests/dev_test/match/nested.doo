@@ -1,0 +1,129 @@
+enum HttpCode {
+    Success(Int),
+    NotFound(Int),
+    ServerError(Str),
+}
+
+enum Complex {
+    Pair(Int, Str),
+    Triple(Int, Str, Bool),
+}
+
+enum Data {
+    Numbers([Int]),
+    Properties({Str: Str}),
+}
+
+enum Outer {
+    Inner(HttpCode),
+    Raw(Int),
+}
+
+fn main() {
+    print("\n=== Nested Match: HttpCode ===");
+    let outerResult = HttpCode::ServerError("fatal");
+    match outerResult {
+        HttpCode::Success(successCode) => match successCode {
+            200 => print("Perfect: Success 200"),
+            201 => print("Created: Success 201"),
+            // c if c >= 400 => print("Success but error code:", c),
+            _ => print("Success with code:", successCode),
+        },
+        HttpCode::NotFound(notFoundCode) => match notFoundCode {
+            404 => print("Not Found: 404"),
+            410 => print("Gone: 410"),
+            _ => print("Not Found with code:", notFoundCode),
+        },
+        HttpCode::ServerError(msg) => match msg {
+            "fatal" => print("Fatal server error"),
+            "timeout" => print("Server timeout error"),
+            _ => print("Error occurred:", msg),
+        },
+        _ => print("Other result"),
+    }
+
+    print("\n=== Nested Match: Complex Payloads ===");
+    let c = Complex::Triple(1, "err", true);
+    match c {
+        Complex::Triple(i, s, b) => match i, s, b {
+            1, "err", true => print("Matched all triple values"),
+            1, _, _ => print("Triple starts with 1"),
+            _ => print("Other triple"),
+        },
+        Complex::Pair(i, s) => match i, s {
+            0, "none" => print("Pair is zero/none"),
+            _ => print("Other pair"),
+        },
+        _ => print("Other complex"),
+    }
+
+    print("\n=== Nested Match: Arrays and Maps ===");
+    let d = Data::Numbers([1,2,3]);
+    match d {
+        Data::Numbers(arr) => match arr[0] {
+            1 => print("First array element is 1"),
+            _ => print("First array element is not 1"),
+        },
+        Data::Properties(map) => match map["name"] {
+            "Alice" => print("Name is Alice"),
+            _ => print("Name is not Alice"),
+        },
+        _ => print("Other data"),
+    }
+
+    let d2 = Data::Properties({"name": "Bob", "role": "admin"});
+    match d2 {
+        Data::Numbers(arr) => match arr.len() {
+            0 => print("Empty array"),
+            _ => print("Non-empty array"),
+        },
+        Data::Properties(map) => match map["role"] {
+            "admin" => print("Role is admin"),
+            _ => print("Role is not admin"),
+        },
+        _ => print("Other data"),
+    }
+
+    print("\n=== Deeply Nested Enums ===");
+    let o = Outer::Inner(HttpCode::Success(200));
+    match o {
+        Outer::Inner(inner) => match inner {
+            HttpCode::Success(deepSuccessCode) => match deepSuccessCode {
+                200 => print("Deep Success 200"),
+                _ => print("Other deep success"),
+            },
+            HttpCode::NotFound(deepNotFoundCode) => match deepNotFoundCode {
+                404 => print("Deep Not Found 404"),
+                _ => print("Other deep not found"),
+            },
+            HttpCode::ServerError(deepMsg) => match deepMsg {
+                "fatal" => print("Deep Fatal Error"),
+                _ => print("Other deep server error"),
+            },
+            _ => print("Other inner"),
+        },
+        Outer::Raw(i) => match i {
+            0 => print("Raw zero"),
+            _ => print("Raw value:", i),
+        },
+        _ => print("Other outer"),
+    }
+
+    print("\n=== Default Case in Nested Match ===");
+    let result = HttpCode::Success(123);
+    match result {
+        HttpCode::Success(defaultSuccessCode) => match defaultSuccessCode {
+            200 => print("Success 200"),
+            _ => print("Default: Success with code", defaultSuccessCode),
+        },
+        HttpCode::NotFound(defaultNotFoundCode) => match defaultNotFoundCode {
+            404 => print("Not Found 404"),
+            _ => print("Default: Not Found with code", defaultNotFoundCode),
+        },
+        HttpCode::ServerError(defaultMsg) => match defaultMsg {
+            "fatal" => print("Fatal error"),
+            _ => print("Default: Server error", defaultMsg),
+        },
+        _ => print("Default: Other result"),
+    }
+}

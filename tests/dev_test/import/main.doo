@@ -1,0 +1,18 @@
+import std::Math::{Abs};
+import std::Math::{Sqrt as Sq, Pow};
+import std::Array;
+
+
+fn main() {
+    let a = Abs(-5);
+    let b = Sq(16);
+    let c = Pow(2, 3);
+    let d = Array::Sum([1,2,3]);
+    // let e = F::Write("sadkjhasjd", "As.txt");
+
+    print("a", a);
+    print("b", b);
+    print("c", c);
+    print("d", d);
+    // print("e", e);
+}

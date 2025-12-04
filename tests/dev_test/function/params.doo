@@ -1,0 +1,212 @@
+struct Point { x: Int, y: Int }
+struct Complex {
+    arr: [Int],
+    map: {Str: Int},
+    status: Status,
+}
+enum Status { Active, Inactive, Pending }
+enum Result {
+    Success(Int),
+    Failure(Str),
+}
+
+fn paramInt(x: Int) { print("Int param:", x); }
+fn paramFloat(x: Float) { print("Float param:", x); }
+fn paramBool(x: Bool) { print("Bool param:", x); }
+fn paramStr(x: Str) { print("Str param:", x); }
+
+fn paramArrayInt(arr: [Int]) { print("Array[Int] param:", arr); }
+fn paramArrayFloat(arr: [Float]) { print("Array[Float] param:", arr); }
+fn paramArrayBool(arr: [Bool]) { print("Array[Bool] param:", arr); }
+fn paramArrayStr(arr: [Str]) { print("Array[Str] param:", arr); }
+
+fn paramMapStrInt(m: {Str: Int}) { print("Map{Str: Int} param:", m); }
+fn paramMapStrFloat(m: {Str: Float}) { print("Map{Str: Float} param:", m); }
+fn paramMapStrBool(m: {Str: Bool}) { print("Map{Str: Bool} param:", m); }
+fn paramMapStrStr(m: {Str: Str}) { print("Map{Str: Str} param:", m); }
+
+fn paramMapIntInt(m: {Int: Int}) { print("Map{Int: Int} param:", m); }
+fn paramMapIntFloat(m: {Int: Float}) { print("Map{Int: Float} param:", m); }
+fn paramMapIntBool(m: {Int: Bool}) { print("Map{Int: Bool} param:", m); }
+fn paramMapIntStr(m: {Int: Str}) { print("Map{Int: Str} param:", m); }
+
+fn paramMapFloatInt(m: {Float: Int}) { print("Map{Float: Int} param:", m); }
+fn paramMapFloatFloat(m: {Float: Float}) { print("Map{Float: Float} param:", m); }
+fn paramMapFloatBool(m: {Float: Bool}) { print("Map{Float: Bool} param:", m); }
+fn paramMapFloatStr(m: {Float: Str}) { print("Map{Float: Str} param:", m); }
+
+fn paramMapBoolInt(m: {Bool: Int}) { print("Map{Bool: Int} param:", m); }
+fn paramMapBoolFloat(m: {Bool: Float}) { print("Map{Bool: Float} param:", m); }
+fn paramMapBoolBool(m: {Bool: Bool}) { print("Map{Bool: Bool} param:", m); }
+fn paramMapBoolStr(m: {Bool: Str}) { print("Map{Bool: Str} param:", m); }
+
+fn paramStruct(p: Point) { print("Struct param:", p); }
+fn paramComplex(c: Complex) { print("Complex struct param:", c); }
+fn paramEnum(e: Status) { print("Enum param:", e); }
+fn paramResult(r: Result) { print("Enum with payload param:", r); }
+
+fn paramMulti(a: Int, b: Str, c: [Float]) { print("Multi param:", a, b, c); }
+
+fn main() {
+    // Primitive edge values
+    paramInt(0);
+    paramInt(-999999);
+    paramInt(999999);
+    paramFloat(0.0);
+    paramFloat(-3.1415);
+    paramFloat(1e10);
+    paramBool(true);
+    paramBool(false);
+    paramStr("");
+    paramStr("hello");
+    paramStr("edge");
+
+    // Arrays (normal and empty)
+    paramArrayInt([1,2,3]);
+    paramArrayInt([]);
+    paramArrayFloat([1.1,2.2]);
+    paramArrayFloat([]);
+    paramArrayBool([true,false]);
+    paramArrayBool([]);
+    paramArrayStr(["a","b"]);
+    paramArrayStr([]);
+
+    // Maps (normal and empty)
+    paramMapStrInt({"a": 1});
+    paramMapStrInt({});
+    paramMapStrFloat({"x": 2.2});
+    paramMapStrFloat({});
+    paramMapStrBool({"flag": true});
+    paramMapStrBool({});
+    paramMapStrStr({"key": "val"});
+    paramMapStrStr({});
+
+    paramMapIntInt({1: 10});
+    paramMapIntInt({});
+    paramMapIntFloat({2: 2.2});
+    paramMapIntFloat({});
+    paramMapIntBool({3: false});
+    paramMapIntBool({});
+    paramMapIntStr({4: "four"});
+    paramMapIntStr({});
+
+    paramMapFloatInt({1.1: 100});
+    paramMapFloatInt({});
+    paramMapFloatFloat({2.2: 2.22});
+    paramMapFloatFloat({});
+    paramMapFloatBool({3.3: true});
+    paramMapFloatBool({});
+    paramMapFloatStr({4.4: "float"});
+    paramMapFloatStr({});
+
+    paramMapBoolInt({true: 1, false: 0});
+    paramMapBoolInt({});
+    paramMapBoolFloat({true: 1.1, false: 0.0});
+    paramMapBoolFloat({});
+    paramMapBoolBool({true: false, false: true});
+    paramMapBoolBool({});
+    paramMapBoolStr({true: "yes", false: "no"});
+    paramMapBoolStr({});
+
+    // Structs
+    paramStruct(Point { x: 10, y: 20 });
+    paramStruct(Point { x: 0, y: 0 });
+
+    // Complex struct with array, map, enum
+    paramComplex(Complex { arr: [1,2], map: {"x": 2}, status: Status::Active });
+    paramComplex(Complex { arr: [], map: {}, status: Status::Inactive });
+
+    // Enums
+    paramEnum(Status::Active);
+    paramEnum(Status::Inactive);
+    paramEnum(Status::Pending);
+
+    // Enum with payloads
+    paramResult(Result::Success(123));
+    paramResult(Result::Failure("fail"));
+
+    // Multiple parameters
+    paramMulti(1, "test", [1.1, 2.2]);
+    paramMulti(-1, "edge", [0.0]);
+
+    // Direct literals
+    paramInt(100);
+    paramFloat(2.718);
+    paramBool(false);
+    paramStr("direct");
+
+
+
+    // --- JSON Parse(JSON.stringify(value)) as param for all supported types ---
+    print("\n=== JSON Parse(JSON.stringify(value)) as Param Tests ===");
+
+    // Primitives
+    paramInt(JSON.parse(JSON.stringify(123)));
+    paramFloat(JSON.parse(JSON.stringify(3.14)));
+    paramBool(JSON.parse(JSON.stringify(true)));
+    paramStr(JSON.parse(JSON.stringify("abc")));
+
+    // Arrays
+    paramArrayInt(JSON.parse(JSON.stringify([1,2,3])));
+    paramArrayFloat(JSON.parse(JSON.stringify([1.1,2.2,3.3])));
+    paramArrayBool(JSON.parse(JSON.stringify([true,false,true])));
+    paramArrayStr(JSON.parse(JSON.stringify(["foo","bar"])));
+
+    // Maps with Str keys
+    paramMapStrInt(JSON.parse(JSON.stringify({"x":1,"y":2})));
+    paramMapStrFloat(JSON.parse(JSON.stringify({"a":1.1,"b":2.2})));
+    paramMapStrBool(JSON.parse(JSON.stringify({"t":true,"f":false})));
+    paramMapStrStr(JSON.parse(JSON.stringify({"hello":"world"})));
+
+    // Maps with Int keys
+    paramMapIntInt(JSON.parse(JSON.stringify({3:33,4:44})));
+    paramMapIntFloat(JSON.parse(JSON.stringify({5:5.5,6:6.6})));
+    paramMapIntBool(JSON.parse(JSON.stringify({7:true,8:false})));
+    paramMapIntStr(JSON.parse(JSON.stringify({9:"nine",10:"ten"})));
+
+    // Maps with Float keys
+    paramMapFloatInt(JSON.parse(JSON.stringify({3.3:3,4.4:4})));
+    paramMapFloatFloat(JSON.parse(JSON.stringify({5.5:55.5,6.6:66.6})));
+    paramMapFloatBool(JSON.parse(JSON.stringify({7.7:true,8.8:false})));
+    paramMapFloatStr(JSON.parse(JSON.stringify({9.9:"nine",10.1:"ten"})));
+
+    // Maps with Bool keys
+    paramMapBoolInt(JSON.parse(JSON.stringify({true:11,false:12})));
+    paramMapBoolFloat(JSON.parse(JSON.stringify({true:13.13,false:14.14})));
+    paramMapBoolBool(JSON.parse(JSON.stringify({true:true,false:false})));
+    paramMapBoolStr(JSON.parse(JSON.stringify({true:"true",false:"false"})));
+
+    // Structs
+    paramStruct(JSON.parse(JSON.stringify(Point { x: 10, y: 20 })));
+    paramStruct(JSON.parse(JSON.stringify(Point { x: 0, y: 0 })));
+
+    // Complex struct
+    paramComplex(JSON.parse(JSON.stringify(Complex { arr: [1,2], map: {"x":2}, status: Status::Active })));
+    paramComplex(JSON.parse(JSON.stringify(Complex { arr: [], map: {}, status: Status::Inactive })));
+
+    // Enums
+    paramEnum(JSON.parse(JSON.stringify(Status::Active)));
+    paramEnum(JSON.parse(JSON.stringify(Status::Inactive)));
+    paramEnum(JSON.parse(JSON.stringify(Status::Pending)));
+
+    // Enum with payloads
+    paramResult(JSON.parse(JSON.stringify(Result::Success(123))));
+    paramResult(JSON.parse(JSON.stringify(Result::Failure("fail"))));
+
+    // Multi param
+    paramMulti(
+        JSON.parse(JSON.stringify(1)),
+        JSON.parse(JSON.stringify("test")),
+        JSON.parse(JSON.stringify([1.1,2.2]))
+    );
+    paramMulti(
+        JSON.parse(JSON.stringify(0)),
+        JSON.parse(JSON.stringify("")),
+        JSON.parse(JSON.stringify([]))
+    );
+    paramMulti(
+        JSON.parse(JSON.stringify(-1)),
+        JSON.parse(JSON.stringify("edge")),
+        JSON.parse(JSON.stringify([0.0]))
+    );
+}

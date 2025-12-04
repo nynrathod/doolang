@@ -1,0 +1,404 @@
+fn main() {
+
+    // ═══════════════════════════════════════════════════════════════════
+    // STRING METHODS
+    // ═══════════════════════════════════════════════════════════════════
+    print(">>> STRING METHODS <<<");
+    print("");
+
+    let testStr: Str = "hello world";
+    print("len('hello world'): ");
+    print(testStr.len());
+
+    print("charAt(0): ");
+    print(testStr.charAt(0));
+
+    print("charAt(5): ");
+    print(testStr.charAt(5));
+
+    print("substring(0, 5): ");
+    print(testStr.substring(0, 5));
+
+    print("substring(6, 11): ");
+    print(testStr.substring(6, 11));
+
+    print("concat('!'): ");
+    print(testStr.concat("!"));
+
+    print("concat(' string'): ");
+    print("test".concat(" string"));
+
+    print("indexOf('world'): ");
+    print(testStr.indexOf("world"));
+
+    print("indexOf('hello'): ");
+    print(testStr.indexOf("hello"));
+
+    print("indexOf('notfound'): ");
+    print(testStr.indexOf("notfound"));
+
+    print("toUpper('hello'): ");
+    print("hello".toUpper());
+
+    print("toUpper('test123'): ");
+    print("test123".toUpper());
+
+    print("toLower('WORLD'): ");
+    print("WORLD".toLower());
+
+    print("toLower('HELLO123'): ");
+    print("HELLO123".toLower());
+
+    print("replace('l', 'x'): ");
+    print("hello".replace("l", "x"));
+
+    print("replace('a', 'b') in 'aaa': ");
+    print("aaa".replace("a", "b"));
+
+    print("trim('  spaces  '): ");
+    print("  spaces  ".trim());
+
+    print("trim('test'): ");
+    print("test".trim());
+
+    print("reverse('hello'): ");
+    print("hello".reverse());
+
+    print("reverse('abc'): ");
+    print("abc".reverse());
+
+    print("contains('ll'): ");
+    print("hello".contains("ll"));
+
+    print("contains('x'): ");
+    print("hello".contains("x"));
+
+    print("startsWith('he'): ");
+    print("hello".startsWith("he"));
+
+    print("startsWith('lo'): ");
+    print("hello".startsWith("lo"));
+
+    print("endsWith('lo'): ");
+    print("hello".endsWith("lo"));
+
+    print("endsWith('he'): ");
+    print("hello".endsWith("he"));
+
+    print("repeat('ab', 3): ");
+    print("ab".repeat(3));
+
+    print("repeat('x', 5): ");
+    print("x".repeat(5));
+
+    let charCodeA = "A";
+    print("charCodeA", charCodeA.charCode());
+    let charCodeAInline = "A".charCode();
+    print("charCodeAInline", charCodeAInline);
+
+    print("countSubstr('aaa', 'aa'): ");
+    print("aaa".countSubstr("aa"));
+
+    print("✓ String methods PASS");
+    print("");
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ARRAY METHODS - INT ARRAYS
+    // ═══════════════════════════════════════════════════════════════════
+    print(">>> ARRAY METHODS - INT <<<");
+    print("");
+
+    let arr: [Int] = [10, 20, 30, 40, 50];
+
+    print("get(0): ");
+    print(arr[0]);
+
+    print("get(2): ");
+    print(arr[2]);
+
+    print("get(4): ");
+    print(arr[4]);
+
+    print("len(): ");
+    print(arr.len());
+
+    print("first(): ");
+    print(arr.first());
+
+    print("last(): ");
+    print(arr.last());
+
+    print("isEmpty(): ");
+    print(arr.isEmpty());
+
+    let mut arr2: [Int] = [1, 2, 3];
+    arr2.push(4);
+    print("After push(4): ");
+    print(arr2);
+
+    arr2.push(5);
+    print("After push(5): ");
+    print(arr2);
+
+    arr2.push(6);
+    print("After push(6): ");
+    print(arr2);
+
+    let popped: Int = arr2.pop();
+    print("pop(): ");
+    print(popped);
+
+    print("After pop: ");
+    print(arr2);
+
+    let mut arr3: [Int] = [100, 200, 300];
+    arr3[1] = 999;
+    print("After [1] = 999: ");
+    print(arr3);
+
+    arr3[0] = 111;
+    print("After [0] = 111: ");
+    print(arr3);
+
+    arr3[2] = 333;
+    print("After [2] = 333: ");
+    print(arr3);
+
+    print("contains(30): ");
+    print(arr.contains(30));
+
+    print("contains(99): ");
+    print(arr.contains(99));
+
+    print("indexOf(30): ");
+    print(arr.indexOf(30));
+
+    print("indexOf(10): ");
+    print(arr.indexOf(10));
+
+    print("indexOf(50): ");
+    print(arr.indexOf(50));
+
+    print("indexOf(99): ");
+    print(arr.indexOf(99));
+
+    let mut arr4: [Int] = [5, 2, 8, 1, 9];
+    print("Before sort: ");
+    print(arr4);
+    arr4.sort();
+    print("After sort: ");
+    print(arr4);
+
+    let mut arr5: [Int] = [5, 4, 3, 2, 1];
+    print("Before reverse: ");
+    print(arr5);
+    arr5.reverse();
+    print("After reverse: ");
+    print(arr5);
+
+    let arr6: [Int] = [10, 20, 30, 40, 50];
+    let slice: [Int] = arr6.slice(1, 4);
+    print("slice(1, 4): ");
+    print(slice);
+
+    let slice2: [Int] = arr6.slice(0, 2);
+    print("slice(0, 2): ");
+    print(slice2);
+
+    let mut arr7: [Int] = [1, 2, 3];
+    arr7.clear();
+    print("After clear: ");
+    print(arr7);
+
+    // ARRAY JOIN EXAMPLES
+    let strArrJoin: [Str] = ["one", "two", "three"];
+    print("strArr join(', '): ");
+    print(strArrJoin.join(", "));
+
+    let mut emptyStrArr: [Str] = [];
+    print("emptyStrArr join(', '): ");
+    print(emptyStrArr.join(", "));
+
+    // Join on Int arrays (joins by converting elements to strings)
+    let intArrJoin: [Int] = [1, 2, 3];
+    print("intArr join('-'): ");
+    print(intArrJoin.join("-"));
+
+    print("✓ Array INT methods PASS");
+    print("");
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ARRAY MAP METHODS - TESTING WITH DIFFERENT TYPES
+    // ═══════════════════════════════════════════════════════════════════
+    print(">>> ARRAY MAP METHODS <<<");
+    print("");
+
+    let intArr: [Int] = [1, 2, 3, 4, 5];
+    print("Original int array: ");
+    print(intArr);
+
+    let strArr: [Str] = ["apple", "banana", "cherry"];
+    print("Original string array: ");
+    print(strArr);
+
+    let boolArr: [Bool] = [true, false, true];
+    print("Original bool array: ");
+    print(boolArr);
+
+    print("✓ Array MAP methods PASS");
+    print("");
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MAP METHODS - INT KEYS, INT VALUES
+    // ═══════════════════════════════════════════════════════════════════
+    print(">>> MAP METHODS - INT:INT <<<");
+    print("");
+
+    let mut intMap: {Int: Int} = {1: 10, 2: 20, 3: 30};
+    print("Created map: ");
+    print(intMap);
+
+    intMap[4] = 40;
+    print("After set(4, 40): ");
+    print(intMap);
+
+    intMap[5] = 50;
+    print("After set(5, 50): ");
+    print(intMap);
+
+    intMap[1] = 100;
+    print("After set(1, 100): ");
+    print(intMap);
+
+    print("has(1): ");
+    print(intMap.has(1));
+
+    print("has(9): ");
+    print(intMap.has(9));
+
+    print("size(): ");
+    print(intMap.size());
+
+    print("isEmpty(): ");
+    print(intMap.isEmpty());
+
+    print("✓ Map INT:INT methods PASS");
+    print("");
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MAP METHODS - STRING KEYS, INT VALUES
+    // ═══════════════════════════════════════════════════════════════════
+    print(">>> MAP METHODS - STR:INT <<<");
+    print("");
+
+    let mut testMap: {Str: Int} = {"apple": 10, "banana": 20, "cherry": 30};
+    print("Created map: ");
+    print(testMap);
+
+    testMap["date"] = 40;
+    print("After set('date', 40): ");
+    print(testMap);
+
+    testMap["elderberry"] = 50;
+    print("After set('elderberry', 50): ");
+    print(testMap);
+
+    testMap["apple"] = 100;
+    print("After set('apple', 100): ");
+    print(testMap);
+
+    print("has('apple'): ");
+    print(testMap.has("apple"));
+
+    print("has('zebra'): ");
+    print(testMap.has("zebra"));
+
+    print("keys(): ");
+    print(testMap.keys());
+
+    print("values(): ");
+    print(testMap.values());
+
+    print("size(): ");
+    print(testMap.size());
+
+    print("isEmpty() on non-empty: ");
+    print(testMap.isEmpty());
+
+    let mut emptyMap: {Str: Int} = {};
+    print("isEmpty() on empty: ");
+    print(emptyMap.isEmpty());
+
+    print("size() on empty: ");
+    print(emptyMap.size());
+
+    print("keys() on empty: ");
+    print(emptyMap.keys());
+
+    print("values() on empty: ");
+    print(emptyMap.values());
+
+    let mut testMap2: {Str: Int} = {"x": 100, "y": 200, "z": 300};
+    print("Before remove: ");
+    print(testMap2);
+
+    testMap2.remove("y");
+    print("After remove('y'): ");
+    print(testMap2);
+
+    testMap2.remove("x");
+    print("After remove('x'): ");
+    print(testMap2);
+
+    testMap2.remove("z");
+    print("After remove('z'): ");
+    print(testMap2);
+
+    let mut clearMap: {Str: Int} = {"a": 1, "b": 2, "c": 3};
+    print("Before clear: ");
+    print(clearMap);
+
+    clearMap.clear();
+    print("After clear: ");
+    print(clearMap);
+
+    print("Size after clear: ");
+    print(clearMap.size());
+
+    print("isEmpty() after clear: ");
+    print(clearMap.isEmpty());
+
+    print("✓ Map STR:INT methods PASS");
+    print("");
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MAP METHODS - STRING KEYS, STRING VALUES
+    // ═══════════════════════════════════════════════════════════════════
+    print(">>> MAP METHODS - STR:STR <<<");
+    print("");
+
+    let mut strMap: {Str: Str} = {"key1": "value1", "key2": "value2", "key3": "value3"};
+    print("Created map: ");
+    print(strMap);
+
+    strMap["key4"] = "value4";
+    print("After set('key4', 'value4'): ");
+    print(strMap);
+
+    strMap["key1"] = "updated";
+    print("After set('key1', 'updated'): ");
+    print(strMap);
+
+    print("has('key1'): ");
+    print(strMap.has("key1"));
+
+    print("has('none'): ");
+    print(strMap.has("none"));
+
+    print("size(): ");
+    print(strMap.size());
+
+    print("✓ Map STR:STR methods PASS");
+    print("");
+
+}

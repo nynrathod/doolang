@@ -1,0 +1,343 @@
+import std::File;
+
+fn main() {
+    print("=== Manual Environment Error Test - Force failures for all success cases ===");
+    print("");
+
+    // This test is intended to exercise the error paths for the file
+    // operations that normally succeed in `manual.doo`. It uses clearly
+    // invalid names (and a root-fallback) to provoke OS-level errors
+    // (e.g., invalid filename characters on Windows, permission errors on Unix).
+    //
+    // Usage:
+    //   - Set environment variable TRIGGER_DOO_ERROR_ALL to any non-empty value
+    //     (for example '1') to actually run these error-checks.
+    //   - If the environment variable is not set, the test will print instructions
+    //     and exit without attempting operations.
+
+
+
+    // Two candidates used per test:
+    //  - invalidWindows: bad names with characters not permitted in Windows filenames
+    //  - invalidUnixFallback: a root-protected path that should fail for non-root users
+    let invalidWindows = "intentional_invalid<name>.txt";
+    let invalidWindowsDir = "invalid<dir>";
+    let invalidUnixFallback = "/root/intentional_invalid_name.txt";
+    let invalidUnixFallbackDir = "/root/invalid_dir_name";
+
+    // Helper textual separator for readability
+    let sep = "----------------------------------------";
+
+    // Test 1: Write invalid filename
+    print(sep);
+    print("Test 1: File::Write with invalid filename (should fail)");
+    let _, writeErr = File::Write(invalidWindows, "This write should fail when env is set.");
+    if writeErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", writeErr);
+        print("    Message:", writeErr.Message);
+    } else {
+        print("  Unexpected: write succeeded when it should have failed. Trying Unix fallback path...");
+        let _, writeErr2 = File::Write(invalidUnixFallback, "Fallback write attempt");
+        if writeErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", writeErr2);
+            print("      Message:", writeErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 2: Read invalid filename
+    print(sep);
+    print("Test 2: File::Read with invalid filename (should fail)");
+    let _, readErr = File::Read(invalidWindows);
+    if readErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", readErr);
+        print("    Message:", readErr.Message);
+    } else {
+        print("  Unexpected: read succeeded when it should have failed. Trying Unix fallback path...");
+        let _, readErr2 = File::Read(invalidUnixFallback);
+        if readErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", readErr2);
+            print("      Message:", readErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 3: Append invalid filename
+    print(sep);
+    print("Test 3: File::Append with invalid filename (should fail)");
+    let _, appendErr = File::Append(invalidWindows, "Append should fail");
+    if appendErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", appendErr);
+        print("    Message:", appendErr.Message);
+    } else {
+        print("  Unexpected: append succeeded when it should have failed. Trying Unix fallback path...");
+        let _, appendErr2 = File::Append(invalidUnixFallback, "Fallback append attempt");
+        if appendErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", appendErr2);
+            print("      Message:", appendErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 4: Exists on invalid filename
+    // NOTE: Many APIs like `Exists` just return a boolean and don't expose errors.
+    // We call it to see behavior; if it returns `false` without an error, that's expected.
+    print(sep);
+    print("Test 4: File::Exists on invalid filename (may return false, may not error)");
+    let existsVal = File::Exists(invalidWindows);
+    print("  File exists (invalidWindows):", existsVal);
+    let existsVal2 = File::Exists(invalidUnixFallback);
+    print("  File exists (invalidUnixFallback):", existsVal2);
+    print("");
+
+    // Test 5: Size of invalid file
+    print(sep);
+    print("Test 5: File::Size on invalid filename (should fail)");
+    let _, sizeErr = File::Size(invalidWindows);
+    if sizeErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", sizeErr);
+        print("    Message:", sizeErr.Message);
+    } else {
+        print("  Unexpected: File::Size succeeded when it should have failed. Trying fallback...");
+        let _, sizeErr2 = File::Size(invalidUnixFallback);
+        if sizeErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", sizeErr2);
+            print("      Message:", sizeErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 6: Metadata on invalid file
+    print(sep);
+    print("Test 6: File::Metadata on invalid filename (should fail)");
+    let _, metaErr = File::Metadata(invalidWindows);
+    if metaErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", metaErr);
+        print("    Message:", metaErr.Message);
+    } else {
+        print("  Unexpected: Metadata succeeded when it should have failed. Trying fallback...");
+        let _, metaErr2 = File::Metadata(invalidUnixFallback);
+        if metaErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", metaErr2);
+            print("      Message:", metaErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 7: Copy - copy invalid source -> destination (should fail)
+    print(sep);
+    print("Test 7: File::Copy from invalid source to dest (should fail)");
+    let _, copyErr = File::Copy(invalidWindows, "copy_dest_invalid.txt");
+    if copyErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", copyErr);
+        print("    Message:", copyErr.Message);
+    } else {
+        print("  Unexpected: Copy succeeded when it should have failed. Trying fallback...");
+        let _, copyErr2 = File::Copy(invalidUnixFallback, "copy_dest_invalid2.txt");
+        if copyErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", copyErr2);
+            print("      Message:", copyErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 8: MkDir with invalid directory name
+    print(sep);
+    print("Test 8: File::MkDir with invalid directory name (should fail)");
+    let _, mkErr = File::MkDir(invalidWindowsDir);
+    if mkErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", mkErr);
+        print("    Message:", mkErr.Message);
+    } else {
+        print("  Unexpected: MkDir succeeded when it should have failed. Trying fallback...");
+        let _, mkErr2 = File::MkDir(invalidUnixFallbackDir);
+        if mkErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", mkErr2);
+            print("      Message:", mkErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded. If you are running as root on Unix, this may succeed.");
+        }
+    }
+    print("");
+
+    // Test 9: Metadata on invalid directory
+    print(sep);
+    print("Test 9: File::Metadata on invalid directory (should fail)");
+    let _, dirMetaErr = File::Metadata(invalidWindowsDir);
+    if dirMetaErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", dirMetaErr);
+        print("    Message:", dirMetaErr.Message);
+    } else {
+        print("  Unexpected: Metadata (dir) succeeded when it should have failed. Trying fallback...");
+        let _, dirMetaErr2 = File::Metadata(invalidUnixFallbackDir);
+        if dirMetaErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", dirMetaErr2);
+            print("      Message:", dirMetaErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 10: Move invalid file
+    print(sep);
+    print("Test 10: File::Move with invalid source (should fail)");
+    let _, moveErr = File::Move(invalidWindows, "moved_invalid_dest.txt");
+    if moveErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", moveErr);
+        print("    Message:", moveErr.Message);
+    } else {
+        print("  Unexpected: Move succeeded when it should have failed. Trying fallback...");
+        let _, moveErr2 = File::Move(invalidUnixFallback, "moved_invalid_dest2.txt");
+        if moveErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", moveErr2);
+            print("      Message:", moveErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 11: ListDir on invalid directory
+    print(sep);
+    print("Test 11: File::ListDir on invalid directory (should fail)");
+    let _, listErr = File::ListDir(invalidWindowsDir);
+    if listErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", listErr);
+        print("    Message:", listErr.Message);
+    } else {
+        print("  Unexpected: ListDir succeeded when it should have failed. Trying fallback...");
+        let _, listErr2 = File::ListDir(invalidUnixFallbackDir);
+        if listErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", listErr2);
+            print("      Message:", listErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 12: ReadLines on invalid filename
+    print(sep);
+    print("Test 12: File::ReadLines on invalid filename (should fail)");
+    let _, readLinesErr = File::ReadLines(invalidWindows);
+    if readLinesErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", readLinesErr);
+        print("    Message:", readLinesErr.Message);
+    } else {
+        print("  Unexpected: ReadLines succeeded when it should have failed. Trying fallback...");
+        let _, readLinesErr2 = File::ReadLines(invalidUnixFallback);
+        if readLinesErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", readLinesErr2);
+            print("      Message:", readLinesErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 13: Delete invalid filename
+    print(sep);
+    print("Test 13: File::Delete on invalid filename (should fail)");
+    let _, delErr = File::Delete(invalidWindows);
+    if delErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", delErr);
+        print("    Message:", delErr.Message);
+    } else {
+        print("  Unexpected: Delete succeeded when it should have failed. Trying fallback...");
+        let _, delErr2 = File::Delete(invalidUnixFallback);
+        if delErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", delErr2);
+            print("      Message:", delErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 14: RmDir invalid directory
+    print(sep);
+    print("Test 14: File::RmDir on invalid directory (should fail)");
+    let _, rmdirErr = File::RmDir(invalidWindowsDir);
+    if rmdirErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", rmdirErr);
+        print("    Message:", rmdirErr.Message);
+    } else {
+        print("  Unexpected: RmDir succeeded when it should have failed. Trying fallback...");
+        let _, rmdirErr2 = File::RmDir(invalidUnixFallbackDir);
+        if rmdirErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", rmdirErr2);
+            print("      Message:", rmdirErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+    // Test 15: RmDirAll on invalid directory
+    print(sep);
+    print("Test 15: File::RmDirAll on invalid directory (should fail)");
+    let _, rmdirAllErr = File::RmDirAll(invalidWindowsDir);
+    if rmdirAllErr != nil {
+        print("  Expected error occurred:");
+        print("    Error:", rmdirAllErr);
+        print("    Message:", rmdirAllErr.Message);
+    } else {
+        print("  Unexpected: RmDirAll succeeded when it should have failed. Trying fallback...");
+        let _, rmdirAllErr2 = File::RmDirAll(invalidUnixFallbackDir);
+        if rmdirAllErr2 != nil {
+            print("    Fallback expected error occurred:");
+            print("      Error:", rmdirAllErr2);
+            print("      Message:", rmdirAllErr2.Message);
+        } else {
+            print("    Fallback also unexpectedly succeeded.");
+        }
+    }
+    print("");
+
+
+    print("=== Manual Environment Error Test Complete ===");
+    print("");
+    print("Notes:");
+    print("  - If many 'Unexpected: ... succeeded' messages appear, please double-check that you are not running as a privileged user or inside an environment where these file-path conventions are allowed.");
+    print("  - On Unix-like systems, characters such as '<' are valid in filenames; the fallback attempts under /root/ should then provoke permission errors for non-root users.");
+    print("  - If you want to try different patterns, set TRIGGER_DOO_ERROR_ALL and edit the invalid names above.");
+}

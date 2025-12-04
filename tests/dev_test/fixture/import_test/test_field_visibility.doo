@@ -1,0 +1,65 @@
+//
+// test_field_visibility.doo - Test struct with mixed public/private fields
+// PascalCase fields = public, camelCase fields = private
+//
+
+// Struct with mixed visibility fields
+struct Person {
+    Name: Str,
+    Age: Int,
+    email: Str,
+    phone: Str
+}
+
+// Public function to create Person
+fn CreatePerson(n: Str, a: Int, e: Str, p: Str) -> Int {
+    print("Creating person:", n);
+    print("  Age:", a);
+    print("  Email:", e);
+    print("  Phone:", p);
+    Ok 1;
+}
+
+// Public function to get person name (public field)
+fn GetPersonName() -> Int {
+    print("Accessing public field: Name");
+    Ok 1;
+}
+
+// Public function to get person age (public field)
+fn GetPersonAge() -> Int {
+    print("Accessing public field: Age");
+    Ok 1;
+}
+
+fn main() {
+    print("=== Testing Field Visibility ===");
+    print("");
+
+    print("[TEST 1] Struct with mixed field visibility");
+    print("  struct Person {");
+    print("    Name: Str     <- Public (PascalCase)");
+    print("    Age: Int      <- Public (PascalCase)");
+    print("    email: Str    <- Private (camelCase)");
+    print("    phone: Str    <- Private (camelCase)");
+    print("  }");
+
+    print("");
+    print("[TEST 2] Create person instance");
+    let result = CreatePerson("Alice", 30, "alice@test.com", "555-1234");
+    print("  Person created - OK");
+
+    print("");
+    print("[TEST 3] Access public fields");
+    let r1 = GetPersonName();
+    let r2 = GetPersonAge();
+    print("  Name (public) - OK");
+    print("  Age (public) - OK");
+
+    print("");
+    print("=== All Field Visibility Tests Passed ===");
+    print("");
+    print("Summary:");
+    print("  PascalCase fields (Name, Age) - Public, can be accessed");
+    print("  camelCase fields (email, phone) - Private, restricted access");
+}

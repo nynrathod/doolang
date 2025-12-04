@@ -1,0 +1,180 @@
+//
+// Comprehensive JSON Parse & Stringify Test Suite
+// - Implicit and explicit type definitions
+// - Direct and variable usage of stringify/parse
+// - Covers: Int, Float, Bool, Str, [Int], [Float], [Bool], [Str],
+//           {Str: Int}, {Str: Float}, {Str: Bool}, {Str: Str},
+//           {Int: Int}, {Int: Float}, {Int: Bool}, {Int: Str},
+//           {Float: Int}, {Float: Float}, {Float: Bool}, {Float: Str},
+//           {Bool: Int}, {Bool: Float}, {Bool: Bool}, {Bool: Str}
+// - Edge cases: empty, single, negative, zero
+//
+
+fn main() {
+    print("=== Comprehensive JSON Parse & Stringify Tests ===\n");
+
+    // ------------------------------------------------------------
+    // Primitive Types
+    print("--- Primitive Types ---");
+    // Implicit
+    let num = 42;
+    print("Int (implicit):", JSON.stringify(num), JSON.parse(JSON.stringify(num)));
+    // Explicit
+    let numEx: Int = 99;
+    let jsonNumEx: Str = JSON.stringify(numEx);
+    let parsedNumEx: Int = JSON.parse(jsonNumEx);
+    print("Int (explicit):", jsonNumEx, parsedNumEx);
+
+    let pi = 3.14159;
+    print("Float (implicit):", JSON.stringify(pi), JSON.parse(JSON.stringify(pi)));
+    let piEx: Float = 2.718;
+    print("Float (explicit):", JSON.stringify(piEx), JSON.parse(JSON.stringify(piEx)));
+
+    let isTrue = true;
+    print("Bool (implicit):", JSON.stringify(isTrue), JSON.parse(JSON.stringify(isTrue)));
+    let isFalseEx: Bool = false;
+    print("Bool (explicit):", JSON.stringify(isFalseEx), JSON.parse(JSON.stringify(isFalseEx)));
+
+    let text = "Hello JSON";
+    print("Str (implicit):", JSON.stringify(text), JSON.parse(JSON.stringify(text)));
+    let textEx: Str = "Explicit String";
+    print("Str (explicit):", JSON.stringify(textEx), JSON.parse(JSON.stringify(textEx)));
+
+    // ------------------------------------------------------------
+    // Arrays
+    print("\n--- Arrays ---");
+    let intArr = [1, 2, 3, 4, 5];
+    print("[Int] (implicit):", JSON.stringify(intArr), JSON.parse(JSON.stringify(intArr)));
+    let intArrEx: [Int] = [10, 20, 30];
+    let jsonIntArrEx: Str = JSON.stringify(intArrEx);
+    print("[Int] (explicit):", jsonIntArrEx, JSON.parse(jsonIntArrEx));
+
+    let floatArr = [1.1, 2.2, 3.3];
+    print("[Float] (implicit):", JSON.stringify(floatArr), JSON.parse(JSON.stringify(floatArr)));
+    let floatArrEx: [Float] = [9.9, 8.8];
+    print("[Float] (explicit):", JSON.stringify(floatArrEx), JSON.parse(JSON.stringify(floatArrEx)));
+
+    let boolArr = [true, false, true];
+    print("[Bool] (implicit):", JSON.stringify(boolArr), JSON.parse(JSON.stringify(boolArr)));
+    let boolArrEx: [Bool] = [false, false, true];
+    print("[Bool] (explicit):", JSON.stringify(boolArrEx), JSON.parse(JSON.stringify(boolArrEx)));
+
+    let strArr = ["apple", "banana", "cherry"];
+    print("[Str] (implicit):", JSON.stringify(strArr), JSON.parse(JSON.stringify(strArr)));
+    let strArrEx: [Str] = ["x", "y", "z"];
+    print("[Str] (explicit):", JSON.stringify(strArrEx), JSON.parse(JSON.stringify(strArrEx)));
+
+    // ------------------------------------------------------------
+    // Maps with String Keys
+    print("\n--- Maps with String Keys ---");
+    let strIntMap = {"age": 25, "year": 2024};
+    print("{Str: Int} (implicit):", JSON.stringify(strIntMap), JSON.parse(JSON.stringify(strIntMap)));
+    let strIntMapEx: {Str: Int} = {"score": 100, "level": 2};
+    let jsonStrIntMapEx: Str = JSON.stringify(strIntMapEx);
+    print("{Str: Int} (explicit):", jsonStrIntMapEx, JSON.parse(jsonStrIntMapEx));
+
+    let strFloatMap = {"pi": 3.14, "e": 2.71};
+    print("{Str: Float} (implicit):", JSON.stringify(strFloatMap), JSON.parse(JSON.stringify(strFloatMap)));
+    let strFloatMapEx: {Str: Float} = {"gold": 1.618, "silver": 47.87};
+    print("{Str: Float} (explicit):", JSON.stringify(strFloatMapEx), JSON.parse(JSON.stringify(strFloatMapEx)));
+
+    let strBoolMap = {"active": true, "verified": false};
+    print("{Str: Bool} (implicit):", JSON.stringify(strBoolMap), JSON.parse(JSON.stringify(strBoolMap)));
+    let strBoolMapEx: {Str: Bool} = {"ready": true, "done": false};
+    print("{Str: Bool} (explicit):", JSON.stringify(strBoolMapEx), JSON.parse(JSON.stringify(strBoolMapEx)));
+
+    let strStrMap = {"name": "Alice", "city": "NYC"};
+    print("{Str: Str} (implicit):", JSON.stringify(strStrMap), JSON.parse(JSON.stringify(strStrMap)));
+    let strStrMapEx: {Str: Str} = {"lang": "doo", "type": "test"};
+    print("{Str: Str} (explicit):", JSON.stringify(strStrMapEx), JSON.parse(JSON.stringify(strStrMapEx)));
+
+    // ------------------------------------------------------------
+    // Maps with Int Keys
+    print("\n--- Maps with Int Keys ---");
+    let intIntMap = {1: 100, 2: 200};
+    print("{Int: Int} (implicit):", JSON.stringify(intIntMap), JSON.parse(JSON.stringify(intIntMap)));
+    let intIntMapEx: {Int: Int} = {7: 77, 8: 88};
+    print("{Int: Int} (explicit):", JSON.stringify(intIntMapEx), JSON.parse(JSON.stringify(intIntMapEx)));
+
+    let intFloatMap = {1: 1.5, 2: 2.5};
+    print("{Int: Float} (implicit):", JSON.stringify(intFloatMap), JSON.parse(JSON.stringify(intFloatMap)));
+    let intFloatMapEx: {Int: Float} = {3: 3.3, 4: 4.4};
+    print("{Int: Float} (explicit):", JSON.stringify(intFloatMapEx), JSON.parse(JSON.stringify(intFloatMapEx)));
+
+    let intBoolMap = {0: false, 1: true};
+    print("{Int: Bool} (implicit):", JSON.stringify(intBoolMap), JSON.parse(JSON.stringify(intBoolMap)));
+    let intBoolMapEx: {Int: Bool} = {5: true, 6: false};
+    print("{Int: Bool} (explicit):", JSON.stringify(intBoolMapEx), JSON.parse(JSON.stringify(intBoolMapEx)));
+
+    let intStrMap = {1: "one", 2: "two"};
+    print("{Int: Str} (implicit):", JSON.stringify(intStrMap), JSON.parse(JSON.stringify(intStrMap)));
+    let intStrMapEx: {Int: Str} = {9: "nine", 10: "ten"};
+    print("{Int: Str} (explicit):", JSON.stringify(intStrMapEx), JSON.parse(JSON.stringify(intStrMapEx)));
+
+    // ------------------------------------------------------------
+    // Maps with Float Keys
+    print("\n--- Maps with Float Keys ---");
+    let floatIntMap = {1.5: 10, 2.5: 20};
+    print("{Float: Int} (implicit):", JSON.stringify(floatIntMap), JSON.parse(JSON.stringify(floatIntMap)));
+    let floatIntMapEx: {Float: Int} = {3.3: 33, 4.4: 44};
+    print("{Float: Int} (explicit):", JSON.stringify(floatIntMapEx), JSON.parse(JSON.stringify(floatIntMapEx)));
+
+    let floatFloatMap = {1.1: 2.2, 3.3: 4.4};
+    print("{Float: Float} (implicit):", JSON.stringify(floatFloatMap), JSON.parse(JSON.stringify(floatFloatMap)));
+    let floatFloatMapEx: {Float: Float} = {5.5: 5.5, 6.6: 6.6};
+    print("{Float: Float} (explicit):", JSON.stringify(floatFloatMapEx), JSON.parse(JSON.stringify(floatFloatMapEx)));
+
+    let floatBoolMap = {0.0: false, 1.0: true};
+    print("{Float: Bool} (implicit):", JSON.stringify(floatBoolMap), JSON.parse(JSON.stringify(floatBoolMap)));
+    let floatBoolMapEx: {Float: Bool} = {7.7: true, 8.8: false};
+    print("{Float: Bool} (explicit):", JSON.stringify(floatBoolMapEx), JSON.parse(JSON.stringify(floatBoolMapEx)));
+
+    let floatStrMap = {1.5: "half", 2.0: "two"};
+    print("{Float: Str} (implicit):", JSON.stringify(floatStrMap), JSON.parse(JSON.stringify(floatStrMap)));
+    let floatStrMapEx: {Float: Str} = {9.9: "nine", 10.1: "ten"};
+    print("{Float: Str} (explicit):", JSON.stringify(floatStrMapEx), JSON.parse(JSON.stringify(floatStrMapEx)));
+
+    // ------------------------------------------------------------
+    // Maps with Bool Keys
+    print("\n--- Maps with Bool Keys ---");
+    let boolIntMap = {true: 1, false: 0};
+    print("{Bool: Int} (implicit):", JSON.stringify(boolIntMap), JSON.parse(JSON.stringify(boolIntMap)));
+    let boolIntMapEx: {Bool: Int} = {true: 2, false: 3};
+    print("{Bool: Int} (explicit):", JSON.stringify(boolIntMapEx), JSON.parse(JSON.stringify(boolIntMapEx)));
+
+    let boolFloatMap = {true: 1.5, false: 0.5};
+    print("{Bool: Float} (implicit):", JSON.stringify(boolFloatMap), JSON.parse(JSON.stringify(boolFloatMap)));
+    let boolFloatMapEx: {Bool: Float} = {true: 2.2, false: 3.3};
+    print("{Bool: Float} (explicit):", JSON.stringify(boolFloatMapEx), JSON.parse(JSON.stringify(boolFloatMapEx)));
+
+    let boolBoolMap = {true: false, false: true};
+    print("{Bool: Bool} (implicit):", JSON.stringify(boolBoolMap), JSON.parse(JSON.stringify(boolBoolMap)));
+    let boolBoolMapEx: {Bool: Bool} = {true: true, false: false};
+    print("{Bool: Bool} (explicit):", JSON.stringify(boolBoolMapEx), JSON.parse(JSON.stringify(boolBoolMapEx)));
+
+    let boolStrMap = {true: "yes", false: "no"};
+    print("{Bool: Str} (implicit):", JSON.stringify(boolStrMap), JSON.parse(JSON.stringify(boolStrMap)));
+    let boolStrMapEx: {Bool: Str} = {true: "true", false: "false"};
+    print("{Bool: Str} (explicit):", JSON.stringify(boolStrMapEx), JSON.parse(JSON.stringify(boolStrMapEx)));
+
+    // ------------------------------------------------------------
+    // Edge Cases
+    print("\n--- Edge Cases ---");
+    let mut emptyArr: [Int] = [];
+    print("Empty array (explicit):", JSON.stringify(emptyArr), JSON.parse(JSON.stringify(emptyArr)));
+    print("Empty array (direct):", JSON.stringify([]), JSON.parse(JSON.stringify([])));
+
+    let singleArr: [Int] = [999];
+    print("Single element array (explicit):", JSON.stringify(singleArr), JSON.parse(JSON.stringify(singleArr)));
+    print("Single element array (direct):", JSON.stringify([123]), JSON.parse(JSON.stringify([123])));
+
+    let negArr: [Int] = [-1, -2, -3];
+    print("Negative numbers (explicit):", JSON.stringify(negArr), JSON.parse(JSON.stringify(negArr)));
+    print("Negative numbers (direct):", JSON.stringify([-7, -8]), JSON.parse(JSON.stringify([-7, -8])));
+
+    let zero: Int = 0;
+    print("Zero (explicit):", JSON.stringify(zero), JSON.parse(JSON.stringify(zero)));
+    print("Zero (direct):", JSON.stringify(0), JSON.parse(JSON.stringify(0)));
+
+    print("\n=== All JSON Parse & Stringify Tests Complete ===");
+}

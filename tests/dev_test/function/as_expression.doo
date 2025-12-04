@@ -1,0 +1,152 @@
+// --- Primitive Types ---
+fn exprInt(x: Int, y: Int) -> Int => x + y;
+fn exprFloat(x: Float, y: Float) -> Float => x * y;
+fn exprBool(b: Bool) -> Bool => !b;
+fn exprStr(s: Str) -> Str => "Hello, " + s;
+
+// --- Expression functions that call other functions ---
+fn baseInt() -> Int => 100;
+fn baseFloat() -> Float => 2.718;
+fn baseBool() -> Bool => false;
+fn baseStr() -> Str => "base";
+
+fn callBaseInt() -> Int => baseInt();
+fn callBaseFloat() -> Float => baseFloat();
+fn callBaseBool() -> Bool => baseBool();
+fn callBaseStr() -> Str => baseStr();
+
+// Tuple return via other function calls
+fn tupleBaseIntStr() -> Int, Str => baseInt(), baseStr();
+fn tupleBaseFloatBool() -> Float, Bool => baseFloat(), baseBool();
+
+// --- Array Types ---
+fn exprArrInt(arr: [Int]) -> [Int] => arr;
+fn exprArrFloat(arr: [Float]) -> [Float] => arr;
+fn exprArrBool(arr: [Bool]) -> [Bool] => arr;
+fn exprArrStr(arr: [Str]) -> [Str] => arr;
+
+// --- Map Types ---
+fn exprMapStrInt(m: {Str: Int}) -> {Str: Int} => m;
+fn exprMapStrFloat(m: {Str: Float}) -> {Str: Float} => m;
+fn exprMapStrBool(m: {Str: Bool}) -> {Str: Bool} => m;
+fn exprMapStrStr(m: {Str: Str}) -> {Str: Str} => m;
+
+fn exprMapIntInt(m: {Int: Int}) -> {Int: Int} => m;
+fn exprMapIntFloat(m: {Int: Float}) -> {Int: Float} => m;
+fn exprMapIntBool(m: {Int: Bool}) -> {Int: Bool} => m;
+fn exprMapIntStr(m: {Int: Str}) -> {Int: Str} => m;
+
+fn exprMapFloatInt(m: {Float: Int}) -> {Float: Int} => m;
+fn exprMapFloatFloat(m: {Float: Float}) -> {Float: Float} => m;
+fn exprMapFloatBool(m: {Float: Bool}) -> {Float: Bool} => m;
+fn exprMapFloatStr(m: {Float: Str}) -> {Float: Str} => m;
+
+fn exprMapBoolInt(m: {Bool: Int}) -> {Bool: Int} => m;
+fn exprMapBoolFloat(m: {Bool: Float}) -> {Bool: Float} => m;
+fn exprMapBoolBool(m: {Bool: Bool}) -> {Bool: Bool} => m;
+fn exprMapBoolStr(m: {Bool: Str}) -> {Bool: Str} => m;
+
+// --- Operator Tuple Expression Functions ---
+// Each returns a tuple using a different operator
+fn tupleAdd(x: Int, y: Int) -> Int, Int => x + y, x + y;
+fn tupleSub(x: Int, y: Int) -> Int, Int => x - y, y - x;
+fn tupleMul(x: Int, y: Int) -> Int, Int => x * y, y * x;
+fn tupleDiv(x: Int, y: Int) -> Int, Int => x / y + 1, y / x + 1;
+fn tupleMod(x: Int, y: Int) -> Int, Int => x % y + 1, y % x + 1;
+
+fn tupleFloatOps(a: Float, b: Float) -> Float, Float => a + b, a * b;
+fn tupleMixOps(x: Int, f: Float) -> Int, Float => x * 2, f / 2.0;
+
+// --- Usage ---
+fn main() {
+    print("=== Expression Function Tests for All Supported Types (with parameters) ===\n");
+
+    // Primitive
+    print("Int:", exprInt(2, 3));
+    print("Float:", exprFloat(2.0, 4.5));
+    print("Bool:", exprBool(false));
+    print("Str:", exprStr("World"));
+
+    // Arrays
+    let arrInt = [1, 2, 3];
+    let arrFloat = [1.1, 2.2, 3.3];
+    let arrBool = [true, false, true];
+    let arrStr = ["a", "b", "c"];
+    print("[Int]:", exprArrInt(arrInt));
+    print("[Float]:", exprArrFloat(arrFloat));
+    print("[Bool]:", exprArrBool(arrBool));
+    print("[Str]:", exprArrStr(arrStr));
+
+    // Maps
+    let mapStrInt = {"a": 1, "b": 2};
+    let mapStrFloat = {"x": 1.1, "y": 2.2};
+    let mapStrBool = {"t": true, "f": false};
+    let mapStrStr = {"foo": "bar", "baz": "qux"};
+    print("{Str: Int}:", exprMapStrInt(mapStrInt));
+    print("{Str: Float}:", exprMapStrFloat(mapStrFloat));
+    print("{Str: Bool}:", exprMapStrBool(mapStrBool));
+    print("{Str: Str}:", exprMapStrStr(mapStrStr));
+
+    let mapIntInt = {1: 10, 2: 20};
+    let mapIntFloat = {1: 1.1, 2: 2.2};
+    let mapIntBool = {1: true, 2: false};
+    let mapIntStr = {1: "one", 2: "two"};
+    print("{Int: Int}:", exprMapIntInt(mapIntInt));
+    print("{Int: Float}:", exprMapIntFloat(mapIntFloat));
+    print("{Int: Bool}:", exprMapIntBool(mapIntBool));
+    print("{Int: Str}:", exprMapIntStr(mapIntStr));
+
+    let mapFloatInt = {1.1: 1, 2.2: 2};
+    let mapFloatFloat = {1.1: 1.1, 2.2: 2.2};
+    let mapFloatBool = {1.1: true, 2.2: false};
+    let mapFloatStr = {1.1: "low", 2.2: "high"};
+    print("{Float: Int}:", exprMapFloatInt(mapFloatInt));
+    print("{Float: Float}:", exprMapFloatFloat(mapFloatFloat));
+    print("{Float: Bool}:", exprMapFloatBool(mapFloatBool));
+    print("{Float: Str}:", exprMapFloatStr(mapFloatStr));
+
+    let mapBoolInt = {true: 1, false: 0};
+    let mapBoolFloat = {true: 1.1, false: 0.0};
+    let mapBoolBool = {true: true, false: false};
+    let mapBoolStr = {true: "yes", false: "no"};
+    print("{Bool: Int}:", exprMapBoolInt(mapBoolInt));
+    print("{Bool: Float}:", exprMapBoolFloat(mapBoolFloat));
+    print("{Bool: Bool}:", exprMapBoolBool(mapBoolBool));
+    print("{Bool: Str}:", exprMapBoolStr(mapBoolStr));
+
+    // --- Operator Tuple Cases ---
+    let add1, add2 = tupleAdd(7, 5);
+    print("Tuple +:", add1, add2);
+
+    let sub1, sub2 = tupleSub(7, 5);
+    print("Tuple -:", sub1, sub2);
+
+    let mul1, mul2 = tupleMul(7, 5);
+    print("Tuple *:", mul1, mul2);
+
+    let div1, div2 = tupleDiv(7, 5);
+    print("Tuple /:", div1, div2);
+
+    let mod1, mod2 = tupleMod(7, 5);
+    print("Tuple %:", mod1, mod2);
+
+    let f1, f2 = tupleFloatOps(2.5, 4.0);
+    print("Tuple Float (+,*):", f1, f2);
+
+    let mix1, mix2 = tupleMixOps(10, 3.0);
+    print("Tuple Mix (Int, Float):", mix1, mix2);
+
+    // --- Direct function call as expression body ---
+    print("callBaseInt():", callBaseInt());
+    print("callBaseFloat():", callBaseFloat());
+    print("callBaseBool():", callBaseBool());
+    print("callBaseStr():", callBaseStr());
+
+    let tInt, tStr = tupleBaseIntStr();
+    print("Tuple from function call (Int, Str):", tInt, tStr);
+
+    let tFloat, tBool = tupleBaseFloatBool();
+    print("Tuple from function call (Float, Bool):", tFloat, tBool);
+
+    print("\n=== All Expression Function Tests Complete ===");
+}

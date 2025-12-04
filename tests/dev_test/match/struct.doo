@@ -1,0 +1,110 @@
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+struct User {
+    name: Str,
+    age: Int,
+    active: Bool,
+}
+
+struct Profile {
+    user: User,
+    location: Str,
+}
+
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+struct Event {
+    kind: Status,
+    timestamp: Int,
+}
+
+fn main() {
+    print("=== Struct Matching Patterns Demo ===");
+
+    // 1. Direct struct field access in match
+    let point = Point { x: 10, y: 20 };
+    let xVal = point.x;
+    match xVal {
+        10 => print("X is 10"),
+        20 => print("X is 20"),
+        _ => print("X is something else"),
+    }
+
+    // 2. Destructuring structs in match (multiple fields)
+    match point.x, point.y {
+        0, 0 => print("Origin"),
+        10, 20 => print("Special Point"),
+        // (_, y) if y > 100 => print("Y is large"),
+        _ => print("Other point"),
+    }
+
+    // 3. Matching on struct as a whole (if supported)
+    match point {
+        Point { x: 10, y: 20 } => print("Matched full Point"),
+        // Point { x, y } if x == y => print("Diagonal"),
+        _ => print("Other"),
+    }
+
+    // 4. Matching with guards on struct fields
+    let user = User {
+        name: "Alice",
+        age: 25,
+        active: true,
+    };
+    match user {
+        // User { active: true, age } if age > 18 => print("Active adult"),
+        User { name: "Alice", age: 25, active: false } => print("Inactive user"),
+        _ => print("Other user"),
+    }
+
+    // 5. Nested structs
+    let profile = Profile {
+        user: user,
+        location: "Earth",
+    };
+    match profile.user.active {
+        true => print("Profile is active"),
+        false => print("Profile is inactive"),
+        _ => print("Unknown profile status"),
+    }
+    match profile.location {
+        "Earth" => print("Location is Earth"),
+        _ => print("Other location"),
+    }
+
+    // // 6. Array of structs
+    // let points = [Point { x: 0, y: 0 }, Point { x: 10, y: 20 }];
+    // match points[1].x {
+    //     10 => print("Second point x is 10"),
+    //     _ => print("Other"),
+    // }
+    // match (points[0].x, points[0].y) {
+    //     (0, 0) => print("First point is origin"),
+    //     _ => print("First point is not origin"),
+    // }
+
+    // 7. Struct with enum field
+    let event = Event {
+        kind: Status::Active,
+        timestamp: 123456,
+    };
+    match event.kind {
+        Status::Active => print("Event is active"),
+        Status::Inactive => print("Event is inactive"),
+        Status::Pending => print("Event is pending"),
+        _ => print("Unknown event status"),
+    }
+    // match event.timestamp {
+    //     t if t > 100000 => print("Recent event"),
+    //     _ => print("Older event"),
+    // }
+
+    print("=== All struct matching patterns tested ===");
+}

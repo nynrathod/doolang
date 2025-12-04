@@ -1,0 +1,53 @@
+struct Point { x: Int, y: Int }
+
+enum Status { Active, Inactive, Pending }
+enum Result { Success(Int), Failure(Str) }
+
+struct Complex {
+    arr: [Int],
+    map: {Str: Int},
+    status: Status,
+}
+
+fn returnPoint() -> Point {
+    return Point { x: 10, y: 20 };
+}
+
+fn returnZeroPoint() -> Point {
+    return Point { x: 0, y: 0 };
+}
+
+fn returnStatusActive() -> Status { return Status::Active; }
+fn returnStatusInactive() -> Status { return Status::Inactive; }
+fn returnResultSuccess() -> Result { return Result::Success(123); }
+fn returnResultFailure() -> Result { return Result::Failure("fail"); }
+
+fn returnComplex() -> Complex {
+    return Complex { arr: [1,2], map: {"x": 2}, status: Status::Active };
+}
+
+fn returnEmptyComplex() -> Complex {
+    return Complex { arr: [], map: {}, status: Status::Inactive };
+}
+
+fn main() {
+    print("=== Struct Return Type Tests ===");
+    let p = returnPoint();
+    print("Returned struct:", p);
+
+    let zp = returnZeroPoint();
+    print("Returned zero struct:", zp);
+
+    print("\n=== Enum Return Type Tests ===");
+    print("Returned enum:", returnStatusActive());
+    print("Returned enum:", returnStatusInactive());
+    print("Returned enum with payload:", returnResultSuccess());
+    print("Returned enum with payload:", returnResultFailure());
+
+    print("\n=== Complex/Composite Return Type Tests ===");
+    let c = returnComplex();
+    print("Returned complex struct:", c);
+
+    let ec = returnEmptyComplex();
+    print("Returned empty complex struct:", ec);
+}

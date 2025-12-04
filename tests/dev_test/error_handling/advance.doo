@@ -1,0 +1,295 @@
+//
+// Comprehensive Error Handling Test Suite
+// Covers: Primitive Types, Structs, Enums, Error Propagation, Chaining, and Complex Operations
+//
+
+// ============================================================================
+// Struct Definitions (Primitive Error Types & Domain Models)
+// ============================================================================
+
+struct IntError {
+    code: Int,
+    reason: Str
+}
+
+struct FloatError {
+    value: Float,
+    message: Str
+}
+
+struct BoolError {
+    flag: Bool,
+    info: Str
+}
+
+struct StrError {
+    text: Str,
+    context: Str
+}
+
+struct ComplexError {
+    code: Int,
+    value: Float,
+    flag: Bool,
+    message: Str
+}
+
+// Domain structs for advanced scenarios
+struct Point {
+    x: Int,
+    y: Int
+}
+
+struct Rectangle {
+    width: Int,
+    height: Int
+}
+
+struct User {
+    email: Str,
+    age: Int,
+    active: Bool
+}
+
+// ============================================================================
+// Enum Definitions (Advanced Error/Status Types)
+// ============================================================================
+
+enum Status {
+    Active,
+    Inactive,
+    Pending
+}
+
+enum ResultType {
+    Success(Int),
+    Failure(Str)
+}
+
+enum Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+// ============================================================================
+// Primitive Error Handling Functions
+// ============================================================================
+
+// Int error type
+fn TestIntError(x: Int) -> Str ! Int {
+    if x < 0 {
+        Err -1;
+    }
+    Ok "success";
+}
+
+// Float error type
+fn TestFloatError(x: Float) -> Str ! Float {
+    if x < 0.0 {
+        Err -99.9;
+    }
+    Ok "success";
+}
+
+// Bool error type
+fn TestBoolError(x: Bool) -> Str ! Bool {
+    if x {
+        Err true;
+    }
+    Ok "success";
+}
+
+// Str error type
+fn TestStrError(x: Int) -> Int ! Str {
+    if x < 0 {
+        Err "string error occurred";
+    }
+    Ok x * 2;
+}
+
+// Struct error types
+fn TestStructIntError(x: Int) -> Str ! IntError {
+    if x < 0 {
+        Err IntError { code: 100, reason: "negative value" };
+    }
+    Ok "success";
+}
+
+fn TestStructFloatError(x: Float) -> Str ! FloatError {
+    if x < 0.0 {
+        Err FloatError { value: x, message: "negative float" };
+    }
+    Ok "success";
+}
+
+fn TestStructBoolError(x: Bool) -> Str ! BoolError {
+    if x {
+        Err BoolError { flag: x, info: "flag was true" };
+    }
+    Ok "success";
+}
+
+fn TestStructStrError(x: Int) -> Int ! StrError {
+    if x < 0 {
+        Err StrError { text: "error text", context: "negative number" };
+    }
+    Ok x;
+}
+
+fn TestComplexError(x: Int) -> Str ! ComplexError {
+    if x < 0 {
+        Err ComplexError {
+            code: 500,
+            value: -99.9,
+            flag: true,
+            message: "complex error occurred"
+        };
+    }
+    Ok "success";
+}
+
+// ============================================================================
+// Advanced Struct & Enum Error Handling Functions
+// ============================================================================
+
+// Point creation with error
+fn CreatePoint(x: Int, y: Int) -> Int ! Str {
+    if x < 0 || y < 0 {
+        Err "Coordinates cannot be negative";
+    }
+    let p = Point { x: x, y: y };
+    Ok p.x + p.y;
+}
+
+// Rectangle area calculation with error
+fn CalculateArea(width: Int, height: Int) -> Int ! Str {
+    if width <= 0 || height <= 0 {
+        Err "Dimensions must be positive";
+    }
+    let rect = Rectangle { width: width, height: height };
+    Ok rect.width * rect.height;
+}
+
+// Age validation with error
+fn ValidateAge(age: Int) -> ! Str {
+    if age < 0 {
+        Err "Age cannot be negative";
+    }
+    if age > 150 {
+        Err "Age too large";
+    }
+}
+
+// User creation with error propagation
+fn CreateUser(email: Str, age: Int) -> Int ! Str {
+    ValidateAge(age)?;
+    let user = User { email: email, age: age, active: true };
+    Ok user.age;
+}
+
+// Enum-based result processing
+fn ProcessResult(success: Bool, value: Int) -> Int ! Str {
+    if success {
+        Ok value * 2;
+    } else {
+        Err "Result was failure";
+    }
+}
+
+// Chained error propagation
+fn ChainedOps(w: Int, h: Int) -> Int ! Str {
+    let area = CalculateArea(w, h)?;
+    if area > 100 {
+        Err "Area too large";
+    } else {
+        Ok area;
+    }
+}
+
+// ============================================================================
+// Main Test Suite
+// ============================================================================
+
+fn main() {
+    print("=== Error Handling: Primitive, Struct, Enum, and Advanced Tests ===\n");
+
+    // --- Primitive Error Tests ---
+    print("Primitive Error Tests:");
+    let r1, e1 = TestIntError(5);
+    print("  Int Ok:", r1);
+    let _, e2 = TestIntError(-5);
+    print("  Int Err:", e2);
+
+    let r3, e3 = TestFloatError(5.5);
+    print("  Float Ok:", r3);
+    let _, e4 = TestFloatError(-5.5);
+    print("  Float Err:", e4);
+
+    let r5, e5 = TestBoolError(false);
+    print("  Bool Ok:", r5);
+    let _, e6 = TestBoolError(true);
+    print("  Bool Err:", e6);
+
+    let r7, e7 = TestStrError(5);
+    print("  Str Ok:", r7);
+    let _, e8 = TestStrError(-5);
+    print("  Str Err:", e8);
+
+    // --- Struct Error Tests ---
+    print("\nStruct Error Tests:");
+    let r9, e9 = TestStructIntError(5);
+    print("  IntError Ok:", r9);
+    let _, e10 = TestStructIntError(-5);
+    print("  IntError Err:", e10.code, e10.reason);
+
+    let r11, e11 = TestStructFloatError(5.5);
+    print("  FloatError Ok:", r11);
+    let _, e12 = TestStructFloatError(-5.5);
+    print("  FloatError Err:", e12.value, e12.message);
+
+    let r13, e13 = TestStructBoolError(false);
+    print("  BoolError Ok:", r13);
+    let _, e14 = TestStructBoolError(true);
+    print("  BoolError Err:", e14.flag, e14.info);
+
+    let r15, e15 = TestStructStrError(5);
+    print("  StrError Ok:", r15);
+    let _, e16 = TestStructStrError(-5);
+    print("  StrError Err:", e16.text, e16.context);
+
+    let r17, e17 = TestComplexError(5);
+    print("  ComplexError Ok:", r17);
+    let _, e18 = TestComplexError(-5);
+    print("  ComplexError Err:", e18.code, e18.value, e18.flag, e18.message);
+
+    // --- Advanced Struct & Enum Error Handling ---
+    print("\nAdvanced Struct & Enum Error Handling:");
+    let cp1, cp1Err = CreatePoint(10, 20);
+    print("  CreatePoint Ok:", cp1);
+    let _, cp2Err = CreatePoint(-5, 10);
+    print("  CreatePoint Err:", cp2Err);
+
+    let area1, area1Err = CalculateArea(5, 10);
+    print("  CalculateArea Ok:", area1);
+    let _, area2Err = CalculateArea(0, 10);
+    print("  CalculateArea Err:", area2Err);
+
+    let user1, user1Err = CreateUser("alice@example.com", 25);
+    print("  CreateUser Ok:", user1);
+    let _, user2Err = CreateUser("bob@example.com", -5);
+    print("  CreateUser Err:", user2Err);
+
+    let pr1, pr1Err = ProcessResult(true, 50);
+    print("  ProcessResult Ok:", pr1);
+    let _, pr2Err = ProcessResult(false, 50);
+    print("  ProcessResult Err:", pr2Err);
+
+    let co1, co1Err = ChainedOps(5, 10);
+    print("  ChainedOps Ok:", co1);
+    let _, co2Err = ChainedOps(20, 20);
+    print("  ChainedOps Err:", co2Err);
+
+    print("\n=== All Error Handling Tests Completed ===");
+}

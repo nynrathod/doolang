@@ -1,0 +1,34 @@
+fn main() {
+    print("========================================");
+    print("  DOO LANGUAGE - FEATURES DEMO");
+    print("========================================");
+    print("");
+
+    print("FEATURE 3: UTF-8 String Support");
+    print("----------------------------------");
+
+    let chinese = "你好世界";
+    let japanese = "こんにちは";
+    let korean = "안녕하세요";
+    let emoji = "🚀 🎉 ❤️ 😊 🔥";
+    let arabic = "مرحبا";
+
+    print("Chinese:");
+    print(chinese);
+    print("Japanese:");
+    print(japanese);
+    print("Korean:");
+    print(korean);
+    print("Emojis:");
+    print(emoji);
+    print("Arabic:");
+    print(arabic);
+    print("");
+
+    print("FEATURE 4: String Interpolation");
+    print("----------------------------------");
+
+    let rocket = "🚀";
+    print("Launching ${rocket} to the stars!");
+    print("");
+}

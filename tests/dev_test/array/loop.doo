@@ -1,0 +1,66 @@
+fn main() {
+
+    // Loop with exclusive range 0..10
+    print("\nRange: 0..10 (exclusive)");
+    for i in 0..10 {
+        print("  i:", i);
+    }
+
+    // Loop with inclusive range 0..=10
+    print("\nRange: 0..=10 (inclusive)");
+    for i in 0..=10 {
+        print("  i:", i);
+    }
+
+    // Loop with variable-based range start...end
+    print("\nRange: start...end (variable-based)");
+    let start = 3;
+    let end = 7;
+    for i in start..end {
+        print("  i:", i);
+    }
+
+    // Iterate with index (Int array)
+    let nums = [10, 20, 30];
+    for i, num in nums {
+        print("  Index:", i, "Value:", num);
+    }
+
+    // Iterate with index (Str array)
+    print("\nArray with index (Str)");
+    let names = ["Alice", "Bob", "Charlie"];
+    for idx, name in names {
+        print("  Position:", idx, "Name:", name);
+    }
+
+    // Iterate with index (Float array)
+    print("\nArray with index (Float)");
+    let values = [1.5, 2.5, 3.5];
+    for i, val in values {
+        print("  Index:", i, "Value:", val);
+    }
+
+    // Iterate with index (Bool array)
+    print("\nArray with index (Bool)");
+    let bools = [true, false, true];
+    for i, b in bools {
+        print("  Index:", i, "Value:", b);
+    }
+
+    // Regular array iteration (no index)
+    print("\nRegular array iteration");
+    let items = [100, 200, 300];
+    for item in items {
+        print("  Item:", item);
+    }
+
+    // Nested array loops with index
+    print("\nNested loops with index");
+    let outer = [1, 2];
+    let inner = [10, 20];
+    for i, outerVal in outer {
+        for j, innerVal in inner {
+            print("  outer[", i, "] =", outerVal, "inner[", j, "] =", innerVal);
+        }
+    }
+}

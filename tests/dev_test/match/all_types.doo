@@ -1,0 +1,322 @@
+fn main() {
+    print("=== Comprehensive Match Test for All Types ===");
+
+    // Int
+    let intVal = 42;
+    match intVal {
+        42 => print("Matched 42"),
+        _ => print("Other"),
+    }
+    let intValExplicit: Int = 42;
+    match intValExplicit {
+        42 => print("Matched 42 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // Float
+    let floatVal = 3.14;
+    match floatVal {
+        3.14 => print("Matched 3.14"),
+        _ => print("Other"),
+    }
+    let floatValExplicit: Float = 3.14;
+    match floatValExplicit {
+        3.14 => print("Matched 3.14 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // Bool
+    let boolVal = true;
+    match boolVal {
+        true => print("Matched true"),
+        false => print("Matched false"),
+    }
+    let boolValExplicit: Bool = true;
+    match boolValExplicit {
+        true => print("Matched true (explicit)"),
+        false => print("Matched false (explicit)"),
+    }
+
+    // Str
+    let strVal = "hello";
+    match strVal {
+        "hello" => print("Matched hello"),
+        _ => print("Other"),
+    }
+    let strValExplicit: Str = "hello";
+    match strValExplicit {
+        "hello" => print("Matched hello (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // [Int]
+    let intArr = [1, 2, 3];
+    let intElem = intArr[0];
+    match intElem {
+        1 => print("Matched 1"),
+        _ => print("Other"),
+    }
+    let intArrExplicit: [Int] = [1, 2, 3];
+    let intElemExplicit = intArrExplicit[0];
+    match intElemExplicit {
+        1 => print("Matched 1 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // [Float]
+    let floatArr = [1.1, 2.2, 3.3];
+    let floatElem = floatArr[0];
+    match floatElem {
+        1.1 => print("Matched 1.1"),
+        _ => print("Other"),
+    }
+    let floatArrExplicit: [Float] = [1.1, 2.2, 3.3];
+    let floatElemExplicit = floatArrExplicit[0];
+    match floatElemExplicit {
+        1.1 => print("Matched 1.1 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // [Bool]
+    let boolArr = [true, false];
+    let boolElem = boolArr[0];
+    match boolElem {
+        true => print("Matched true"),
+        false => print("Matched false"),
+    }
+    let boolArrExplicit: [Bool] = [true, false];
+    let boolElemExplicit = boolArrExplicit[0];
+    match boolElemExplicit {
+        true => print("Matched true (explicit)"),
+        false => print("Matched false (explicit)"),
+    }
+
+    // [Str]
+    let strArr = ["foo", "bar"];
+    let strElem = strArr[0];
+    match strElem {
+        "foo" => print("Matched foo"),
+        _ => print("Other"),
+    }
+    let strArrExplicit: [Str] = ["foo", "bar"];
+    let strElemExplicit = strArrExplicit[0];
+    match strElemExplicit {
+        "foo" => print("Matched foo (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Str: Int}
+    let mapStrInt = {"a": 1, "b": 2};
+    let mapStrIntVal = mapStrInt["a"];
+    match mapStrIntVal {
+        1 => print("Matched 1"),
+        _ => print("Other"),
+    }
+    let mapStrIntExplicit: {Str: Int} = {"a": 1, "b": 2};
+    let mapStrIntValExplicit = mapStrIntExplicit["a"];
+    match mapStrIntValExplicit {
+        1 => print("Matched 1 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Str: Float}
+    let mapStrFloat = {"x": 1.5, "y": 2.5};
+    let mapStrFloatVal = mapStrFloat["x"];
+    match mapStrFloatVal {
+        1.5 => print("Matched 1.5"),
+        _ => print("Other"),
+    }
+    let mapStrFloatExplicit: {Str: Float} = {"x": 1.5, "y": 2.5};
+    let mapStrFloatValExplicit = mapStrFloatExplicit["x"];
+    match mapStrFloatValExplicit {
+        1.5 => print("Matched 1.5 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Str: Bool}
+    let mapStrBool = {"flag": true, "other": false};
+    let mapStrBoolVal = mapStrBool["flag"];
+    match mapStrBoolVal {
+        true => print("Matched true"),
+        false => print("Matched false"),
+    }
+    let mapStrBoolExplicit: {Str: Bool} = {"flag": true, "other": false};
+    let mapStrBoolValExplicit = mapStrBoolExplicit["flag"];
+    match mapStrBoolValExplicit {
+        true => print("Matched true (explicit)"),
+        false => print("Matched false (explicit)"),
+    }
+
+    // {Str: Str}
+    let mapStrStr = {"first": "one", "second": "two"};
+    let mapStrStrVal = mapStrStr["first"];
+    match mapStrStrVal {
+        "one" => print("Matched one"),
+        _ => print("Other"),
+    }
+    let mapStrStrExplicit: {Str: Str} = {"first": "one", "second": "two"};
+    let mapStrStrValExplicit = mapStrStrExplicit["first"];
+    match mapStrStrValExplicit {
+        "one" => print("Matched one (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Int: Int}
+    let mapIntInt = {1: 10, 2: 20};
+    let mapIntIntVal = mapIntInt[1];
+    match mapIntIntVal {
+        10 => print("Matched 10"),
+        _ => print("Other"),
+    }
+    let mapIntIntExplicit: {Int: Int} = {1: 10, 2: 20};
+    let mapIntIntValExplicit = mapIntIntExplicit[1];
+    match mapIntIntValExplicit {
+        10 => print("Matched 10 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Int: Float}
+    let mapIntFloat = {1: 1.1, 2: 2.2};
+    let mapIntFloatVal = mapIntFloat[1];
+    match mapIntFloatVal {
+        1.1 => print("Matched 1.1"),
+        _ => print("Other"),
+    }
+    let mapIntFloatExplicit: {Int: Float} = {1: 1.1, 2: 2.2};
+    let mapIntFloatValExplicit = mapIntFloatExplicit[1];
+    match mapIntFloatValExplicit {
+        1.1 => print("Matched 1.1 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Int: Bool}
+    let mapIntBool = {1: true, 2: false};
+    let mapIntBoolVal = mapIntBool[1];
+    match mapIntBoolVal {
+        true => print("Matched true"),
+        false => print("Matched false"),
+    }
+    let mapIntBoolExplicit: {Int: Bool} = {1: true, 2: false};
+    let mapIntBoolValExplicit = mapIntBoolExplicit[1];
+    match mapIntBoolValExplicit {
+        true => print("Matched true (explicit)"),
+        false => print("Matched false (explicit)"),
+    }
+
+    // {Int: Str}
+    let mapIntStr = {1: "one", 2: "two"};
+    let mapIntStrVal = mapIntStr[1];
+    match mapIntStrVal {
+        "one" => print("Matched one"),
+        _ => print("Other"),
+    }
+    let mapIntStrExplicit: {Int: Str} = {1: "one", 2: "two"};
+    let mapIntStrValExplicit = mapIntStrExplicit[1];
+    match mapIntStrValExplicit {
+        "one" => print("Matched one (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Float: Int}
+    let mapFloatInt = {1.1: 10, 2.2: 20};
+    let mapFloatIntVal = mapFloatInt[1.1];
+    match mapFloatIntVal {
+        10 => print("Matched 10"),
+        _ => print("Other"),
+    }
+    let mapFloatIntExplicit: {Float: Int} = {1.1: 10, 2.2: 20};
+    let mapFloatIntValExplicit = mapFloatIntExplicit[1.1];
+    match mapFloatIntValExplicit {
+        10 => print("Matched 10 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Float: Float}
+    let mapFloatFloat = {1.1: 1.11, 2.2: 2.22};
+    let mapFloatFloatVal = mapFloatFloat[1.1];
+    match mapFloatFloatVal {
+        1.11 => print("Matched 1.11"),
+        _ => print("Other"),
+    }
+    let mapFloatFloatExplicit: {Float: Float} = {1.1: 1.11, 2.2: 2.22};
+    let mapFloatFloatValExplicit = mapFloatFloatExplicit[1.1];
+    match mapFloatFloatValExplicit {
+        1.11 => print("Matched 1.11 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Float: Bool}
+    let mapFloatBool = {1.1: true, 2.2: false};
+    let mapFloatBoolVal = mapFloatBool[1.1];
+    match mapFloatBoolVal {
+        true => print("Matched true"),
+        false => print("Matched false"),
+    }
+    let mapFloatBoolExplicit: {Float: Bool} = {1.1: true, 2.2: false};
+    let mapFloatBoolValExplicit = mapFloatBoolExplicit[1.1];
+    match mapFloatBoolValExplicit {
+        true => print("Matched true (explicit)"),
+        false => print("Matched false (explicit)"),
+    }
+
+    // {Float: Str}
+    let mapFloatStr = {1.1: "one", 2.2: "two"};
+    let mapFloatStrVal = mapFloatStr[1.1];
+    match mapFloatStrVal {
+        "one" => print("Matched one"),
+        _ => print("Other"),
+    }
+    let mapFloatStrExplicit: {Float: Str} = {1.1: "one", 2.2: "two"};
+    let mapFloatStrValExplicit = mapFloatStrExplicit[1.1];
+    match mapFloatStrValExplicit {
+        "one" => print("Matched one (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Bool: Int}
+    let mapBoolInt = {true: 100, false: 200};
+    let mapBoolIntVal = mapBoolInt[true];
+    match mapBoolIntVal {
+        100 => print("Matched 100"),
+        _ => print("Other"),
+    }
+    let mapBoolIntExplicit: {Bool: Int} = {true: 100, false: 200};
+    let mapBoolIntValExplicit = mapBoolIntExplicit[true];
+    match mapBoolIntValExplicit {
+        100 => print("Matched 100 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Bool: Float}
+    let mapBoolFloat = {true: 1.5, false: 2.5};
+    let mapBoolFloatVal = mapBoolFloat[true];
+    match mapBoolFloatVal {
+        1.5 => print("Matched 1.5"),
+        _ => print("Other"),
+    }
+    let mapBoolFloatExplicit: {Bool: Float} = {true: 1.5, false: 2.5};
+    let mapBoolFloatValExplicit = mapBoolFloatExplicit[true];
+    match mapBoolFloatValExplicit {
+        1.5 => print("Matched 1.5 (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+    // {Bool: Str}
+    let mapBoolStr = {true: "yes", false: "no"};
+    let mapBoolStrVal = mapBoolStr[true];
+    match mapBoolStrVal {
+        "yes" => print("Matched yes"),
+        _ => print("Other"),
+    }
+    let mapBoolStrExplicit: {Bool: Str} = {true: "yes", false: "no"};
+    let mapBoolStrValExplicit = mapBoolStrExplicit[true];
+    match mapBoolStrValExplicit {
+        "yes" => print("Matched yes (explicit)"),
+        _ => print("Other (explicit)"),
+    }
+
+
+
+
+    print("\n=== Test Complete ===");
+}

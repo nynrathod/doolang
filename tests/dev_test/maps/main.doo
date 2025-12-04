@@ -1,0 +1,131 @@
+fn main() {
+    print("=== Comprehensive Map Creation & Printing (implicit + explicit typed) ===");
+
+    // --- Key: Str ---
+    print("\n--- {Str: Int} ---");
+    let mapStrIntImplicit = {"age": 30, "score": 100};
+    let mapStrIntExplicit: {Str: Int} = {"age": 30, "score": 100};
+    print("implicit:", mapStrIntImplicit);
+    print("explicit:", mapStrIntExplicit);
+
+    print("\n--- {Str: Float} ---");
+    let mapStrFloatImplicit = {"height": 1.75, "weight": 65.5};
+    let mapStrFloatExplicit: {Str: Float} = {"height": 1.75, "weight": 65.5};
+    print("implicit:", mapStrFloatImplicit);
+    print("explicit:", mapStrFloatExplicit);
+
+    print("\n--- {Str: Bool} ---");
+    let mapStrBoolImplicit = {"active": true, "verified": false};
+    let mapStrBoolExplicit: {Str: Bool} = {"active": true, "verified": false};
+    print("implicit:", mapStrBoolImplicit);
+    print("explicit:", mapStrBoolExplicit);
+
+    print("\n--- {Str: Str} ---");
+    let mapStrStrImplicit = {"name": "Alice", "role": "admin"};
+    let mapStrStrExplicit: {Str: Str} = {"name": "Alice", "role": "admin"};
+    print("implicit:", mapStrStrImplicit);
+    print("explicit:", mapStrStrExplicit);
+
+    // --- Key: Int ---
+    print("\n--- {Int: Int} ---");
+    let mapIntIntImplicit = {1: 10, 2: 20};
+    let mapIntIntExplicit: {Int: Int} = {1: 10, 2: 20};
+    print("implicit:", mapIntIntImplicit);
+    print("explicit:", mapIntIntExplicit);
+
+    print("\n--- {Int: Float} ---");
+    let mapIntFloatImplicit = {1: 1.1, 2: 2.2};
+    let mapIntFloatExplicit: {Int: Float} = {1: 1.1, 2: 2.2};
+    print("implicit:", mapIntFloatImplicit);
+    print("explicit:", mapIntFloatExplicit);
+
+    print("\n--- {Int: Bool} ---");
+    let mapIntBoolImplicit = {1: true, 2: false};
+    let mapIntBoolExplicit: {Int: Bool} = {1: true, 2: false};
+    print("implicit:", mapIntBoolImplicit);
+    print("explicit:", mapIntBoolExplicit);
+
+    print("\n--- {Int: Str} ---");
+    let mapIntStrImplicit = {1: "one", 2: "two"};
+    let mapIntStrExplicit: {Int: Str} = {1: "one", 2: "two"};
+    print("implicit:", mapIntStrImplicit);
+    print("explicit:", mapIntStrExplicit);
+
+    // --- Key: Float ---
+    print("\n--- {Float: Int} ---");
+    let mapFloatIntImplicit = {1.1: 10, 2.2: 20};
+    let mapFloatIntExplicit: {Float: Int} = {1.1: 10, 2.2: 20};
+    print("implicit:", mapFloatIntImplicit);
+    print("explicit:", mapFloatIntExplicit);
+
+    print("\n--- {Float: Float} ---");
+    let mapFloatFloatImplicit = {1.1: 11.1, 2.2: 22.2};
+    let mapFloatFloatExplicit: {Float: Float} = {1.1: 11.1, 2.2: 22.2};
+    print("implicit:", mapFloatFloatImplicit);
+    print("explicit:", mapFloatFloatExplicit);
+
+    print("\n--- {Float: Bool} ---");
+    let mapFloatBoolImplicit = {1.1: true, 2.2: false};
+    let mapFloatBoolExplicit: {Float: Bool} = {1.1: true, 2.2: false};
+    print("implicit:", mapFloatBoolImplicit);
+    print("explicit:", mapFloatBoolExplicit);
+
+    print("\n--- {Float: Str} ---");
+    let mapFloatStrImplicit = {1.1: "one", 2.2: "two"};
+    let mapFloatStrExplicit: {Float: Str} = {1.1: "one", 2.2: "two"};
+    print("implicit:", mapFloatStrImplicit);
+    print("explicit:", mapFloatStrExplicit);
+
+    // --- Key: Bool ---
+    print("\n--- {Bool: Int} ---");
+    let mapBoolIntImplicit = {true: 100, false: 200};
+    let mapBoolIntExplicit: {Bool: Int} = {true: 100, false: 200};
+    print("implicit:", mapBoolIntImplicit);
+    print("explicit:", mapBoolIntExplicit);
+
+    print("\n--- {Bool: Float} ---");
+    let mapBoolFloatImplicit = {true: 1.5, false: 2.5};
+    let mapBoolFloatExplicit: {Bool: Float} = {true: 1.5, false: 2.5};
+    print("implicit:", mapBoolFloatImplicit);
+    print("explicit:", mapBoolFloatExplicit);
+
+    print("\n--- {Bool: Bool} ---");
+    let mapBoolBoolImplicit = {true: false, false: true};
+    let mapBoolBoolExplicit: {Bool: Bool} = {true: false, false: true};
+    print("implicit:", mapBoolBoolImplicit);
+    print("explicit:", mapBoolBoolExplicit);
+
+    print("\n--- {Bool: Str} ---");
+    let mapBoolStrImplicit = {true: "yes", false: "no"};
+    let mapBoolStrExplicit: {Bool: Str} = {true: "yes", false: "no"};
+    print("implicit:", mapBoolStrImplicit);
+    print("explicit:", mapBoolStrExplicit);
+
+    // === Combine 'in' operator with arrays: check membership in a map via indices array ===
+    print("\n--- Combine 'in' + array loop ---");
+    let lookup = {0: "zero", 1: "one", 2: "two"};
+    let indices = [0, 1, 2, 5];
+
+    for idx, val in indices {
+        if val in lookup {
+            print("  indices[", idx, "] =", val, "exists in lookup ->", lookup[val]);
+        } else {
+            print("  indices[", idx, "] =", val, "not in lookup");
+        }
+    }
+
+    // === 'in' operator in nested context ===
+    print("\n--- 'in' operator in nested context ---");
+    let validIds: {Int: Bool} = {1: true, 2: true, 3: true};
+    let testData = [1, 2, 5];
+
+    for idx, id in testData {
+        if id in validIds {
+            print("  ID", id, "at index", idx, "is valid");
+        } else {
+            print("  ID", id, "at index", idx, "is invalid");
+        }
+    }
+
+    print("\n=== All map & loop tests complete ===");
+}

@@ -1,0 +1,102 @@
+import std::Array::{Unique, Range, Sum, MinArr, MaxArr};
+import std::Math::{Abs, Pow, Sqrt, Min, Max, Floor, Ceil, Round};
+
+fn main() {
+    print("Abs(-42): ");
+    print(Abs(-42));
+
+    print("Abs(42): ");
+    print(Abs(42));
+
+    print("Pow(2, 8): ");
+    print(Pow(2, 8));
+
+    print("Pow(3, 3): ");
+    print(Pow(3, 3));
+
+    print("Sqrt(49): ");
+    print(Sqrt(49));
+
+    print("Sqrt(16): ");
+    print(Sqrt(16));
+
+    print("Min(3, 7): ");
+    print(Min(3, 7));
+
+    print("Min(10, 5): ");
+    print(Min(10, 5));
+
+    print("Max(3, 7): ");
+    print(Max(3, 7));
+
+    print("Max(100, 50): ");
+    print(Max(100, 50));
+
+    print("Floor(3.7): ");
+    print(Floor(3.7));
+
+    print("Floor(-3.7): ");
+    print(Floor(-3.7));
+
+    print("Ceil(3.2): ");
+    print(Ceil(3.2));
+
+    print("Ceil(-3.2): ");
+    print(Ceil(-3.2));
+
+    print("Round(3.5): ");
+    print(Round(3.5));
+
+    print("Round(3.49): ");
+    print(Round(3.49));
+
+    print("Round(-3.5): ");
+    print(Round(-3.5));
+
+    print("Round(-3.51): ");
+    print(Round(-3.51));
+
+    print("");
+    print("✓ Math functions PASS");
+    print("");
+
+    print("Unique([1,2,2,3,3,3]): ");
+    print(Unique([1, 2, 2, 3, 3, 3]));
+
+    print("Unique([5,5,5,5]): ");
+    print(Unique([5, 5, 5, 5]));
+
+    print("Unique([1,2,3]): ");
+    print(Unique([1, 2, 3]));
+
+    print("Range(3, 7): ");
+    print(Range(3, 7));
+
+    print("Range(0, 5): ");
+    print(Range(0, 5));
+
+    print("Range(10, 15): ");
+    print(Range(10, 15));
+
+    print("Sum([1,2,3,4,5]): ");
+    print(Sum([1, 2, 3, 4, 5]));
+
+    print("Sum([10,20,30]): ");
+    print(Sum([10, 20, 30]));
+
+    print("MinArr([5,2,8,1,9]): ");
+    print(MinArr([5, 2, 8, 1, 9]));
+
+    print("MinArr([100,50,75]): ");
+    print(MinArr([100, 50, 75]));
+
+    print("MaxArr([5,2,8,1,9]): ");
+    print(MaxArr([5, 2, 8, 1, 9]));
+
+    print("MaxArr([100,50,75]): ");
+    print(MaxArr([100, 50, 75]));
+
+    print("");
+    print("✓ Array functions PASS");
+    print("");
+}

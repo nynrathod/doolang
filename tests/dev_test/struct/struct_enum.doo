@@ -1,0 +1,43 @@
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+struct User {
+    name: Str,
+    age: Int,
+    status: Status,
+}
+
+fn main() {
+    // ------------------------------------------------------------
+    // Struct initialization with enum field
+    let user1 = User {
+        name: "Alice",
+        age: 30,
+        status: Status::Active,
+    };
+    let user2 = User {
+        name: "Bob",
+        age: 25,
+        status: Status::Inactive,
+    };
+    let user3 = User {
+        name: "Charlie",
+        age: 40,
+        status: Status::Pending,
+    };
+    let user0 = User {
+        name: "",
+        age: 0,
+        status: Status::Inactive,
+    };
+
+    // ------------------------------------------------------------
+    // Print struct values
+    print("User1:", user1);
+    print("User2:", user2);
+    print("User3:", user3);
+    print("Zero User:", user0);
+}

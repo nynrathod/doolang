@@ -1,0 +1,13 @@
+// fail_private_import.doo - Test that private imports are REJECTED (SHOULD FAIL)
+// This file tests that PRIVATE types/functions CANNOT be imported
+// Visibility convention:
+//   - PascalCase = public (can be imported)
+//   - camelCase = private (cannot be imported)
+
+// Test: Trying to import private enum (camelCase) - SHOULD FAIL
+import defs::types::internalState;
+
+fn main() {
+    // This file should not compile because we're trying to import a private enum
+    print("This should never print - compilation should fail!");
+}

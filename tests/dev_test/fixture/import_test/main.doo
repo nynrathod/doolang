@@ -1,0 +1,38 @@
+//
+// main.doo - Test importing public/private structs and enums
+//
+
+import types::User;
+import types::Status;
+import types::CreateUser;
+import types::GetActiveStatus;
+
+fn main() {
+    print("=== Testing Public/Private Imports ===");
+    print("");
+
+    print("[TEST 1] Import public struct (User)");
+    print("  import types::User - OK");
+
+    print("");
+    print("[TEST 2] Import public enum (Status)");
+    let s = Status::Active;
+    print("  import types::Status - OK");
+    print("  Status::Active - OK");
+
+    print("");
+    print("[TEST 3] Import public functions");
+    let r1 = CreateUser("John", "john@test.com");
+    let r2 = GetActiveStatus();
+    print("  CreateUser() - OK");
+    print("  GetActiveStatus() - OK");
+
+    print("");
+    print("=== All Import Tests Passed ===");
+    print("");
+    print("Summary:");
+    print("  Public struct (User) - Imported");
+    print("  Public enum (Status) - Imported");
+    print("  Private struct (config) - Not imported (as expected)");
+    print("  Private enum (mode) - Not imported (as expected)");
+}

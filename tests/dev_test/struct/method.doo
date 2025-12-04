@@ -1,0 +1,131 @@
+// ===== BASIC STRUCT =====
+struct User {
+    age: Int,
+    name: Str
+}
+
+fn User.isAdult(self) -> Bool {
+    return self.age >= 18;
+}
+
+fn User.getAge(self) -> Int {
+    return self.age;
+}
+
+fn User.getName(self) -> Str {
+    return self.name;
+}
+
+fn User.greet(self) -> Str {
+    return "Hello, " + self.name;
+}
+
+fn User.incrementAge(self) -> Int {
+    return self.age + 1;
+}
+
+// ===== STRUCT WITH MULTIPLE FIELDS =====
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn Point.distance(self) -> Float {
+    let xSquared = self.x * self.x;
+    let ySquared = self.y * self.y;
+    let sum = xSquared + ySquared;
+    return (sum as Float);
+}
+
+fn Point.getX(self) -> Int {
+    return self.x;
+}
+
+fn Point.getY(self) -> Int {
+    return self.y;
+}
+
+// ===== STRUCT WITH DIFFERENT TYPES =====
+struct Product {
+    name: Str,
+    price: Float,
+    inStock: Bool,
+    quantity: Int
+}
+
+fn Product.isAvailable(self) -> Bool {
+    return self.inStock;
+}
+
+fn Product.getTotalValue(self) -> Float {
+    return self.price * (self.quantity as Float);
+}
+
+fn Product.getName(self) -> Str {
+    return self.name;
+}
+
+fn Product.getPrice(self) -> Float {
+    return self.price;
+}
+
+// ===== NESTED STRUCT =====
+struct Address {
+    street: Str,
+    city: Str
+}
+
+struct Person {
+    name: Str,
+    age: Int,
+    address: Address
+}
+
+fn Address.getFullAddress(self) -> Str {
+    return self.street + ", " + self.city;
+}
+
+fn Person.getName(self) -> Str {
+    return self.name;
+}
+
+fn Person.getAge(self) -> Int {
+    return self.age;
+}
+
+fn Person.getCity(self) -> Str {
+    return self.address.city;
+}
+
+// ===== MAIN FUNCTION =====
+fn main() {
+    println("===== USER STRUCT =====");
+    let user = User { age: 25, name: "Alice" };
+    println(user.isAdult());
+    println(user.getAge());
+    println(user.getName());
+    println(user.greet());
+    println(user.incrementAge());
+
+    println("===== POINT STRUCT =====");
+    let point = Point { x: 3, y: 4 };
+    println(point.getX());
+    println(point.getY());
+    println(point.distance());
+
+    println("===== PRODUCT STRUCT =====");
+    let product = Product { name: "Laptop", price: 999.99, inStock: true, quantity: 5 };
+    println(product.isAvailable());
+    println(product.getTotalValue());
+    println(product.getName());
+    println(product.getPrice());
+
+    println("===== NESTED STRUCT =====");
+    let addr = Address { street: "123 Main St", city: "New York" };
+    println(addr.getFullAddress());
+
+    let person = Person { name: "Bob", age: 30, address: addr };
+    println(person.getName());
+    println(person.getAge());
+    println(person.getCity());
+}

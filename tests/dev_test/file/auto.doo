@@ -1,0 +1,53 @@
+import std::File;
+
+fn main() {
+
+    // print("TEST 1: File::Write on new file");
+    // File::Write("test_file.txt", "Initial content")?;
+    // print("File written successfully.");
+
+    // print("TEST 2: File::Append on existing file");
+    // File::Append("test_file.txt", "Appended text")?;
+    // print("File appended successfully.");
+
+    // print("TEST 4: File::IsDir on existing directory");
+    // File::IsDir("test_dir")?;
+    // print("IsDir check passed.");
+
+    // print("TEST 5: File::Read on non-existent file");
+    // File::Read("nonexistent_file_xyz.txt")?;
+    // print("ERROR: Should not reach here!");
+
+    // print("TEST 6: File::Delete on non-existent file");
+    // File::Delete("nonexistent_file_xyz.txt")?;
+    // print("ERROR: Should not reach here!");
+
+    // print("TEST 7: File::Size on non-existent file");
+    // File::Size("nonexistent_file_xyz.txt")?;
+    // print("ERROR: Should not reach here!");
+
+    // print("TEST 8: File::ListDir on non-existent directory");
+    // File::ListDir("nonexistent_dir_xyz")?;
+    // print("ERROR: Should not reach here!");
+
+    // print("TEST 9: File::Copy on non-existent source file");
+    // File::Copy("nonexistent_source.txt", "dest.txt")?;
+    // print("ERROR: Should not reach here!");
+
+    // print("TEST 10: File::Move on non-existent source file");
+    // File::Move("nonexistent_source.txt", "dest.txt")?;
+    // print("ERROR: Should not reach here!");
+
+    // print("TEST 11: File::ReadLines on non-existent file");
+    // File::ReadLines("nonexistent_file_xyz.txt")?;
+    // print("ERROR: Should not reach here!");
+
+    // print("TEST 12: File::RmDir on non-existent directory");
+    // File::RmDir("nonexistent_dir_xyz")?;
+    // print("ERROR: Should not reach here!");
+
+    // print("TEST 13: File::RmDirAll on non-existent directory");
+    // File::RmDirAll("nonexistent_dir_xyz")?;
+    // print("ERROR: Should not reach here!");
+
+}

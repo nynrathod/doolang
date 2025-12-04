@@ -1,0 +1,86 @@
+struct Address {
+    street: Str,
+    city: Str,
+    zipcode: Int,
+}
+
+struct User {
+    name: Str,
+    email: Str,
+    age: Int,
+    address: Address,
+}
+
+fn main() {
+    print("=== Testing Nested Structs ===");
+    print("");
+
+    // Test 1: Create a nested struct
+    print("Test 1: Creating nested struct...");
+    let addr = Address {
+        street: "123 Main St",
+        city: "Springfield",
+        zipcode: 12345,
+    };
+    print(
+        "  Address created:",
+        addr,
+        addr.street,
+        addr.city,
+        addr.zipcode,
+    );
+
+    let user = User {
+        name: "John Doe",
+        email: "john@example.com",
+        age: 30,
+        address: addr,
+    };
+    print("  User created:", user.name, user.email);
+
+    // Test 2: Access nested fields
+    print("");
+    print("Test 2: Accessing nested fields...");
+    print("  User's street:", user.address.street);
+    print("  User's city:", user.address.city);
+    print("  User's zipcode:", user.address.zipcode);
+
+    // Test 3: Create inline nested struct
+    print("");
+    print("Test 3: Creating inline nested struct...");
+    let user2 = User {
+        name: "Jane Smith",
+        email: "jane@example.com",
+        age: 25,
+        address: Address {
+            street: "456 Oak Ave",
+            city: "Portland",
+            zipcode: 67890,
+        },
+    };
+    print("  User2 created:", user2.name);
+    print(
+        "  User2's address:",
+        user2.address.street,
+        user2.address.city,
+    );
+
+    // Test 4: Create another nested struct to verify type system
+    print("");
+    print("Test 4: Creating another nested struct...");
+    let user3 = User {
+        name: "Bob Wilson",
+        email: "bob@example.com",
+        age: 35,
+        address: Address {
+            street: "789 Pine Rd",
+            city: "Seattle",
+            zipcode: 98101,
+        },
+    };
+    print("  User3 created:", user3.name);
+    print("  User3's city:", user3.address.city);
+
+    print("");
+    print("=== All nested struct tests complete ===");
+}
