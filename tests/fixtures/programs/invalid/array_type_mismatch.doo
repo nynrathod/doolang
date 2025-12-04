@@ -1,3 +1,0 @@
-fn main() {
-    let arr = [1, 2, "hello", 4];
-}

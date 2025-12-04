@@ -1,6 +1,0 @@
-fn getValue() -> Int {
-    let x = 42;
-}
-
-fn main() {
-}

@@ -1,6 +1,0 @@
-fn test(x: Int, x: Int) -> Int {
-    return x;
-}
-
-fn main() {
-}

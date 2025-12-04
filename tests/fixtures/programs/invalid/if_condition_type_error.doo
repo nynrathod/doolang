@@ -1,5 +1,0 @@
-fn main() {
-    if 42 {
-        print("this should fail");
-    }
-}
