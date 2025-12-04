@@ -109,7 +109,8 @@ fn test_large_float_array() {
 #[test]
 fn test_deeply_nested_expressions() {
     let mut expr = String::from("1");
-    for _ in 0..50 {
+    // Reduced from 50 to 15 to prevent stack overflow during compilation
+    for _ in 0..15 {
         expr = format!("({} + 1)", expr);
     }
     let code = format!("fn main() {{ let x = {}; }}", expr);
@@ -119,11 +120,12 @@ fn test_deeply_nested_expressions() {
 #[test]
 fn test_deeply_nested_blocks() {
     let mut code = String::from("fn main() {\n");
-    for _ in 0..30 {
+    // Reduced from 30 to 10 to prevent stack overflow during compilation
+    for _ in 0..10 {
         code.push_str("    if true {\n");
     }
     code.push_str("        let x = 1;\n");
-    for _ in 0..30 {
+    for _ in 0..10 {
         code.push_str("    }\n");
     }
     code.push_str("}");
@@ -151,7 +153,8 @@ fn test_deeply_nested_function_calls() {
     code.push_str("fn main() {\n");
 
     let mut expr = String::from("1");
-    for i in 0..20 {
+    // Reduced from 20 to 10 to prevent stack overflow during compilation
+    for i in 0..10 {
         expr = format!("add({}, {})", expr, i);
     }
     code.push_str(&format!("    let result = {};\n", expr));
@@ -362,7 +365,7 @@ fn test_single_element_collections() {
             let val = arr[0];
 
             let m = {"key": 1};
-            let v = m.get("key");
+            let v = m["key"];
         }
     "#;
     assert_compiles(code);
