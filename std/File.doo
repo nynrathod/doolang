@@ -44,19 +44,19 @@
 
 // FileError struct for structured error handling
 struct FileError {
-    message: Str,
+    Message: Str,
 }
 
 // FileMetadata struct containing comprehensive file/folder information
 struct FileMetadata {
-    isFile: Bool,        // true if path is a file
-    isDir: Bool,         // true if path is a directory
-    isSymlink: Bool,     // true if path is a symbolic link
-    size: Int,            // size in bytes (0 for directories)
-    readonly: Bool,       // true if file/dir is read-only
-    created: Int,         // creation time (Unix timestamp in seconds, 0 if unavailable)
-    modified: Int,        // last modification time (Unix timestamp in seconds)
-    accessed: Int,        // last access time (Unix timestamp in seconds)
+    IsFile: Bool,        // true if path is a file
+    IsDir: Bool,         // true if path is a directory
+    IsSymlink: Bool,     // true if path is a symbolic link
+    Size: Int,            // size in bytes (0 for directories)
+    Readonly: Bool,       // true if file/dir is read-only
+    Created: Int,         // creation time (Unix timestamp in seconds, 0 if unavailable)
+    Modified: Int,        // last modification time (Unix timestamp in seconds)
+    Accessed: Int,        // last access time (Unix timestamp in seconds)
 }
 
 // Read entire file content as string
