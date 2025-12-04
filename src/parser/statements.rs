@@ -169,6 +169,17 @@ impl<'a> Parser<'a> {
         let mut arms = Vec::new();
         let is_tuple_match = values.len() > 1;
 
+        // Check for empty match arms - this is an error
+        if self.peek_is(TokenType::CloseBrace) {
+            if let Some(tok) = self.peek() {
+                return Err(ParseError::UnexpectedTokenAt {
+                    msg: "Match expression requires at least one arm".to_string(),
+                    line: tok.line,
+                    col: tok.col,
+                });
+            }
+        }
+
         while !self.peek_is(TokenType::CloseBrace) {
             // Parse pattern
             let pattern = if self.peek_is(TokenType::Underscore) {

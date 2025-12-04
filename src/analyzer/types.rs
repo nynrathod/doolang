@@ -128,6 +128,26 @@ pub enum SemanticError {
 
     // --- Module Import Errors ---
     ModuleNotFound(String),
+    /// Error when trying to import a private function (camelCase name)
+    PrivateFunctionImport {
+        name: String,
+        module: String,
+    },
+    /// Error when trying to import a private struct (camelCase name)
+    PrivateStructImport {
+        name: String,
+        module: String,
+    },
+    /// Error when trying to import a private enum (camelCase name)
+    PrivateEnumImport {
+        name: String,
+        module: String,
+    },
+    /// Error when trying to access a private field (camelCase name) from outside the module
+    PrivateFieldAccess {
+        struct_name: String,
+        field_name: String,
+    },
     /// Dedicated error for circular imports, includes the cycle of modules
     CircularImport {
         cycle: Vec<String>,
@@ -270,6 +290,10 @@ impl SemanticError {
 
             SemanticError::ParseErrorInModule { .. } => "E0704",
             SemanticError::CircularImport { .. } => "E0705",
+            SemanticError::PrivateFunctionImport { .. } => "E0706",
+            SemanticError::PrivateStructImport { .. } => "E0707",
+            SemanticError::PrivateEnumImport { .. } => "E0708",
+            SemanticError::PrivateFieldAccess { .. } => "E0709",
 
             // Error handling
             SemanticError::UnhandledResult { .. } => "E0801",
@@ -542,6 +566,34 @@ impl fmt::Display for SemanticError {
             E::ParseErrorInModule { file, error } => {
                 write!(f, "error[{}] in {}: {}", self.code(), file, error)
             }
+            E::PrivateFunctionImport { name, module } => write!(
+                f,
+                "error[{}]: cannot import private function '{}' from module '{}'. Private functions (camelCase) are not accessible outside their module. Use PascalCase for public functions.",
+                self.code(),
+                name,
+                module
+            ),
+            E::PrivateStructImport { name, module } => write!(
+                f,
+                "error[{}]: cannot import private struct '{}' from module '{}'. Private structs (camelCase) are not accessible outside their module. Use PascalCase for public structs.",
+                self.code(),
+                name,
+                module
+            ),
+            E::PrivateEnumImport { name, module } => write!(
+                f,
+                "error[{}]: cannot import private enum '{}' from module '{}'. Private enums (camelCase) are not accessible outside their module. Use PascalCase for public enums.",
+                self.code(),
+                name,
+                module
+            ),
+            E::PrivateFieldAccess { struct_name, field_name } => write!(
+                f,
+                "error[{}]: cannot access private field '{}' on struct '{}'. Private fields (camelCase) are not accessible outside their module. Use PascalCase for public fields.",
+                self.code(),
+                field_name,
+                struct_name
+            ),
 
             // Error handling
             E::UnhandledResult { ok_type, error_type } => write!(

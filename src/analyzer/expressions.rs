@@ -1,4 +1,4 @@
-use super::analyzer::{SemanticAnalyzer, SymbolInfo};
+use super::analyzer::{types_compatible, SemanticAnalyzer, SymbolInfo};
 use super::types::{NamedError, SemanticError, TypeMismatch};
 use crate::lexer::token::TokenType;
 use crate::limits::ANALYZER_MAX_DEPTH;
@@ -995,8 +995,23 @@ impl SemanticAnalyzer {
             AstNode::StructLiteral { name, fields } => {
                 // Check if struct type exists
                 if let Some(struct_fields) = self.struct_table.get(name) {
+                    // Check if this is an imported struct - if so, check field visibility
+                    let is_imported = self.imported_struct_names.contains(name);
+
                     // Verify all required fields are provided
-                    for (field_name, field_type) in struct_fields {
+                    for (field_name, _field_type) in struct_fields {
+                        // For imported structs, only require public fields
+                        if is_imported {
+                            if let Some(field_visibility) = self.struct_field_visibility.get(name) {
+                                if let Some(is_public) = field_visibility.get(field_name) {
+                                    if !*is_public {
+                                        // Private field - skip requirement check (it should have a default or be handled internally)
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
                         let field_provided = fields.iter().any(|(f, _)| f == field_name);
                         if !field_provided {
                             // Check if field has default value or is optional
@@ -1010,12 +1025,39 @@ impl SemanticAnalyzer {
                         }
                     }
 
-                    // Verify field types match
+                    // Verify field types match and check visibility for provided fields
                     for (field_name, field_value) in fields {
+                        // Check field visibility for imported structs
+                        if is_imported {
+                            if let Some(field_visibility) = self.struct_field_visibility.get(name) {
+                                if let Some(is_public) = field_visibility.get(field_name) {
+                                    if !*is_public {
+                                        return Err(SemanticError::PrivateFieldAccess {
+                                            struct_name: name.clone(),
+                                            field_name: field_name.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(expected_type) = struct_fields.get(field_name) {
                             let actual_type = self.infer_type(field_value)?;
-                            // For now, basic type checking
-                            // TODO: Handle Optional types and type compatibility
+                            // Check type compatibility
+                            if !types_compatible(
+                                &actual_type,
+                                expected_type,
+                                &self.struct_table,
+                                &self.enum_table,
+                            ) {
+                                return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                    expected: expected_type.clone(),
+                                    found: actual_type,
+                                    value: None,
+                                    line: None,
+                                    col: None,
+                                }));
+                            }
                         } else {
                             return Err(SemanticError::UndeclaredVariable(NamedError {
                                 name: format!(
@@ -1053,6 +1095,22 @@ impl SemanticAnalyzer {
                 match resolved_type {
                     TypeNode::Struct(struct_name, fields) => {
                         if let Some(field_type) = fields.get(field) {
+                            // Check field visibility for imported structs
+                            // If the struct is imported from another module, check if the field is public
+                            if self.imported_struct_names.contains(&struct_name) {
+                                if let Some(field_visibility) =
+                                    self.struct_field_visibility.get(&struct_name)
+                                {
+                                    if let Some(is_public) = field_visibility.get(field) {
+                                        if !*is_public {
+                                            return Err(SemanticError::PrivateFieldAccess {
+                                                struct_name: struct_name.clone(),
+                                                field_name: field.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                             Ok(field_type.clone())
                         } else {
                             Err(SemanticError::UndeclaredVariable(NamedError {
@@ -1126,11 +1184,27 @@ impl SemanticAnalyzer {
                                 if let TypeNode::Tuple(tuple_types) = expected_type {
                                     // Tuple payload - expect multiple arguments
                                     if payload.len() == tuple_types.len() {
-                                        for (arg, _expected_elem_type) in
+                                        for (arg, expected_elem_type) in
                                             payload.iter().zip(tuple_types.iter())
                                         {
-                                            let _actual_type = self.infer_type(arg)?;
-                                            // TODO: Type compatibility check for each element
+                                            let actual_type = self.infer_type(arg)?;
+                                            // Type compatibility check for each element
+                                            if !types_compatible(
+                                                &actual_type,
+                                                expected_elem_type,
+                                                &self.struct_table,
+                                                &self.enum_table,
+                                            ) {
+                                                return Err(SemanticError::VarTypeMismatch(
+                                                    TypeMismatch {
+                                                        expected: expected_elem_type.clone(),
+                                                        found: actual_type,
+                                                        value: None,
+                                                        line: None,
+                                                        col: None,
+                                                    },
+                                                ));
+                                            }
                                         }
                                         Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))
                                     } else {
@@ -1146,8 +1220,22 @@ impl SemanticAnalyzer {
                                     }
                                 } else if payload.len() == 1 {
                                     // Single payload
-                                    let _actual_type = self.infer_type(&payload[0])?;
-                                    // TODO: Type compatibility check
+                                    let actual_type = self.infer_type(&payload[0])?;
+                                    // Type compatibility check
+                                    if !types_compatible(
+                                        &actual_type,
+                                        expected_type,
+                                        &self.struct_table,
+                                        &self.enum_table,
+                                    ) {
+                                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                            expected: expected_type.clone(),
+                                            found: actual_type,
+                                            value: None,
+                                            line: None,
+                                            col: None,
+                                        }));
+                                    }
                                     Ok(TypeNode::Enum(enum_name.clone(), enum_variants.clone()))
                                 } else {
                                     Err(SemanticError::UndeclaredVariable(NamedError {
@@ -1294,6 +1382,8 @@ impl SemanticAnalyzer {
                     enum_table: self.enum_table.clone(),
                     enum_variant_order: self.enum_variant_order.clone(),
                     method_table: self.method_table.clone(),
+                    struct_field_visibility: self.struct_field_visibility.clone(),
+                    imported_struct_names: self.imported_struct_names.clone(),
                     function_aliases: self.function_aliases.clone(),
                     loop_depth: self.loop_depth,
                     scope_stack: self.scope_stack.clone(),
@@ -1303,6 +1393,7 @@ impl SemanticAnalyzer {
                     project_root: self.project_root.clone(),
                     imported_modules: self.imported_modules.clone(),
                     imported_functions: self.imported_functions.clone(),
+                    imported_structs: self.imported_structs.clone(),
                     collected_errors: Vec::new(),
                     is_main_module: self.is_main_module,
                     type_inference_depth: RefCell::new(0),
@@ -1594,10 +1685,13 @@ impl SemanticAnalyzer {
             enum_table: self.enum_table.clone(),
             enum_variant_order: self.enum_variant_order.clone(),
             method_table: self.method_table.clone(),
+            struct_field_visibility: self.struct_field_visibility.clone(),
+            imported_struct_names: self.imported_struct_names.clone(),
             outer_symbol_table: self.outer_symbol_table.clone(),
             project_root: self.project_root.clone(),
             imported_modules: self.imported_modules.clone(),
             imported_functions: self.imported_functions.clone(),
+            imported_structs: self.imported_structs.clone(),
             function_aliases: self.function_aliases.clone(),
             loop_depth: self.loop_depth,
             scope_stack: self.scope_stack.clone(),

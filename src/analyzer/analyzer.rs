@@ -28,11 +28,14 @@ pub struct SemanticAnalyzer {
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
     pub(crate) method_table:
         HashMap<String, HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Methods per type: TypeName -> MethodName -> (params, return_type, error_type)
+    pub(crate) struct_field_visibility: HashMap<String, HashMap<String, bool>>, // Track field visibility for imported structs: struct_name -> (field_name -> is_public)
+    pub(crate) imported_struct_names: std::collections::HashSet<String>, // Track which structs are imported (for visibility checking)
 
     pub(crate) outer_symbol_table: Option<HashMap<String, SymbolInfo>>, // For nested scopes
     pub(crate) project_root: PathBuf, // Root directory for module resolution
     pub(crate) imported_modules: HashMap<String, bool>, // Track imported modules to prevent circular imports
     pub imported_functions: Vec<AstNode>, // Store imported function AST nodes for MIR generation
+    pub imported_structs: Vec<AstNode>,   // Store imported struct AST nodes for MIR generation
     pub function_aliases: HashMap<String, String>, // Maps alias names to original function names
     pub loop_depth: usize,                // Track loop nesting for break/continue error handling
     pub scope_stack: Vec<HashMap<String, SymbolInfo>>, // Scope stack for block scoping
@@ -80,10 +83,13 @@ impl SemanticAnalyzer {
             enum_table: HashMap::new(),
             enum_variant_order: HashMap::new(),
             method_table: HashMap::new(),
+            struct_field_visibility: HashMap::new(),
+            imported_struct_names: std::collections::HashSet::new(),
             outer_symbol_table: None,
             project_root,
             imported_modules: HashMap::new(),
             imported_functions: Vec::new(),
+            imported_structs: Vec::new(),
             function_aliases: HashMap::new(),
             loop_depth: 0,
             scope_stack: Vec::new(),
@@ -1134,6 +1140,69 @@ impl SemanticAnalyzer {
         // Treat namespace alias like namespace import (import all functions)
         let is_namespace_import_or_alias = is_namespace_import || namespace_alias.is_some();
 
+        // Get module name for error messages
+        let module_name = path.join("::");
+
+        // First pass: collect all declared types/functions in the module (both public and private)
+        // to check if user is trying to import private symbols
+        let mut private_functions: Vec<String> = Vec::new();
+        let mut private_structs: Vec<String> = Vec::new();
+        let mut private_enums: Vec<String> = Vec::new();
+
+        for node in &nodes {
+            match node {
+                AstNode::FunctionDecl { name, .. } => {
+                    // Private functions start with lowercase (camelCase)
+                    if !name.chars().next().unwrap_or('A').is_uppercase() {
+                        private_functions.push(name.clone());
+                    }
+                }
+                AstNode::StructDecl {
+                    name, is_public, ..
+                } => {
+                    if !*is_public {
+                        private_structs.push(name.clone());
+                    }
+                }
+                AstNode::EnumDecl {
+                    name, is_public, ..
+                } => {
+                    if !*is_public {
+                        private_enums.push(name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Check if user is trying to explicitly import private symbols
+        for item in &specific_imports {
+            match item {
+                crate::parser::ast::ImportItem::Symbol(sym)
+                | crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
+                    if private_functions.contains(sym) {
+                        return Err(SemanticError::PrivateFunctionImport {
+                            name: sym.clone(),
+                            module: module_name.clone(),
+                        });
+                    }
+                    if private_structs.contains(sym) {
+                        return Err(SemanticError::PrivateStructImport {
+                            name: sym.clone(),
+                            module: module_name.clone(),
+                        });
+                    }
+                    if private_enums.contains(sym) {
+                        return Err(SemanticError::PrivateEnumImport {
+                            name: sym.clone(),
+                            module: module_name.clone(),
+                        });
+                    }
+                }
+                crate::parser::ast::ImportItem::Wildcard => {}
+            }
+        }
+
         for node in nodes {
             match &node {
                 // Import functions
@@ -1225,7 +1294,9 @@ impl SemanticAnalyzer {
                 }
                 // Import structs
                 AstNode::StructDecl {
-                    name, is_public, ..
+                    name,
+                    is_public,
+                    fields,
                 } => {
                     // Only import public structs (PascalCase - starts with uppercase)
                     if *is_public {
@@ -1250,13 +1321,37 @@ impl SemanticAnalyzer {
 
                         if should_import {
                             // Copy struct definition to current struct table
-                            if let Some(fields) = imported_analyzer.struct_table.get(name) {
-                                self.struct_table.insert(name.clone(), fields.clone());
+                            if let Some(field_types) = imported_analyzer.struct_table.get(name) {
+                                self.struct_table.insert(name.clone(), field_types.clone());
+
+                                // Store field visibility information for imported struct
+                                let mut field_visibility: HashMap<String, bool> = HashMap::new();
+                                for field in fields {
+                                    field_visibility.insert(field.name.clone(), field.is_public);
+                                }
+                                self.struct_field_visibility
+                                    .insert(name.clone(), field_visibility);
+
+                                // Track this struct as imported (for visibility checking)
+                                self.imported_struct_names.insert(name.clone());
+
+                                // CRITICAL: Add to imported_structs for MIR generation
+                                // This ensures struct metadata is available in codegen
+                                if !self.imported_structs.iter().any(|n| {
+                                    if let AstNode::StructDecl { name: s_name, .. } = n {
+                                        s_name == name
+                                    } else {
+                                        false
+                                    }
+                                }) {
+                                    self.imported_structs.push(node.clone());
+                                }
+
                                 // Also add to symbol_table for type resolution
                                 self.symbol_table.insert(
                                     name.clone(),
                                     SymbolInfo {
-                                        ty: TypeNode::Struct(name.clone(), fields.clone()),
+                                        ty: TypeNode::Struct(name.clone(), field_types.clone()),
                                         mutable: false,
                                         is_ref_counted: true,
                                         is_parameter: false,

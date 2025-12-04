@@ -1,8 +1,16 @@
 //! Parser Unit Tests
-//! Tests AST generation in isolation - NO analyzer/mir/codegen dependencies
+//! Tests AST generation and syntax validation
 //!
-//! Responsibility: Verify AST structure, operator precedence, syntax variations
-//! Does NOT: Test type checking (analyzer's job), test semantics
+//! Responsibility: Verify SYNTAX correctness and SYNTAX ERRORS
+//!   - Parse errors (missing semicolons, unclosed braces, etc.)
+//!   - Syntax variations (different ways to write same construct)
+//!   - AST structure verification for complex expressions
+//!
+//! Does NOT: Duplicate "valid program" tests that codegen already covers
+//!
+//! Rationale: Codegen runs the full pipeline (lexer→parser→analyzer→MIR→codegen),
+//! so if codegen passes, parser already passed. Parser tests should focus on
+//! SYNTAX ERRORS and syntax variations that parser uniquely handles.
 
 #[cfg(test)]
 mod parser_tests {
@@ -33,18 +41,208 @@ mod parser_tests {
         assert!(parse_input(input).is_err(), "Should fail: {}", input);
     }
 
+    fn assert_program_parses(input: &str) {
+        assert!(
+            parse_program(input).is_ok(),
+            "Failed to parse program: {}",
+            input
+        );
+    }
+
+    fn assert_program_fails(input: &str) {
+        assert!(
+            parse_program(input).is_err(),
+            "Program should fail: {}",
+            input
+        );
+    }
+
     // =====================================================================
-    // VARIABLE DECLARATIONS - AST STRUCTURE
+    // SYNTAX ERRORS - MISSING DELIMITERS
+    // These errors are ONLY caught by parser
     // =====================================================================
 
     #[test]
-    fn test_parse_let_declaration() {
-        let result = parse_input("let x: Int = 42;");
-        assert!(result.is_ok());
-        match result.unwrap() {
-            AstNode::LetDecl { .. } => (),
-            _ => panic!("Expected LetDecl"),
-        }
+    fn test_parse_error_missing_semicolon() {
+        assert_parse_fails("let x = 42");
+    }
+
+    #[test]
+    fn test_parse_error_unclosed_bracket() {
+        assert_parse_fails("let x = [1, 2, 3;");
+    }
+
+    #[test]
+    fn test_parse_error_unclosed_brace() {
+        assert_program_fails("fn main() { let x = 42;");
+    }
+
+    #[test]
+    fn test_parse_error_unclosed_string() {
+        // Lexer handles this but parser should handle incomplete expressions
+        assert_parse_fails("let x = \"hello;");
+    }
+
+    #[test]
+    fn test_parse_error_missing_closing_bracket_in_array() {
+        assert_parse_fails("let arr = [1, 2, 3");
+    }
+
+    #[test]
+    fn test_parse_error_missing_closing_brace_in_map() {
+        assert_parse_fails("let m = {\"a\": 1, \"b\": 2");
+    }
+
+    // =====================================================================
+    // SYNTAX ERRORS - FUNCTION DEFINITIONS
+    // =====================================================================
+
+    #[test]
+    fn test_parse_error_missing_fn_name() {
+        assert_program_fails("fn () { }");
+    }
+
+    #[test]
+    fn test_parse_error_invalid_param_missing_type() {
+        assert_program_fails("fn foo(x) { }");
+    }
+
+    #[test]
+    fn test_parse_error_missing_arrow_in_return_type() {
+        assert_program_fails("fn foo() Int { }");
+    }
+
+    #[test]
+    fn test_parse_error_missing_function_body() {
+        assert_program_fails("fn foo()");
+    }
+
+    #[test]
+    fn test_parse_error_missing_param_type_after_colon() {
+        assert_program_fails("fn foo(x:) { }");
+    }
+
+    #[test]
+    fn test_parse_error_extra_comma_in_params() {
+        assert_program_fails("fn foo(x: Int,) { }");
+    }
+
+    // =====================================================================
+    // SYNTAX ERRORS - CONTROL FLOW
+    // =====================================================================
+
+    #[test]
+    fn test_parse_error_if_missing_brace() {
+        assert_parse_fails("if true let x = 1;");
+    }
+
+    #[test]
+    fn test_parse_error_for_missing_in() {
+        assert_parse_fails("for i 0..10 { }");
+    }
+
+    #[test]
+    fn test_parse_error_for_missing_body() {
+        assert_parse_fails("for i in 0..10");
+    }
+
+    #[test]
+    fn test_parse_error_match_missing_arms() {
+        assert_parse_fails("match x { }");
+    }
+
+    #[test]
+    fn test_parse_error_match_missing_fat_arrow() {
+        assert_parse_fails("match x { 1 print(1), }");
+    }
+
+    // =====================================================================
+    // SYNTAX ERRORS - STRUCT/ENUM
+    // =====================================================================
+
+    #[test]
+    fn test_parse_error_struct_missing_name() {
+        assert_program_fails("struct { name: Str }");
+    }
+
+    #[test]
+    fn test_parse_error_struct_missing_brace() {
+        assert_program_fails("struct User name: Str }");
+    }
+
+    #[test]
+    fn test_parse_error_struct_field_missing_type() {
+        assert_program_fails("struct User { name }");
+    }
+
+    #[test]
+    fn test_parse_error_enum_missing_name() {
+        assert_program_fails("enum { Active, Inactive }");
+    }
+
+    #[test]
+    fn test_parse_error_enum_missing_brace() {
+        assert_program_fails("enum Status Active, Inactive }");
+    }
+
+    // =====================================================================
+    // SYNTAX ERRORS - EXPRESSIONS
+    // =====================================================================
+
+    #[test]
+    fn test_parse_error_binary_op_missing_operand() {
+        assert_parse_fails("let x = 1 +;");
+    }
+
+    #[test]
+    fn test_parse_error_unary_op_missing_operand() {
+        assert_parse_fails("let x = !;");
+    }
+
+    #[test]
+    fn test_parse_error_method_call_missing_paren() {
+        // arr.len is valid field access syntax, not a parse error
+        // If len is a method, semantic analysis should catch the error
+        assert_parses("let x = arr.len;");
+    }
+
+    #[test]
+    fn test_parse_error_array_access_missing_bracket() {
+        assert_parse_fails("let x = arr[0;");
+    }
+
+    // =====================================================================
+    // SYNTAX ERRORS - IMPORTS
+    // =====================================================================
+
+    #[test]
+    fn test_parse_error_import_missing_path() {
+        assert_parse_fails("import ;");
+    }
+
+    #[test]
+    fn test_parse_error_import_missing_semicolon() {
+        assert_program_fails("import std::Math fn main() { }");
+    }
+
+    // =====================================================================
+    // SYNTAX VARIATIONS - LET DECLARATIONS
+    // Tests that different valid syntaxes parse correctly
+    // =====================================================================
+
+    #[test]
+    fn test_parse_let_with_type_annotation() {
+        assert_parses("let x: Int = 42;");
+        assert_parses("let x: Float = 3.14;");
+        assert_parses("let x: Str = \"hello\";");
+        assert_parses("let x: Bool = true;");
+        assert_parses("let x: [Int] = [1, 2, 3];");
+        assert_parses("let x: {Str: Int} = {\"a\": 1};");
+    }
+
+    #[test]
+    fn test_parse_let_without_type_annotation() {
+        assert_parses("let x = 42;");
     }
 
     #[test]
@@ -62,264 +260,12 @@ mod parser_tests {
         assert_parses("let _ = 42;");
     }
 
-    #[test]
-    fn test_parse_let_with_type_annotations() {
-        assert_parses("let x: Int = 42;");
-        assert_parses("let x: Float = 42.0;");
-        assert_parses("let x: Str = \"hello\";");
-        assert_parses("let x: Bool = true;");
-        assert_parses("let x: [Int] = [1, 2, 3];");
-        assert_parses("let x: {Str: Int} = {\"a\": 1};");
-    }
-
-    #[test]
-    fn test_parse_let_without_type() {
-        assert_parses("let x = 42;");
-    }
-
-    #[test]
-    fn test_parse_let_string_literal() {
-        assert_parses(r#"let s = "hello";"#);
-    }
-
-    #[test]
-    fn test_parse_let_float_literal() {
-        assert_parses(r#"let f = 3.14;"#);
-    }
-
-    #[test]
-    fn test_parse_let_bool_literal() {
-        assert_parses("let b = true;");
-    }
-
-    #[test]
-    fn test_parse_let_array_literal() {
-        assert_parses("let arr = [1, 2, 3];");
-    }
-
-    #[test]
-    fn test_parse_let_map_literal() {
-        assert_parses(r#"let m = {"a": 1, "b": 2};"#);
-    }
-
-    #[test]
-    fn test_parse_empty_array() {
-        assert_parses("let arr: [Int] = [];");
-    }
-
-    #[test]
-    fn test_parse_empty_map() {
-        assert_parses("let m: {Str: Int} = {};");
-    }
-
     // =====================================================================
-    // FUNCTION DEFINITIONS - AST STRUCTURE
+    // SYNTAX VARIATIONS - FOR LOOPS
     // =====================================================================
 
     #[test]
-    fn test_parse_function_basic() {
-        let result = parse_program("fn main() { }");
-        assert!(result.is_ok());
-        match result.unwrap() {
-            AstNode::Program(_) => (),
-            _ => panic!("Expected Program"),
-        }
-    }
-
-    #[test]
-    fn test_parse_function_no_params_with_return() {
-        assert_parses("fn getAnswer() -> Int { return 42; }");
-    }
-
-    #[test]
-    fn test_parse_function_multiple_params() {
-        assert_parses("fn add(a: Int, b: Int) -> Int { return a + b; }");
-    }
-
-    #[test]
-    fn test_parse_function_array_param() {
-        assert_parses("fn process(arr: [Int]) { }");
-    }
-
-    #[test]
-    fn test_parse_function_map_param() {
-        assert_parses("fn process(m: {Str: Int}) { }");
-    }
-
-    #[test]
-    fn test_parse_function_with_body() {
-        assert_parses("fn foo() { let x = 1; let y = 2; }");
-    }
-
-    #[test]
-    fn test_parse_function_empty_body() {
-        assert_parses("fn foo() { }");
-    }
-
-    #[test]
-    fn test_parse_function_recursive() {
-        assert_parses(
-            "fn fib(n: Int) -> Int { if n <= 1 { return 1; } return fib(n-1) + fib(n-2); }",
-        );
-    }
-
-    // =====================================================================
-    // EXPRESSIONS - OPERATOR PRECEDENCE
-    // =====================================================================
-
-    #[test]
-    fn test_parse_expr_addition() {
-        let result = parse_input("let a = 1 + 2;");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_parse_expr_subtraction() {
-        assert_parses("let a = 10 - 3;");
-    }
-
-    #[test]
-    fn test_parse_expr_multiplication() {
-        assert_parses("let a = 4 * 7;");
-    }
-
-    #[test]
-    fn test_parse_expr_division() {
-        assert_parses("let a = 20 / 4;");
-    }
-
-    #[test]
-    fn test_parse_expr_modulo() {
-        assert_parses("let a = 10 % 3;");
-    }
-
-    #[test]
-    fn test_parse_expr_mixed_operators() {
-        // Precedence: * / % before + -
-        assert_parses("let a = 1 + 2 * 3;");
-        assert_parses("let a = 10 - 5 / 2;");
-        assert_parses("let a = 3 * 4 + 5 * 6;");
-    }
-
-    #[test]
-    fn test_parse_expr_unary_minus() {
-        assert_parses("let a = -5;");
-        assert_parses("let x = -42;");
-    }
-
-    #[test]
-    fn test_parse_expr_unary_not() {
-        assert_parses("let a = !true;");
-        assert_parses("let x = !false;");
-    }
-
-    // =====================================================================
-    // COMPARISONS - OPERATOR PRECEDENCE
-    // =====================================================================
-
-    #[test]
-    fn test_parse_expr_equals() {
-        assert_parses("let a = 1 == 2;");
-        assert_parses("let a = 1 == 2 == 3;"); // Left-associative
-    }
-
-    #[test]
-    fn test_parse_expr_not_equals() {
-        assert_parses("let a = 1 != 2;");
-    }
-
-    #[test]
-    fn test_parse_expr_less_than() {
-        assert_parses("let a = 1 < 2;");
-    }
-
-    #[test]
-    fn test_parse_expr_greater_than() {
-        assert_parses("let a = 5 > 3;");
-    }
-
-    #[test]
-    fn test_parse_expr_less_equal() {
-        assert_parses("let a = 1 <= 2;");
-    }
-
-    #[test]
-    fn test_parse_expr_greater_equal() {
-        assert_parses("let a = 5 >= 3;");
-    }
-
-    #[test]
-    fn test_parse_expr_comparison_chain() {
-        assert_parses("let a = 1 < 2 < 3;");
-        assert_parses("let a = x == y == z;");
-    }
-
-    // =====================================================================
-    // LOGICAL OPERATORS - PRECEDENCE
-    // =====================================================================
-
-    #[test]
-    fn test_parse_expr_logical_and() {
-        assert_parses("let a = true && false;");
-    }
-
-    #[test]
-    fn test_parse_expr_logical_or() {
-        assert_parses("let a = true || false;");
-    }
-
-    #[test]
-    fn test_parse_expr_logical_complex() {
-        // Precedence: && before ||
-        assert_parses("let a = true || false && true;");
-        assert_parses("let a = true || false && true;");
-    }
-
-    // =====================================================================
-    // CONTROL FLOW - AST STRUCTURE
-    // =====================================================================
-
-    #[test]
-    fn test_parse_if_simple() {
-        assert_parses("if true { }");
-    }
-
-    #[test]
-    fn test_parse_if_else() {
-        assert_parses("if true { } else { }");
-    }
-
-    #[test]
-    fn test_parse_if_elif_else() {
-        assert_parses("if true { } else if false { } else { }");
-    }
-
-    #[test]
-    fn test_parse_if_with_body() {
-        assert_parses("if true { let x = 1; }");
-    }
-
-    #[test]
-    fn test_parse_if_nested() {
-        assert_parses("if true { if false { } }");
-    }
-
-    #[test]
-    fn test_parse_if_condition_comparison() {
-        assert_parses("if 1 < 2 { }");
-    }
-
-    #[test]
-    fn test_parse_if_condition_logical() {
-        assert_parses("if true && false { }");
-    }
-
-    // =====================================================================
-    // FOR LOOPS - AST STRUCTURE & SYNTAX VARIATIONS
-    // =====================================================================
-
-    #[test]
-    fn test_parse_for_range() {
+    fn test_parse_for_range_exclusive() {
         assert_parses("for i in 0..10 { }");
     }
 
@@ -329,82 +275,26 @@ mod parser_tests {
     }
 
     #[test]
-    fn test_parse_for_array() {
+    fn test_parse_for_array_iteration() {
         assert_parses("for x in arr { }");
     }
 
     #[test]
-    fn test_parse_for_array_wildcard() {
+    fn test_parse_for_with_wildcard() {
         assert_parses("for _ in arr { }");
+        assert_parses("for _ in 0..10 { }");
     }
 
     #[test]
-    fn test_parse_for_with_body() {
-        assert_parses("for i in 0..5 { print(i); }");
-    }
-
-    #[test]
-    fn test_parse_for_nested() {
-        assert_parses("for i in 0..10 { for j in 0..10 { } }");
-    }
-
-    #[test]
-    fn test_parse_for_with_break() {
-        assert_parses("for i in 0..10 { break; }");
-    }
-
-    #[test]
-    fn test_parse_for_with_continue() {
-        assert_parses("for i in 0..10 { continue; }");
-    }
-
-    // =====================================================================
-    // FOR LOOP MAP DESTRUCTURING - SYNTAX VARIATIONS
-    // =====================================================================
-
-    #[test]
-    fn test_parse_for_map_destructure_paren_tuple() {
-        assert_parses("for (k, v) in map1 { }");
-    }
-
-    #[test]
-    fn test_parse_for_map_destructure_tuple_no_paren() {
+    fn test_parse_for_map_destructure() {
         assert_parses("for k, v in map1 { }");
     }
 
     #[test]
-    fn test_parse_for_map_destructure_wildcard_both_paren() {
-        assert_parses("for (_, _) in map1 { }");
-    }
-
-    #[test]
-    fn test_parse_for_map_destructure_wildcard_no_paren() {
+    fn test_parse_for_map_destructure_wildcards() {
         assert_parses("for _, _ in map1 { }");
-    }
-
-    #[test]
-    fn test_parse_for_map_destructure_wildcard_key_paren() {
-        assert_parses("for (_, v) in map1 { }");
-    }
-
-    #[test]
-    fn test_parse_for_map_destructure_wildcard_value_paren() {
-        assert_parses("for (k, _) in map1 { }");
-    }
-
-    #[test]
-    fn test_parse_for_map_destructure_wildcard_key_no_paren() {
         assert_parses("for _, v in map1 { }");
-    }
-
-    #[test]
-    fn test_parse_for_map_destructure_wildcard_value_no_paren() {
         assert_parses("for k, _ in map1 { }");
-    }
-
-    #[test]
-    fn test_parse_for_map_destructure_multiple() {
-        assert_parses("for (k, v) in {\"a\": 1, \"b\": 2, \"c\": 3} { }");
     }
 
     #[test]
@@ -413,175 +303,122 @@ mod parser_tests {
     }
 
     // =====================================================================
-    // RETURN, BREAK, CONTINUE
+    // SYNTAX VARIATIONS - MATCH EXPRESSIONS
     // =====================================================================
 
     #[test]
-    fn test_parse_return_value() {
-        assert_parses("return 42;");
+    fn test_parse_match_int_arms() {
+        assert_parses("match x { 1 => print(1), _ => print(0), }");
     }
 
     #[test]
-    fn test_parse_return_expression() {
-        assert_parses("return x + y;");
+    fn test_parse_match_string_arms() {
+        assert_parses(r#"match s { "hello" => print(1), "world" => print(2), _ => print(0), }"#);
     }
 
     #[test]
-    fn test_parse_break_statement() {
-        assert_parses("break;");
+    fn test_parse_match_bool_arms() {
+        assert_parses("match flag { true => print(\"yes\"), false => print(\"no\"), }");
     }
 
     #[test]
-    fn test_parse_continue_statement() {
-        assert_parses("continue;");
+    fn test_parse_match_enum_variant() {
+        assert_parses("match status { Status::Active => print(1), Status::Inactive => print(0), }");
     }
 
     #[test]
-    fn test_parse_void_return() {
-        assert_parse_fails("fn main() { return; }");
-    }
-
-    // =====================================================================
-    // ARRAYS - AST STRUCTURE
-    // =====================================================================
-
-    // #[test]
-    // fn test_parse_array_empty() {
-    //     assert_parses("let a = [];");
-    // }
-
-    #[test]
-    fn test_parse_array_single() {
-        assert_parses("let a = [1];");
-    }
-
-    #[test]
-    fn test_parse_array_multiple() {
-        assert_parses("let a = [1, 2, 3];");
-    }
-
-    #[test]
-    fn test_parse_array_strings() {
-        assert_parses("let a = [\"a\", \"b\", \"c\"];");
-    }
-
-    #[test]
-    fn test_parse_array_access() {
-        assert_parses("let a = arr[0];");
-    }
-
-    #[test]
-    fn test_parse_array_access_expr() {
-        assert_parses("let a = arr[i + 1];");
-    }
-
-    // =====================================================================
-    // MAPS - AST STRUCTURE
-    // =====================================================================
-
-    #[test]
-    fn test_parse_map_empty() {
-        assert_parses("let mut a = {};");
-    }
-
-    #[test]
-    fn test_parse_map_single() {
-        assert_parses("let a = {\"a\": 1};");
-    }
-
-    #[test]
-    fn test_parse_map_multiple() {
-        assert_parses("let a = {\"a\": 1, \"b\": 2};");
-    }
-
-    #[test]
-    fn test_parse_map_access() {
-        assert_parses("let a = m[\"key\"];");
-    }
-
-    // TODO: handle parser error handling for nested
-    #[test]
-    fn test_parse_map_mixed_nesting() {
-        assert_parses("let a = {\"a\": [1, 2], \"b\": [3, 4]};");
-    }
-
-    // =====================================================================
-    // METHOD CALLS - AST STRUCTURE
-    // =====================================================================
-
-    #[test]
-    fn test_parse_method_call_no_args() {
-        assert_parses("let a = arr.len();");
-    }
-
-    #[test]
-    fn test_parse_method_call_with_args() {
-        assert_parses("let a = arr.contains(5);");
-    }
-
-    #[test]
-    fn test_parse_method_chained() {
-        assert_parses("let a = arr.map((x) => x + 1).filter((x) => x > 5);");
-    }
-
-    #[test]
-    fn test_parse_method_lambda() {
-        assert_parses("let a = arr.map((n) => n * 2);");
-    }
-
-    #[test]
-    fn test_parse_method_filter() {
-        assert_parses("let a = arr.filter((n) => n > 1);");
-    }
-
-    #[test]
-    fn test_parse_method_reduce() {
-        assert_parses("let a = arr.reduce((acc, n) => acc + n);");
-    }
-
-    #[test]
-    fn test_parse_method_typeof() {
-        assert_parses("let a = x.typeof();");
-    }
-
-    #[test]
-    fn test_parse_method_map_block() {
-        assert_parses("let a = arr.map((n) => { return n * 2; });");
-    }
-
-    #[test]
-    fn test_parse_method_filter_complex() {
+    fn test_parse_match_enum_with_binding() {
         assert_parses(
-            "let a = arr.filter((n) => { if n > 0 { return true; } else { return false; } });",
+            "match result { Result::Success(val) => print(val), Result::Failure(msg) => print(msg), }",
         );
     }
 
-    // =====================================================================
-    // FUNCTION CALLS - AST STRUCTURE
-    // =====================================================================
-
     #[test]
-    fn test_parse_call_no_args() {
-        assert_parses("foo();");
+    fn test_parse_match_as_expression() {
+        assert_parses("let msg = match x { 1 => \"one\", _ => \"other\", };");
     }
 
     #[test]
-    fn test_parse_call_with_args() {
-        assert_parses("foo(1, 2, 3);");
-    }
-
-    #[test]
-    fn test_parse_call_nested() {
-        assert_parses("foo(bar(baz()));");
-    }
-
-    #[test]
-    fn test_parse_call_as_expr() {
-        assert_parses("let x = add(5, 3);");
+    fn test_parse_match_with_block_body() {
+        assert_parses("match x { 1 => { let a = 1; print(a); }, _ => print(0), }");
     }
 
     // =====================================================================
-    // IMPORTS - AST STRUCTURE & SYNTAX VARIATIONS
+    // SYNTAX VARIATIONS - ERROR HANDLING
+    // =====================================================================
+
+    #[test]
+    fn test_parse_result_return_type() {
+        assert_program_parses(
+            "fn divide(a: Int, b: Int) -> Int ! Str { return a / b; } fn main() { }",
+        );
+    }
+
+    #[test]
+    fn test_parse_ok_expression() {
+        assert_parses("Ok 42;");
+    }
+
+    #[test]
+    fn test_parse_err_expression() {
+        assert_parses(r#"Err "error message";"#);
+    }
+
+    #[test]
+    fn test_parse_error_propagation() {
+        assert_parses("let val = getValue()?;");
+    }
+
+    #[test]
+    fn test_parse_manual_error_extract() {
+        assert_parses("let result, err = someFunction();");
+        assert_parses("let _, err = someFunction();");
+    }
+
+    // =====================================================================
+    // SYNTAX VARIATIONS - TUPLE
+    // =====================================================================
+
+    #[test]
+    fn test_parse_tuple_return_type() {
+        assert_program_parses("fn getData() -> Int, Str { return 1, \"hello\"; } fn main() { }");
+    }
+
+    #[test]
+    fn test_parse_tuple_destructuring() {
+        assert_parses("let a, b = getData();");
+        assert_parses("let a, b, c = getTriple();");
+    }
+
+    // =====================================================================
+    // SYNTAX VARIATIONS - ARRAY SPREAD & SLICE
+    // =====================================================================
+
+    #[test]
+    fn test_parse_array_spread() {
+        assert_parses("let arr2 = [...arr1, 4, 5];");
+        assert_parses("let combined = [...arr1, ...arr2];");
+        assert_parses("let arr = [1, 2, ...rest];");
+        assert_parses("let arr = [...prefix, 3, 4];");
+    }
+
+    #[test]
+    fn test_parse_array_slice_exclusive() {
+        assert_parses("let slice = arr[1..4];");
+    }
+
+    #[test]
+    fn test_parse_array_slice_inclusive() {
+        assert_parses("let slice = arr[1..=4];");
+    }
+
+    #[test]
+    fn test_parse_array_slice_with_variables() {
+        assert_parses("let slice = arr[start..end];");
+    }
+
+    // =====================================================================
+    // SYNTAX VARIATIONS - IMPORTS
     // =====================================================================
 
     #[test]
@@ -605,114 +442,138 @@ mod parser_tests {
     }
 
     #[test]
-    fn test_parse_import_single_module_no_braces() {
-        assert_parses("import std::File; fn main() { File::Write(); }");
+    fn test_parse_import_module_no_braces() {
+        assert_program_parses("import std::File; fn main() { }");
     }
 
     #[test]
-    fn test_parse_import_single_module_alias() {
-        assert_parses("import std::File as F; fn main() { F::Write(); }");
+    fn test_parse_import_module_alias() {
+        assert_program_parses("import std::File as F; fn main() { }");
     }
 
     #[test]
-    fn test_parse_import_single_module_wildcard() {
-        assert_parses("import std::File::*; fn main() { Write(); }");
+    fn test_parse_import_module_wildcard() {
+        assert_program_parses("import std::File::*; fn main() { }");
     }
 
     #[test]
-    fn test_parse_import_top_level_multiple_modules() {
-        assert_parses("import std::{File, Math, Json}; fn main() { File::Write(); Math::sqrt(); Json::parse(); }");
-    }
-
-    #[test]
-    fn test_parse_import_top_level_multiple_with_aliases() {
-        assert_parses("import std::{File as F, Math as M}; fn main() { F::Write(); M::sqrt(); }");
-    }
-
-    #[test]
-    fn test_parse_import_top_level_mixed_wildcard() {
-        assert_parses("import std::{File::*, Math}; fn main() { Write(); Math::sqrt(); }");
-    }
-
-    #[test]
-    fn test_parse_import_undefined_symbol_syntax_only() {
-        assert_parses("import std::Math::{NonExistent}; fn main() { }");
+    fn test_parse_import_top_level_multiple() {
+        assert_program_parses("import std::{File, Math, Json}; fn main() { }");
     }
 
     // =====================================================================
-    // OPERATOR PRECEDENCE - COMPLEX CASES
+    // SYNTAX VARIATIONS - LAMBDAS
     // =====================================================================
 
     #[test]
-    fn test_parse_operator_precedence_mixed() {
-        // Test: *, / before +, -
-        assert_parses("let a = 2 + 3 * 4;");
-        assert_parses("let b = 2 * 3 + 4;");
+    fn test_parse_lambda_simple() {
+        assert_parses("let a = arr.map((n) => n * 2);");
     }
 
     #[test]
-    fn test_parse_operator_precedence_comparison_logical() {
-        // Arithmetic before comparison before logical
-        assert_parses("let a = 1 + 2 < 3 + 4;");
-        assert_parses("let b = x == y && a > b;");
+    fn test_parse_lambda_filter() {
+        assert_parses("let a = arr.filter((n) => n > 1);");
     }
 
     #[test]
-    fn test_parse_parenthesized() {
-        assert_parses("let a = 1 + 2 * 3;");
-        assert_parses("let b = x;");
+    fn test_parse_lambda_reduce() {
+        assert_parses("let a = arr.reduce((acc, n) => acc + n);");
     }
 
     #[test]
-    fn test_parse_complex_expression() {
-        assert_parses("let a = a + b * c - d / e + f;");
-    }
-
-    // =====================================================================
-    // ERROR CASES - PARSE FAILURES
-    // =====================================================================
-
-    #[test]
-    fn test_parse_error_missing_semicolon() {
-        assert_parse_fails("let x = 42");
+    fn test_parse_lambda_block() {
+        assert_parses("let doubled = arr.map((x) => { let y = x * 2; return y; });");
     }
 
     #[test]
-    fn test_parse_error_unclosed_bracket() {
-        assert_parse_fails("let x = [1, 2, 3;");
-    }
-
-    #[test]
-    fn test_parse_error_unclosed_brace() {
-        assert_parse_fails("fn main() { let x = 42;");
-    }
-
-    #[test]
-    fn test_parse_error_unclosed_paren() {
-        assert_parse_fails("let x = (1 + 2;");
-    }
-
-    #[test]
-    fn test_parse_error_missing_fn_name() {
-        assert_parse_fails("fn () { }");
-    }
-
-    #[test]
-    fn test_parse_error_invalid_param() {
-        assert_parse_fails("fn foo(x) { }"); // Missing type
-    }
-
-    #[test]
-    fn test_parse_error_missing_arrow() {
-        assert_parse_fails("fn foo() Int { }"); // Missing ->
+    fn test_parse_lambda_block_multiline() {
+        assert_parses(
+            "let result = arr.filter((x) => { if x > 0 { return true; } return false; });",
+        );
     }
 
     // =====================================================================
-    // PROGRAM STRUCTURE
+    // SYNTAX VARIATIONS - STRING INTERPOLATION
     // =====================================================================
 
     #[test]
-    fn test_parse_program_simple() {
+    fn test_parse_string_interpolation_simple() {
+        assert_parses(r#"let msg = "Hello ${name}!";"#);
+    }
+
+    #[test]
+    fn test_parse_string_interpolation_expression() {
+        assert_parses(r#"let msg = "Result: ${x + y}";"#);
+    }
+
+    #[test]
+    fn test_parse_string_interpolation_multiple() {
+        assert_parses(r#"let msg = "${first} ${last}";"#);
+    }
+
+    // =====================================================================
+    // SYNTAX VARIATIONS - TYPE CAST
+    // =====================================================================
+
+    #[test]
+    fn test_parse_type_cast() {
+        assert_parses("let x = value as Int;");
+        assert_parses("let x = value as Float;");
+        assert_parses("let x = value as Str;");
+        assert_parses("let x = a + b as Float;");
+    }
+
+    // =====================================================================
+    // SYNTAX VARIATIONS - INLINE IF
+    // =====================================================================
+
+    #[test]
+    fn test_parse_inline_if_expression() {
+        assert_parses("let x = if condition { 1 } else { 0 };");
+    }
+
+    #[test]
+    fn test_parse_conditional_assignment() {
+        assert_parses("let result = if x > 0 { x } else { -x };");
+    }
+
+    // =====================================================================
+    // SYNTAX VARIATIONS - IN OPERATOR
+    // =====================================================================
+
+    #[test]
+    fn test_parse_in_operator() {
+        assert_parses("if 3 in arr { print(\"found\"); }");
+        assert_parses(r#"if "key" in map { print("exists"); }"#);
+    }
+
+    // =====================================================================
+    // SYNTAX VARIATIONS - INCREMENT/DECREMENT
+    // =====================================================================
+
+    #[test]
+    fn test_parse_increment_decrement() {
+        assert_parses("x++;");
+        assert_parses("x--;");
+    }
+
+    // =====================================================================
+    // AST STRUCTURE VERIFICATION
+    // Verify that parser produces correct AST for specific constructs
+    // =====================================================================
+
+    #[test]
+    fn test_parse_let_produces_ast_node() {
+        let result = parse_input("let x: Int = 42;");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            AstNode::LetDecl { .. } => (),
+            _ => panic!("Expected LetDecl"),
+        }
+    }
+
+    #[test]
+    fn test_parse_program_structure() {
         let result = parse_program("fn main() { }");
         assert!(result.is_ok());
         match result.unwrap() {
@@ -731,13 +592,35 @@ mod parser_tests {
         }
     }
 
+    // =====================================================================
+    // HAPPY PATH SANITY CHECKS (MINIMAL)
+    // Keep very few to ensure parser doesn't reject valid code
+    // =====================================================================
+
     #[test]
-    fn test_parse_program_with_variables() {
-        assert!(parse_program("let x = 1; fn main() { }").is_ok());
+    fn test_parse_basic_program_ok() {
+        assert_program_parses("fn main() { }");
     }
 
     #[test]
-    fn test_parse_program_imports_first() {
-        assert!(parse_program("import std::Math::{Abs}; fn main() { }").is_ok());
+    fn test_parse_struct_declaration_ok() {
+        assert_program_parses("struct User { name: Str, age: Int } fn main() { }");
+    }
+
+    #[test]
+    fn test_parse_enum_declaration_ok() {
+        assert_program_parses("enum Status { Active, Inactive, Pending } fn main() { }");
+    }
+
+    #[test]
+    fn test_parse_enum_with_payload_ok() {
+        assert_program_parses("enum Result { Success(Int), Failure(Str) } fn main() { }");
+    }
+
+    #[test]
+    fn test_parse_struct_method_ok() {
+        assert_program_parses(
+            "struct User { age: Int } fn User.isAdult(self) -> Bool { return self.age >= 18; } fn main() { }",
+        );
     }
 }

@@ -137,7 +137,7 @@ impl<'a> Parser<'a> {
         // Parse function parameters until ')' is found
         // Track if we've seen the first parameter (for methods)
         let mut is_first_param = true;
-        let params = self.parse_comma_separated(
+        let params = self.parse_comma_separated_strict(
             |p| {
                 let param_name = p.expect_ident()?;
 

@@ -342,4 +342,44 @@ impl<'a> Parser<'a> {
         }
         Ok(items)
     }
+
+    /// Parses a comma-separated list of items until an end token is reached.
+    /// This version does NOT allow trailing commas - returns error if comma is followed by end token.
+    ///
+    /// - `parse_item`: a closure that parses a single item from the stream.
+    /// - `end_token`: the token that marks the end of the list (e.g., `)` or `}`).
+    ///
+    /// Example usage:
+    ///     parse_comma_separated_strict(|p| p.parse_type_annotation(), TokenType::CloseParen)
+    pub fn parse_comma_separated_strict<T, F>(
+        &mut self,
+        mut parse_item: F,
+        end_token: TokenType,
+    ) -> ParseResult<Vec<T>>
+    where
+        F: FnMut(&mut Self) -> ParseResult<T>,
+    {
+        let mut items = Vec::new();
+        // Continue parsing items until the end token is found
+        while !self.peek_is(end_token) {
+            // Parse a single item using the provided closure
+            items.push(parse_item(self)?);
+            // If there's a comma, check for trailing comma
+            if self.consume_if(TokenType::Comma) {
+                // Check if this is a trailing comma (comma followed by end token)
+                if self.peek_is(end_token) {
+                    if let Some(tok) = self.peek() {
+                        return Err(ParseError::UnexpectedTokenAt {
+                            msg: "Trailing comma is not allowed".to_string(),
+                            line: tok.line,
+                            col: tok.col,
+                        });
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(items)
+    }
 }
