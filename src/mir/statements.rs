@@ -147,8 +147,19 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             pattern,
             value,
             mutable,
+            is_ref_counted,
+            type_annotation,
             ..
         } => {
+            // Determine if reference counting is needed for this variable.
+            // Use is_ref_counted from analyzer (handles inferred types) OR check explicit type annotation
+            let needs_rc = is_ref_counted.unwrap_or(false)
+                || match type_annotation {
+                    Some(crate::parser::ast::TypeNode::String) => true,
+                    Some(crate::parser::ast::TypeNode::Array(_)) => true,
+                    Some(crate::parser::ast::TypeNode::Map(_, _)) => true,
+                    _ => false,
+                };
             // Check if the RHS is a function call that returns an error type
             // If so, and we have a tuple pattern, treat the last variable as the error variable
             let is_error_returning = check_if_error_returning(builder, value);
@@ -224,6 +235,15 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             // Build MIR for the right-hand side expression.
             let value_tmp = build_expression(builder, value, block);
 
+            // Check if value_tmp is a simple variable identifier (not a temp or literal).
+            // We only need to incref when COPYING from an existing variable.
+            // Temps starting with '%' are newly created values (from ConstString, Array, Map, etc.)
+            // that already have RC=1, so we shouldn't incref them.
+            let is_copying_variable = !value_tmp.starts_with('%')
+                && !value_tmp.parse::<i32>().is_ok()
+                && value_tmp != "true"
+                && value_tmp != "false";
+
             match pattern {
                 // Simple variable assignment.
                 Pattern::Identifier(name) => {
@@ -237,6 +257,30 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     // Copy type from value_tmp if available
                     if let Some(value_type) = builder.mir_symbol_table.get(&value_tmp).cloned() {
                         builder.mir_symbol_table.insert(name.clone(), value_type);
+                    } else if let Some(type_ann) = type_annotation {
+                        builder
+                            .mir_symbol_table
+                            .insert(name.clone(), type_ann.clone());
+                    }
+
+                    // DEBUG: trace RC variable tracking
+                    eprintln!(
+                        "[DEBUG-stmt] needs_rc={}, is_copying_variable={}, value_tmp='{}', name='{}'",
+                        needs_rc, is_copying_variable, value_tmp, name
+                    );
+
+                    // Insert IncRef ONLY when copying from an existing variable.
+                    // Don't incref for newly created temps (they already have RC=1).
+                    if needs_rc && is_copying_variable {
+                        block.instrs.push(MirInstr::IncRef {
+                            value: name.clone(),
+                        });
+                    }
+
+                    // Always track RC variables for cleanup at scope end
+                    if needs_rc {
+                        eprintln!("[DEBUG-stmt] Tracking RC var: {}", name);
+                        builder.track_rc_var(name.clone());
                     }
                 }
                 // Tuple destructuring: let (a, b) = expr;
@@ -255,6 +299,11 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                 value: extract_tmp,
                                 mutable: *mutable,
                             });
+
+                            // Reference counting for tuple elements if needed.
+                            if needs_rc {
+                                builder.track_rc_var(name.clone());
+                            }
                         }
                     }
                 }

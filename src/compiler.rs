@@ -269,7 +269,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         });
     }
 
-    let mut all_nodes = analyzer.imported_functions.clone();
+    // Merge imported structs and functions into the AST for MIR generation
+    let mut all_nodes = analyzer.imported_structs.clone();
+    all_nodes.extend(analyzer.imported_functions.clone());
     all_nodes.extend(statements);
 
     if opts.print_ast {}

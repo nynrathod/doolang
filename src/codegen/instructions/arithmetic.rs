@@ -20,9 +20,35 @@ impl<'ctx> CodeGen<'ctx> {
         let op_name = parts[0];
         let op_type = parts.get(1).copied().unwrap_or("int");
 
+        // Handle enum comparisons by comparing tags
+        if op_name == "eq" || op_name == "ne" {
+            // If comparing two struct values (enums), extract and compare their tags
+            if let (
+                BasicValueEnum::StructValue(lhs_struct),
+                BasicValueEnum::StructValue(rhs_struct),
+            ) = (lhs_val, rhs_val)
+            {
+                // Extract tag (field 0) from both enums
+                let lhs_tag = self
+                    .builder
+                    .build_extract_value(lhs_struct, 0, "lhs_enum_tag")
+                    .unwrap()
+                    .into_int_value();
+                let rhs_tag = self
+                    .builder
+                    .build_extract_value(rhs_struct, 0, "rhs_enum_tag")
+                    .unwrap()
+                    .into_int_value();
+
+                // Update values to be the extracted tags for comparison
+                lhs_val = lhs_tag.into();
+                rhs_val = rhs_tag.into();
+            }
+        }
+
         // Handle pointer-to-nil comparisons (e.g., err != nil)
         // Convert nil (int 0) to null pointer for comparison
-        if (op_name == "eq" || op_name == "ne") {
+        if op_name == "eq" || op_name == "ne" {
             if lhs_val.is_pointer_value() && rhs_val.is_int_value() {
                 let rhs_int = rhs_val.into_int_value();
                 if rhs_int.is_const() && rhs_int.get_zero_extended_constant() == Some(0) {

@@ -115,8 +115,8 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
     operators.insert("#", TokenType::Pound);
     operators.insert("@", TokenType::At);
     operators.insert("~", TokenType::Tilde);
-    operators.insert("??", TokenType::DoubleQuestion);
     operators.insert("?", TokenType::Question);
+    operators.insert("??", TokenType::DoubleQuestion);
     operators.insert("$", TokenType::Dollar);
 
     // Special identifier

@@ -35,12 +35,14 @@ pub fn build_let_decl(builder: &mut MirBuilder, node: &AstNode) -> Vec<MirInstr>
         instrs.extend(temp_block.instrs);
 
         // Determine if reference counting is needed for this variable.
-        let needs_rc = match type_annotation {
-            Some(TypeNode::String) => true,
-            Some(TypeNode::Array(_)) => true,
-            Some(TypeNode::Map(_, _)) => true,
-            _ => false,
-        };
+        // Use is_ref_counted from analyzer (handles inferred types) OR check explicit type annotation
+        let needs_rc = is_ref_counted.unwrap_or(false)
+            || match type_annotation {
+                Some(TypeNode::String) => true,
+                Some(TypeNode::Array(_)) => true,
+                Some(TypeNode::Map(_, _)) => true,
+                _ => false,
+            };
 
         // Check if value_tmp is a simple variable identifier (not a temp or literal).
         // We only need to incref when COPYING from an existing variable.
@@ -72,6 +74,11 @@ pub fn build_let_decl(builder: &mut MirBuilder, node: &AstNode) -> Vec<MirInstr>
 
                 // Insert IncRef ONLY when copying from an existing variable.
                 // Don't incref for newly created temps (they already have RC=1).
+                // DEBUG: trace incref generation
+                eprintln!(
+                    "[DEBUG] needs_rc={}, is_copying_variable={}, value_tmp='{}', name='{}'",
+                    needs_rc, is_copying_variable, value_tmp, name
+                );
                 if needs_rc && is_copying_variable {
                     instrs.push(MirInstr::IncRef {
                         value: name.clone(),

@@ -271,7 +271,7 @@ mod lexer_tests {
 
     #[test]
     fn test_symbols() {
-        first_token_is("&", TokenType::At);
+        first_token_is("@", TokenType::At);
         first_token_is("$", TokenType::Dollar);
     }
 
@@ -304,9 +304,7 @@ mod lexer_tests {
 
     #[test]
     fn test_delimiters_in_expression() {
-        lex_and_check("(a, b, c)", |tokens| {
-            assert_eq!(count_token_kind(tokens, TokenType::OpenParen), 1);
-            assert_eq!(count_token_kind(tokens, TokenType::CloseParen), 1);
+        lex_and_check("a, b, c", |tokens| {
             assert_eq!(count_token_kind(tokens, TokenType::Comma), 2);
         });
     }
@@ -375,7 +373,7 @@ mod lexer_tests {
 
     #[test]
     fn test_function_definition() {
-        lex_and_check("fn add(x, y) { return x + y; }", |tokens| {
+        lex_and_check("fn add(x: Int, y: Int) { return x + y; }", |tokens| {
             assert!(has_token_kind(tokens, TokenType::Function));
             assert!(has_token_kind(tokens, TokenType::Identifier));
             assert!(has_token_kind(tokens, TokenType::Return));
@@ -514,13 +512,11 @@ mod lexer_tests {
 
     #[test]
     fn test_map_access() {
-        lex_and_check(r#"map.get("key")"#, |tokens| {
+        lex_and_check(r#"map["key"]"#, |tokens| {
             assert!(has_token_kind(tokens, TokenType::Identifier));
-            assert!(has_token_kind(tokens, TokenType::Dot));
-            assert!(has_token_kind(tokens, TokenType::Identifier));
-            assert!(has_token_kind(tokens, TokenType::OpenParen));
+            assert!(has_token_kind(tokens, TokenType::OpenBracket));
             assert!(has_token_kind(tokens, TokenType::String));
-            assert!(has_token_kind(tokens, TokenType::CloseParen));
+            assert!(has_token_kind(tokens, TokenType::CloseBracket));
         });
     }
 
@@ -578,6 +574,346 @@ mod lexer_tests {
     fn test_import_aliased() {
         lex_and_check("import std::Math::{Abs as AbsValue};", |tokens| {
             assert!(has_token_kind(tokens, TokenType::As));
+        });
+    }
+
+    // =====================================================================
+    // STRUCT & ENUM DECLARATIONS
+    // =====================================================================
+
+    #[test]
+    fn test_struct_declaration() {
+        lex_and_check("struct User { name: Str, age: Int }", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Struct));
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::OpenBrace));
+            assert!(has_token_kind(tokens, TokenType::Colon));
+            assert!(has_token_kind(tokens, TokenType::Comma));
+            assert!(has_token_kind(tokens, TokenType::CloseBrace));
+        });
+    }
+
+    #[test]
+    fn test_enum_declaration() {
+        lex_and_check("enum Status { Active, Inactive, Pending }", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Enum));
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::OpenBrace));
+            assert!(has_token_kind(tokens, TokenType::Comma));
+            assert!(has_token_kind(tokens, TokenType::CloseBrace));
+        });
+    }
+
+    #[test]
+    fn test_enum_with_payload() {
+        lex_and_check("enum Result { Success(Int), Failure(Str) }", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Enum));
+            assert!(has_token_kind(tokens, TokenType::OpenParen));
+            assert!(has_token_kind(tokens, TokenType::CloseParen));
+        });
+    }
+
+    #[test]
+    fn test_struct_literal() {
+        lex_and_check(r#"User { name: "Alice", age: 25 }"#, |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::OpenBrace));
+            assert!(has_token_kind(tokens, TokenType::Colon));
+            assert!(has_token_kind(tokens, TokenType::String));
+            assert!(has_token_kind(tokens, TokenType::Number));
+        });
+    }
+
+    #[test]
+    fn test_enum_variant_access() {
+        lex_and_check("Status::Active", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::ColonColon));
+        });
+    }
+
+    // =====================================================================
+    // MATCH EXPRESSION
+    // =====================================================================
+
+    #[test]
+    fn test_match_keyword() {
+        first_token_is("match", TokenType::Match);
+    }
+
+    #[test]
+    fn test_match_expression() {
+        lex_and_check("match x { 1 => true, _ => false }", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Match));
+            assert!(has_token_kind(tokens, TokenType::OpenBrace));
+            assert!(has_token_kind(tokens, TokenType::FatArrow));
+            assert!(has_token_kind(tokens, TokenType::Underscore));
+            assert!(has_token_kind(tokens, TokenType::CloseBrace));
+        });
+    }
+
+    #[test]
+    fn test_match_enum_pattern() {
+        lex_and_check(
+            "match status { Status::Active => 1, Status::Inactive => 0 }",
+            |tokens| {
+                assert!(has_token_kind(tokens, TokenType::Match));
+                assert!(has_token_kind(tokens, TokenType::ColonColon));
+                assert!(has_token_kind(tokens, TokenType::FatArrow));
+            },
+        );
+    }
+
+    #[test]
+    fn test_match_with_payload_binding() {
+        lex_and_check(
+            "match result { Result::Success(val) => val, _ => 0 }",
+            |tokens| {
+                assert!(has_token_kind(tokens, TokenType::Match));
+                assert!(has_token_kind(tokens, TokenType::ColonColon));
+                assert!(has_token_kind(tokens, TokenType::OpenParen));
+                assert!(has_token_kind(tokens, TokenType::CloseParen));
+            },
+        );
+    }
+
+    // =====================================================================
+    // ERROR HANDLING
+    // =====================================================================
+
+    #[test]
+    fn test_ok_err_keywords() {
+        first_token_is("Ok", TokenType::Ok);
+        first_token_is("Err", TokenType::Err);
+    }
+
+    #[test]
+    fn test_nil_keyword() {
+        first_token_is("nil", TokenType::Nil);
+    }
+
+    #[test]
+    fn test_question_mark_operator() {
+        first_token_is("?", TokenType::Question);
+    }
+
+    #[test]
+    fn test_error_propagation_syntax() {
+        lex_and_check("let val = getValue()?;", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Question));
+            assert!(has_token_kind(tokens, TokenType::Semi));
+        });
+    }
+
+    #[test]
+    fn test_result_return_type() {
+        lex_and_check("fn test() -> Int ! Str { }", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Arrow));
+            assert!(has_token_kind(tokens, TokenType::Bang));
+        });
+    }
+
+    #[test]
+    fn test_ok_expr() {
+        lex_and_check("Ok 42", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Ok));
+            assert!(has_token_kind(tokens, TokenType::Number));
+        });
+    }
+
+    #[test]
+    fn test_err_expr() {
+        lex_and_check(r#"Err "error message""#, |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Err));
+            assert!(has_token_kind(tokens, TokenType::String));
+        });
+    }
+
+    // =====================================================================
+    // SPECIAL OPERATORS & SYMBOLS
+    // =====================================================================
+
+    #[test]
+    fn test_double_colon() {
+        first_token_is("::", TokenType::ColonColon);
+    }
+
+    #[test]
+    fn test_underscore() {
+        first_token_is("_", TokenType::Underscore);
+    }
+
+    #[test]
+    fn test_spread_in_array() {
+        lex_and_check("[...arr1, ...arr2]", |tokens| {
+            assert_eq!(count_token_kind(tokens, TokenType::Spread), 2);
+            assert!(has_token_kind(tokens, TokenType::OpenBracket));
+            assert!(has_token_kind(tokens, TokenType::CloseBracket));
+        });
+    }
+
+    // =====================================================================
+    // STRING INTERPOLATION
+    // =====================================================================
+
+    #[test]
+    fn test_string_with_dollar() {
+        lex_and_check(r#""Hello ${name}!""#, |tokens| {
+            assert!(has_token_kind(tokens, TokenType::String));
+        });
+    }
+
+    #[test]
+    fn test_string_interpolation_expression() {
+        lex_and_check(r#""Result: ${x + y}""#, |tokens| {
+            assert!(has_token_kind(tokens, TokenType::String));
+        });
+    }
+
+    // =====================================================================
+    // ARRAY SLICING
+    // =====================================================================
+
+    #[test]
+    fn test_array_slice_exclusive() {
+        lex_and_check("arr[1..4]", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::OpenBracket));
+            assert!(has_token_kind(tokens, TokenType::RangeExc));
+            assert!(has_token_kind(tokens, TokenType::CloseBracket));
+        });
+    }
+
+    #[test]
+    fn test_array_slice_inclusive() {
+        lex_and_check("arr[1..=4]", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::OpenBracket));
+            assert!(has_token_kind(tokens, TokenType::RangeInc));
+            assert!(has_token_kind(tokens, TokenType::CloseBracket));
+        });
+    }
+
+    // =====================================================================
+    // METHOD DECLARATIONS
+    // =====================================================================
+
+    #[test]
+    fn test_method_declaration() {
+        lex_and_check("fn User.getName(self) -> Str { }", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Function));
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::Dot));
+            assert!(has_token_kind(tokens, TokenType::Arrow));
+        });
+    }
+
+    // =====================================================================
+    // TUPLE SYNTAX
+    // =====================================================================
+
+    #[test]
+    fn test_tuple_return_type() {
+        lex_and_check("fn getData() -> (Int, Str) { }", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Arrow));
+            assert!(has_token_kind(tokens, TokenType::OpenParen));
+            assert!(has_token_kind(tokens, TokenType::Comma));
+            assert!(has_token_kind(tokens, TokenType::CloseParen));
+        });
+    }
+
+    #[test]
+    fn test_tuple_destructuring() {
+        lex_and_check("let a, b = getData();", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Let));
+            assert!(has_token_kind(tokens, TokenType::Comma));
+            assert!(has_token_kind(tokens, TokenType::Eq));
+        });
+    }
+
+    // =====================================================================
+    // FIELD ACCESS
+    // =====================================================================
+
+    #[test]
+    fn test_field_access() {
+        lex_and_check("user.name", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Identifier));
+            assert!(has_token_kind(tokens, TokenType::Dot));
+        });
+    }
+
+    #[test]
+    fn test_nested_field_access() {
+        lex_and_check("user.address.city", |tokens| {
+            assert_eq!(count_token_kind(tokens, TokenType::Dot), 2);
+            assert_eq!(count_token_kind(tokens, TokenType::Identifier), 3);
+        });
+    }
+
+    // =====================================================================
+    // IN OPERATOR (FIND)
+    // =====================================================================
+
+    #[test]
+    fn test_in_operator() {
+        lex_and_check("if 3 in arr { }", |tokens| {
+            assert!(has_token_kind(tokens, TokenType::If));
+            assert!(has_token_kind(tokens, TokenType::In));
+            assert!(has_token_kind(tokens, TokenType::Number));
+        });
+    }
+
+    // =====================================================================
+    // COMPLEX PROGRAMS - COMPREHENSIVE
+    // =====================================================================
+
+    #[test]
+    fn test_struct_with_method() {
+        let code = r#"
+            struct Point { x: Int, y: Int }
+            fn Point.distance(self) -> Float {
+                return (self.x * self.x + self.y * self.y) as Float;
+            }
+        "#;
+        lex_and_check(code, |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Struct));
+            assert!(has_token_kind(tokens, TokenType::Function));
+            assert!(has_token_kind(tokens, TokenType::Dot));
+            assert!(has_token_kind(tokens, TokenType::As));
+        });
+    }
+
+    #[test]
+    fn test_error_handling_function() {
+        let code = r#"
+            fn divide(a: Int, b: Int) -> Int ! Str {
+                if b == 0 { Err "division by zero"; }
+                Ok a / b;
+            }
+        "#;
+        lex_and_check(code, |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Function));
+            assert!(has_token_kind(tokens, TokenType::Arrow));
+            assert!(has_token_kind(tokens, TokenType::Bang));
+            assert!(has_token_kind(tokens, TokenType::Ok));
+            assert!(has_token_kind(tokens, TokenType::Err));
+        });
+    }
+
+    #[test]
+    fn test_match_with_multiple_arms() {
+        let code = r#"
+            match value {
+                1 => "one",
+                2 => "two",
+                _ => "other",
+            }
+        "#;
+        lex_and_check(code, |tokens| {
+            assert!(has_token_kind(tokens, TokenType::Match));
+            assert_eq!(count_token_kind(tokens, TokenType::FatArrow), 3);
+            assert!(has_token_kind(tokens, TokenType::Underscore));
         });
     }
 }

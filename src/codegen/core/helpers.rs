@@ -166,6 +166,14 @@ impl<'ctx> CodeGen<'ctx> {
         if name == "false" {
             return self.context.i32_type().const_int(0, false).into();
         }
+        if name == "nil" {
+            // nil is a null pointer (0)
+            return self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .const_null()
+                .into();
+        }
 
         eprintln!("ERROR: Unknown variable or literal: {}", name);
         eprintln!(

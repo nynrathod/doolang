@@ -503,10 +503,7 @@ impl<'ctx> CodeGen<'ctx> {
                         if is_from_arrayget {
                             self.loop_local_vars.insert(value.to_string());
                         }
-                        // Only incref when copying from an existing variable (not from a temp)
-                        if self.symbols.contains_key(value) {
-                            self.emit_incref(name);
-                        }
+                        // NOTE: Removed duplicate incref here - MIR already emits IncRef when copying from variable
                     } else if value_is_heap_array {
                         self.heap_arrays.insert(name.clone());
                         // Copy array metadata from source to destination
@@ -519,10 +516,7 @@ impl<'ctx> CodeGen<'ctx> {
                         if !self.symbols.contains_key(value) || value.starts_with('%') {
                             self.heap_arrays.remove(value);
                         }
-                        // Only incref when copying from an existing variable (not from a temp)
-                        if self.symbols.contains_key(value) {
-                            self.emit_incref(name);
-                        }
+                        // NOTE: Removed duplicate incref here - MIR already emits IncRef when copying from variable
 
                         // Copy array metadata on re-assignment - ENHANCED
                         // CRITICAL: Try ALL possible ways to find the metadata
@@ -618,10 +612,7 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     } else if value_is_heap_map {
                         self.heap_maps.insert(name.clone());
-                        // Only incref when copying from an existing variable (not from a temp)
-                        if self.symbols.contains_key(value) {
-                            self.emit_incref(name);
-                        }
+                        // NOTE: Removed duplicate incref here - MIR already emits IncRef when copying from variable
 
                         // Copy map metadata on re-assignment
                         // Copy map metadata
@@ -734,16 +725,12 @@ impl<'ctx> CodeGen<'ctx> {
                         if is_from_arrayget {
                             self.loop_local_vars.insert(value.to_string());
                         }
-                        if self.symbols.contains_key(value) {
-                            self.emit_incref(name);
-                        }
+                        // NOTE: Removed duplicate incref here - MIR already emits IncRef when copying from variable
                     } else if value_is_heap_array {
                         self.heap_arrays.insert(name.clone());
                         // Remove temp from tracking (ownership transferred to symbol)
                         self.heap_arrays.remove(value);
-                        if self.symbols.contains_key(value) {
-                            self.emit_incref(name);
-                        }
+                        // NOTE: Removed duplicate incref here - MIR already emits IncRef when copying from variable
 
                         // Copy array metadata - ENHANCED for dynamic arrays
                         // CRITICAL: Try ALL possible ways to find the metadata
@@ -822,10 +809,7 @@ impl<'ctx> CodeGen<'ctx> {
                         if !self.symbols.contains_key(value) || value.starts_with('%') {
                             self.heap_maps.remove(value);
                         }
-                        // Only incref when copying from an existing variable (not from a temp)
-                        if self.symbols.contains_key(value) {
-                            self.emit_incref(name);
-                        }
+                        // NOTE: Removed duplicate incref here - MIR already emits IncRef when copying from variable
 
                         // Copy map metadata
                         // But NEVER propagate to loop iteration variables or ArrayGet results
