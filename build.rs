@@ -1,24 +1,10 @@
 use std::fs;
-use std::path::PathBuf;
 
 fn main() {
-    // Get the target directory from the environment
-    let target_dir = PathBuf::from(std::env::var("TARGET_DIR").unwrap_or_else(|_| {
-        // Fallback: construct from OUT_DIR
-        let out_dir = std::env::var("OUT_DIR").unwrap_or_default();
-        let path = PathBuf::from(out_dir);
-        // OUT_DIR is like target/debug/build/doo-xxx/out
-        // We want target/debug
-        path.ancestors()
-            .nth(3)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "target/debug".to_string())
-    }));
-
     // Get the current directory (project root)
     let current_dir = std::env::current_dir().expect("Failed to get current directory");
 
-    // Source FFI libraries
+    // Source FFI libraries directory
     let ffi_libs_source = current_dir
         .join("ffi_libs")
         .join("libdoo_file")
@@ -29,7 +15,8 @@ fn main() {
     let debug_target = current_dir.join("target").join("debug");
     let release_target = current_dir.join("target").join("release");
 
-    // Files to copy
+    // Platform-specific files to copy
+    #[cfg(target_os = "windows")]
     let files_to_copy = vec![
         "doo_file.dll",
         "doo_file.dll.lib",
@@ -37,29 +24,26 @@ fn main() {
         "doo_file.pdb",
     ];
 
-    // Copy to debug directory
-    if debug_target.exists() {
-        for file in &files_to_copy {
-            let src = ffi_libs_source.join(file);
-            let dst = debug_target.join(file);
+    #[cfg(target_os = "linux")]
+    let files_to_copy = vec!["libdoo_file.so"];
 
-            if src.exists() {
-                if let Err(e) = fs::copy(&src, &dst) {
-                    eprintln!("Warning: Failed to copy {} to debug: {}", file, e);
-                }
-            }
-        }
-    }
+    #[cfg(target_os = "macos")]
+    let files_to_copy = vec!["libdoo_file.dylib"];
 
-    // Copy to release directory
-    if release_target.exists() {
-        for file in &files_to_copy {
-            let src = ffi_libs_source.join(file);
-            let dst = release_target.join(file);
+    // Copy files to both debug and release directories
+    for target_dir in [&debug_target, &release_target] {
+        if target_dir.exists() {
+            for file in &files_to_copy {
+                let src = ffi_libs_source.join(file);
+                let dst = target_dir.join(file);
 
-            if src.exists() {
-                if let Err(e) = fs::copy(&src, &dst) {
-                    eprintln!("Warning: Failed to copy {} to release: {}", file, e);
+                if src.exists() {
+                    if let Err(e) = fs::copy(&src, &dst) {
+                        eprintln!(
+                            "Warning: Failed to copy {} to {:?}: {}",
+                            file, target_dir, e
+                        );
+                    }
                 }
             }
         }
@@ -67,5 +51,13 @@ fn main() {
 
     // Rebuild on changes to FFI libraries
     println!("cargo:rerun-if-changed=ffi_libs/libdoo_file/src/lib.rs");
+
+    #[cfg(target_os = "windows")]
     println!("cargo:rerun-if-changed=ffi_libs/libdoo_file/target/release/doo_file.dll");
+
+    #[cfg(target_os = "linux")]
+    println!("cargo:rerun-if-changed=ffi_libs/libdoo_file/target/release/libdoo_file.so");
+
+    #[cfg(target_os = "macos")]
+    println!("cargo:rerun-if-changed=ffi_libs/libdoo_file/target/release/libdoo_file.dylib");
 }
