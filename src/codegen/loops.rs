@@ -429,22 +429,94 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_load(elem_type, elem_ptr, "elem_val")
                 .unwrap();
 
-            self.builder.build_store(item_alloca, elem_val).unwrap();
+            // CRITICAL: For arrays of structs (pointers), check if element is null
+            // This handles sparse arrays from map.values() where some indices may be uninitialized
+            // Maps using integer keys as direct indices may have gaps (e.g., {1: user} leaves index 0 empty)
+            let is_struct_array = if let Some(metadata) = self.array_metadata.get(array) {
+                self.struct_metadata.contains_key(&metadata.element_type)
+            } else {
+                false
+            };
 
-            // CRITICAL: Track struct element types for the loop variable
-            // This enables field access (like u.Name) on elements during iteration
-            if let Some(metadata) = self.array_metadata.get(array) {
-                let elem_type_name = &metadata.element_type;
-                // Check if element type is a struct
-                if self.struct_metadata.contains_key(elem_type_name) {
-                    // Track loop variable as a struct instance
-                    self.struct_instance_types
-                        .insert(var.to_string(), elem_type_name.clone());
-                    // Also track in variable_types for completeness
-                    self.variable_types
-                        .insert(var.to_string(), elem_type_name.clone());
-                    // Store the loaded value in temp_values so resolve_value can find it
-                    self.temp_values.insert(var.to_string(), elem_val);
+            if is_struct_array && elem_type.is_pointer_type() {
+                // Check if the loaded pointer is null - skip this iteration if so
+                let elem_ptr_val = elem_val.into_pointer_value();
+                let is_null = self
+                    .builder
+                    .build_is_null(elem_ptr_val, "elem_is_null")
+                    .unwrap();
+
+                // Create blocks for null check
+                let current_func = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let skip_null_block = self
+                    .context
+                    .append_basic_block(current_func, "skip_null_elem");
+                let process_elem_block = self
+                    .context
+                    .append_basic_block(current_func, "process_elem");
+
+                self.builder
+                    .build_conditional_branch(is_null, skip_null_block, process_elem_block)
+                    .unwrap();
+
+                // Skip null block: increment index and jump back to condition
+                self.builder.position_at_end(skip_null_block);
+                let next_index = self
+                    .builder
+                    .build_int_add(
+                        current_index,
+                        self.context.i32_type().const_int(1, false),
+                        "skip_next_idx",
+                    )
+                    .unwrap();
+                self.builder.build_store(index_alloca, next_index).unwrap();
+                self.builder.build_unconditional_branch(cond_block).unwrap();
+
+                // Process element block: continue with normal loop body
+                self.builder.position_at_end(process_elem_block);
+
+                // Re-load elem_val since we're in a new block
+                let elem_val = self
+                    .builder
+                    .build_load(elem_type, elem_ptr, "elem_val_reloaded")
+                    .unwrap();
+
+                self.builder.build_store(item_alloca, elem_val).unwrap();
+
+                // Track struct element types for the loop variable
+                if let Some(metadata) = self.array_metadata.get(array) {
+                    let elem_type_name = &metadata.element_type;
+                    if self.struct_metadata.contains_key(elem_type_name) {
+                        self.struct_instance_types
+                            .insert(var.to_string(), elem_type_name.clone());
+                        self.variable_types
+                            .insert(var.to_string(), elem_type_name.clone());
+                        self.temp_values.insert(var.to_string(), elem_val);
+                    }
+                }
+            } else {
+                self.builder.build_store(item_alloca, elem_val).unwrap();
+
+                // CRITICAL: Track struct element types for the loop variable
+                // This enables field access (like u.Name) on elements during iteration
+                if let Some(metadata) = self.array_metadata.get(array) {
+                    let elem_type_name = &metadata.element_type;
+                    // Check if element type is a struct
+                    if self.struct_metadata.contains_key(elem_type_name) {
+                        // Track loop variable as a struct instance
+                        self.struct_instance_types
+                            .insert(var.to_string(), elem_type_name.clone());
+                        // Also track in variable_types for completeness
+                        self.variable_types
+                            .insert(var.to_string(), elem_type_name.clone());
+                        // Store the loaded value in temp_values so resolve_value can find it
+                        self.temp_values.insert(var.to_string(), elem_val);
+                    }
                 }
             }
         }

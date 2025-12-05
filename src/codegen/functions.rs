@@ -1685,8 +1685,45 @@ impl<'ctx> CodeGen<'ctx> {
                         // Check if this is a user-defined struct method
                         // Look up the struct type and method return type from function_return_types
                         else {
-                            // Try to find struct type for the object from mir_symbol_table or struct_instance_types
-                            let struct_type = self.struct_instance_types.get(object).cloned();
+                            // Try to find struct type for the object from multiple sources:
+                            // 1. struct_instance_types (populated during earlier passes)
+                            // 2. variable_types (may have type info)
+                            // 3. Scan function_return_types for methods matching this object's possible types
+                            let struct_type = self
+                                .struct_instance_types
+                                .get(object)
+                                .cloned()
+                                .or_else(|| {
+                                    // Check variable_types
+                                    self.variable_types.get(object).and_then(|vt| {
+                                        if vt.starts_with("Struct(") && vt.ends_with(")") {
+                                            Some(vt[7..vt.len() - 1].to_string())
+                                        } else if self.struct_metadata.contains_key(vt) {
+                                            Some(vt.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .or_else(|| {
+                                    // Scan function_return_types for any Type::method that matches
+                                    // This handles cases where struct_instance_types isn't populated yet
+                                    for func_name in self.function_return_types.keys() {
+                                        if func_name.ends_with(&format!("::{}", method)) {
+                                            // Extract the struct name from "StructName::method"
+                                            if let Some(struct_name) =
+                                                func_name.strip_suffix(&format!("::{}", method))
+                                            {
+                                                // Verify this is actually a struct type
+                                                if self.struct_metadata.contains_key(struct_name) {
+                                                    return Some(struct_name.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None
+                                });
+
                             if let Some(struct_name) = struct_type {
                                 // Build the method name as "StructName::MethodName"
                                 let full_method_name = format!("{}::{}", struct_name, method);
@@ -2791,8 +2828,39 @@ impl<'ctx> CodeGen<'ctx> {
                         self.functions_returning_heap.insert(fn_name.to_string());
 
                         // Only call incref if this is a locally-created heap value with an RC header
+                        // CRITICAL: Must check for null BEFORE computing ptr - 8, otherwise we get
+                        // an invalid address like 0xFFFFFFF8 which passes the null check in __incref
                         if val.is_pointer_value() {
                             let ptr = val.into_pointer_value();
+
+                            // Add null check before computing RC header offset
+                            let current_fn = self
+                                .builder
+                                .get_insert_block()
+                                .unwrap()
+                                .get_parent()
+                                .unwrap();
+                            let do_incref_block = self
+                                .context
+                                .append_basic_block(current_fn, "return_do_incref");
+                            let skip_incref_block = self
+                                .context
+                                .append_basic_block(current_fn, "return_skip_incref");
+
+                            let is_null = self
+                                .builder
+                                .build_is_null(ptr, "return_ptr_is_null")
+                                .unwrap();
+                            self.builder
+                                .build_conditional_branch(
+                                    is_null,
+                                    skip_incref_block,
+                                    do_incref_block,
+                                )
+                                .unwrap();
+
+                            // Do incref block - pointer is not null
+                            self.builder.position_at_end(do_incref_block);
                             let rc_header = unsafe {
                                 self.builder.build_in_bounds_gep(
                                     self.context.i8_type(),
@@ -2807,6 +2875,12 @@ impl<'ctx> CodeGen<'ctx> {
                             self.builder
                                 .build_call(incref_fn, &[rc_header.into()], "")
                                 .unwrap();
+                            self.builder
+                                .build_unconditional_branch(skip_incref_block)
+                                .unwrap();
+
+                            // Skip incref block - continue to return
+                            self.builder.position_at_end(skip_incref_block);
                         }
                     } else {
                         // If returning an RC-typed parameter (not a locally-created value),

@@ -2666,10 +2666,12 @@ impl<'ctx> CodeGen<'ctx> {
                     };
 
                     // Loop through map and copy values using byte-level GEP
+                    // For struct values, skip null entries (sparse integer-keyed maps)
                     let loop_block = self.context.append_basic_block(current_fn, "values_loop");
                     let loop_body = self.context.append_basic_block(current_fn, "values_body");
                     let loop_done = self.context.append_basic_block(current_fn, "values_done");
 
+                    // Input counter (iterates over map slots)
                     let counter_ptr = self
                         .builder
                         .build_alloca(self.context.i32_type(), "values_counter")
@@ -2677,6 +2679,16 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder
                         .build_store(counter_ptr, self.context.i32_type().const_zero())
                         .unwrap();
+
+                    // Output counter (tracks actual non-null values copied)
+                    let out_counter_ptr = self
+                        .builder
+                        .build_alloca(self.context.i32_type(), "values_out_counter")
+                        .unwrap();
+                    self.builder
+                        .build_store(out_counter_ptr, self.context.i32_type().const_zero())
+                        .unwrap();
+
                     self.builder.build_unconditional_branch(loop_block).unwrap();
 
                     // Loop check - use runtime_length for comparison
@@ -2741,10 +2753,49 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_load(val_type, val_ptr, "val_val_values")
                         .unwrap();
 
-                    // Store in output array using byte-level GEP
+                    // Check if value is a struct pointer (needs null check for sparse maps)
+                    let is_struct_value = metadata.value_needs_rc
+                        || self.struct_metadata.contains_key(&metadata.value_type);
+
+                    // For struct values, skip null entries
+                    let loop_inc = self.context.append_basic_block(current_fn, "values_inc");
+                    let copy_block = self.context.append_basic_block(current_fn, "values_copy");
+
+                    if is_struct_value {
+                        let val_as_ptr = val_val.into_pointer_value();
+                        let is_null = self
+                            .builder
+                            .build_is_null(val_as_ptr, "val_is_null")
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(is_null, loop_inc, copy_block)
+                            .unwrap();
+                    } else {
+                        self.builder.build_unconditional_branch(copy_block).unwrap();
+                    }
+
+                    // Copy block: store value in output array
+                    self.builder.position_at_end(copy_block);
+
+                    // Load output counter for storing
+                    let out_counter = self
+                        .builder
+                        .build_load(
+                            self.context.i32_type(),
+                            out_counter_ptr,
+                            "out_counter_values",
+                        )
+                        .unwrap()
+                        .into_int_value();
+                    let out_counter_64 = self
+                        .builder
+                        .build_int_z_extend(out_counter, self.context.i64_type(), "out_counter_64")
+                        .unwrap();
+
+                    // Store in output array using output counter
                     let out_byte_offset = self
                         .builder
-                        .build_int_mul(counter_64, val_elem_size, "out_byte_offset_values")
+                        .build_int_mul(out_counter_64, val_elem_size, "out_byte_offset_values")
                         .unwrap();
                     let elem_ptr = unsafe {
                         self.builder
@@ -2766,7 +2817,20 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     self.builder.build_store(elem_ptr_typed, val_val).unwrap();
 
-                    // Increment counter
+                    // Increment output counter
+                    let next_out = self
+                        .builder
+                        .build_int_add(
+                            out_counter,
+                            self.context.i32_type().const_int(1, false),
+                            "next_out_values",
+                        )
+                        .unwrap();
+                    self.builder.build_store(out_counter_ptr, next_out).unwrap();
+                    self.builder.build_unconditional_branch(loop_inc).unwrap();
+
+                    // Increment input counter
+                    self.builder.position_at_end(loop_inc);
                     let next = self
                         .builder
                         .build_int_add(
@@ -2778,8 +2842,16 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.build_store(counter_ptr, next).unwrap();
                     self.builder.build_unconditional_branch(loop_block).unwrap();
 
-                    // Done with loop
+                    // Done with loop - update actual length in heap header
                     self.builder.position_at_end(loop_done);
+
+                    // Load final output count and store as actual length
+                    let final_count = self
+                        .builder
+                        .build_load(self.context.i32_type(), out_counter_ptr, "final_count")
+                        .unwrap()
+                        .into_int_value();
+                    self.builder.build_store(len_ptr, final_count).unwrap();
                     self.builder
                         .build_unconditional_branch(merge_block)
                         .unwrap();

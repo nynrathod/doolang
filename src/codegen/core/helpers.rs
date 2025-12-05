@@ -102,6 +102,10 @@ impl<'ctx> CodeGen<'ctx> {
             // Check if this is a struct by looking at variable_types OR struct_instance_types
             // Structs can be stored as "Struct(Name)" or just "Name" (if it's in struct_metadata)
             let var_type = self.variable_types.get(name);
+
+            // Check if this is a Result type - it should NOT be treated as a struct
+            let is_result_type = var_type.map(|t| t == "Result").unwrap_or(false);
+
             let is_struct = var_type
                 .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
                 .unwrap_or(false)
@@ -116,7 +120,14 @@ impl<'ctx> CodeGen<'ctx> {
             let is_string =
                 self.heap_strings.contains(name) || var_type.map(|t| t == "Str").unwrap_or(false);
 
-            let load_type = if is_enum {
+            let load_type = if is_result_type {
+                // Result type is represented as { i32 tag, ptr payload } - same as enum
+                // CRITICAL: Must load as struct, not as pointer!
+                let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                self.context
+                    .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                    .into()
+            } else if is_enum {
                 // Enum is represented as { i32 tag, ptr payload }
                 let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
                 self.context

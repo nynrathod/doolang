@@ -141,6 +141,9 @@ pub struct CodeGen<'ctx> {
 
     // Closure body storage for on-demand string closure generation
     pub closure_bodies: HashMap<String, (Vec<String>, Box<AstNode>)>, // Maps closure name to (params, body_ast)
+
+    // Track struct temps that may be null (from sparse arrays like map.values())
+    pub nullable_struct_temps: std::collections::HashSet<String>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -216,6 +219,7 @@ impl<'ctx> CodeGen<'ctx> {
             current_function_name: None,
             current_error_type: None,
             closure_bodies: HashMap::new(),
+            nullable_struct_temps: std::collections::HashSet::new(),
         }
     }
 

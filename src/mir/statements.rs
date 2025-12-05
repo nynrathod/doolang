@@ -568,9 +568,16 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                         builder.mir_symbol_table.get(&struct_instance)
                     {
                         // Get the struct name from the type
-                        if let crate::parser::ast::TypeNode::Struct(struct_name, _) = struct_type {
+                        // Handle both TypeNode::Struct and TypeNode::TypeRef
+                        let struct_name_opt = match struct_type {
+                            crate::parser::ast::TypeNode::Struct(name, _) => Some(name.clone()),
+                            crate::parser::ast::TypeNode::TypeRef(name) => Some(name.clone()),
+                            _ => None,
+                        };
+
+                        if let Some(struct_name) = struct_name_opt {
                             // Look up the field type in struct_table (HashMap<String, TypeNode>)
-                            if let Some(struct_fields) = builder.struct_table.get(struct_name) {
+                            if let Some(struct_fields) = builder.struct_table.get(&struct_name) {
                                 struct_fields
                                     .get(field)
                                     .map(|ty| matches!(ty, crate::parser::ast::TypeNode::Map(_, _)))

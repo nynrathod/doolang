@@ -1373,7 +1373,12 @@ impl<'ctx> CodeGen<'ctx> {
                 if t.starts_with("Enum(") && t.ends_with(")") {
                     Some(&t[5..t.len() - 1])
                 } else {
-                    None
+                    // Also check if it's a direct enum name in enum_table
+                    if self.enum_table.contains_key(t) {
+                        Some(t.as_str())
+                    } else {
+                        None
+                    }
                 }
             }) {
                 // Handle enum printing: EnumName::VariantName or EnumName::VariantName(payload)
@@ -2332,6 +2337,42 @@ impl<'ctx> CodeGen<'ctx> {
                 // This ensures sliced arrays show correct length
                 let array_ptr = self.resolve_value(variation).into_pointer_value();
 
+                // CRITICAL: Check for null pointer before accessing heap header
+                // This handles cases like empty arrays from .values() on empty maps
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let null_block = self
+                    .context
+                    .append_basic_block(current_fn, "array_len_null");
+                let non_null_block = self
+                    .context
+                    .append_basic_block(current_fn, "array_len_non_null");
+                let merge_block = self
+                    .context
+                    .append_basic_block(current_fn, "array_len_merge");
+
+                let is_null = self
+                    .builder
+                    .build_is_null(array_ptr, "array_ptr_is_null")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(is_null, null_block, non_null_block)
+                    .unwrap();
+
+                // Null case: return 0
+                self.builder.position_at_end(null_block);
+                let zero_len = self.context.i32_type().const_int(0, false);
+                self.builder
+                    .build_unconditional_branch(merge_block)
+                    .unwrap();
+
+                // Non-null case: read from heap header
+                self.builder.position_at_end(non_null_block);
+
                 // Get the heap pointer (8 bytes before data pointer)
                 let heap_ptr = unsafe {
                     self.builder
@@ -2365,10 +2406,23 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .unwrap();
 
-                let len_val = self
+                let heap_len_val = self
                     .builder
                     .build_load(self.context.i32_type(), len_ptr_cast, "runtime_len")
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_unconditional_branch(merge_block)
                     .unwrap();
+
+                // Merge block: PHI for result
+                self.builder.position_at_end(merge_block);
+                let len_phi = self
+                    .builder
+                    .build_phi(self.context.i32_type(), "array_len_result")
+                    .unwrap();
+                len_phi.add_incoming(&[(&zero_len, null_block), (&heap_len_val, non_null_block)]);
+                let len_val = len_phi.as_basic_value();
 
                 self.temp_values.insert(name.to_string(), len_val);
                 if let Some(sym) = self.symbols.get(name) {
@@ -2381,6 +2435,37 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(_metadata) = self.map_metadata.get(array_name) {
             // Read map length from heap at runtime
             let map_ptr = self.resolve_value(array).into_pointer_value();
+
+            // CRITICAL: Check for null pointer before accessing heap header
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+            let null_block = self.context.append_basic_block(current_fn, "map_len_null");
+            let non_null_block = self
+                .context
+                .append_basic_block(current_fn, "map_len_non_null");
+            let merge_block = self.context.append_basic_block(current_fn, "map_len_merge");
+
+            let is_null = self
+                .builder
+                .build_is_null(map_ptr, "map_ptr_is_null")
+                .unwrap();
+            self.builder
+                .build_conditional_branch(is_null, null_block, non_null_block)
+                .unwrap();
+
+            // Null case: return 0
+            self.builder.position_at_end(null_block);
+            let zero_len = self.context.i32_type().const_int(0, false);
+            self.builder
+                .build_unconditional_branch(merge_block)
+                .unwrap();
+
+            // Non-null case: read from heap header
+            self.builder.position_at_end(non_null_block);
 
             // Get the heap pointer (8 bytes before data pointer)
             let heap_ptr = unsafe {
@@ -2415,10 +2500,23 @@ impl<'ctx> CodeGen<'ctx> {
                 )
                 .unwrap();
 
-            let len_val = self
+            let heap_len_val = self
                 .builder
                 .build_load(self.context.i32_type(), len_ptr_cast, "map_runtime_len")
+                .unwrap()
+                .into_int_value();
+            self.builder
+                .build_unconditional_branch(merge_block)
                 .unwrap();
+
+            // Merge block: PHI for result
+            self.builder.position_at_end(merge_block);
+            let len_phi = self
+                .builder
+                .build_phi(self.context.i32_type(), "map_len_result")
+                .unwrap();
+            len_phi.add_incoming(&[(&zero_len, null_block), (&heap_len_val, non_null_block)]);
+            let len_val = len_phi.as_basic_value();
 
             self.temp_values.insert(name.to_string(), len_val);
             if let Some(sym) = self.symbols.get(name) {
