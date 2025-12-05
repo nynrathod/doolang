@@ -203,12 +203,18 @@ fn divide(a: Int, b: Int) -> Int ! Str {
 }
 
 fn main() {
-    let result, err = divide(10, 2);
-    if err != nil {
-        print("Error:", err);
-    } else {
-        print("Result:", result);
-    }
+
+    // Single line auto error propagation via ?
+    let result, err = divide(10, 2)?;
+
+    // or
+    // Manual handling
+    // let result, err = divide(10, 2);
+    // if err != nil {
+    //     print("Error:", err);
+    // } else {
+    //     print("Result:", result);
+    // }
 }
 ```
 
