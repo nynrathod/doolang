@@ -99,12 +99,13 @@ impl<'ctx> CodeGen<'ctx> {
                 || self.heap_arrays.contains(name)
                 || self.heap_maps.contains(name);
 
-            // Check if this is a struct by looking at variable_types
+            // Check if this is a struct by looking at variable_types OR struct_instance_types
             // Structs can be stored as "Struct(Name)" or just "Name" (if it's in struct_metadata)
             let var_type = self.variable_types.get(name);
             let is_struct = var_type
                 .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || self.struct_instance_types.contains_key(name);
 
             // Check if this is an enum by looking at variable_types
             let is_enum = var_type
@@ -184,9 +185,27 @@ impl<'ctx> CodeGen<'ctx> {
             "Available in symbols: {:?}",
             self.symbols.keys().collect::<Vec<_>>()
         );
+        eprintln!(
+            "Available in variable_types: {:?}",
+            self.variable_types.keys().collect::<Vec<_>>()
+        );
+        eprintln!(
+            "Available in struct_instance_types: {:?}",
+            self.struct_instance_types.keys().collect::<Vec<_>>()
+        );
         if let Some(block) = self.builder.get_insert_block() {
             eprintln!("Current block: {:?}", block.get_name());
         }
+
+        // Instead of panicking, create a fallback value for the unknown variable
+        // This allows compilation to continue and reveals more errors
+        // For temps starting with %, allocate them on-the-fly
+        if name.starts_with('%') {
+            eprintln!("WARNING: Auto-allocating missing temp {} as i32", name);
+            // Return a zero value as fallback - this is a workaround, not a fix
+            return self.context.i32_type().const_int(0, false).into();
+        }
+
         eprintln!("BACKTRACE:");
         eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
         panic!(

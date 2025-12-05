@@ -68,26 +68,77 @@ impl<'ctx> CodeGen<'ctx> {
                         )
                         .unwrap();
 
-                    // For array type sizing, we need a constant or estimate
-                    // Use a large buffer size to accommodate growth
-                    let estimated_capacity = old_length_val
-                        .get_zero_extended_constant()
-                        .unwrap_or(0)
-                        .max(4) as u32
-                        + 10; // Allocate extra space
-                    let new_length =
-                        new_length_val.get_zero_extended_constant().unwrap_or(1) as usize;
-
-                    // Determine element type
-                    let elem_type = if metadata.contains_strings {
+                    // Determine element size based on type
+                    let element_size = if metadata.contains_strings {
+                        // Strings are pointers
                         self.context
                             .ptr_type(inkwell::AddressSpace::default())
-                            .as_basic_type_enum()
+                            .size_of()
+                    } else if self.struct_metadata.contains_key(&metadata.element_type) {
+                        // Structs are stored as pointers in arrays
+                        self.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .size_of()
                     } else {
-                        self.context.i32_type().as_basic_type_enum()
+                        // Integers
+                        self.context.i32_type().size_of()
                     };
 
-                    // Allocate new array with size for new_length elements
+                    // Calculate capacity: grow by 1.5x or add 10, whichever is larger
+                    // capacity = max(new_length, old_length + max(old_length / 2, 10))
+                    let growth = self
+                        .builder
+                        .build_int_unsigned_div(
+                            old_length_val,
+                            self.context.i32_type().const_int(2, false),
+                            "growth",
+                        )
+                        .unwrap();
+                    let min_growth = self.context.i32_type().const_int(10, false);
+                    let growth_cmp = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::UGT,
+                            growth,
+                            min_growth,
+                            "growth_cmp",
+                        )
+                        .unwrap();
+                    let actual_growth = self
+                        .builder
+                        .build_select(growth_cmp, growth, min_growth, "actual_growth")
+                        .unwrap()
+                        .into_int_value();
+                    let suggested_capacity = self
+                        .builder
+                        .build_int_add(old_length_val, actual_growth, "suggested_capacity")
+                        .unwrap();
+                    let capacity_cmp = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::UGT,
+                            new_length_val,
+                            suggested_capacity,
+                            "capacity_cmp",
+                        )
+                        .unwrap();
+                    let capacity = self
+                        .builder
+                        .build_select(capacity_cmp, new_length_val, suggested_capacity, "capacity")
+                        .unwrap()
+                        .into_int_value();
+
+                    // Convert capacity to i64 and calculate array size: capacity * element_size
+                    let capacity_i64 = self
+                        .builder
+                        .build_int_z_extend(capacity, self.context.i64_type(), "capacity_i64")
+                        .unwrap();
+                    let array_size = self
+                        .builder
+                        .build_int_mul(capacity_i64, element_size, "array_size")
+                        .unwrap();
+
+                    // Allocate new array with size for capacity elements
                     let realloc_fn = self.module.get_function("realloc").unwrap_or_else(|| {
                         let fn_type = self
                             .context
@@ -104,8 +155,6 @@ impl<'ctx> CodeGen<'ctx> {
                         self.module.add_function("realloc", fn_type, None)
                     });
 
-                    let array_type = elem_type.array_type(estimated_capacity);
-                    let array_size = array_type.size_of().unwrap();
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
                         .builder
@@ -212,6 +261,21 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder
                             .build_store(element_ptr, value_to_push)
                             .unwrap();
+                    } else if self.struct_metadata.contains_key(&metadata.element_type) {
+                        // Handle struct arrays - structs are stored as pointers in arrays
+                        let element_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    new_array_ptr,
+                                    &[new_index],
+                                    "push_ptr",
+                                )
+                                .unwrap()
+                        };
+                        self.builder
+                            .build_store(element_ptr, value_to_push)
+                            .unwrap();
                     } else {
                         let element_ptr = unsafe {
                             self.builder
@@ -228,8 +292,11 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap();
                     }
 
-                    // Update metadata for all name variations
-                    metadata.length = new_length;
+                    // Update metadata length (use runtime value if available, otherwise estimate)
+                    metadata.length = new_length_val
+                        .get_zero_extended_constant()
+                        .unwrap_or((metadata.length + 1) as u64)
+                        as usize;
 
                     let base_name = object.trim_start_matches('%').trim_end_matches("_array");
                     let name_variations = vec![
@@ -254,6 +321,58 @@ impl<'ctx> CodeGen<'ctx> {
                     // Update symbol table if object is a variable
                     if let Some(sym) = self.symbols.get(object) {
                         self.builder.build_store(sym.ptr, new_data_ptr).unwrap();
+                    }
+
+                    // CRITICAL FIX: If this array came from a struct field, update the struct field
+                    // to point to the new reallocated array. This prevents the struct from holding
+                    // a stale pointer to freed memory after reallocation.
+                    if let Some((struct_instance, field_name)) =
+                        self.struct_field_sources.get(object).cloned()
+                    {
+                        // Get the struct pointer
+                        let struct_ptr = self.resolve_value(&struct_instance);
+                        if struct_ptr.is_pointer_value() {
+                            let ptr = struct_ptr.into_pointer_value();
+
+                            // Get struct type info
+                            let struct_type_str = self
+                                .variable_types
+                                .get(&struct_instance)
+                                .cloned()
+                                .unwrap_or_default();
+                            let struct_name = if struct_type_str.starts_with("Struct(")
+                                && struct_type_str.ends_with(")")
+                            {
+                                &struct_type_str[7..struct_type_str.len() - 1]
+                            } else {
+                                &struct_type_str
+                            };
+
+                            // Get field index
+                            if let Some(metadata) = self.struct_metadata.get(struct_name) {
+                                if let Some(field_index) =
+                                    metadata.field_names.iter().position(|f| f == &field_name)
+                                {
+                                    // Get the struct LLVM type
+                                    if let Some(struct_type) =
+                                        self.canonical_struct_types.get(struct_name)
+                                    {
+                                        // Build struct GEP to get field pointer
+                                        if let Ok(field_ptr) = self.builder.build_struct_gep(
+                                            *struct_type,
+                                            ptr,
+                                            field_index as u32,
+                                            "struct_field_update_ptr",
+                                        ) {
+                                            // Store the new array pointer into the struct field
+                                            self.builder
+                                                .build_store(field_ptr, new_data_ptr)
+                                                .unwrap();
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     None
@@ -1238,6 +1357,18 @@ impl<'ctx> CodeGen<'ctx> {
                     let is_string_array =
                         metadata.contains_strings || metadata.element_type == "Str";
                     let is_float_array = metadata.element_type == "Float";
+                    // Check if element type is a struct (not a primitive type)
+                    let is_struct_array = !is_string_array
+                        && !is_float_array
+                        && metadata.element_type != "Int"
+                        && metadata.element_type != "Bool"
+                        && self.struct_metadata.contains_key(&metadata.element_type);
+                    eprintln!(
+                        "DEBUG filter: element_type={}, is_struct_array={}, struct_metadata.contains_key={}",
+                        metadata.element_type,
+                        is_struct_array,
+                        self.struct_metadata.contains_key(&metadata.element_type)
+                    );
 
                     // Check if the argument is a closure
                     if !self.is_closure(&args[0]) {
@@ -1245,6 +1376,11 @@ impl<'ctx> CodeGen<'ctx> {
                     }
 
                     // Generate appropriate closure on-demand
+                    eprintln!(
+                        "DEBUG filter: checking closure_bodies for '{}': {}",
+                        args[0],
+                        self.closure_bodies.contains_key(&args[0])
+                    );
                     if is_string_array {
                         if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
                         {
@@ -1264,6 +1400,26 @@ impl<'ctx> CodeGen<'ctx> {
                                     &args[0],
                                     &params,
                                     &Some(body_ast),
+                                );
+                            }
+                        }
+                    } else if is_struct_array {
+                        // Generate struct filter closure
+                        if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
+                        {
+                            let has_fn =
+                                self.get_struct_filter_closure_function(&args[0]).is_some();
+                            eprintln!(
+                                "DEBUG filter: struct_filter_closure function exists: {}",
+                                has_fn
+                            );
+                            if !has_fn {
+                                let struct_type_name = metadata.element_type.clone();
+                                self.generate_struct_filter_closure(
+                                    &args[0],
+                                    &params,
+                                    &Some(body_ast),
+                                    &struct_type_name,
                                 );
                             }
                         }
@@ -1311,12 +1467,14 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
 
-                    // Allocate new result array - use pointer type for string arrays
+                    // Allocate new result array - use pointer type for string/struct arrays
                     let malloc_fn = self.get_or_declare_malloc();
                     let elem_size = if is_string_array {
                         8u64
                     } else if is_float_array {
                         8u64
+                    } else if is_struct_array {
+                        8u64 // Structs are stored as pointers (8 bytes on 64-bit)
                     } else {
                         4u64
                     };
@@ -1403,12 +1561,19 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .get_parent()
                         .unwrap();
+
+                    // Save the original block to return to after filter completes
+                    let original_block = self.builder.get_insert_block().unwrap();
+
                     let loop_block = self.context.append_basic_block(current_fn, "filter_loop");
                     let check_block = self.context.append_basic_block(current_fn, "filter_check");
                     let include_block = self
                         .context
                         .append_basic_block(current_fn, "filter_include");
                     let after_block = self.context.append_basic_block(current_fn, "filter_after");
+                    let continuation_block = self
+                        .context
+                        .append_basic_block(current_fn, "filter_continue");
 
                     let counter_ptr = self
                         .builder
@@ -1450,8 +1615,8 @@ impl<'ctx> CodeGen<'ctx> {
                     // Check element value by calling closure
                     self.builder.position_at_end(check_block);
 
-                    // Create alloca for element to use after phi (needed for string and float cases)
-                    let elem_alloca = if is_string_array {
+                    // Create alloca for element to use after phi (needed for string, float, and struct cases)
+                    let elem_alloca = if is_string_array || is_struct_array {
                         Some(
                             self.builder
                                 .build_alloca(
@@ -1470,7 +1635,54 @@ impl<'ctx> CodeGen<'ctx> {
                         None
                     };
 
-                    let should_include = if is_string_array {
+                    let should_include = if is_struct_array {
+                        // Struct array filter: load pointer, call struct filter closure
+                        let elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    array_ptr,
+                                    &[counter],
+                                    "elem_ptr_filter_struct",
+                                )
+                                .unwrap()
+                        };
+                        let elem = self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                elem_ptr,
+                                "elem_filter_struct",
+                            )
+                            .unwrap();
+
+                        // Store element for later use
+                        self.builder
+                            .build_store(elem_alloca.unwrap(), elem)
+                            .unwrap();
+
+                        // Call the struct filter closure
+                        let closure_result =
+                            self.call_struct_filter_closure_with_one_arg(&args[0], elem);
+
+                        if let Some(result) = closure_result {
+                            if result.is_int_value() {
+                                let result_int = result.into_int_value();
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::NE,
+                                        result_int,
+                                        self.context.i32_type().const_int(0, false),
+                                        "should_include_struct",
+                                    )
+                                    .unwrap()
+                            } else {
+                                self.context.bool_type().const_int(0, false)
+                            }
+                        } else {
+                            self.context.bool_type().const_int(0, false)
+                        }
+                    } else if is_string_array {
                         // String array filter: load pointer, call string filter closure
                         let elem_ptr = unsafe {
                             self.builder
@@ -1614,7 +1826,29 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
 
-                    if is_string_array {
+                    if is_struct_array {
+                        // Load struct pointer from alloca and store to result
+                        let elem = self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                elem_alloca.unwrap(),
+                                "elem_reload_struct",
+                            )
+                            .unwrap();
+
+                        let result_elem_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    new_array_ptr,
+                                    &[result_idx],
+                                    "result_elem_ptr_struct",
+                                )
+                                .unwrap()
+                        };
+                        self.builder.build_store(result_elem_ptr, elem).unwrap();
+                    } else if is_string_array {
                         // Load element from alloca and store to result
                         let elem = self
                             .builder
@@ -1725,9 +1959,17 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_store(result_len_ptr_cast, final_result_idx)
                         .unwrap();
 
+                    // Branch to continuation block
+                    self.builder
+                        .build_unconditional_branch(continuation_block)
+                        .unwrap();
+
+                    // Position at continuation block for subsequent instructions
+                    self.builder.position_at_end(continuation_block);
+
                     let mut new_metadata = metadata.clone();
                     new_metadata.length = 100;
-                    new_metadata.contains_strings = is_string_array;
+                    new_metadata.contains_strings = is_string_array || is_struct_array;
                     self.temp_values
                         .insert(dest.to_string(), result_data_ptr.into());
                     self.heap_arrays.insert(dest.to_string());
@@ -1805,12 +2047,20 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
 
-                    // Allocate new array - use pointer type for string arrays
+                    // Allocate new array - use pointer type for string/struct arrays
                     let malloc_fn = self.get_or_declare_malloc();
+                    // Check if element type is a struct (not a primitive type)
+                    let is_struct_array = !is_string_array
+                        && !is_float_array
+                        && metadata.element_type != "Int"
+                        && metadata.element_type != "Bool"
+                        && self.struct_metadata.contains_key(&metadata.element_type);
                     let elem_size = if is_string_array {
                         8u64
                     } else if is_float_array {
                         8u64
+                    } else if is_struct_array {
+                        8u64 // Structs are stored as pointers (8 bytes on 64-bit)
                     } else {
                         4u64
                     }; // ptr/f64 is 8 bytes, i32 is 4 bytes

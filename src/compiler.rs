@@ -280,6 +280,8 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     mir_builder.enum_table = std::sync::Arc::new(analyzer.enum_table.clone());
     mir_builder.enum_variant_order = std::sync::Arc::new(analyzer.enum_variant_order.clone());
     mir_builder.function_table = std::sync::Arc::new(analyzer.function_table.clone());
+    mir_builder.method_table = std::sync::Arc::new(analyzer.method_table.clone());
+    mir_builder.struct_table = std::sync::Arc::new(analyzer.struct_table.clone());
     mir_builder.set_is_main_entry(true); // Mark this as the main entry point
     mir_builder.build_program(&all_nodes);
     mir_builder.finalize();
@@ -406,38 +408,102 @@ fn compile_to_native(
 fn link_object_file(
     obj_file: &str,
     output: &str,
-    dev_mode: bool,
+    _dev_mode: bool,
     mir_program: &crate::mir::mir::MirProgram,
 ) -> Result<(), String> {
-    // Collect all FFI libraries needed
-    let mut ffi_libs = std::collections::HashSet::new();
-    for func in &mir_program.functions {
-        if let Some(ref lib_name) = func.ffi_lib {
-            ffi_libs.insert(lib_name.clone());
+    // Collect all FFI libraries needed from the MIR
+    let ffi_libs: std::collections::HashSet<String> = mir_program
+        .functions
+        .iter()
+        .filter_map(|f| f.ffi_lib.clone())
+        .collect();
+
+    // Common: Build search paths for libraries (works on all platforms)
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let cwd = env::current_dir().ok();
+
+    let mut search_paths: Vec<PathBuf> = Vec::new();
+
+    // 1. Same directory as doo executable
+    if let Some(ref dir) = exe_dir {
+        search_paths.push(dir.clone());
+    }
+
+    // 2. target/release and target/debug (for development)
+    if let Some(ref c) = cwd {
+        search_paths.push(c.join("target").join("release"));
+        search_paths.push(c.join("target").join("debug"));
+    }
+
+    // 3. System locations (Unix only, but harmless on Windows)
+    search_paths.push(PathBuf::from("/usr/local/lib"));
+    search_paths.push(PathBuf::from("/usr/lib"));
+
+    // 4. User home lib directory
+    if let Ok(home) = env::var("HOME") {
+        search_paths.push(PathBuf::from(home).join(".local").join("lib"));
+    }
+    if let Ok(home) = env::var("USERPROFILE") {
+        search_paths.push(PathBuf::from(home).join(".local").join("lib"));
+    }
+
+    // Helper: Find FFI library in search paths
+    let find_ffi_lib = |lib_name: &str, paths: &[PathBuf]| -> Option<(PathBuf, PathBuf)> {
+        for search_path in paths {
+            // Windows: .dll.lib or .lib
+            #[cfg(target_os = "windows")]
+            {
+                let dll_lib = search_path.join(format!("{}.dll.lib", lib_name));
+                if dll_lib.exists() {
+                    return Some((search_path.clone(), dll_lib));
+                }
+                let lib = search_path.join(format!("{}.lib", lib_name));
+                if lib.exists() {
+                    return Some((search_path.clone(), lib));
+                }
+            }
+            // Unix: lib*.so, lib*.dylib, lib*.a
+            #[cfg(not(target_os = "windows"))]
+            {
+                let so = search_path.join(format!("lib{}.so", lib_name));
+                if so.exists() {
+                    return Some((search_path.clone(), so));
+                }
+                let dylib = search_path.join(format!("lib{}.dylib", lib_name));
+                if dylib.exists() {
+                    return Some((search_path.clone(), dylib));
+                }
+                let a = search_path.join(format!("lib{}.a", lib_name));
+                if a.exists() {
+                    return Some((search_path.clone(), a));
+                }
+            }
+        }
+        None
+    };
+
+    // Also search in ffi_libs directory structure
+    let mut ffi_search_paths = search_paths.clone();
+    if let Some(ref c) = cwd {
+        for ffi_lib in &ffi_libs {
+            let ffi_dir = c
+                .join("ffi_libs")
+                .join(format!("lib{}", ffi_lib))
+                .join("target")
+                .join("release");
+            if ffi_dir.exists() {
+                ffi_search_paths.push(ffi_dir);
+            }
         }
     }
+
+    // ========== WINDOWS LINKING ==========
     #[cfg(target_os = "windows")]
     {
         let linker = extract_embedded_linker()?;
         let sdk_paths = find_windows_sdk_paths();
-
-        // Find the doo runtime library
-        let target_dir = env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .or_else(|| {
-                // Fallback: try to find target/debug or target/release
-                let cwd = env::current_dir().ok()?;
-                let debug_lib = cwd.join("target").join("debug");
-                let release_lib = cwd.join("target").join("release");
-                if debug_lib.exists() {
-                    Some(debug_lib)
-                } else if release_lib.exists() {
-                    Some(release_lib)
-                } else {
-                    None
-                }
-            });
 
         let mut cmd = Command::new(&linker);
         cmd.arg(format!("/OUT:{}", output))
@@ -445,6 +511,7 @@ fn link_object_file(
             .arg("/SUBSYSTEM:CONSOLE")
             .arg("/ENTRY:main");
 
+        // Add Windows SDK paths
         if let Some(paths) = sdk_paths {
             if let Some(ucrt) = paths.ucrt_lib {
                 cmd.arg(format!("/LIBPATH:{}", ucrt));
@@ -461,87 +528,39 @@ fn link_object_file(
                 .arg("libcmt.lib");
         }
 
-        // Add doo runtime DLL import library for JSON/File I/O support
-        // Only add if it exists to avoid breaking simple programs
-        if let Some(lib_dir) = target_dir {
-            let doo_dll_lib = lib_dir.join("doo.dll.lib");
-            if doo_dll_lib.exists() {
-                // Add extra libraries needed for Rust runtime
+        // Link FFI libraries
+        let mut added_paths = std::collections::HashSet::new();
+        for ffi_lib in &ffi_libs {
+            if let Some((lib_dir, lib_file)) = find_ffi_lib(ffi_lib, &ffi_search_paths) {
+                // Add library path if not already added
+                if added_paths.insert(lib_dir.clone()) {
+                    cmd.arg(format!("/LIBPATH:{}", lib_dir.display()));
+                }
+                // Add Windows system libs needed by Rust FFI
                 cmd.arg("ws2_32.lib")
                     .arg("userenv.lib")
                     .arg("bcrypt.lib")
                     .arg("kernel32.lib")
-                    .arg("advapi32.lib")
-                    .arg("ntdll.lib")
-                    .arg("ole32.lib")
-                    .arg("shell32.lib");
-
-                // Link against the DLL
-                cmd.arg(doo_dll_lib.to_str().unwrap());
-            }
-
-            // Add FFI library paths first, then libraries
-            // This ensures the linker can find import libraries correctly
-            let mut ffi_lib_paths = Vec::new();
-            let mut ffi_lib_files = Vec::new();
-
-            for ffi_lib in &ffi_libs {
-                let mut found_lib = false;
-
-                // First try in target_dir
-                let ffi_lib_path = lib_dir.join(format!("{}.dll.lib", ffi_lib));
-                if ffi_lib_path.exists() {
-                    ffi_lib_files.push(ffi_lib_path);
-                    found_lib = true;
-                } else {
-                    // Try without .dll.lib suffix - just the import lib name
-                    let alt_path = lib_dir.join(format!("{}.lib", ffi_lib));
-                    if alt_path.exists() {
-                        ffi_lib_files.push(alt_path);
-                        found_lib = true;
-                    }
-                }
-
-                // If not found in target_dir, try searching in ffi_libs directory
-                if !found_lib {
-                    let ffi_libs_dir = env::current_dir().ok().map(|p| {
-                        p.join("ffi_libs")
-                            .join(format!("lib{}", ffi_lib))
-                            .join("target")
-                            .join("release")
-                    });
-
-                    if let Some(ffi_dir) = ffi_libs_dir {
-                        let ffi_dll_lib = ffi_dir.join(format!("{}.dll.lib", ffi_lib));
-                        if ffi_dll_lib.exists() {
-                            ffi_lib_files.push(ffi_dll_lib);
-                            ffi_lib_paths.push(ffi_dir.clone());
-                            found_lib = true;
-                        } else {
-                            let ffi_dll_lib_alt = ffi_dir.join(format!("{}.lib", ffi_lib));
-                            if ffi_dll_lib_alt.exists() {
-                                ffi_lib_files.push(ffi_dll_lib_alt);
-                                ffi_lib_paths.push(ffi_dir.clone());
-                                found_lib = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Add all library paths first
-            for path in ffi_lib_paths {
-                cmd.arg(format!("/LIBPATH:{}", path.display()));
-            }
-
-            // Then add all library files
-            for lib_file in ffi_lib_files {
+                    .arg("advapi32.lib");
+                // Link the library
                 cmd.arg(lib_file.to_str().unwrap());
+            } else {
+                // FFI library not found - provide helpful error
+                return Err(format!(
+                    "FFI library '{}.dll.lib' not found.\n\
+                    Build it first:\n\
+                      cd ffi_libs\\lib{} && cargo build --release\n\
+                    Then rebuild doo:\n\
+                      cargo build --release\n\
+                    \n\
+                    Searched in: {:?}",
+                    ffi_lib, ffi_lib, ffi_search_paths
+                ));
             }
         }
 
         let result = cmd.output();
-        match result {
+        return match result {
             Ok(r) if r.status.success() => Ok(()),
             Ok(r) => Err(format!(
                 "Linking failed:\nSTDOUT:\n{}\nSTDERR:\n{}",
@@ -549,14 +568,14 @@ fn link_object_file(
                 String::from_utf8_lossy(&r.stderr)
             )),
             Err(e) => Err(format!("Linker error: {}", e)),
-        }
+        };
     }
 
+    // ========== UNIX LINKING (Linux & macOS) ==========
     #[cfg(not(target_os = "windows"))]
     {
-        // Use clang on Unix - simple and reliable
-        let clang_check = Command::new("clang").arg("--version").output();
-        if clang_check.is_err() {
+        // Check for clang
+        if Command::new("clang").arg("--version").output().is_err() {
             return Err("Clang not found. Install with:\n\
                 - Ubuntu/Debian: sudo apt install clang\n\
                 - Fedora: sudo dnf install clang\n\
@@ -564,73 +583,68 @@ fn link_object_file(
                 .to_string());
         }
 
-        // Find the doo runtime library
-        let target_dir = env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .or_else(|| {
-                let cwd = env::current_dir().ok()?;
-                let debug_lib = cwd.join("target").join("debug");
-                let release_lib = cwd.join("target").join("release");
-                if debug_lib.exists() {
-                    Some(debug_lib)
-                } else if release_lib.exists() {
-                    Some(release_lib)
-                } else {
-                    None
-                }
-            });
-
         let mut cmd = Command::new("clang");
-        cmd.arg(obj_file).arg("-o").arg(output);
+        cmd.arg(obj_file).arg("-o").arg(output).arg("-lm");
 
-        // Add system libraries
-        cmd.arg("-lm");
+        // Platform-specific system libraries
+        #[cfg(target_os = "linux")]
+        cmd.arg("-lpthread").arg("-ldl");
 
-        // Add doo runtime library for JSON/File I/O support if available
-        if let Some(lib_dir) = target_dir {
-            let doo_a = lib_dir.join("libdoo.a");
-            if doo_a.exists() {
-                cmd.arg(doo_a.to_str().unwrap());
-                // Add additional libraries needed for Rust runtime
-                cmd.arg("-lpthread").arg("-ldl");
-            }
+        #[cfg(target_os = "macos")]
+        {
+            cmd.arg("-lpthread");
+            cmd.arg("-framework").arg("Security");
+            cmd.arg("-framework").arg("CoreFoundation");
+        }
 
-            // Add FFI libraries
-            for ffi_lib in &ffi_libs {
-                // Try to find the shared library in the ffi_libs directory
-                let ffi_lib_dir = env::current_dir().ok().and_then(|p| {
-                    Some(
-                        p.join("ffi_libs")
-                            .join(format!("lib{}", ffi_lib))
-                            .join("target")
-                            .join("release"),
-                    )
-                });
+        // Link FFI libraries
+        let mut added_paths = std::collections::HashSet::new();
+        for ffi_lib in &ffi_libs {
+            if let Some((lib_dir, lib_file)) = find_ffi_lib(ffi_lib, &ffi_search_paths) {
+                // For shared libraries, add -L and -l flags with rpath
+                let is_shared = lib_file
+                    .extension()
+                    .map(|e| e == "so" || e == "dylib")
+                    .unwrap_or(false);
 
-                if let Some(ffi_dir) = ffi_lib_dir {
-                    if ffi_dir.exists() {
-                        // Add library path
-                        cmd.arg(format!("-L{}", ffi_dir.display()));
-                        // Link the library (clang will add lib prefix and .so/.dylib suffix)
-                        cmd.arg(format!("-l{}", ffi_lib));
-                        // Add rpath so the library can be found at runtime
-                        cmd.arg(format!("-Wl,-rpath,{}", ffi_dir.display()));
+                if is_shared {
+                    if added_paths.insert(lib_dir.clone()) {
+                        cmd.arg(format!("-L{}", lib_dir.display()));
+                        cmd.arg(format!("-Wl,-rpath,{}", lib_dir.display()));
                     }
+                    cmd.arg(format!("-l{}", ffi_lib));
+                } else {
+                    // Static library - link directly
+                    cmd.arg(lib_file.to_str().unwrap());
                 }
+            } else {
+                // FFI library not found - provide helpful error
+                let lib_name = format!("lib{}.so", ffi_lib);
+                #[cfg(target_os = "macos")]
+                let lib_name = format!("lib{}.dylib", ffi_lib);
+
+                return Err(format!(
+                    "FFI library '{}' not found.\n\
+                    Build it first:\n\
+                      cd ffi_libs/lib{} && cargo build --release\n\
+                    Then rebuild doo:\n\
+                      cargo build --release\n\
+                    \n\
+                    Searched in: {:?}",
+                    lib_name, ffi_lib, ffi_search_paths
+                ));
             }
         }
 
         let result = cmd.output();
-
-        match result {
+        return match result {
             Ok(r) if r.status.success() => Ok(()),
             Ok(r) => Err(format!(
                 "Linking failed:\n{}",
                 String::from_utf8_lossy(&r.stderr)
             )),
             Err(e) => Err(format!("Linker error: {}", e)),
-        }
+        };
     }
 }
 

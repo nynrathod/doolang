@@ -1042,7 +1042,9 @@ impl SemanticAnalyzer {
                         }
 
                         if let Some(expected_type) = struct_fields.get(field_name) {
-                            let actual_type = self.infer_type(field_value)?;
+                            // Use infer_type_with_expected to handle empty arrays/maps properly
+                            let actual_type =
+                                self.infer_type_with_expected(field_value, expected_type)?;
                             // Check type compatibility
                             if !types_compatible(
                                 &actual_type,

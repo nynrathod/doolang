@@ -220,6 +220,20 @@ pub enum MirInstr {
         key: String,
         value: String,
     },
+    /// Map set on a struct field: self.field[key] = value
+    FieldMapSet {
+        struct_instance: String,
+        field: String,
+        key: String,
+        value: String,
+    },
+    /// Array set on a struct field: self.field[index] = value
+    FieldArraySet {
+        struct_instance: String,
+        field: String,
+        index: String,
+        value: String,
+    },
     MapContains {
         name: String,
         map: String,
@@ -316,6 +330,10 @@ pub enum MirInstr {
     },
 
     // Struct and enum operations
+    EnumDecl {
+        enum_name: String,
+        variants: Vec<crate::parser::ast::EnumVariant>,
+    },
     StructDecl {
         struct_name: String,
         field_names: Vec<String>,
@@ -627,6 +645,26 @@ impl MirInstr {
             MirInstr::MapSet { map, key, value } => {
                 used.push(map.clone());
                 used.push(key.clone());
+                used.push(value.clone());
+            }
+            MirInstr::FieldMapSet {
+                struct_instance,
+                key,
+                value,
+                ..
+            } => {
+                used.push(struct_instance.clone());
+                used.push(key.clone());
+                used.push(value.clone());
+            }
+            MirInstr::FieldArraySet {
+                struct_instance,
+                index,
+                value,
+                ..
+            } => {
+                used.push(struct_instance.clone());
+                used.push(index.clone());
                 used.push(value.clone());
             }
             MirInstr::MapContains { map, key, .. } => {

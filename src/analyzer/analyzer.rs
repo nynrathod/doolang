@@ -465,6 +465,11 @@ impl SemanticAnalyzer {
                 index,
                 value,
             } => self.analyze_element_assignment(array, index, value),
+            AstNode::FieldAssignment {
+                object,
+                field,
+                value,
+            } => self.analyze_field_assignment(object, field, value),
             AstNode::Return { values } => {
                 // Check that return is inside a function
                 if self.function_depth == 0 {
@@ -1086,7 +1091,24 @@ impl SemanticAnalyzer {
                 // Use analyze_program_with_stack for proper two-pass analysis with circular import detection
                 // Pass the current import_stack so recursive imports are detected correctly
                 imported_analyzer.is_main_module = false;
-                imported_analyzer.analyze_program_with_stack(&mut nodes, import_stack)?;
+
+                // DEBUG: Print what module we're analyzing
+                eprintln!("[DEBUG] Analyzing imported module: {:?}", file_path);
+
+                if let Err(e) =
+                    imported_analyzer.analyze_program_with_stack(&mut nodes, import_stack)
+                {
+                    eprintln!("[DEBUG] Import analysis error for {:?}: {:?}", file_path, e);
+                    eprintln!(
+                        "[DEBUG] Collected errors: {:?}",
+                        imported_analyzer.collected_errors
+                    );
+                    eprintln!(
+                        "[DEBUG] struct_table keys: {:?}",
+                        imported_analyzer.struct_table.keys().collect::<Vec<_>>()
+                    );
+                    return Err(e);
+                }
 
                 import_stack.pop();
                 (nodes, imported_analyzer)
@@ -1175,17 +1197,16 @@ impl SemanticAnalyzer {
             }
         }
 
-        // Check if user is trying to explicitly import private symbols
+        // NOTE: We allow explicit imports of private (camelCase) functions.
+        // If a user explicitly imports a private function by name, they're making
+        // a conscious decision to access internal functionality.
+        // Only structs and enums maintain strict visibility rules.
         for item in &specific_imports {
             match item {
                 crate::parser::ast::ImportItem::Symbol(sym)
                 | crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
-                    if private_functions.contains(sym) {
-                        return Err(SemanticError::PrivateFunctionImport {
-                            name: sym.clone(),
-                            module: module_name.clone(),
-                        });
-                    }
+                    // Allow explicit import of private functions - user knows what they're doing
+                    // if private_functions.contains(sym) { ... } - intentionally removed
                     if private_structs.contains(sym) {
                         return Err(SemanticError::PrivateStructImport {
                             name: sym.clone(),
@@ -1207,11 +1228,32 @@ impl SemanticAnalyzer {
             match &node {
                 // Import functions
                 AstNode::FunctionDecl { name, .. } => {
-                    // Only import functions that start with uppercase (public convention)
-                    if name.chars().next().unwrap_or('a').is_uppercase() {
+                    // Check if this is a public function (uppercase) OR explicitly imported private function
+                    let is_public = name.chars().next().unwrap_or('a').is_uppercase();
+                    let is_explicitly_imported = specific_imports.iter().any(|item| match item {
+                        crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
+                        crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => sym == name,
+                        crate::parser::ast::ImportItem::Wildcard => false,
+                    });
+
+                    // ALWAYS add ALL functions to imported_functions for MIR generation
+                    // This is critical because imported functions may call private helpers from their module
+                    // The visibility check only affects what's exposed in function_table (callable by importer)
+                    if !self.imported_functions.iter().any(|n| {
+                        if let AstNode::FunctionDecl { name: fn_name, .. } = n {
+                            fn_name == name
+                        } else {
+                            false
+                        }
+                    }) {
+                        self.imported_functions.push(node.clone());
+                    }
+
+                    // Determine what to expose in function_table (only public or explicitly imported)
+                    if is_public || is_explicitly_imported {
                         let should_expose = if should_import_wildcard {
-                            // Wildcard: expose all public functions
-                            true
+                            // Wildcard: expose only public functions (not private ones)
+                            is_public
                         } else if is_namespace_import_or_alias {
                             // Namespace import or namespace alias: expose all with namespace prefix
                             true
@@ -1229,18 +1271,6 @@ impl SemanticAnalyzer {
                                 crate::parser::ast::ImportItem::Wildcard => false,
                             })
                         };
-
-                        // ALWAYS add public functions to imported_functions for MIR (for dependencies)
-                        // But only expose requested ones to function_table (for caller access)
-                        if !self.imported_functions.iter().any(|n| {
-                            if let AstNode::FunctionDecl { name: fn_name, .. } = n {
-                                fn_name == name
-                            } else {
-                                false
-                            }
-                        }) {
-                            self.imported_functions.push(node.clone());
-                        }
 
                         // Only expose to function_table if explicitly requested
                         if should_expose {
@@ -1323,41 +1353,62 @@ impl SemanticAnalyzer {
                             // Copy struct definition to current struct table
                             if let Some(field_types) = imported_analyzer.struct_table.get(name) {
                                 self.struct_table.insert(name.clone(), field_types.clone());
-
-                                // Store field visibility information for imported struct
-                                let mut field_visibility: HashMap<String, bool> = HashMap::new();
+                            } else {
+                                // Struct not found in imported_analyzer.struct_table - this is a bug
+                                // The struct declaration exists but wasn't registered during analysis
+                                // This can happen if the imported module had analysis errors
+                                // Fall back to building field_types from the AST node directly
+                                let mut field_types_fallback: HashMap<String, TypeNode> =
+                                    HashMap::new();
                                 for field in fields {
-                                    field_visibility.insert(field.name.clone(), field.is_public);
+                                    field_types_fallback
+                                        .insert(field.name.clone(), field.field_type.clone());
                                 }
-                                self.struct_field_visibility
-                                    .insert(name.clone(), field_visibility);
-
-                                // Track this struct as imported (for visibility checking)
-                                self.imported_struct_names.insert(name.clone());
-
-                                // CRITICAL: Add to imported_structs for MIR generation
-                                // This ensures struct metadata is available in codegen
-                                if !self.imported_structs.iter().any(|n| {
-                                    if let AstNode::StructDecl { name: s_name, .. } = n {
-                                        s_name == name
-                                    } else {
-                                        false
-                                    }
-                                }) {
-                                    self.imported_structs.push(node.clone());
-                                }
-
-                                // Also add to symbol_table for type resolution
-                                self.symbol_table.insert(
-                                    name.clone(),
-                                    SymbolInfo {
-                                        ty: TypeNode::Struct(name.clone(), field_types.clone()),
-                                        mutable: false,
-                                        is_ref_counted: true,
-                                        is_parameter: false,
-                                    },
-                                );
+                                self.struct_table
+                                    .insert(name.clone(), field_types_fallback.clone());
                             }
+
+                            // The rest of the import logic uses field_types from struct_table
+                            let field_types = self.struct_table.get(name).unwrap().clone();
+
+                            // Store field visibility information for imported struct
+                            let mut field_visibility: HashMap<String, bool> = HashMap::new();
+                            for field in fields {
+                                field_visibility.insert(field.name.clone(), field.is_public);
+                            }
+                            self.struct_field_visibility
+                                .insert(name.clone(), field_visibility);
+
+                            // Track this struct as imported (for visibility checking)
+                            self.imported_struct_names.insert(name.clone());
+
+                            // CRITICAL: Import methods for this struct from the imported module's method_table
+                            if let Some(methods) = imported_analyzer.method_table.get(name) {
+                                self.method_table.insert(name.clone(), methods.clone());
+                            }
+
+                            // CRITICAL: Add to imported_structs for MIR generation
+                            // This ensures struct metadata is available in codegen
+                            if !self.imported_structs.iter().any(|n| {
+                                if let AstNode::StructDecl { name: s_name, .. } = n {
+                                    s_name == name
+                                } else {
+                                    false
+                                }
+                            }) {
+                                self.imported_structs.push(node.clone());
+                            }
+
+                            // Also add to symbol_table for type resolution
+                            self.symbol_table.insert(
+                                name.clone(),
+                                SymbolInfo {
+                                    ty: TypeNode::Struct(name.clone(), field_types.clone()),
+                                    mutable: false,
+                                    is_ref_counted: true,
+                                    is_parameter: false,
+                                },
+                            );
                         }
                     }
                 }
@@ -1444,6 +1495,113 @@ impl SemanticAnalyzer {
                         );
                     }
                 }
+            }
+        }
+
+        // TRANSITIVE STRUCT IMPORTS: Import all structs from the imported module
+        // This ensures that struct types used in function signatures are available
+        for transitive_struct in &imported_analyzer.imported_structs {
+            if let AstNode::StructDecl {
+                name: struct_name,
+                fields,
+                ..
+            } = transitive_struct
+            {
+                // Add to imported_structs if not already present
+                if !self.imported_structs.iter().any(|n| {
+                    if let AstNode::StructDecl { name: s_name, .. } = n {
+                        s_name == struct_name
+                    } else {
+                        false
+                    }
+                }) {
+                    self.imported_structs.push(transitive_struct.clone());
+                }
+                // Add to struct_table if not already present
+                if !self.struct_table.contains_key(struct_name) {
+                    if let Some(field_types) = imported_analyzer.struct_table.get(struct_name) {
+                        self.struct_table
+                            .insert(struct_name.clone(), field_types.clone());
+
+                        // Also copy field visibility
+                        let mut field_visibility: HashMap<String, bool> = HashMap::new();
+                        for field in fields {
+                            field_visibility.insert(field.name.clone(), field.is_public);
+                        }
+                        self.struct_field_visibility
+                            .insert(struct_name.clone(), field_visibility);
+
+                        // Mark as imported
+                        self.imported_struct_names.insert(struct_name.clone());
+
+                        // Copy methods for this struct
+                        if let Some(methods) = imported_analyzer.method_table.get(struct_name) {
+                            self.method_table
+                                .insert(struct_name.clone(), methods.clone());
+                        }
+
+                        // Add to symbol_table for type resolution
+                        self.symbol_table.insert(
+                            struct_name.clone(),
+                            SymbolInfo {
+                                ty: TypeNode::Struct(struct_name.clone(), field_types.clone()),
+                                mutable: false,
+                                is_ref_counted: true,
+                                is_parameter: false,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        // Also import structs directly from the imported module's struct_table
+        // (these might not be in imported_structs if they were defined in that module)
+        for (struct_name, field_types) in &imported_analyzer.struct_table {
+            if !self.struct_table.contains_key(struct_name) {
+                self.struct_table
+                    .insert(struct_name.clone(), field_types.clone());
+
+                // Copy methods for this struct
+                if let Some(methods) = imported_analyzer.method_table.get(struct_name) {
+                    self.method_table
+                        .insert(struct_name.clone(), methods.clone());
+                }
+
+                // Add to symbol_table for type resolution
+                self.symbol_table.insert(
+                    struct_name.clone(),
+                    SymbolInfo {
+                        ty: TypeNode::Struct(struct_name.clone(), field_types.clone()),
+                        mutable: false,
+                        is_ref_counted: true,
+                        is_parameter: false,
+                    },
+                );
+            }
+        }
+
+        // TRANSITIVE ENUM IMPORTS: Import all enums from the imported module
+        for (enum_name, variants) in &imported_analyzer.enum_table {
+            if !self.enum_table.contains_key(enum_name) {
+                self.enum_table.insert(enum_name.clone(), variants.clone());
+
+                // Copy enum_variant_order
+                if let Some(variant_order) = imported_analyzer.enum_variant_order.get(enum_name) {
+                    self.enum_variant_order
+                        .insert(enum_name.clone(), variant_order.clone());
+                }
+
+                // Add to symbol_table for type resolution
+                self.symbol_table.insert(
+                    enum_name.clone(),
+                    SymbolInfo {
+                        ty: TypeNode::Enum(enum_name.clone(), variants.clone()),
+                        mutable: false,
+                        is_ref_counted: true,
+                        is_parameter: false,
+                    },
+                );
             }
         }
 

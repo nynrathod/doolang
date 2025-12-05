@@ -430,6 +430,23 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
 
             self.builder.build_store(item_alloca, elem_val).unwrap();
+
+            // CRITICAL: Track struct element types for the loop variable
+            // This enables field access (like u.Name) on elements during iteration
+            if let Some(metadata) = self.array_metadata.get(array) {
+                let elem_type_name = &metadata.element_type;
+                // Check if element type is a struct
+                if self.struct_metadata.contains_key(elem_type_name) {
+                    // Track loop variable as a struct instance
+                    self.struct_instance_types
+                        .insert(var.to_string(), elem_type_name.clone());
+                    // Also track in variable_types for completeness
+                    self.variable_types
+                        .insert(var.to_string(), elem_type_name.clone());
+                    // Store the loaded value in temp_values so resolve_value can find it
+                    self.temp_values.insert(var.to_string(), elem_val);
+                }
+            }
         }
     }
 

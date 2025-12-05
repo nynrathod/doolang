@@ -200,6 +200,7 @@ impl<'a> Parser<'a> {
                                 self.expect(TokenType::Semi)?;
 
                                 // Handle array/map element assignment: arr[index] = value
+                                // Handle field assignment: obj.field = value
                                 match expr {
                                     AstNode::Identifier(name) => {
                                         return Ok(AstNode::Assignment {
@@ -214,9 +215,16 @@ impl<'a> Parser<'a> {
                                             value: Box::new(value),
                                         });
                                     }
+                                    AstNode::FieldAccess { object, field } => {
+                                        return Ok(AstNode::FieldAssignment {
+                                            object,
+                                            field,
+                                            value: Box::new(value),
+                                        });
+                                    }
                                     _ => {
                                         return Err(ParseError::UnexpectedToken(
-                                            "Only single-variable or element assignment is allowed without 'let'"
+                                            "Only single-variable, element, or field assignment is allowed without 'let'"
                                                 .into(),
                                         ));
                                     }
@@ -381,5 +389,40 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(items)
+    }
+
+    /// Process escape sequences in string literals
+    /// Converts \n, \t, \r, \\, \", etc. to their actual characters
+    pub fn process_escape_sequences(s: &str) -> String {
+        let mut result = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(&next_ch) = chars.peek() {
+                    chars.next(); // consume the escaped character
+                    match next_ch {
+                        'n' => result.push('\n'),
+                        't' => result.push('\t'),
+                        'r' => result.push('\r'),
+                        '\\' => result.push('\\'),
+                        '"' => result.push('"'),
+                        '0' => result.push('\0'),
+                        _ => {
+                            // Unknown escape sequence - keep as is
+                            result.push('\\');
+                            result.push(next_ch);
+                        }
+                    }
+                } else {
+                    // Backslash at end of string
+                    result.push('\\');
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        result
     }
 }

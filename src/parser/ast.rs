@@ -239,6 +239,11 @@ pub enum AstNode {
         index: Box<AstNode>,
         value: Box<AstNode>,
     },
+    FieldAssignment {
+        object: Box<AstNode>,
+        field: String,
+        value: Box<AstNode>,
+    },
     FunctionDecl {
         name: String,
         visibility: String,

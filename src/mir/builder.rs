@@ -23,7 +23,11 @@ pub struct MirBuilder {
     pub enum_table: Arc<HashMap<String, HashMap<String, Option<TypeNode>>>>, // Shared enum table for enum variant resolution
     pub enum_variant_order: Arc<HashMap<String, Vec<(String, Option<TypeNode>)>>>, // Ordered enum variants for correct tag values
     pub function_table: Arc<HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Shared function table for namespace resolution
+    pub method_table:
+        Arc<HashMap<String, HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>>, // Methods per type: TypeName -> MethodName -> (params, return_type, error_type)
     pub current_function_error_type: Option<TypeNode>, // Track if current function has error type for Ok/Err handling
+    pub struct_table: Arc<HashMap<String, HashMap<String, TypeNode>>>, // Struct definitions: name -> field_name -> field_type
+    pub current_struct_name: Option<String>, // Track current struct context for method analysis
 }
 
 /// Context for tracking loop break/continue targets
@@ -55,7 +59,10 @@ impl MirBuilder {
             enum_table: Arc::new(HashMap::new()),
             enum_variant_order: Arc::new(HashMap::new()),
             function_table: Arc::new(HashMap::new()),
+            method_table: Arc::new(HashMap::new()),
             current_function_error_type: None,
+            struct_table: Arc::new(HashMap::new()),
+            current_struct_name: None,
         }
     }
 
@@ -205,11 +212,13 @@ impl MirBuilder {
                 AstNode::EnumDecl {
                     name,
                     variants,
-                    is_public,
+                    is_public: _,
                 } => {
-                    // Enum declarations are type definitions only.
-                    // No MIR instructions needed - the analyzer handles type tracking.
-                    // Actual enum instances are created when using EnumVariant expressions.
+                    // Emit EnumDecl so codegen can register types
+                    self.program.globals.push(MirInstr::EnumDecl {
+                        enum_name: name.clone(),
+                        variants: variants.clone(),
+                    });
                 }
 
                 // Handle global assignments (outside functions).

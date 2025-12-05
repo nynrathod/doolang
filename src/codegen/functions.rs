@@ -28,6 +28,27 @@ impl<'ctx> CodeGen<'ctx> {
         // --- PRE-PROCESSING ---
         // CRITICAL: Scan for struct declarations FIRST to populate metadata and create canonical types
         // This MUST happen BEFORE predeclaring functions so that struct parameter types are recognized
+        // Pre-scan for enum declarations to register types
+        for instr in &program.globals {
+            if let MirInstr::EnumDecl {
+                enum_name,
+                variants,
+            } = instr
+            {
+                // Register enum in enum_table (variant -> payload type)
+                let mut variant_map = std::collections::HashMap::new();
+                // Register enum variants (variant -> tag)
+                let mut variant_list = Vec::new();
+
+                for (idx, variant) in variants.iter().enumerate() {
+                    variant_map.insert(variant.name.clone(), variant.payload.clone());
+                    variant_list.push((variant.name.clone(), idx as u32));
+                }
+                self.enum_table.insert(enum_name.clone(), variant_map);
+                self.enum_variants.insert(enum_name.clone(), variant_list);
+            }
+        }
+
         for instr in &program.globals {
             if let MirInstr::StructDecl {
                 struct_name,
@@ -59,7 +80,7 @@ impl<'ctx> CodeGen<'ctx> {
         // struct declarations from imported modules.
         if !self.struct_metadata.contains_key("FileError") {
             let metadata = crate::codegen::core::context::StructMetadata {
-                field_names: vec!["message".to_string()],
+                field_names: vec!["Message".to_string()],
                 field_types: vec!["Str".to_string()],
             };
             self.struct_metadata
@@ -275,7 +296,14 @@ impl<'ctx> CodeGen<'ctx> {
             let result_struct = self
                 .context
                 .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
-            result_struct.fn_type(&param_types, false)
+
+            if is_ffi {
+                // FFI: return pointer to Result struct (consistent with other FFI error functions)
+                ptr_type.fn_type(&param_types, false)
+            } else {
+                // Non-FFI: return Result struct by value
+                result_struct.fn_type(&param_types, false)
+            }
         } else {
             self.context.void_type().fn_type(&param_types, false)
         };
@@ -408,7 +436,7 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Extract the element type from an Array type string
-    /// Format: "Array(Int)", "Array(Str)", etc.
+    /// Format: "Array(Int)", "Array(Str)", "Array(StructName)", etc.
     fn extract_array_element_type(type_str: &str) -> &str {
         if type_str.contains("Array(Str)") {
             "Str"
@@ -416,6 +444,12 @@ impl<'ctx> CodeGen<'ctx> {
             "Float"
         } else if type_str.contains("Array(Bool)") {
             "Bool"
+        } else if type_str.contains("Array(Int)") {
+            "Int"
+        } else if type_str.starts_with("Array(") && type_str.ends_with(")") {
+            // Extract the element type for struct arrays like Array(Task)
+            let inner = &type_str[6..type_str.len() - 1];
+            inner
         } else {
             "Int" // default
         }
@@ -498,23 +532,42 @@ impl<'ctx> CodeGen<'ctx> {
             // Handle bare struct names (without "Struct()" wrapper) - nested structs
             // For nested structs, we store them as pointers
             self.context.ptr_type(AddressSpace::default()).into()
+        } else if self.enum_table.contains_key(type_str) || type_str.starts_with("Enum(") {
+            // Handle enums - represented as { i32 tag, ptr payload } struct
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            self.context
+                .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                .into()
         } else {
+            eprintln!(
+                "DEBUG type_string_to_llvm_type: unknown type {}, defaulting to i32",
+                type_str
+            );
             // Default fallback
             self.context.i32_type().into()
         }
     }
 
     /// Extract element type from Array return type string
-    /// Format: "Array(Int)", "Array(Str)", etc.
-    pub fn extract_array_element_type_from_return(type_str: &str) -> &str {
+    /// Format: "Array(Int)", "Array(Str)", "Array(User)", etc.
+    pub fn extract_array_element_type_from_return(type_str: &str) -> String {
+        // Try to parse Array(Type) format
+        if let Some(start) = type_str.find("Array(") {
+            let inner_start = start + 6; // Length of "Array("
+            if let Some(end) = type_str[inner_start..].find(')') {
+                let element_type = &type_str[inner_start..inner_start + end];
+                return element_type.to_string();
+            }
+        }
+        // Fallback for common types
         if type_str.contains("Array(Str)") {
-            "Str"
+            "Str".to_string()
         } else if type_str.contains("Array(Float)") {
-            "Float"
+            "Float".to_string()
         } else if type_str.contains("Array(Bool)") {
-            "Bool"
+            "Bool".to_string()
         } else {
-            "Int" // default
+            "Int".to_string() // default
         }
     }
 
@@ -742,6 +795,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.composite_string_ptrs.clear();
         self.loop_stack.clear();
         self.loop_local_vars.clear();
+        self.struct_field_sources.clear();
         self.struct_instance_types.clear();
         self.variable_types.clear();
 
@@ -811,6 +865,30 @@ impl<'ctx> CodeGen<'ctx> {
                     ty: param_type,
                 },
             );
+
+            // Track parameter type and struct instance metadata for downstream codegen
+            if let Some(Some(ref type_str)) = func.param_types.get(i) {
+                self.variable_types.insert(param.clone(), type_str.clone());
+
+                // If this is a struct parameter, record the struct name for field accesses
+                let is_struct =
+                    type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
+                if is_struct {
+                    let struct_name = if type_str.starts_with("Struct(") && type_str.ends_with(")")
+                    {
+                        type_str
+                            .trim_start_matches("Struct(")
+                            .trim_end_matches(')')
+                            .to_string()
+                    } else {
+                        type_str.clone()
+                    };
+                    self.struct_instance_types
+                        .insert(param.clone(), struct_name.clone());
+                    self.struct_instance_types
+                        .insert(format!("%{}", param), struct_name);
+                }
+            }
 
             // Create metadata for array and map parameters
             // This is crucial for imported functions to work with arrays/maps
@@ -1013,6 +1091,17 @@ impl<'ctx> CodeGen<'ctx> {
                         block_defs.insert(name.clone());
                         block_uses.insert(struct_instance.clone());
                     }
+                    // StructSet uses the struct instance and value
+                    crate::mir::MirInstr::StructSet {
+                        struct_instance,
+                        value,
+                        ..
+                    } => {
+                        block_uses.insert(struct_instance.clone());
+                        if !value.parse::<i32>().is_ok() && value != "true" && value != "false" {
+                            block_uses.insert(value.clone());
+                        }
+                    }
                     // EnumInit defines a variable
                     crate::mir::MirInstr::EnumInit { name, value, .. } => {
                         block_defs.insert(name.clone());
@@ -1161,6 +1250,43 @@ impl<'ctx> CodeGen<'ctx> {
                             self.context.ptr_type(AddressSpace::default()).into(),
                         );
                     }
+                    // ArrayGet results - check if array contains structs (pointers) or primitives
+                    crate::mir::MirInstr::ArrayGet { name, array, .. } => {
+                        // Check if the array contains struct elements by looking at array metadata
+                        // or by checking if the array name suggests it's a struct array
+                        // For now, default to pointer type for struct arrays
+                        // This will be refined at codegen time based on actual array metadata
+                        if let Some(arr_type) = var_types.get(array) {
+                            if arr_type.is_pointer_type() {
+                                // Array of pointers - element is also a pointer (struct)
+                                var_types.insert(
+                                    name.clone(),
+                                    self.context.ptr_type(AddressSpace::default()).into(),
+                                );
+                            } else {
+                                // Array of primitives - element is the primitive type
+                                var_types.insert(name.clone(), *arr_type);
+                            }
+                        } else {
+                            // Default to pointer for struct arrays (most common case in loops)
+                            var_types.insert(
+                                name.clone(),
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                            );
+                        }
+
+                        // CRITICAL: Track struct instance type for ArrayGet result
+                        // This is needed for method calls on loop iteration variables
+                        // Look up the array's element type from array_metadata
+                        if let Some(arr_meta) = self.array_metadata.get(array) {
+                            let elem_type = &arr_meta.element_type;
+                            // Check if element type is a struct
+                            if self.struct_metadata.contains_key(elem_type) {
+                                self.struct_instance_types
+                                    .insert(name.clone(), elem_type.clone());
+                            }
+                        }
+                    }
                     // Strings are always pointers
                     crate::mir::MirInstr::ConstString { name, .. } => {
                         var_types.insert(
@@ -1171,6 +1297,18 @@ impl<'ctx> CodeGen<'ctx> {
                     // Variables with "_array" or "_map" suffix are pointers
                     // BUT: exclude index variables (ending with __index)
                     crate::mir::MirInstr::Assign { name, value, .. } => {
+                        // CRITICAL: Propagate struct_instance_types from value to name
+                        // This ensures loop iteration variables have correct struct type tracking
+                        if let Some(struct_type) = self.struct_instance_types.get(value).cloned() {
+                            self.struct_instance_types.insert(name.clone(), struct_type);
+                        }
+
+                        // CRITICAL: Propagate array_metadata from value to name
+                        // This ensures loop array copies (task_array = tasks) have correct element type info
+                        if let Some(arr_meta) = self.array_metadata.get(value).cloned() {
+                            self.array_metadata.insert(name.clone(), arr_meta);
+                        }
+
                         // Index variables are always i32
                         if name.ends_with("__index") || name.ends_with("_end") {
                             var_types.insert(name.clone(), self.context.i32_type().into());
@@ -1236,11 +1374,107 @@ impl<'ctx> CodeGen<'ctx> {
                         );
                     }
                     // StructGet - field access, type depends on field
-                    // For now, default to i32; actual type is determined at codegen
-                    crate::mir::MirInstr::StructGet { name, .. } => {
-                        // Most struct fields are primitives (Int) by default
-                        // Pointer fields will be handled specially at codegen time
-                        var_types.insert(name.clone(), self.context.i32_type().into());
+                    crate::mir::MirInstr::StructGet {
+                        name,
+                        struct_instance,
+                        field,
+                        ..
+                    } => {
+                        // Try to determine the actual field type from struct metadata
+                        let field_type = if let Some(struct_type_str) =
+                            self.variable_types.get(struct_instance)
+                        {
+                            // Extract struct name from type string
+                            let struct_name = if struct_type_str.starts_with("Struct(")
+                                && struct_type_str.ends_with(")")
+                            {
+                                &struct_type_str[7..struct_type_str.len() - 1]
+                            } else if !struct_type_str.is_empty()
+                                && struct_type_str != "Unknown"
+                                && !struct_type_str.starts_with("Array")
+                                && !struct_type_str.starts_with("Map")
+                                && !struct_type_str.starts_with("Int")
+                                && !struct_type_str.starts_with("Float")
+                                && !struct_type_str.starts_with("Bool")
+                                && !struct_type_str.starts_with("Str")
+                            {
+                                struct_type_str.as_str()
+                            } else {
+                                ""
+                            };
+
+                            // Look up field type from struct metadata
+                            if let Some(metadata) = self.struct_metadata.get(struct_name) {
+                                if let Some(field_index) =
+                                    metadata.field_names.iter().position(|f| f == field)
+                                {
+                                    if let Some(field_type_name) =
+                                        metadata.field_types.get(field_index)
+                                    {
+                                        // Determine LLVM type based on field type name
+                                        if field_type_name == "Str" || field_type_name == "String" {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        } else if field_type_name.starts_with("Array(") {
+                                            // CRITICAL: Also populate array_metadata for array fields
+                                            // This ensures methods like push() work on struct array fields
+                                            let element_type =
+                                                &field_type_name[6..field_type_name.len() - 1];
+                                            let contains_strings = element_type == "Str";
+                                            self.array_metadata.insert(
+                                                name.clone(),
+                                                crate::codegen::ArrayMetadata {
+                                                    length: 0,
+                                                    element_type: element_type.to_string(),
+                                                    contains_strings,
+                                                },
+                                            );
+                                            // Also track as heap array
+                                            self.heap_arrays.insert(name.clone());
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        } else if field_type_name.starts_with("Map(") {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        } else if self.struct_metadata.contains_key(field_type_name)
+                                        {
+                                            // Nested struct - pointer type
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        } else if self.enum_table.contains_key(field_type_name)
+                                            || field_type_name.starts_with("Enum(")
+                                        {
+                                            // Enum type - represented as { i32 tag, ptr payload } struct
+                                            let ptr_type =
+                                                self.context.ptr_type(AddressSpace::default());
+                                            self.context
+                                                .struct_type(
+                                                    &[
+                                                        self.context.i32_type().into(),
+                                                        ptr_type.into(),
+                                                    ],
+                                                    false,
+                                                )
+                                                .into()
+                                        } else if field_type_name == "Float" {
+                                            self.context.f64_type().into()
+                                        } else if field_type_name == "Bool" {
+                                            self.context.i32_type().into()
+                                        } else {
+                                            // Default to i32 for Int and unknown types
+                                            self.context.i32_type().into()
+                                        }
+                                    } else {
+                                        self.context.i32_type().into()
+                                    }
+                                } else {
+                                    self.context.i32_type().into()
+                                }
+                            } else {
+                                self.context.i32_type().into()
+                            }
+                        } else {
+                            // No type info available, default to i32
+                            self.context.i32_type().into()
+                        };
+
+                        var_types.insert(name.clone(), field_type);
                     }
                     // StringConcat - result is a string pointer
                     crate::mir::MirInstr::StringConcat { name, .. } => {
@@ -1345,6 +1579,29 @@ impl<'ctx> CodeGen<'ctx> {
                                             self.context.i32_type().into(),
                                         );
                                     }
+
+                                    // CRITICAL: Track struct_instance_types for struct return types
+                                    // This ensures method calls on function results work correctly
+                                    // e.g., let store = CreateStore(); store.Add(...);
+                                    let struct_name = if return_type_str.starts_with("Struct(")
+                                        && return_type_str.ends_with(")")
+                                    {
+                                        Some(&return_type_str[7..return_type_str.len() - 1])
+                                    } else if self.struct_metadata.contains_key(return_type_str) {
+                                        Some(return_type_str.as_str())
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(sname) = struct_name {
+                                        self.struct_instance_types
+                                            .insert(dest_name.clone(), sname.to_string());
+                                        // Also set var_type to pointer for struct types
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.ptr_type(AddressSpace::default()).into(),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1424,6 +1681,50 @@ impl<'ctx> CodeGen<'ctx> {
                         // String len returns i32
                         else if method == "len" {
                             var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
+                        // Check if this is a user-defined struct method
+                        // Look up the struct type and method return type from function_return_types
+                        else {
+                            // Try to find struct type for the object from mir_symbol_table or struct_instance_types
+                            let struct_type = self.struct_instance_types.get(object).cloned();
+                            if let Some(struct_name) = struct_type {
+                                // Build the method name as "StructName::MethodName"
+                                let full_method_name = format!("{}::{}", struct_name, method);
+                                if let Some(return_type_str) =
+                                    self.function_return_types.get(&full_method_name)
+                                {
+                                    // Determine the LLVM type from the return type string
+                                    let llvm_type = match return_type_str.as_str() {
+                                        "Str" | "String" => {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        }
+                                        "Int" => self.context.i32_type().into(),
+                                        "Float" => self.context.f64_type().into(),
+                                        "Bool" => self.context.i32_type().into(),
+                                        t if t.starts_with("Array(") => {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        }
+                                        t if t.starts_with("Map(") => {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        }
+                                        t if t.starts_with("Struct(") => {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        }
+                                        _ => {
+                                            // Check if it's a struct type reference
+                                            if self.struct_metadata.contains_key(return_type_str) {
+                                                self.context
+                                                    .ptr_type(AddressSpace::default())
+                                                    .into()
+                                            } else {
+                                                // Default to i32 for unknown types
+                                                self.context.i32_type().into()
+                                            }
+                                        }
+                                    };
+                                    var_types.insert(dest.clone(), llvm_type);
+                                }
+                            }
                         }
                     }
                     // Binary operations - determine type from op string
@@ -1853,6 +2154,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Cleanup arrays (RC-managed)
         for var_name in heap_arrays {
+            // Skip aliases to struct fields; the struct owns their lifetime and pushes may have updated the field pointer
+            if self.struct_field_sources.contains_key(&var_name) {
+                continue;
+            }
             self.emit_decref(&var_name);
         }
 
@@ -2256,6 +2561,15 @@ impl<'ctx> CodeGen<'ctx> {
                     None
                 };
 
+                // Helper to detect compiler temps (do not decref them here)
+                let is_compiler_temp = |name: &str| {
+                    name.starts_with('%')
+                        || name.starts_with("data_ptr")
+                        || name.starts_with("temp_")
+                        || name.contains("_ptr")
+                        || name.contains("elem_")
+                };
+
                 // 2. Free arrays (exclude return value)
                 let mut heap_array_vars: Vec<String> = self
                     .symbols
@@ -2263,12 +2577,20 @@ impl<'ctx> CodeGen<'ctx> {
                     .filter(|name| {
                         self.heap_arrays.contains(*name)
                             && return_value_name.map_or(true, |ret| ret != *name)
+                            && !self.struct_field_sources.contains_key(*name)
+                            && !is_compiler_temp(name)
                     })
                     .cloned()
                     .collect();
                 heap_array_vars.reverse();
 
                 for var_name in heap_array_vars {
+                    if self.struct_field_sources.contains_key(&var_name) {
+                        continue;
+                    }
+                    if is_compiler_temp(&var_name) {
+                        continue;
+                    }
                     self.emit_decref(&var_name);
                 }
 
@@ -2826,6 +3148,10 @@ impl<'ctx> CodeGen<'ctx> {
                 | MirInstr::ForMap { .. }
                 | MirInstr::ForInfinite { .. } => {
                     self.generate_for_loop(instr, bb_map);
+                    // For loops handle their own control flow and position the builder
+                    // at a different block (body_bb), so we must return to avoid
+                    // adding a terminator to the wrong block
+                    return;
                 }
 
                 MirInstr::LoadArrayElement { dest, array, index } => {

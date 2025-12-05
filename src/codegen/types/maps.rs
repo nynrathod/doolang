@@ -312,11 +312,16 @@ impl<'ctx> CodeGen<'ctx> {
                 "Bool" => self.context.i32_type().into(),
                 "Str" => self.context.ptr_type(AddressSpace::default()).into(),
                 _ => {
-                    eprintln!(
-                        "WARNING: Unknown key type '{}' for map '{}', defaulting to i32",
-                        metadata.key_type, map_name
-                    );
-                    self.context.i32_type().into()
+                    // Check if it's a struct type - structs are stored as pointers
+                    if self.struct_metadata.contains_key(&metadata.key_type) {
+                        self.context.ptr_type(AddressSpace::default()).into()
+                    } else {
+                        eprintln!(
+                            "WARNING: Unknown key type '{}' for map '{}', defaulting to i32",
+                            metadata.key_type, map_name
+                        );
+                        self.context.i32_type().into()
+                    }
                 }
             };
 
@@ -327,11 +332,16 @@ impl<'ctx> CodeGen<'ctx> {
                 "Bool" => self.context.i32_type().into(),
                 "Str" => self.context.ptr_type(AddressSpace::default()).into(),
                 _ => {
-                    eprintln!(
-                        "WARNING: Unknown value type '{}' for map '{}', defaulting to i32",
-                        metadata.value_type, map_name
-                    );
-                    self.context.i32_type().into()
+                    // Check if it's a struct type - structs are stored as pointers
+                    if self.struct_metadata.contains_key(&metadata.value_type) {
+                        self.context.ptr_type(AddressSpace::default()).into()
+                    } else {
+                        eprintln!(
+                            "WARNING: Unknown value type '{}' for map '{}', defaulting to i32",
+                            metadata.value_type, map_name
+                        );
+                        self.context.i32_type().into()
+                    }
                 }
             };
 

@@ -180,9 +180,28 @@ impl<'ctx> CodeGen<'ctx> {
 
                 self.boolean_temps.insert(dst.to_string());
                 self.temp_values.insert(dst.to_string(), result.into());
+
+                // CRITICAL: Always create a symbol for comparison results to support cross-block access
+                // This is needed for match expressions where comparisons happen in one block
+                // but the result is used in branch conditions that span multiple blocks
                 if let Some(sym) = self.symbols.get(dst) {
                     self.builder.build_store(sym.ptr, result).unwrap();
+                } else if dst.starts_with('%') {
+                    // Create symbol for temp if it doesn't exist
+                    let alloca = self
+                        .builder
+                        .build_alloca(self.context.i32_type(), dst)
+                        .unwrap();
+                    self.builder.build_store(alloca, result).unwrap();
+                    self.symbols.insert(
+                        dst.to_string(),
+                        crate::codegen::core::context::Symbol {
+                            ptr: alloca,
+                            ty: self.context.i32_type().into(),
+                        },
+                    );
                 }
+
                 self.variable_types
                     .insert(dst.to_string(), "Bool".to_string());
                 return Some(result.into());
@@ -234,9 +253,26 @@ impl<'ctx> CodeGen<'ctx> {
             // Track as boolean for print formatting
             self.boolean_temps.insert(dst.to_string());
             self.temp_values.insert(dst.to_string(), result.into());
+
+            // CRITICAL: Always create a symbol for comparison results to support cross-block access
             if let Some(sym) = self.symbols.get(dst) {
                 self.builder.build_store(sym.ptr, result).unwrap();
+            } else if dst.starts_with('%') {
+                // Create symbol for temp if it doesn't exist
+                let alloca = self
+                    .builder
+                    .build_alloca(self.context.i32_type(), dst)
+                    .unwrap();
+                self.builder.build_store(alloca, result).unwrap();
+                self.symbols.insert(
+                    dst.to_string(),
+                    crate::codegen::core::context::Symbol {
+                        ptr: alloca,
+                        ty: self.context.i32_type().into(),
+                    },
+                );
             }
+
             return Some(result.into());
         }
 
@@ -276,9 +312,26 @@ impl<'ctx> CodeGen<'ctx> {
             };
 
             self.temp_values.insert(dst.to_string(), result.into());
+
+            // CRITICAL: Always create a symbol for comparison results to support cross-block access
             if let Some(sym) = self.symbols.get(dst) {
                 self.builder.build_store(sym.ptr, result).unwrap();
+            } else if dst.starts_with('%') {
+                // Create symbol for temp if it doesn't exist
+                let alloca = self
+                    .builder
+                    .build_alloca(self.context.i32_type(), dst)
+                    .unwrap();
+                self.builder.build_store(alloca, result).unwrap();
+                self.symbols.insert(
+                    dst.to_string(),
+                    crate::codegen::core::context::Symbol {
+                        ptr: alloca,
+                        ty: self.context.i32_type().into(),
+                    },
+                );
             }
+
             return Some(result.into());
         }
 
@@ -877,8 +930,23 @@ impl<'ctx> CodeGen<'ctx> {
         };
 
         self.temp_values.insert(dst.to_string(), res.into());
+
+        // CRITICAL: Always create a symbol for operation results to support cross-block access
+        // This is especially important for comparison results used in match expressions
         if let Some(sym) = self.symbols.get(dst) {
             self.builder.build_store(sym.ptr, res).unwrap();
+        } else if dst.starts_with('%') && res.is_int_value() {
+            // Create symbol for temp if it doesn't exist
+            let int_val = res.into_int_value();
+            let alloca = self.builder.build_alloca(int_val.get_type(), dst).unwrap();
+            self.builder.build_store(alloca, int_val).unwrap();
+            self.symbols.insert(
+                dst.to_string(),
+                crate::codegen::core::context::Symbol {
+                    ptr: alloca,
+                    ty: int_val.get_type().into(),
+                },
+            );
         }
 
         // Track the type of the result for later printing/formatting

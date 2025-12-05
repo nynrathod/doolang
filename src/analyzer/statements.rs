@@ -714,33 +714,57 @@ impl SemanticAnalyzer {
         index: &AstNode,
         value: &AstNode,
     ) -> Result<(), SemanticError> {
-        // Get the array/map variable name
-        let array_name = match array {
-            AstNode::Identifier(name) => name.clone(),
+        // Get the array/map type - can be either a direct identifier or a field access
+        let array_or_map_type = match array {
+            AstNode::Identifier(name) => {
+                // Check if the variable exists and is mutable
+                match self.symbol_table.get(name) {
+                    Some(info) => {
+                        if !info.mutable {
+                            return Err(SemanticError::InvalidAssignmentTarget {
+                                target: format!(
+                                    "Cannot assign to element of immutable variable '{}'",
+                                    name
+                                ),
+                            });
+                        }
+                        info.ty.clone()
+                    }
+                    None => {
+                        return Err(SemanticError::UndeclaredVariable(NamedError {
+                            name: name.clone(),
+                        }));
+                    }
+                }
+            }
+            AstNode::FieldAccess { object, field } => {
+                // For field access like self.Users[key], we need to:
+                // 1. Check that the object (e.g., self) is mutable
+                // 2. Get the type of the field being accessed
+
+                // Check object mutability
+                if let AstNode::Identifier(obj_name) = object.as_ref() {
+                    if let Some(info) = self.symbol_table.get(obj_name) {
+                        // For 'self', we allow mutation in methods
+                        if obj_name != "self" && !info.mutable {
+                            return Err(SemanticError::InvalidAssignmentTarget {
+                                target: format!(
+                                    "Cannot assign to field '{}' of immutable variable '{}'",
+                                    field, obj_name
+                                ),
+                            });
+                        }
+                    }
+                }
+
+                // Infer the type of the field access (e.g., self.Users)
+                self.infer_type(array)?
+            }
             _ => {
                 return Err(SemanticError::InvalidAssignmentTarget {
-                    target: "Element assignment target must be a variable".to_string(),
+                    target: "Element assignment target must be a variable or field access"
+                        .to_string(),
                 });
-            }
-        };
-
-        // Check if the array/map variable exists and is mutable
-        let array_info = match self.symbol_table.get(&array_name) {
-            Some(info) => {
-                if !info.mutable {
-                    return Err(SemanticError::InvalidAssignmentTarget {
-                        target: format!(
-                            "Cannot assign to element of immutable variable '{}'",
-                            array_name
-                        ),
-                    });
-                }
-                info.clone()
-            }
-            None => {
-                return Err(SemanticError::UndeclaredVariable(NamedError {
-                    name: array_name,
-                }));
             }
         };
 
@@ -751,7 +775,7 @@ impl SemanticAnalyzer {
         let value_type = self.infer_type(value)?;
 
         // Verify the array/map type and element assignment
-        match &array_info.ty {
+        match &array_or_map_type {
             TypeNode::Array(elem_type) => {
                 // For arrays, index must be Int
                 if index_type != TypeNode::Int {
@@ -799,6 +823,97 @@ impl SemanticAnalyzer {
             _ => {
                 return Err(SemanticError::InvalidAssignmentTarget {
                     target: format!("Cannot assign to element of unsupported type"),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Analyze a field assignment statement (e.g., `self.field = value` or `obj.field = value`)
+    /// Checks that:
+    /// 1. The object is mutable (or is `self` in a method)
+    /// 2. The field exists on the struct
+    /// 3. The value type matches the field type
+    pub fn analyze_field_assignment(
+        &mut self,
+        object: &AstNode,
+        field: &str,
+        value: &AstNode,
+    ) -> Result<(), SemanticError> {
+        // Get the object type
+        let object_type = self.infer_type(object)?;
+
+        // Check if object is mutable
+        match object {
+            AstNode::Identifier(name) => {
+                // Check if the variable exists and is mutable
+                if let Some(info) = self.symbol_table.get(name) {
+                    // Allow 'self' to be mutated in methods (it's implicitly mutable)
+                    if name != "self" && !info.mutable {
+                        return Err(SemanticError::InvalidAssignmentTarget {
+                            target: format!(
+                                "Cannot assign to field '{}' of immutable variable '{}'",
+                                field, name
+                            ),
+                        });
+                    }
+                }
+            }
+            _ => {
+                // For more complex expressions, we don't check mutability here
+                // The codegen will handle it
+            }
+        }
+
+        // Get the value type
+        let value_type = self.infer_type(value)?;
+
+        // Check that the field exists and matches the value type
+        match &object_type {
+            TypeNode::Struct(struct_name, fields) => {
+                if let Some(field_type) = fields.get(field) {
+                    if *field_type != value_type {
+                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                            expected: field_type.clone(),
+                            found: value_type,
+                            value: None,
+                            line: None,
+                            col: None,
+                        }));
+                    }
+                } else {
+                    return Err(SemanticError::InvalidAssignmentTarget {
+                        target: format!("Field '{}' not found on struct '{}'", field, struct_name),
+                    });
+                }
+            }
+            TypeNode::TypeRef(type_name) => {
+                // Look up the struct type from struct_table
+                if let Some(fields) = self.struct_table.get(type_name) {
+                    if let Some(field_type) = fields.get(field) {
+                        if *field_type != value_type {
+                            return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                expected: field_type.clone(),
+                                found: value_type,
+                                value: None,
+                                line: None,
+                                col: None,
+                            }));
+                        }
+                    } else {
+                        return Err(SemanticError::InvalidAssignmentTarget {
+                            target: format!(
+                                "Field '{}' not found on struct '{}'",
+                                field, type_name
+                            ),
+                        });
+                    }
+                }
+            }
+            _ => {
+                return Err(SemanticError::InvalidAssignmentTarget {
+                    target: format!("Cannot assign to field '{}' of non-struct type", field),
                 });
             }
         }

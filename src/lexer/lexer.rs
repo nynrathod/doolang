@@ -273,7 +273,7 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
         }
 
         // For value inside string literal
-        // Ex: "hello world"
+        // Ex: "hello world" or "say \"hello\""
         if c == '"' {
             let token_line = line;
             let token_col = col;
@@ -284,6 +284,15 @@ pub fn lex<'a>(input: &'a str, arena: &'a Bump) -> Vec<Token<'a>> {
             let mut found_closing_quote = false;
 
             while i < chars.len() {
+                // Handle escape sequences - skip the escaped character
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    // Skip both the backslash and the escaped character
+                    string_len += 2;
+                    i += 2;
+                    col += 2;
+                    continue;
+                }
+
                 if chars[i] == '"' {
                     found_closing_quote = true;
                     break;

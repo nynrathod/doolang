@@ -235,6 +235,43 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             // Build MIR for the right-hand side expression.
             let value_tmp = build_expression(builder, value, block);
 
+            // CRITICAL FIX: If this is an empty array literal and we have a type annotation,
+            // update the MirInstr::Array to use the correct element type from the annotation.
+            // This ensures `let tasks: [Task] = []` creates an array with element_type="Task", not "Int".
+            if let Some(crate::parser::ast::TypeNode::Array(elem_type)) = type_annotation {
+                // Find the Array instruction for value_tmp and update its element_type
+                for instr in block.instrs.iter_mut() {
+                    if let MirInstr::Array {
+                        name,
+                        elements,
+                        element_type,
+                    } = instr
+                    {
+                        if name == &value_tmp && elements.is_empty() {
+                            // Update element_type from type annotation
+                            let new_elem_type = match elem_type.as_ref() {
+                                crate::parser::ast::TypeNode::Int => Some("Int".to_string()),
+                                crate::parser::ast::TypeNode::Float => Some("Float".to_string()),
+                                crate::parser::ast::TypeNode::Bool => Some("Bool".to_string()),
+                                crate::parser::ast::TypeNode::String => Some("Str".to_string()),
+                                crate::parser::ast::TypeNode::TypeRef(struct_name) => {
+                                    Some(struct_name.clone())
+                                }
+                                _ => None,
+                            };
+                            if new_elem_type.is_some() {
+                                *element_type = new_elem_type;
+                                // Also update the mir_symbol_table
+                                builder.mir_symbol_table.insert(
+                                    value_tmp.clone(),
+                                    crate::parser::ast::TypeNode::Array(elem_type.clone()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             // Check if value_tmp is a simple variable identifier (not a temp or literal).
             // We only need to incref when COPYING from an existing variable.
             // Temps starting with '%' are newly created values (from ConstString, Array, Map, etc.)
@@ -444,44 +481,148 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             });
         }
 
+        // Handle field assignment statements (e.g., self.field = value, obj.field = value).
+        AstNode::FieldAssignment {
+            object,
+            field,
+            value,
+        } => {
+            // Build MIR for value expression
+            let value_tmp = build_expression(builder, value, block);
+
+            // Get the object variable name and emit field assignment
+            if let AstNode::Identifier(obj_name) = &**object {
+                block.instrs.push(MirInstr::StructSet {
+                    struct_instance: obj_name.clone(),
+                    field: field.clone(),
+                    value: value_tmp,
+                });
+            } else if let AstNode::FieldAccess {
+                object: _inner_obj,
+                field: _inner_field,
+            } = &**object
+            {
+                // Handle nested field access like self.inner.field = value
+                // First get the inner object
+                let inner_tmp = build_expression(builder, object, block);
+                block.instrs.push(MirInstr::StructSet {
+                    struct_instance: inner_tmp,
+                    field: field.clone(),
+                    value: value_tmp,
+                });
+            }
+        }
+
         // Handle element assignment statements (e.g., arr[0] = 5, map["key"] = value).
         AstNode::ElementAssignment {
             array,
             index,
             value,
         } => {
-            // Build MIR for array/map expression
-            let _array_tmp = build_expression(builder, array, block);
-
             // Build MIR for index expression
             let index_tmp = build_expression(builder, index, block);
 
             // Build MIR for value expression
             let value_tmp = build_expression(builder, value, block);
 
-            // Get the array/map variable name
-            if let AstNode::Identifier(array_name) = &**array {
-                // Check if it's an array or map based on the MIR symbol table type
-                let is_map = builder
-                    .mir_symbol_table
-                    .get(array_name)
-                    .map(|ty| matches!(ty, crate::parser::ast::TypeNode::Map(_, _)))
-                    .unwrap_or(false);
+            // Handle different array/map targets
+            match &**array {
+                AstNode::Identifier(array_name) => {
+                    // Direct variable access: arr[0] = 5 or map["key"] = value
+                    // Check if it's an array or map based on the MIR symbol table type
+                    let is_map = builder
+                        .mir_symbol_table
+                        .get(array_name)
+                        .map(|ty| matches!(ty, crate::parser::ast::TypeNode::Map(_, _)))
+                        .unwrap_or(false);
 
-                if is_map {
-                    // Emit MapSet for maps
-                    block.instrs.push(MirInstr::MapSet {
-                        map: array_name.clone(),
-                        key: index_tmp,
-                        value: value_tmp,
-                    });
-                } else {
-                    // Emit ArraySet for arrays
-                    block.instrs.push(MirInstr::ArraySet {
-                        array: array_name.clone(),
-                        index: index_tmp,
-                        value: value_tmp,
-                    });
+                    if is_map {
+                        // Emit MapSet for maps
+                        block.instrs.push(MirInstr::MapSet {
+                            map: array_name.clone(),
+                            key: index_tmp,
+                            value: value_tmp,
+                        });
+                    } else {
+                        // Emit ArraySet for arrays
+                        block.instrs.push(MirInstr::ArraySet {
+                            array: array_name.clone(),
+                            index: index_tmp,
+                            value: value_tmp,
+                        });
+                    }
+                }
+                AstNode::FieldAccess { object, field } => {
+                    // Field access: self.Users[key] = value or obj.items[0] = value
+                    // Get the struct instance name
+                    let struct_instance = if let AstNode::Identifier(name) = &**object {
+                        name.clone()
+                    } else {
+                        // For nested field access, build the expression
+                        build_expression(builder, object, block)
+                    };
+
+                    // Try to determine if the field is a map or array
+                    // First, check struct_table for the struct type
+                    let is_map = if let Some(struct_type) =
+                        builder.mir_symbol_table.get(&struct_instance)
+                    {
+                        // Get the struct name from the type
+                        if let crate::parser::ast::TypeNode::Struct(struct_name, _) = struct_type {
+                            // Look up the field type in struct_table (HashMap<String, TypeNode>)
+                            if let Some(struct_fields) = builder.struct_table.get(struct_name) {
+                                struct_fields
+                                    .get(field)
+                                    .map(|ty| matches!(ty, crate::parser::ast::TypeNode::Map(_, _)))
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        // Fallback: check if "self" has a known struct type
+                        if struct_instance == "self" {
+                            if let Some(current_struct) = &builder.current_struct_name {
+                                if let Some(struct_fields) =
+                                    builder.struct_table.get(current_struct)
+                                {
+                                    struct_fields
+                                        .get(field)
+                                        .map(|ty| {
+                                            matches!(ty, crate::parser::ast::TypeNode::Map(_, _))
+                                        })
+                                        .unwrap_or(false)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    };
+
+                    if is_map {
+                        block.instrs.push(MirInstr::FieldMapSet {
+                            struct_instance,
+                            field: field.clone(),
+                            key: index_tmp,
+                            value: value_tmp,
+                        });
+                    } else {
+                        block.instrs.push(MirInstr::FieldArraySet {
+                            struct_instance,
+                            field: field.clone(),
+                            index: index_tmp,
+                            value: value_tmp,
+                        });
+                    }
+                }
+                _ => {
+                    // Unsupported target - silently ignore (analyzer should have caught this)
                 }
             }
         }
@@ -1935,8 +2076,314 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                         }
                     }
 
+                    // Handle FieldAccess and any other expression type as iterable
+                    // This covers cases like `for task in self.tasks` where self.tasks is a struct field
                     _ => {
-                        // Handle other cases
+                        // Evaluate the expression to get the iterable value
+                        let iter_tmp = build_expression(builder, iter_expr, block);
+
+                        // For tuple pattern (index, value) iteration
+                        if is_tuple_pattern {
+                            if let (Some(index_var), Some(value_var)) = (&key_var, &value_var) {
+                                // Store array in a variable
+                                let array_var = format!("{}_{}_array", index_var, value_var);
+                                block.instrs.push(MirInstr::Assign {
+                                    name: array_var.clone(),
+                                    value: iter_tmp,
+                                    mutable: false,
+                                });
+
+                                let loop_index_var =
+                                    format!("{}_{}__loopindex", index_var, value_var);
+
+                                // Initialize loop index
+                                let zero_tmp = builder.next_tmp();
+                                block.instrs.push(MirInstr::ConstInt {
+                                    name: zero_tmp.clone(),
+                                    value: 0,
+                                });
+                                block.instrs.push(MirInstr::Assign {
+                                    name: loop_index_var.clone(),
+                                    value: zero_tmp,
+                                    mutable: true,
+                                });
+
+                                if block.terminator.is_none() {
+                                    block.terminator = Some(MirInstr::Jump {
+                                        label: loop_header.clone(),
+                                    });
+                                } else {
+                                    if let Some(current_func) = builder.program.functions.last_mut()
+                                    {
+                                        for prev_block in current_func.blocks.iter_mut().rev() {
+                                            if prev_block.terminator.is_none() {
+                                                prev_block.terminator = Some(MirInstr::Jump {
+                                                    label: loop_header.clone(),
+                                                });
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Header: bounds check
+                                let mut header_block = MirBlock {
+                                    label: loop_header.clone(),
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                let len_tmp = builder.next_tmp();
+                                header_block.instrs.push(MirInstr::ArrayLen {
+                                    name: len_tmp.clone(),
+                                    array: array_var.clone(),
+                                });
+
+                                let cmp_tmp = builder.next_tmp();
+                                header_block.instrs.push(MirInstr::BinaryOp(
+                                    "lt".to_string(),
+                                    cmp_tmp.clone(),
+                                    loop_index_var.clone(),
+                                    len_tmp,
+                                ));
+
+                                header_block.terminator = Some(MirInstr::CondJump {
+                                    cond: cmp_tmp,
+                                    then_block: loop_body.clone(),
+                                    else_block: loop_end.clone(),
+                                });
+
+                                blocks_to_add.push(header_block);
+
+                                // Body: extract element and assign index and value
+                                let mut body_block = MirBlock {
+                                    label: loop_body.clone(),
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                // Assign index variable
+                                body_block.instrs.push(MirInstr::Assign {
+                                    name: index_var.clone(),
+                                    value: loop_index_var.clone(),
+                                    mutable: false,
+                                });
+
+                                // Get array element
+                                let elem_tmp = builder.next_tmp();
+                                body_block.instrs.push(MirInstr::ArrayGet {
+                                    name: elem_tmp.clone(),
+                                    array: array_var.clone(),
+                                    index: loop_index_var.clone(),
+                                });
+
+                                // Assign element to value variable
+                                body_block.instrs.push(MirInstr::Assign {
+                                    name: value_var.clone(),
+                                    value: elem_tmp,
+                                    mutable: false,
+                                });
+
+                                // Build body statements
+                                for stmt in body {
+                                    build_statement(builder, stmt, &mut body_block);
+                                }
+
+                                if body_block.terminator.is_none() {
+                                    body_block.terminator = Some(MirInstr::Jump {
+                                        label: loop_increment.clone(),
+                                    });
+                                }
+
+                                blocks_to_add.push(body_block);
+
+                                // Increment: index++
+                                let mut increment_block = MirBlock {
+                                    label: loop_increment,
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                let one_tmp = builder.next_tmp();
+                                increment_block.instrs.push(MirInstr::ConstInt {
+                                    name: one_tmp.clone(),
+                                    value: 1,
+                                });
+
+                                let new_index_tmp = builder.next_tmp();
+                                increment_block.instrs.push(MirInstr::BinaryOp(
+                                    "add".to_string(),
+                                    new_index_tmp.clone(),
+                                    loop_index_var.clone(),
+                                    one_tmp,
+                                ));
+
+                                increment_block.instrs.push(MirInstr::Assign {
+                                    name: loop_index_var,
+                                    value: new_index_tmp,
+                                    mutable: true,
+                                });
+
+                                increment_block.terminator = Some(MirInstr::Jump {
+                                    label: loop_header.clone(),
+                                });
+
+                                blocks_to_add.push(increment_block);
+
+                                // End block
+                                let end_block = MirBlock {
+                                    label: loop_end,
+                                    instrs: vec![],
+                                    terminator: None,
+                                };
+
+                                blocks_to_add.push(end_block);
+                            }
+                        } else if let Some(loop_var) = &loop_var {
+                            // Simple iteration: for item in expr
+                            let array_var = format!("{}_array", loop_var);
+                            block.instrs.push(MirInstr::Assign {
+                                name: array_var.clone(),
+                                value: iter_tmp,
+                                mutable: false,
+                            });
+
+                            let index_var = format!("{}__index", loop_var);
+
+                            // Initialize index
+                            let zero_tmp = builder.next_tmp();
+                            block.instrs.push(MirInstr::ConstInt {
+                                name: zero_tmp.clone(),
+                                value: 0,
+                            });
+                            block.instrs.push(MirInstr::Assign {
+                                name: index_var.clone(),
+                                value: zero_tmp,
+                                mutable: true,
+                            });
+
+                            if block.terminator.is_none() {
+                                block.terminator = Some(MirInstr::Jump {
+                                    label: loop_header.clone(),
+                                });
+                            } else {
+                                if let Some(current_func) = builder.program.functions.last_mut() {
+                                    for prev_block in current_func.blocks.iter_mut().rev() {
+                                        if prev_block.terminator.is_none() {
+                                            prev_block.terminator = Some(MirInstr::Jump {
+                                                label: loop_header.clone(),
+                                            });
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Header: bounds check
+                            let mut header_block = MirBlock {
+                                label: loop_header.clone(),
+                                instrs: vec![],
+                                terminator: None,
+                            };
+
+                            let len_tmp = builder.next_tmp();
+                            header_block.instrs.push(MirInstr::ArrayLen {
+                                name: len_tmp.clone(),
+                                array: array_var.clone(),
+                            });
+
+                            let cmp_tmp = builder.next_tmp();
+                            header_block.instrs.push(MirInstr::BinaryOp(
+                                "lt".to_string(),
+                                cmp_tmp.clone(),
+                                index_var.clone(),
+                                len_tmp,
+                            ));
+
+                            header_block.terminator = Some(MirInstr::CondJump {
+                                cond: cmp_tmp,
+                                then_block: loop_body.clone(),
+                                else_block: loop_end.clone(),
+                            });
+
+                            blocks_to_add.push(header_block);
+
+                            // Body: extract element and execute statements
+                            let mut body_block = MirBlock {
+                                label: loop_body.clone(),
+                                instrs: vec![],
+                                terminator: None,
+                            };
+
+                            let elem_tmp = builder.next_tmp();
+                            body_block.instrs.push(MirInstr::ArrayGet {
+                                name: elem_tmp.clone(),
+                                array: array_var.clone(),
+                                index: index_var.clone(),
+                            });
+
+                            // Assign element to loop variable
+                            body_block.instrs.push(MirInstr::Assign {
+                                name: loop_var.clone(),
+                                value: elem_tmp,
+                                mutable: false,
+                            });
+
+                            // Build body statements
+                            for stmt in body {
+                                build_statement(builder, stmt, &mut body_block);
+                            }
+
+                            if body_block.terminator.is_none() {
+                                body_block.terminator = Some(MirInstr::Jump {
+                                    label: loop_increment.clone(),
+                                });
+                            }
+
+                            blocks_to_add.push(body_block);
+
+                            // Increment: index++
+                            let mut increment_block = MirBlock {
+                                label: loop_increment,
+                                instrs: vec![],
+                                terminator: None,
+                            };
+
+                            let one_tmp = builder.next_tmp();
+                            increment_block.instrs.push(MirInstr::ConstInt {
+                                name: one_tmp.clone(),
+                                value: 1,
+                            });
+
+                            let new_index_tmp = builder.next_tmp();
+                            increment_block.instrs.push(MirInstr::BinaryOp(
+                                "add".to_string(),
+                                new_index_tmp.clone(),
+                                index_var.clone(),
+                                one_tmp,
+                            ));
+
+                            increment_block.instrs.push(MirInstr::Assign {
+                                name: index_var,
+                                value: new_index_tmp,
+                                mutable: true,
+                            });
+
+                            increment_block.terminator = Some(MirInstr::Jump {
+                                label: loop_header.clone(),
+                            });
+
+                            blocks_to_add.push(increment_block);
+
+                            // End block
+                            let end_block = MirBlock {
+                                label: loop_end,
+                                instrs: vec![],
+                                terminator: None,
+                            };
+
+                            blocks_to_add.push(end_block);
+                        }
                     }
                 }
             }

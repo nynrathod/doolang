@@ -31,6 +31,40 @@ pub fn build_let_decl(builder: &mut MirBuilder, node: &AstNode) -> Vec<MirInstr>
         // Build MIR for the value expression.
         let value_tmp = build_expression(builder, value, &mut temp_block);
 
+        // CRITICAL FIX: If this is an empty array literal and we have a type annotation,
+        // update the MirInstr::Array to use the correct element type from the annotation.
+        // This ensures `let tasks: [Task] = []` creates an array with element_type="Task", not "Int".
+        if let Some(TypeNode::Array(elem_type)) = type_annotation {
+            // Find the Array instruction for value_tmp and update its element_type
+            for instr in temp_block.instrs.iter_mut() {
+                if let MirInstr::Array {
+                    name,
+                    elements,
+                    element_type,
+                } = instr
+                {
+                    if name == &value_tmp && elements.is_empty() {
+                        // Update element_type from type annotation
+                        let new_elem_type = match elem_type.as_ref() {
+                            TypeNode::Int => Some("Int".to_string()),
+                            TypeNode::Float => Some("Float".to_string()),
+                            TypeNode::Bool => Some("Bool".to_string()),
+                            TypeNode::String => Some("Str".to_string()),
+                            TypeNode::TypeRef(struct_name) => Some(struct_name.clone()),
+                            _ => None,
+                        };
+                        if new_elem_type.is_some() {
+                            *element_type = new_elem_type;
+                            // Also update the mir_symbol_table
+                            builder
+                                .mir_symbol_table
+                                .insert(value_tmp.clone(), TypeNode::Array(elem_type.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
         // Add the expression evaluation instructions to our result.
         instrs.extend(temp_block.instrs);
 

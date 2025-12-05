@@ -688,6 +688,212 @@ impl<'ctx> CodeGen<'ctx> {
         Some(fn_ptr.into())
     }
 
+    /// Generate LLVM IR for a struct filter closure (takes pointer, returns i32 for bool)
+    /// Used for struct array filter operations
+    pub fn generate_struct_filter_closure(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body_ast: &Option<Box<AstNode>>,
+        struct_type_name: &str,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        eprintln!(
+            "DEBUG generate_struct_filter_closure: name={}, params={:?}, struct_type={}",
+            name, params, struct_type_name
+        );
+        // Generate a unique function name for this struct filter closure
+        let closure_fn_name = format!("struct_filter_closure_{}", name);
+
+        // Struct filter closures take pointer parameter and return i32 (bool)
+        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let mut param_llvm_types: Vec<BasicMetadataTypeEnum> = Vec::new();
+        for _ in params {
+            param_llvm_types.push(ptr_type.into());
+        }
+
+        // Create function type (returns i32 for bool)
+        let fn_type = i32_type.fn_type(&param_llvm_types, false);
+
+        // Create the function
+        let function = self.module.add_function(&closure_fn_name, fn_type, None);
+
+        // Save current insert block
+        let saved_block = self.builder.get_insert_block();
+
+        // Create entry block for closure function
+        let entry_block = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry_block);
+
+        // Store ALL current temp_values keys to detect what gets added during closure generation
+        let keys_before: std::collections::HashSet<String> =
+            self.temp_values.keys().cloned().collect();
+
+        // Store old parameter mappings (including None for params that didn't exist)
+        let old_params: Vec<(String, Option<BasicValueEnum>)> = params
+            .iter()
+            .map(|p| (p.clone(), self.temp_values.get(p).copied()))
+            .collect();
+
+        // Store old struct_instance_types for parameters
+        let old_struct_types: Vec<(String, Option<String>)> = params
+            .iter()
+            .map(|p| (p.clone(), self.struct_instance_types.get(p).cloned()))
+            .collect();
+
+        // Map function parameters to the closure parameter names
+        for (i, param_name) in params.iter().enumerate() {
+            if let Some(param_value) = function.get_nth_param(i as u32) {
+                self.temp_values.insert(param_name.clone(), param_value);
+                // Register the parameter as a struct instance so method calls work
+                self.struct_instance_types
+                    .insert(param_name.clone(), struct_type_name.to_string());
+                self.variable_types
+                    .insert(param_name.clone(), struct_type_name.to_string());
+                eprintln!(
+                    "DEBUG: inserted param '{}' into struct_instance_types with type '{}'",
+                    param_name, struct_type_name
+                );
+                eprintln!(
+                    "DEBUG: struct_instance_types now contains '{}': {}",
+                    param_name,
+                    self.struct_instance_types.contains_key(param_name)
+                );
+            }
+        }
+
+        // Generate the body expression from AST using eval_ast_expr which now handles MethodCall
+        let result_value = if let Some(ast_body) = body_ast {
+            match ast_body.as_ref() {
+                AstNode::Block(statements) => {
+                    let mut last_result: Option<BasicValueEnum> = None;
+                    for stmt in statements {
+                        match stmt {
+                            AstNode::Return { values } => {
+                                if !values.is_empty() {
+                                    last_result = self.eval_ast_expr(&values[0]);
+                                }
+                            }
+                            AstNode::LetDecl { pattern, value, .. } => {
+                                if let Some(val) = self.eval_ast_expr(value) {
+                                    if let crate::parser::ast::Pattern::Identifier(name) = pattern {
+                                        self.temp_values.insert(name.clone(), val);
+                                    }
+                                }
+                            }
+                            _ => {
+                                self.eval_ast_expr(stmt);
+                            }
+                        }
+                    }
+                    last_result.unwrap_or_else(|| i32_type.const_int(0, false).into())
+                }
+                _ => self
+                    .eval_ast_expr(ast_body)
+                    .unwrap_or_else(|| i32_type.const_int(0, false).into()),
+            }
+        } else {
+            i32_type.const_int(0, false).into()
+        };
+
+        // Return the result as i32
+        if result_value.is_int_value() {
+            let int_val = result_value.into_int_value();
+            // Ensure it's i32
+            let result_i32 = if int_val.get_type().get_bit_width() == 32 {
+                int_val
+            } else {
+                self.builder
+                    .build_int_z_extend_or_bit_cast(int_val, i32_type, "to_i32")
+                    .unwrap()
+            };
+            self.builder.build_return(Some(&result_i32)).unwrap();
+        } else {
+            self.builder
+                .build_return(Some(&i32_type.const_int(0, false)))
+                .unwrap();
+        }
+
+        // Remove ALL variables that were added during closure generation
+        let keys_after: Vec<String> = self.temp_values.keys().cloned().collect();
+        for key in keys_after {
+            if !keys_before.contains(&key) {
+                self.temp_values.remove(&key);
+            }
+        }
+
+        // Restore parameter mappings (restore old values or remove if none existed)
+        for (param_name, old_val) in old_params {
+            if let Some(val) = old_val {
+                self.temp_values.insert(param_name, val);
+            } else {
+                self.temp_values.remove(&param_name);
+            }
+        }
+
+        // Restore struct_instance_types
+        for (param_name, old_type) in old_struct_types {
+            if let Some(type_name) = old_type {
+                self.struct_instance_types.insert(param_name, type_name);
+            } else {
+                self.struct_instance_types.remove(&param_name);
+            }
+        }
+
+        // Restore insert position
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+
+        // Store the function reference
+        self.temp_strings.insert(
+            format!("struct_filter_closure_{}_fn_name", name),
+            closure_fn_name.clone(),
+        );
+
+        let fn_ptr = function.as_global_value().as_pointer_value();
+        Some(fn_ptr.into())
+    }
+
+    /// Get the struct filter closure function if it exists
+    pub fn get_struct_filter_closure_function(&self, name: &str) -> Option<FunctionValue<'ctx>> {
+        let closure_fn_name = format!("struct_filter_closure_{}", name);
+        self.module.get_function(&closure_fn_name)
+    }
+
+    /// Call a struct filter closure with one pointer argument
+    pub fn call_struct_filter_closure_with_one_arg(
+        &mut self,
+        closure_name: &str,
+        arg: BasicValueEnum<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        eprintln!(
+            "DEBUG call_struct_filter_closure: looking for closure '{}'",
+            closure_name
+        );
+        let fn_name = format!("struct_filter_closure_{}", closure_name);
+        eprintln!(
+            "DEBUG call_struct_filter_closure: full fn name = '{}'",
+            fn_name
+        );
+        if let Some(closure_fn) = self.get_struct_filter_closure_function(closure_name) {
+            let arg_ptr = if arg.is_pointer_value() {
+                arg.into_pointer_value()
+            } else {
+                return None;
+            };
+
+            let call_result = self
+                .builder
+                .build_call(closure_fn, &[arg_ptr.into()], "struct_filter_closure_call")
+                .unwrap();
+
+            call_result.try_as_basic_value().left()
+        } else {
+            None
+        }
+    }
+
     /// Evaluate an AST expression for float closures
     fn eval_float_ast_expr(&mut self, node: &AstNode) -> Option<BasicValueEnum<'ctx>> {
         let f64_type = self.context.f64_type();
@@ -1554,6 +1760,112 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
                 last_val
+            }
+            AstNode::MethodCall {
+                object,
+                method,
+                args,
+            } => {
+                // Handle method calls on struct instances inside closures
+                // First get the object value (should be a pointer to struct)
+                let obj_name = Self::extract_identifier(object)?;
+                eprintln!(
+                    "DEBUG eval_ast_expr MethodCall: obj_name={}, method={}",
+                    obj_name, method
+                );
+                eprintln!(
+                    "DEBUG: temp_values contains '{}': {}",
+                    obj_name,
+                    self.temp_values.contains_key(obj_name)
+                );
+                eprintln!(
+                    "DEBUG: struct_instance_types contains '{}': {}",
+                    obj_name,
+                    self.struct_instance_types.contains_key(obj_name)
+                );
+                eprintln!(
+                    "DEBUG: variable_types contains '{}': {}",
+                    obj_name,
+                    self.variable_types.contains_key(obj_name)
+                );
+                let obj_val = self.temp_values.get(obj_name)?.clone();
+
+                // Check if this is a struct type by looking up in struct_instance_types
+                if let Some(struct_type_name) = self.struct_instance_types.get(obj_name).cloned() {
+                    // This is a struct method call
+                    // The method should be generated as StructName::method
+                    let mangled_method_name = format!("{}::{}", struct_type_name, method);
+                    eprintln!(
+                        "DEBUG: looking for method function: {}",
+                        mangled_method_name
+                    );
+
+                    if let Some(method_fn) = self.module.get_function(&mangled_method_name) {
+                        // Build arguments - first arg is self (the struct pointer)
+                        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = vec![];
+
+                        // Add self as first argument
+                        if obj_val.is_pointer_value() {
+                            call_args.push(obj_val.into_pointer_value().into());
+                        } else {
+                            return None;
+                        }
+
+                        // Add remaining arguments
+                        for arg in args {
+                            if let Some(arg_val) = self.eval_ast_expr(arg) {
+                                call_args.push(arg_val.into());
+                            }
+                        }
+
+                        // Call the method
+                        let call_result = self
+                            .builder
+                            .build_call(method_fn, &call_args, &format!("{}_call", method))
+                            .unwrap();
+
+                        return call_result.try_as_basic_value().left();
+                    }
+                }
+
+                // Fallback: check variable_types for struct type
+                if let Some(type_str) = self.variable_types.get(obj_name).cloned() {
+                    let struct_name = if type_str.starts_with("Struct(") && type_str.ends_with(")")
+                    {
+                        type_str[7..type_str.len() - 1].to_string()
+                    } else if self.struct_metadata.contains_key(&type_str) {
+                        type_str.clone()
+                    } else {
+                        return None;
+                    };
+
+                    let mangled_method_name = format!("{}::{}", struct_name, method);
+
+                    if let Some(method_fn) = self.module.get_function(&mangled_method_name) {
+                        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = vec![];
+
+                        if obj_val.is_pointer_value() {
+                            call_args.push(obj_val.into_pointer_value().into());
+                        } else {
+                            return None;
+                        }
+
+                        for arg in args {
+                            if let Some(arg_val) = self.eval_ast_expr(arg) {
+                                call_args.push(arg_val.into());
+                            }
+                        }
+
+                        let call_result = self
+                            .builder
+                            .build_call(method_fn, &call_args, &format!("{}_call", method))
+                            .unwrap();
+
+                        return call_result.try_as_basic_value().left();
+                    }
+                }
+
+                None
             }
             _ => None,
         }

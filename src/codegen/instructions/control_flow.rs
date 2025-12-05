@@ -644,65 +644,85 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
-                // Check if this function is known to return heap-allocated values
-                // Use actual_func_name in case func was an alias
+                // CRITICAL FIX: Set up array/map metadata based on return type
+                // This must happen regardless of functions_returning_heap check
+                // to properly support user-defined methods that return arrays/maps
+                if result.is_pointer_value() {
+                    // Try to get return type from function_return_types
+                    // Check both actual_func_name and original func name
+                    let return_type_opt = self
+                        .function_return_types
+                        .get(&actual_func_name)
+                        .or_else(|| self.function_return_types.get(func))
+                        .cloned();
+
+                    if let Some(return_type_str) = return_type_opt {
+                        if return_type_str.contains("Array") && !return_type_str.contains(',') {
+                            self.heap_arrays.insert(dest_name.clone());
+                            self.variable_types
+                                .insert(dest_name.clone(), format!("Array"));
+
+                            // Create array metadata for the returned array
+                            // Extract element type from Array(Type) format
+                            let element_type =
+                                CodeGen::extract_array_element_type_from_return(&return_type_str);
+
+                            let contains_strings = element_type == "Str";
+
+                            self.array_metadata.insert(
+                                dest_name.clone(),
+                                crate::codegen::ArrayMetadata {
+                                    length: 0, // Will be determined at runtime
+                                    element_type: element_type.to_string(),
+                                    contains_strings,
+                                },
+                            );
+                        } else if return_type_str.contains("Map") {
+                            self.heap_maps.insert(dest_name.clone());
+                            self.variable_types
+                                .insert(dest_name.clone(), "Map".to_string());
+
+                            // Create map metadata for the returned map
+                            // Extract key and value types from Map(Key,Value) format
+                            let (key_type, value_type) =
+                                CodeGen::extract_map_types_from_return(&return_type_str);
+
+                            let key_is_string = key_type == "Str";
+                            let value_is_string = value_type == "Str";
+                            let key_needs_rc = key_is_string;
+                            let value_needs_rc = value_is_string;
+
+                            self.map_metadata.insert(
+                                dest_name.clone(),
+                                crate::codegen::MapMetadata {
+                                    length: 0, // Will be determined at runtime
+                                    key_type: key_type.to_string(),
+                                    value_type: value_type.to_string(),
+                                    key_is_string,
+                                    value_is_string,
+                                    key_needs_rc,
+                                    value_needs_rc,
+                                },
+                            );
+                        } else if return_type_str.contains("Str")
+                            || return_type_str.contains("String")
+                        {
+                            self.heap_strings.insert(dest_name.clone());
+                        }
+                    }
+                }
+
+                // Also mark as heap-allocated if in functions_returning_heap (for RC tracking)
                 if self.functions_returning_heap.contains(&actual_func_name) {
                     if result.is_pointer_value() {
-                        // Mark the result as heap-allocated based on return type
                         if let Some(return_type_str) =
                             self.function_return_types.get(&actual_func_name)
                         {
-                            if return_type_str.contains("Array") && !return_type_str.contains(',') {
+                            if return_type_str.contains("Array") {
                                 self.heap_arrays.insert(dest_name.clone());
-                                self.variable_types
-                                    .insert(dest_name.clone(), "Array".to_string());
-
-                                // Create array metadata for the returned array
-                                // Extract element type from Array(Type) format
-                                let element_type = CodeGen::extract_array_element_type_from_return(
-                                    return_type_str,
-                                );
-
-                                let contains_strings = element_type == "Str";
-
-                                self.array_metadata.insert(
-                                    dest_name.clone(),
-                                    crate::codegen::ArrayMetadata {
-                                        length: 0, // Will be determined at runtime
-                                        element_type: element_type.to_string(),
-                                        contains_strings,
-                                    },
-                                );
                             } else if return_type_str.contains("Map") {
                                 self.heap_maps.insert(dest_name.clone());
-                                self.variable_types
-                                    .insert(dest_name.clone(), "Map".to_string());
-
-                                // Create map metadata for the returned map
-                                // Extract key and value types from Map(Key,Value) format
-                                let (key_type, value_type) =
-                                    CodeGen::extract_map_types_from_return(return_type_str);
-
-                                let key_is_string = key_type == "Str";
-                                let value_is_string = value_type == "Str";
-                                let key_needs_rc = key_is_string;
-                                let value_needs_rc = value_is_string;
-
-                                self.map_metadata.insert(
-                                    dest_name.clone(),
-                                    crate::codegen::MapMetadata {
-                                        length: 0, // Will be determined at runtime
-                                        key_type: key_type.to_string(),
-                                        value_type: value_type.to_string(),
-                                        key_is_string,
-                                        value_is_string,
-                                        key_needs_rc,
-                                        value_needs_rc,
-                                    },
-                                );
-                            } else if return_type_str.contains("Str")
-                                || return_type_str.contains("String")
-                            {
+                            } else if return_type_str.contains("Str") {
                                 self.heap_strings.insert(dest_name.clone());
                             }
                         }
@@ -727,7 +747,17 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn generate_print(&mut self, values: &[String]) {
         let printf_fn = self.get_or_declare_printf();
 
-        for (idx, value) in values.iter().enumerate() {
+        // CRITICAL FIX: Pre-resolve all values BEFORE processing any of them.
+        // This prevents cross-block temp issues where continuation blocks (created for
+        // null checking) can't find temps that were supposed to be resolved later.
+        // By pre-resolving everything upfront, all values exist in temp_values/symbols
+        // before any block splitting happens.
+        let pre_resolved: Vec<(String, inkwell::values::BasicValueEnum<'ctx>)> = values
+            .iter()
+            .map(|v| (v.clone(), self.resolve_value(v)))
+            .collect();
+
+        for (idx, (value, pre_resolved_val)) in pre_resolved.iter().enumerate() {
             let base_name = value.trim_start_matches('%').trim_end_matches("_array");
 
             // Check if this value is a loop iteration variable (should NOT be treated as array/map)
@@ -793,7 +823,8 @@ impl<'ctx> CodeGen<'ctx> {
             // Only treat as array/map if it's actually a pointer value
             // Non-pointer values (like loop iteration variables) should never be treated as collections
             // Also exclude struct instances from being treated as arrays
-            let resolved_val = self.resolve_value(value);
+            // Use pre-resolved value instead of resolving again
+            let resolved_val = *pre_resolved_val;
             let is_actually_pointer = resolved_val.is_pointer_value();
 
             let is_array = !is_loop_var
@@ -807,7 +838,8 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Check if this value is a Result struct by checking result_types
             // Also check if the resolved value is a struct (fallback detection)
-            let resolved_val_for_result_check = self.resolve_value(value);
+            // Use pre-resolved value instead of resolving again
+            let resolved_val_for_result_check = resolved_val;
             let is_struct_value = resolved_val_for_result_check.is_struct_value();
             let is_result_struct_value = is_struct_value && {
                 let struct_type = resolved_val_for_result_check.get_type();
@@ -837,7 +869,8 @@ impl<'ctx> CodeGen<'ctx> {
             if struct_instance_name.is_some() && !is_result {
                 // Print struct with actual field values
                 let struct_name = struct_instance_name.unwrap();
-                let struct_val = self.resolve_value(value);
+                // Use pre-resolved value instead of resolving again
+                let struct_val = resolved_val;
 
                 if let Some(metadata) = self.struct_metadata.get(&struct_name).cloned() {
                     // Check if struct_val is a pointer - if so, print with actual values
@@ -1344,7 +1377,8 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }) {
                 // Handle enum printing: EnumName::VariantName or EnumName::VariantName(payload)
-                let val = self.resolve_value(value);
+                // Use pre-resolved value instead of resolving again
+                let val = resolved_val;
 
                 if let BasicValueEnum::StructValue(enum_struct) = val {
                     // Extract tag (field 0) to determine variant
@@ -1746,7 +1780,8 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             } else if is_result {
                 // Special handling for Result structs: check tag at runtime
-                let val = self.resolve_value(value);
+                // Use pre-resolved value instead of resolving again
+                let val = resolved_val;
 
                 // Result struct is { i32 tag, ptr value }
                 if val.is_struct_value() {
@@ -2038,12 +2073,14 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                 }
             } else {
-                let val = self.resolve_value(value);
+                // Use pre-resolved value instead of resolving again
+                let val = resolved_val;
 
                 // Struct instances are now handled above, so skip redundant check
                 if self.is_boolean_value(value) && val.is_int_value() {
                     // Use a simple approach to avoid crashes
-                    let bool_val = self.resolve_value(value);
+                    // Use pre-resolved value instead of resolving again
+                    let bool_val = resolved_val;
                     let int_val = bool_val.into_int_value();
 
                     // Check if value is 0 (false) or non-zero (true)

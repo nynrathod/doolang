@@ -2503,7 +2503,15 @@ impl<'ctx> CodeGen<'ctx> {
                         self.context.i32_type().into()
                     };
 
+                    // Determine value type - strings and structs are pointers, primitives are i32
                     let val_type: inkwell::types::BasicTypeEnum = if metadata.value_is_string {
+                        self.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into()
+                    } else if metadata.value_needs_rc
+                        || self.struct_metadata.contains_key(&metadata.value_type)
+                    {
+                        // Struct values are stored as pointers
                         self.context
                             .ptr_type(inkwell::AddressSpace::default())
                             .into()
@@ -2830,6 +2838,11 @@ impl<'ctx> CodeGen<'ctx> {
                         },
                         element_type: if metadata.value_is_string {
                             "Str".to_string()
+                        } else if metadata.value_needs_rc
+                            || self.struct_metadata.contains_key(&metadata.value_type)
+                        {
+                            // Preserve struct type name for array element type
+                            metadata.value_type.clone()
                         } else {
                             "Int".to_string()
                         },

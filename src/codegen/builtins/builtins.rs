@@ -19,7 +19,6 @@ impl<'ctx> CodeGen<'ctx> {
         // First, check if this is a custom user-defined method
         // Try to determine the type name from the object
         let object_val = self.resolve_value(object);
-
         // Determine type name for method lookup
         // IMPORTANT: Check struct_instance_types FIRST before heap_arrays
         // because heap_arrays is reused to track both arrays AND structs for RC
@@ -39,6 +38,33 @@ impl<'ctx> CodeGen<'ctx> {
             }) {
             // Found in struct_instance_types - this is a struct
             Some(struct_type)
+        } else if let Some(var_type) = self.variable_types.get(object).cloned().or_else(|| {
+            // Try without % prefix
+            if object.starts_with('%') {
+                self.variable_types
+                    .get(&object.trim_start_matches('%').to_string())
+                    .cloned()
+            } else {
+                // Try with % prefix
+                self.variable_types.get(&format!("%{}", object)).cloned()
+            }
+        }) {
+            // Check if variable_types has a struct type (not a primitive)
+            // This handles cases where StructGet result is tracked in variable_types but not struct_instance_types
+            if !var_type.starts_with("Array")
+                && !var_type.starts_with("Map")
+                && var_type != "Int"
+                && var_type != "Float"
+                && var_type != "Bool"
+                && var_type != "Str"
+                && var_type != "String"
+                && !var_type.is_empty()
+            {
+                // This is likely a struct type name
+                Some(var_type)
+            } else {
+                None
+            }
         } else if self.array_metadata.contains_key(object) {
             // Has array metadata - definitely an array
             if let Some(metadata) = self.array_metadata.get(object) {

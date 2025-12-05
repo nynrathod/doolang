@@ -29,6 +29,12 @@ fn get_enum_variant_index(builder: &MirBuilder, enum_name: &str, variant_name: &
     0
 }
 
+/// Helper function to determine if a method mutates its receiver
+/// These methods need special handling for struct fields
+fn is_mutating_method(method: &str) -> bool {
+    matches!(method, "push" | "pop" | "clear" | "insert" | "remove")
+}
+
 /// Helper function to determine the type of an operand by looking it up in the symbol table
 /// If not found, tries to infer the type from the operand value (e.g., literals)
 /// Helper function to convert TypeNode to source_type string for Cast instructions
@@ -686,9 +692,19 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 let dest_tmp = builder.next_tmp();
                 block.instrs.push(MirInstr::Call {
                     dest: vec![dest_tmp.clone()],
-                    func: func_name,
+                    func: func_name.clone(),
                     args: arg_tmps,
                 });
+
+                // CRITICAL: Track function return type in mir_symbol_table
+                // This ensures binary operations with function call results use correct types
+                if let Some((_params, return_type, _error_type)) =
+                    builder.function_table.get(&func_name)
+                {
+                    builder
+                        .mir_symbol_table
+                        .insert(dest_tmp.clone(), return_type.clone());
+                }
 
                 dest_tmp
             }
@@ -699,6 +715,20 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             method,
             args,
         } => {
+            // Check if object is a field access - we'll need to write back after mutating methods
+            let is_field_access = matches!(object.as_ref(), AstNode::FieldAccess { .. });
+            let (struct_instance, field_name) = if let AstNode::FieldAccess {
+                object: struct_obj,
+                field,
+            } = object.as_ref()
+            {
+                // Get the struct instance temp
+                let struct_tmp = build_expression(builder, struct_obj, block);
+                (Some(struct_tmp), Some(field.clone()))
+            } else {
+                (None, None)
+            };
+
             let object_tmp = build_expression(builder, object, block);
             let mut arg_tmps = vec![];
             for arg in args {
@@ -709,10 +739,51 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             let dest_tmp = builder.next_tmp();
             block.instrs.push(MirInstr::MethodCall {
                 dest: dest_tmp.clone(),
-                object: object_tmp,
+                object: object_tmp.clone(),
                 method: method.clone(),
                 args: arg_tmps,
             });
+
+            // CRITICAL: Track method return type in mir_symbol_table
+            // This ensures the dest_tmp is properly typed for subsequent operations
+            if let Some(obj_type) = builder.mir_symbol_table.get(&object_tmp).cloned() {
+                // Get the type name for method_table lookup
+                let type_name = match &obj_type {
+                    TypeNode::TypeRef(name) => name.clone(),
+                    TypeNode::Struct(name, _) => name.clone(),
+                    TypeNode::Array(inner) => format!("Array({})", inner.format_type_string()),
+                    TypeNode::Map(key, val) => format!(
+                        "Map({},{})",
+                        key.format_type_string(),
+                        val.format_type_string()
+                    ),
+                    _ => String::new(),
+                };
+
+                // Look up method return type in method_table
+                if !type_name.is_empty() {
+                    if let Some(methods) = builder.method_table.get(&type_name) {
+                        if let Some((_params, return_type, _error_type)) = methods.get(method) {
+                            builder
+                                .mir_symbol_table
+                                .insert(dest_tmp.clone(), return_type.clone());
+                        }
+                    }
+                }
+            }
+
+            // For mutating methods on struct fields, write the value back
+            // This is critical for methods like push/pop that reallocate the underlying array
+            if is_field_access && is_mutating_method(method) {
+                if let (Some(struct_tmp), Some(field)) = (struct_instance, field_name) {
+                    // Write the potentially modified value back to the struct field
+                    block.instrs.push(MirInstr::StructSet {
+                        struct_instance: struct_tmp,
+                        field,
+                        value: object_tmp,
+                    });
+                }
+            }
 
             dest_tmp
         }
@@ -803,6 +874,7 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 TypeNode::Float => Some("Float".to_string()),
                 TypeNode::Bool => Some("Bool".to_string()),
                 TypeNode::String => Some("Str".to_string()),
+                TypeNode::TypeRef(struct_name) => Some(struct_name.clone()),
                 _ => None,
             };
             block.instrs.push(MirInstr::Array {
@@ -865,6 +937,8 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 TypeNode::Float => Some("Float".to_string()),
                 TypeNode::Bool => Some("Bool".to_string()),
                 TypeNode::String => Some("Str".to_string()),
+                TypeNode::Struct(name, _) => Some(name.clone()),
+                TypeNode::TypeRef(name) => Some(name.clone()),
                 _ => None,
             };
 
@@ -873,6 +947,8 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 TypeNode::Float => Some("Float".to_string()),
                 TypeNode::Bool => Some("Bool".to_string()),
                 TypeNode::String => Some("Str".to_string()),
+                TypeNode::Struct(name, _) => Some(name.clone()),
+                TypeNode::TypeRef(name) => Some(name.clone()),
                 _ => None,
             };
 
@@ -1172,7 +1248,86 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
         AstNode::StructLiteral { name, fields } => {
             // Build MIR for each field value expression
             let mut field_values = Vec::new();
+
+            // Get struct field types from the struct table to handle empty arrays correctly
+            let struct_field_types = builder.program.struct_table.get(name).cloned();
+
             for (field_name, field_expr) in fields {
+                // For empty array literals, check if we know the expected field type
+                if let AstNode::ArrayLiteral(elements) = field_expr.as_ref() {
+                    if elements.is_empty() {
+                        if let Some(ref field_types) = struct_field_types {
+                            if let Some(TypeNode::Array(elem_type)) = field_types.get(field_name) {
+                                // Build empty array with known element type
+                                let tmp = builder.next_tmp();
+                                let element_type_str = match elem_type.as_ref() {
+                                    TypeNode::Int => Some("Int".to_string()),
+                                    TypeNode::Float => Some("Float".to_string()),
+                                    TypeNode::Bool => Some("Bool".to_string()),
+                                    TypeNode::String => Some("Str".to_string()),
+                                    TypeNode::TypeRef(struct_name) => Some(struct_name.clone()),
+                                    TypeNode::Struct(struct_name, _) => Some(struct_name.clone()),
+                                    _ => None,
+                                };
+                                block.instrs.push(MirInstr::Array {
+                                    name: tmp.clone(),
+                                    elements: vec![],
+                                    element_type: element_type_str,
+                                });
+                                builder
+                                    .mir_symbol_table
+                                    .insert(tmp.clone(), TypeNode::Array(elem_type.clone()));
+                                field_values.push((field_name.clone(), tmp));
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // For empty map literals, check if we know the expected field type
+                if let AstNode::MapLiteral(entries) = field_expr.as_ref() {
+                    if entries.is_empty() {
+                        if let Some(ref field_types) = struct_field_types {
+                            if let Some(TypeNode::Map(key_type, value_type)) =
+                                field_types.get(field_name)
+                            {
+                                // Build empty map with known key/value types
+                                let tmp = builder.next_tmp();
+                                let key_type_str = match key_type.as_ref() {
+                                    TypeNode::Int => Some("Int".to_string()),
+                                    TypeNode::Float => Some("Float".to_string()),
+                                    TypeNode::Bool => Some("Bool".to_string()),
+                                    TypeNode::String => Some("Str".to_string()),
+                                    TypeNode::TypeRef(struct_name) => Some(struct_name.clone()),
+                                    TypeNode::Struct(struct_name, _) => Some(struct_name.clone()),
+                                    _ => None,
+                                };
+                                let value_type_str = match value_type.as_ref() {
+                                    TypeNode::Int => Some("Int".to_string()),
+                                    TypeNode::Float => Some("Float".to_string()),
+                                    TypeNode::Bool => Some("Bool".to_string()),
+                                    TypeNode::String => Some("Str".to_string()),
+                                    TypeNode::TypeRef(struct_name) => Some(struct_name.clone()),
+                                    TypeNode::Struct(struct_name, _) => Some(struct_name.clone()),
+                                    _ => None,
+                                };
+                                block.instrs.push(MirInstr::Map {
+                                    name: tmp.clone(),
+                                    entries: vec![],
+                                    key_type: key_type_str,
+                                    value_type: value_type_str,
+                                });
+                                builder.mir_symbol_table.insert(
+                                    tmp.clone(),
+                                    TypeNode::Map(key_type.clone(), value_type.clone()),
+                                );
+                                field_values.push((field_name.clone(), tmp));
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 let value_tmp = build_expression(builder, field_expr, block);
                 field_values.push((field_name.clone(), value_tmp));
             }

@@ -26,11 +26,12 @@ impl<'a> Parser<'a> {
     /// - `min_prec`: minimum precedence to consider (used for recursion).
     /// Returns the parsed AST node for the expression.
     fn parse_expression_prec(&mut self, min_prec: u8) -> ParseResult<AstNode> {
-        // First parse unary and primary
+        // First parse unary and primary (postfix is now handled inside parse_unary_primary
+        // so that method calls bind tighter than unary operators)
         let mut left = self.parse_unary_primary()?;
 
-        // Then apply postfix operations (array access, method calls, casts)
-        // This ensures that -42 as Str parses as (-42) as Str, not -(42 as Str)
+        // Apply postfix operations for unary expressions
+        // This handles cases like (-42) as Str
         left = self.parse_postfix(left)?;
 
         // Binary operator expressions:
@@ -108,7 +109,8 @@ impl<'a> Parser<'a> {
 
     /// Parse unary operators and primary expressions.
     /// Unary operators (-, !, +) are right-associative, so !!x is parsed as !(!(x))
-    /// This is called before postfix operations, so postfix operators apply to the result of unary.
+    /// Method calls and field access bind tighter than unary operators.
+    /// So !t.IsDone() is parsed as !(t.IsDone()), not (!t).IsDone()
     fn parse_unary_primary(&mut self) -> ParseResult<AstNode> {
         if let Some(tok) = self.peek() {
             match tok.kind {
@@ -117,6 +119,7 @@ impl<'a> Parser<'a> {
                     let op = tok.kind;
                     self.advance(); // consume operator
                                     // Recursively parse unary for chaining: !!x, ---x, etc.
+                                    // The recursive call handles the operand, which may include postfix operations
                     let expr = self.parse_unary_primary()?;
                     Ok(AstNode::UnaryExpr {
                         op,
@@ -125,7 +128,11 @@ impl<'a> Parser<'a> {
                 }
                 // Primary expressions:
                 // Handles: number, identifier, function call foo(a + b), string, boolean, array, map
-                _ => self.parse_primary(),
+                // Apply postfix operations here so method calls bind tighter than unary
+                _ => {
+                    let primary = self.parse_primary()?;
+                    self.parse_postfix(primary)
+                }
             }
         } else {
             Err(ParseError::EndOfInput)
@@ -376,13 +383,15 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::String => {
                     let tok = self.advance().unwrap();
-                    let string_value = tok.value.to_string();
+                    let raw_value = tok.value.to_string();
 
                     // Check for string interpolation ${...}
-                    if string_value.contains("${") {
+                    if raw_value.contains("${") {
                         // Parse string interpolation and convert to concatenation
-                        Ok(self.parse_string_interpolation(&string_value)?)
+                        Ok(self.parse_string_interpolation(&raw_value)?)
                     } else {
+                        // Process escape sequences
+                        let string_value = Parser::process_escape_sequences(&raw_value);
                         Ok(AstNode::StringLiteral(string_value))
                     }
                 }

@@ -294,6 +294,11 @@ impl<'ctx> CodeGen<'ctx> {
                 if let Some(array_meta) = self.array_metadata.get(value).cloned() {
                     self.array_metadata.insert(name.clone(), array_meta);
                 }
+
+                // Clear any stale struct field source tracking for this destination
+                // (assignment means this var is no longer an alias to a struct field)
+                self.struct_field_sources.remove(name);
+
                 // Propagate map metadata from source to destination
                 if let Some(map_meta) = self.map_metadata.get(value).cloned() {
                     self.map_metadata.insert(name.clone(), map_meta);
@@ -1283,47 +1288,19 @@ impl<'ctx> CodeGen<'ctx> {
                 }
 
                 // Normal array element access
-                // Try multiple name variations to find metadata for array iteration
-                let elem_type = if let Some(metadata) = self.array_metadata.get(array) {
-                    match metadata.element_type.as_str() {
-                        "Int" => self.context.i32_type().into(),
-                        "Float" => self.context.f64_type().into(),
-                        // Bool arrays store bools as i32 (not i1) for consistency with ConstBool
-                        "Bool" => self.context.i32_type().into(),
-                        "Str" => self
-                            .context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .into(),
-                        _ => self.context.i32_type().into(),
+                let elem_type = self.get_array_element_type(array);
+
+                // Try to determine the element type name for metadata propagation
+                let element_type_name = if let Some(metadata) = self.array_metadata.get(array) {
+                    Some(metadata.element_type.clone())
+                } else if let Some(type_str) = self.variable_types.get(array) {
+                    if type_str.starts_with("Array(") && type_str.ends_with(")") {
+                        Some(type_str[6..type_str.len() - 1].to_string())
+                    } else {
+                        None
                     }
                 } else {
-                    // Try array name variations (without _array suffix, with % prefix, etc)
-                    let base_name = array.trim_start_matches('%').trim_end_matches("_array");
-                    let variations = vec![
-                        array.to_string(),
-                        base_name.to_string(),
-                        format!("{}_array", base_name),
-                        format!("{}item_array", base_name),
-                    ];
-
-                    let mut found_type = self.context.i32_type().as_basic_type_enum();
-                    for var in variations {
-                        if let Some(metadata) = self.array_metadata.get(&var) {
-                            found_type = match metadata.element_type.as_str() {
-                                "Int" => self.context.i32_type().into(),
-                                "Float" => self.context.f64_type().into(),
-                                // Bool arrays store bools as i32 (not i1) for consistency with ConstBool
-                                "Bool" => self.context.i32_type().into(),
-                                "Str" => self
-                                    .context
-                                    .ptr_type(inkwell::AddressSpace::default())
-                                    .into(),
-                                _ => self.context.i32_type().into(),
-                            };
-                            break;
-                        }
-                    }
-                    found_type
+                    None
                 };
 
                 // Use direct pointer arithmetic with single index for runtime arrays
@@ -1344,23 +1321,51 @@ impl<'ctx> CodeGen<'ctx> {
                 self.temp_values.insert(name.clone(), elem_val);
 
                 // Track the type of this result
-                if elem_type.is_pointer_type() {
-                    self.variable_types.insert(name.clone(), "Str".to_string());
-                } else if elem_type.is_float_type() {
-                    self.variable_types
-                        .insert(name.clone(), "Float".to_string());
-                } else if elem_type.is_int_type() {
-                    // Check if this is a Bool array element (stored as i32 but typed as Bool)
-                    let is_bool_array = self
-                        .array_metadata
-                        .get(array)
-                        .map(|m| m.element_type == "Bool")
-                        .unwrap_or(false);
-                    if is_bool_array {
-                        self.variable_types.insert(name.clone(), "Bool".to_string());
+                // Check if this is a struct array element first
+                let is_struct_array = self
+                    .array_metadata
+                    .get(array)
+                    .map(|m| self.struct_metadata.contains_key(&m.element_type))
+                    .unwrap_or(false);
+
+                if is_struct_array {
+                    if let Some(metadata) = self.array_metadata.get(array) {
+                        let struct_type_name = metadata.element_type.clone();
+                        self.variable_types
+                            .insert(name.clone(), format!("Struct({})", struct_type_name));
+                        self.struct_instance_types
+                            .insert(name.clone(), struct_type_name);
+                    }
+                }
+
+                // Propagate type information if available
+                if let Some(type_name) = element_type_name {
+                    self.variable_types.insert(name.clone(), type_name.clone());
+
+                    // If it's a struct type, also track in struct_instance_types
+                    if self.struct_metadata.contains_key(&type_name) {
+                        self.struct_instance_types
+                            .insert(name.clone(), type_name.clone());
+                        // Also store with % prefix if name doesn't have it
+                        if !name.starts_with('%') {
+                            self.struct_instance_types
+                                .insert(format!("%{}", name), type_name.clone());
+                        }
+                    }
+
+                    // Handle boolean arrays specifically
+                    if type_name == "Bool" {
                         self.boolean_temps.insert(name.clone());
-                    } else {
+                    }
+                } else {
+                    // Fallback logic if type name couldn't be determined
+                    if elem_type.is_int_type() {
                         self.variable_types.insert(name.clone(), "Int".to_string());
+                    } else if elem_type.is_float_type() {
+                        self.variable_types
+                            .insert(name.clone(), "Float".to_string());
+                    } else if elem_type.is_pointer_type() {
+                        self.variable_types.insert(name.clone(), "Str".to_string());
                     }
                 }
 
@@ -1382,7 +1387,9 @@ impl<'ctx> CodeGen<'ctx> {
                     self.loop_local_vars.insert(name.clone());
 
                     // Track variable type for proper printing
-                    self.variable_types.insert(name.clone(), "Str".to_string());
+                    if !self.variable_types.contains_key(name) {
+                        self.variable_types.insert(name.clone(), "Str".to_string());
+                    }
                 }
 
                 Some(elem_val)
@@ -3955,6 +3962,243 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
 
+            // Field map element assignment: self.field[key] = value
+            MirInstr::FieldMapSet {
+                struct_instance,
+                field,
+                key,
+                value,
+            } => {
+                // Get the struct pointer
+                let struct_ptr = self.resolve_value(struct_instance).into_pointer_value();
+
+                // Get struct type name to look up field info
+                let struct_name =
+                    if let Some(name) = self.struct_instance_types.get(struct_instance) {
+                        name.clone()
+                    } else if let Some(type_str) = self.variable_types.get(struct_instance) {
+                        if type_str.starts_with("Struct(") && type_str.ends_with(")") {
+                            type_str[7..type_str.len() - 1].to_string()
+                        } else {
+                            struct_instance.clone()
+                        }
+                    } else {
+                        struct_instance.clone()
+                    };
+
+                // Get field index and type from struct metadata
+                if let Some(metadata) = self.struct_metadata.get(&struct_name) {
+                    let field_index = metadata
+                        .field_names
+                        .iter()
+                        .position(|f| f == field)
+                        .unwrap_or(0);
+                    let field_type = metadata.field_types.get(field_index).cloned();
+
+                    // Check if this field is a map
+                    if let Some(ref type_str) = field_type {
+                        if type_str.starts_with("Map(") || type_str.contains("{") {
+                            // Get struct LLVM type
+                            let struct_llvm_type = self
+                                .canonical_struct_types
+                                .get(&struct_name)
+                                .cloned()
+                                .unwrap_or_else(|| self.context.struct_type(&[], false));
+
+                            // GEP to get the field (map) pointer
+                            let field_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    struct_llvm_type,
+                                    struct_ptr,
+                                    field_index as u32,
+                                    &format!("{}_field_{}", struct_instance, field),
+                                )
+                                .unwrap();
+
+                            // Load the map pointer from the field
+                            let map_ptr = self
+                                .builder
+                                .build_load(
+                                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                                    field_ptr,
+                                    &format!("{}_map", field),
+                                )
+                                .unwrap()
+                                .into_pointer_value();
+
+                            // Get key and value
+                            let key_val = self.resolve_value(key);
+                            let value_val = self.resolve_value(value);
+
+                            // Try to get map metadata from a canonical name
+                            let map_key = format!("{}_{}", struct_instance, field);
+                            let map_metadata = self
+                                .map_metadata
+                                .get(&map_key)
+                                .or_else(|| self.map_metadata.get(field))
+                                .cloned();
+
+                            if let Some(map_meta) = map_metadata {
+                                // Use the map metadata for proper key/value handling
+                                let key_is_string = map_meta.key_is_string;
+                                let value_type_str = map_meta.value_type.clone();
+                                let key_type_str = map_meta.key_type.clone();
+
+                                let value_type: BasicTypeEnum = match value_type_str.as_str() {
+                                    "Str" => self
+                                        .context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                    "Int" => self.context.i32_type().into(),
+                                    "Bool" => self.context.i32_type().into(),
+                                    "Float" => self.context.f64_type().into(),
+                                    _ if self.struct_metadata.contains_key(&value_type_str) => self
+                                        .context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                    _ => self.context.i32_type().into(),
+                                };
+
+                                let key_type_llvm: BasicTypeEnum = if key_is_string {
+                                    self.context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into()
+                                } else if key_type_str == "Float" {
+                                    self.context.f64_type().into()
+                                } else {
+                                    self.context.i32_type().into()
+                                };
+
+                                let pair_type = self
+                                    .context
+                                    .struct_type(&[key_type_llvm, value_type], false);
+
+                                // For integer keys, use directly as index
+                                let index_val = if key_is_string {
+                                    // String key handling would require linear search
+                                    // For now, use 0 as fallback
+                                    self.context.i32_type().const_int(0, false)
+                                } else {
+                                    key_val.into_int_value()
+                                };
+
+                                // GEP to get pair pointer
+                                let pair_ptr = unsafe {
+                                    self.builder.build_in_bounds_gep(
+                                        pair_type,
+                                        map_ptr,
+                                        &[index_val],
+                                        "field_mapset_pair_ptr",
+                                    )
+                                }
+                                .unwrap();
+
+                                // Get value field pointer (index 1)
+                                let value_ptr = self
+                                    .builder
+                                    .build_struct_gep(
+                                        pair_type,
+                                        pair_ptr,
+                                        1,
+                                        "field_mapset_value_ptr",
+                                    )
+                                    .unwrap();
+
+                                // Store the value
+                                self.builder.build_store(value_ptr, value_val).unwrap();
+                            }
+                        }
+                    }
+                }
+                None
+            }
+
+            // Field array element assignment: self.field[index] = value
+            MirInstr::FieldArraySet {
+                struct_instance,
+                field,
+                index,
+                value,
+            } => {
+                // Get the struct pointer
+                let struct_ptr = self.resolve_value(struct_instance).into_pointer_value();
+
+                // Get struct type name
+                let struct_name =
+                    if let Some(name) = self.struct_instance_types.get(struct_instance) {
+                        name.clone()
+                    } else if let Some(type_str) = self.variable_types.get(struct_instance) {
+                        if type_str.starts_with("Struct(") && type_str.ends_with(")") {
+                            type_str[7..type_str.len() - 1].to_string()
+                        } else {
+                            struct_instance.clone()
+                        }
+                    } else {
+                        struct_instance.clone()
+                    };
+
+                // Get field index from struct metadata
+                if let Some(metadata) = self.struct_metadata.get(&struct_name) {
+                    let field_index = metadata
+                        .field_names
+                        .iter()
+                        .position(|f| f == field)
+                        .unwrap_or(0);
+
+                    // Get struct LLVM type
+                    let struct_llvm_type = self
+                        .canonical_struct_types
+                        .get(&struct_name)
+                        .cloned()
+                        .unwrap_or_else(|| self.context.struct_type(&[], false));
+
+                    // GEP to get the field (array) pointer
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            struct_llvm_type,
+                            struct_ptr,
+                            field_index as u32,
+                            &format!("{}_field_{}", struct_instance, field),
+                        )
+                        .unwrap();
+
+                    // Load the array pointer from the field
+                    let array_ptr = self
+                        .builder
+                        .build_load(
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            field_ptr,
+                            &format!("{}_array", field),
+                        )
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Get index and value
+                    let index_val = self.resolve_value(index).into_int_value();
+                    let value_val = self.resolve_value(value);
+
+                    // Determine element type (default to pointer for structs)
+                    let elem_type = self.context.ptr_type(inkwell::AddressSpace::default());
+
+                    // GEP to get element pointer
+                    let elem_ptr = unsafe {
+                        self.builder.build_in_bounds_gep(
+                            elem_type,
+                            array_ptr,
+                            &[index_val],
+                            "field_arrayset_elem_ptr",
+                        )
+                    }
+                    .unwrap();
+
+                    // Store the value
+                    self.builder.build_store(elem_ptr, value_val).unwrap();
+                }
+                None
+            }
+
             // Result/Error handling: Ok expression creates a success result
             MirInstr::ResultOk { name, values } => {
                 // Create a Result struct with tag=0 (Ok) and the value(s)
@@ -5952,6 +6196,30 @@ impl<'ctx> CodeGen<'ctx> {
                                             .unwrap();
                                     }
                                 }
+
+                                // Alias array/map metadata to struct field names for later Field*Set access
+                                if type_str.starts_with("Map(") {
+                                    if let Some(meta) = self.map_metadata.get(value_tmp).cloned() {
+                                        let field_key =
+                                            format!("{}_{}", name, canonical_field_name);
+                                        self.map_metadata.insert(field_key.clone(), meta.clone());
+                                        self.map_metadata
+                                            .insert(canonical_field_name.clone(), meta);
+                                        self.heap_maps.insert(field_key);
+                                        self.heap_maps.insert(canonical_field_name.clone());
+                                    }
+                                } else if type_str.starts_with("Array(") {
+                                    if let Some(meta) = self.array_metadata.get(value_tmp).cloned()
+                                    {
+                                        let field_key =
+                                            format!("{}_{}", name, canonical_field_name);
+                                        self.array_metadata.insert(field_key.clone(), meta.clone());
+                                        self.array_metadata
+                                            .insert(canonical_field_name.clone(), meta);
+                                        self.heap_arrays.insert(field_key);
+                                        self.heap_arrays.insert(canonical_field_name.clone());
+                                    }
+                                }
                             }
 
                             let field_ptr = self
@@ -6057,6 +6325,10 @@ impl<'ctx> CodeGen<'ctx> {
                 let struct_ptr = self.resolve_value(struct_instance);
 
                 if !struct_ptr.is_pointer_value() {
+                    eprintln!(
+                        "DEBUG StructGet: struct_ptr is not a pointer value! Type: {:?}",
+                        struct_ptr.get_type()
+                    );
                     return None;
                 }
 
@@ -6088,7 +6360,6 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         ""
                     };
-
                 // Look up field index from metadata
                 let (field_index, field_type_name) =
                     if let Some(metadata) = self.struct_metadata.get(struct_name) {
@@ -6129,6 +6400,19 @@ impl<'ctx> CodeGen<'ctx> {
                                         // Nested struct - use pointer to the struct
                                         self.context
                                             .ptr_type(inkwell::AddressSpace::default())
+                                            .into()
+                                    }
+                                    _ if self.enum_table.contains_key(type_name)
+                                        || type_name.starts_with("Enum(") =>
+                                    {
+                                        // Enum type - represented as { i32 tag, ptr payload } struct
+                                        let ptr_type =
+                                            self.context.ptr_type(inkwell::AddressSpace::default());
+                                        self.context
+                                            .struct_type(
+                                                &[self.context.i32_type().into(), ptr_type.into()],
+                                                false,
+                                            )
                                             .into()
                                     }
                                     _ => self.context.i32_type().into(),
@@ -6198,11 +6482,96 @@ impl<'ctx> CodeGen<'ctx> {
                 self.variable_types
                     .insert(name.clone(), field_type_name.clone());
 
+                // CRITICAL FIX: Always create/use symbol for StructGet results to support cross-block access
+                // This is needed because print statements create additional LLVM blocks (for null checking)
+                // and the temp value from StructGet needs to be accessible in those continuation blocks
+                if let Some(sym) = self.symbols.get(name) {
+                    self.builder.build_store(sym.ptr, field_val).unwrap();
+                } else if name.starts_with('%') {
+                    // Create symbol for temp if it doesn't exist
+                    let alloca = self.builder.build_alloca(field_llvm_type, name).unwrap();
+                    self.builder.build_store(alloca, field_val).unwrap();
+                    self.symbols.insert(
+                        name.clone(),
+                        crate::codegen::core::context::Symbol {
+                            ptr: alloca,
+                            ty: field_llvm_type,
+                        },
+                    );
+                }
+
                 // CRITICAL: If the field is a struct type, also track it in struct_instance_types
                 // so that subsequent field accesses on this field work correctly
                 if is_nested_struct {
                     self.struct_instance_types
                         .insert(name.clone(), field_type_name.clone());
+                }
+
+                // CRITICAL FIX: If the field is an array type, propagate array metadata
+                // so that array methods like filter, map, etc. work on the result
+                if field_type_name.starts_with("Array(") {
+                    // Extract element type from "Array(ElementType)"
+                    let element_type = field_type_name[6..field_type_name.len() - 1].to_string();
+                    // Mark as heap array
+                    self.heap_arrays.insert(name.clone());
+                    // Create array metadata for the field
+                    let array_metadata = crate::codegen::ArrayMetadata {
+                        element_type: element_type.clone(),
+                        length: 0, // Unknown length at compile time
+                        contains_strings: element_type == "Str",
+                    };
+                    self.array_metadata.insert(name.clone(), array_metadata);
+
+                    // CRITICAL: Track that this array came from a struct field
+                    // This allows push() to update the struct field after reallocation
+                    self.struct_field_sources
+                        .insert(name.clone(), (struct_instance.clone(), field.clone()));
+                }
+
+                // CRITICAL FIX: If the field is a map type, propagate map metadata
+                // so that map methods like values, keys, etc. work on the result
+                if field_type_name.starts_with("Map(") {
+                    // Parse "Map(KeyType,ValueType)" to extract key and value types
+                    let inner = &field_type_name[4..field_type_name.len() - 1];
+                    // Split on comma, handling nested types
+                    let mut depth = 0;
+                    let mut split_pos = None;
+                    for (i, c) in inner.chars().enumerate() {
+                        match c {
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            ',' if depth == 0 => {
+                                split_pos = Some(i);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let (key_type, value_type) = if let Some(pos) = split_pos {
+                        (inner[..pos].to_string(), inner[pos + 1..].to_string())
+                    } else {
+                        ("Str".to_string(), "Str".to_string())
+                    };
+
+                    // Mark as heap map
+                    self.heap_maps.insert(name.clone());
+                    // Create map metadata for the field
+                    let map_metadata = crate::codegen::MapMetadata {
+                        length: 0, // Unknown length at compile time
+                        key_type: key_type.clone(),
+                        value_type: value_type.clone(),
+                        key_is_string: key_type == "Str" || key_type == "String",
+                        value_is_string: value_type == "Str" || value_type == "String",
+                        key_needs_rc: key_type == "Str" || key_type == "String",
+                        value_needs_rc: value_type == "Str"
+                            || value_type == "String"
+                            || self.struct_metadata.contains_key(&value_type),
+                    };
+                    self.map_metadata.insert(name.clone(), map_metadata);
+
+                    // Track that this map came from a struct field
+                    self.struct_field_sources
+                        .insert(name.clone(), (struct_instance.clone(), field.clone()));
                 }
 
                 // CRITICAL: Store to symbol if this is a cross-block variable
@@ -6214,6 +6583,106 @@ impl<'ctx> CodeGen<'ctx> {
                 }
 
                 Some(field_val)
+            }
+
+            // Field assignment: obj.field = value
+            MirInstr::StructSet {
+                struct_instance,
+                field,
+                value,
+            } => {
+                // Get the struct pointer
+                let struct_ptr = self.resolve_value(struct_instance);
+
+                // Get the value to store
+                let store_value = self.resolve_value(value);
+
+                // Get struct type name from tracking
+                let struct_name = if let Some(type_name) = self.variable_types.get(struct_instance)
+                {
+                    // Extract struct name from "Struct(Name)" format
+                    if type_name.starts_with("Struct(") && type_name.ends_with(")") {
+                        type_name[7..type_name.len() - 1].to_string()
+                    } else {
+                        type_name.clone()
+                    }
+                } else if let Some(type_name) = self.struct_instance_types.get(struct_instance) {
+                    type_name.clone()
+                } else {
+                    // Fallback - try to infer from parameter types (for self in methods)
+                    "".to_string()
+                };
+
+                // Look up field index from metadata
+                let field_index = if let Some(metadata) = self.struct_metadata.get(&struct_name) {
+                    metadata
+                        .field_names
+                        .iter()
+                        .position(|f| f == field)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                // Get the struct type
+                let struct_type =
+                    if let Some(canonical_type) = self.canonical_struct_types.get(&struct_name) {
+                        *canonical_type
+                    } else if let Some(metadata) = self.struct_metadata.get(&struct_name) {
+                        let field_llvm_types: Vec<inkwell::types::BasicTypeEnum> = metadata
+                            .field_types
+                            .iter()
+                            .map(|type_name| match type_name.as_str() {
+                                "Int" => self.context.i32_type().into(),
+                                "Float" => self.context.f64_type().into(),
+                                "Bool" => self.context.i32_type().into(),
+                                "Str" => self
+                                    .context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                                _ if type_name.starts_with("Struct(") => self
+                                    .context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                                _ if type_name.starts_with("Array(") => self
+                                    .context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                                _ if type_name.starts_with("Enum(") => self
+                                    .context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                                _ => self.context.i32_type().into(),
+                            })
+                            .collect();
+                        self.context.struct_type(&field_llvm_types, false)
+                    } else {
+                        self.context
+                            .struct_type(&[self.context.i32_type().into()], false)
+                    };
+
+                // Get the struct pointer as pointer value
+                let typed_ptr = if struct_ptr.is_pointer_value() {
+                    struct_ptr.into_pointer_value()
+                } else {
+                    return None;
+                };
+
+                // Build GEP to get field pointer
+                match self.builder.build_struct_gep(
+                    struct_type,
+                    typed_ptr,
+                    field_index as u32,
+                    &format!("{}_field_ptr", field),
+                ) {
+                    Ok(field_ptr) => {
+                        // Store the value to the field
+                        self.builder.build_store(field_ptr, store_value).unwrap();
+                    }
+                    Err(_e) => {}
+                }
+
+                None
             }
 
             // Enum initialization: Direction::North or Status::Active(value)

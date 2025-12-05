@@ -101,9 +101,29 @@ impl<'ctx> CodeGen<'ctx> {
             })
             .collect();
 
-        // Allow empty arrays: default element type to Int if elements is empty
+        // Allow empty arrays: use explicit type if provided, otherwise default to Int
         let elem_type = if element_values.is_empty() {
-            self.context.i32_type().as_basic_type_enum()
+            if let Some(et) = explicit_element_type {
+                // Map element type string to LLVM type
+                match et {
+                    "Int" => self.context.i32_type().as_basic_type_enum(),
+                    "Float" => self.context.f64_type().as_basic_type_enum(),
+                    "Bool" => self.context.bool_type().as_basic_type_enum(),
+                    "Str" | "String" => self
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .as_basic_type_enum(),
+                    _ if self.struct_metadata.contains_key(et) => {
+                        // Struct arrays store pointers to structs
+                        self.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .as_basic_type_enum()
+                    }
+                    _ => self.context.i32_type().as_basic_type_enum(),
+                }
+            } else {
+                self.context.i32_type().as_basic_type_enum()
+            }
         } else {
             element_values[0].get_type()
         };
@@ -438,9 +458,46 @@ impl<'ctx> CodeGen<'ctx> {
                 "Float" => self.context.f64_type().into(), // f64 for floating point
                 "Bool" => self.context.i32_type().into(), // Bool stored as i32 (not i1) for consistency
                 "Str" => self.context.ptr_type(AddressSpace::default()).into(),
-                _ => self.context.i32_type().into(),
+                _ => {
+                    // Check if it's a struct type - structs are stored as pointers
+                    if self.struct_metadata.contains_key(&metadata.element_type) {
+                        self.context.ptr_type(AddressSpace::default()).into()
+                    } else {
+                        self.context.i32_type().into()
+                    }
+                }
             }
         } else {
+            // Fallback: check variable_types for Array(Type)
+            // This handles arrays loaded from struct fields where array_metadata might be missing
+            if let Some(type_str) = self.variable_types.get(array_name) {
+                if type_str.starts_with("Array(") && type_str.ends_with(")") {
+                    let inner_type = &type_str[6..type_str.len() - 1];
+                    // Inline type resolution logic since type_string_to_llvm_type is not pub
+                    return match inner_type {
+                        "Int" | "i32" => self.context.i32_type().into(),
+                        "Float" | "f64" => self.context.f64_type().into(),
+                        "Bool" => self.context.i32_type().into(),
+                        "Str" | "String" => self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into(),
+                        _ => {
+                            if inner_type.starts_with("Array")
+                                || inner_type.starts_with("Map")
+                                || inner_type.starts_with("Struct")
+                                || self.struct_metadata.contains_key(inner_type)
+                            {
+                                self.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into()
+                            } else {
+                                self.context.i32_type().into()
+                            }
+                        }
+                    };
+                }
+            }
             self.context.i32_type().into()
         }
     }
@@ -670,12 +727,20 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_call(printf_fn, &[open_bracket.as_pointer_value().into()], "")
                 .unwrap();
 
+            // Check if element type is a struct
+            let is_struct_element = self.struct_metadata.contains_key(&metadata.element_type);
+
             let elem_type = if metadata.element_type == "Str" {
                 self.context
                     .ptr_type(AddressSpace::default())
                     .as_basic_type_enum()
             } else if metadata.element_type == "Float" {
                 self.context.f64_type().as_basic_type_enum()
+            } else if is_struct_element {
+                // Struct elements are stored as pointers
+                self.context
+                    .ptr_type(AddressSpace::default())
+                    .as_basic_type_enum()
             } else {
                 self.context.i32_type().as_basic_type_enum()
             };
@@ -816,7 +881,287 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
 
             // Print the element based on its type
-            if metadata.element_type == "Str" {
+            if is_struct_element {
+                // Handle struct array element - print struct with its fields
+                let struct_name = metadata.element_type.clone();
+                let struct_ptr = elem_val.into_pointer_value();
+
+                if let Some(struct_meta) = self.struct_metadata.get(&struct_name).cloned() {
+                    // Print struct name and opening brace
+                    let opening = format!("{} {{ ", struct_name);
+                    let opening_global = self
+                        .builder
+                        .build_global_string_ptr(&opening, "arr_struct_opening")
+                        .unwrap();
+                    self.builder
+                        .build_call(printf_fn, &[opening_global.as_pointer_value().into()], "")
+                        .unwrap();
+
+                    // Get canonical struct type for GEP
+                    if let Some(canonical_type) =
+                        self.canonical_struct_types.get(&struct_name).cloned()
+                    {
+                        for (field_idx, field_name) in struct_meta.field_names.iter().enumerate() {
+                            let field_type = struct_meta
+                                .field_types
+                                .get(field_idx)
+                                .map(|s| s.as_str())
+                                .unwrap_or("");
+
+                            // Print field name
+                            let field_label = format!("{}: ", field_name);
+                            let field_label_global = self
+                                .builder
+                                .build_global_string_ptr(&field_label, "arr_field_label")
+                                .unwrap();
+                            self.builder
+                                .build_call(
+                                    printf_fn,
+                                    &[field_label_global.as_pointer_value().into()],
+                                    "",
+                                )
+                                .unwrap();
+
+                            // Get field pointer
+                            let field_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    canonical_type,
+                                    struct_ptr,
+                                    field_idx as u32,
+                                    &format!("arr_field_{}_ptr", field_name),
+                                )
+                                .unwrap();
+
+                            // Get field LLVM type
+                            let field_llvm_type = canonical_type
+                                .get_field_type_at_index(field_idx as u32)
+                                .unwrap_or_else(|| self.context.i32_type().into());
+
+                            // Load and print field value
+                            let field_val = self
+                                .builder
+                                .build_load(
+                                    field_llvm_type,
+                                    field_ptr,
+                                    &format!("arr_field_{}", field_name),
+                                )
+                                .unwrap();
+
+                            if field_type == "Str" || field_type == "String" {
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("\"%s\"", "arr_str_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt.as_pointer_value().into(), field_val.into()],
+                                        "",
+                                    )
+                                    .unwrap();
+                            } else if field_type == "Int" {
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("%d", "arr_int_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt.as_pointer_value().into(), field_val.into()],
+                                        "",
+                                    )
+                                    .unwrap();
+                            } else if field_type == "Float" {
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("%f", "arr_float_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt.as_pointer_value().into(), field_val.into()],
+                                        "",
+                                    )
+                                    .unwrap();
+                            } else if field_type == "Bool" {
+                                let int_val = field_val.into_int_value();
+                                let zero = self.context.i32_type().const_int(0, false);
+                                let is_true = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::NE,
+                                        int_val,
+                                        zero,
+                                        "arr_bool_check",
+                                    )
+                                    .unwrap();
+                                let true_str = self
+                                    .builder
+                                    .build_global_string_ptr("true", "arr_true")
+                                    .unwrap();
+                                let false_str = self
+                                    .builder
+                                    .build_global_string_ptr("false", "arr_false")
+                                    .unwrap();
+                                let bool_str = self
+                                    .builder
+                                    .build_select(
+                                        is_true,
+                                        true_str.as_pointer_value(),
+                                        false_str.as_pointer_value(),
+                                        "arr_bool_sel",
+                                    )
+                                    .unwrap()
+                                    .into_pointer_value();
+                                self.builder
+                                    .build_call(printf_fn, &[bool_str.into()], "")
+                                    .unwrap();
+                            } else if self.enum_table.contains_key(field_type) {
+                                // Enum field - print variant name
+                                // Extract tag from enum struct { i32 tag, ptr payload }
+                                let tag_val = if field_val.is_struct_value() {
+                                    self.builder
+                                        .build_extract_value(
+                                            field_val.into_struct_value(),
+                                            0,
+                                            "arr_enum_tag",
+                                        )
+                                        .unwrap()
+                                        .into_int_value()
+                                } else {
+                                    field_val.into_int_value()
+                                };
+                                if let Some(variants) = self.enum_table.get(field_type) {
+                                    let mut sorted_variants: Vec<_> = variants.iter().collect();
+                                    sorted_variants.sort_by_key(|(name, _)| *name);
+
+                                    // For simplicity, print as EnumName::tag_value
+                                    // A full implementation would use switch, but for now just print the tag
+                                    let enum_fmt = self
+                                        .builder
+                                        .build_global_string_ptr(
+                                            &format!("{}::", field_type),
+                                            "arr_enum_fmt",
+                                        )
+                                        .unwrap();
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[enum_fmt.as_pointer_value().into()],
+                                            "",
+                                        )
+                                        .unwrap();
+                                    let tag_fmt = self
+                                        .builder
+                                        .build_global_string_ptr("%d", "arr_tag_fmt")
+                                        .unwrap();
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[tag_fmt.as_pointer_value().into(), tag_val.into()],
+                                            "",
+                                        )
+                                        .unwrap();
+                                } else {
+                                    let fmt = self
+                                        .builder
+                                        .build_global_string_ptr("%d", "arr_enum_tag")
+                                        .unwrap();
+                                    self.builder
+                                        .build_call(
+                                            printf_fn,
+                                            &[fmt.as_pointer_value().into(), field_val.into()],
+                                            "",
+                                        )
+                                        .unwrap();
+                                }
+                            } else {
+                                // Unknown type - print as int
+                                let fmt = self
+                                    .builder
+                                    .build_global_string_ptr("%d", "arr_unknown_fmt")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt.as_pointer_value().into(), field_val.into()],
+                                        "",
+                                    )
+                                    .unwrap();
+                            }
+
+                            // Print comma if not last field
+                            if field_idx < struct_meta.field_names.len() - 1 {
+                                let comma = self
+                                    .builder
+                                    .build_global_string_ptr(", ", "arr_field_comma")
+                                    .unwrap();
+                                self.builder
+                                    .build_call(printf_fn, &[comma.as_pointer_value().into()], "")
+                                    .unwrap();
+                            }
+                        }
+                    }
+
+                    // Print closing brace
+                    let closing_global = self
+                        .builder
+                        .build_global_string_ptr(" }", "arr_struct_closing")
+                        .unwrap();
+                    self.builder
+                        .build_call(printf_fn, &[closing_global.as_pointer_value().into()], "")
+                        .unwrap();
+                } else {
+                    // No metadata - just print placeholder
+                    let placeholder = format!("<{}>", struct_name);
+                    let placeholder_global = self
+                        .builder
+                        .build_global_string_ptr(&placeholder, "arr_struct_placeholder")
+                        .unwrap();
+                    self.builder
+                        .build_call(
+                            printf_fn,
+                            &[placeholder_global.as_pointer_value().into()],
+                            "",
+                        )
+                        .unwrap();
+                }
+
+                // Print comma if not last element
+                let comma_block = self
+                    .context
+                    .append_basic_block(print_fn, "arr_struct_comma");
+                let no_comma_block = self
+                    .context
+                    .append_basic_block(print_fn, "arr_struct_no_comma");
+                let after_comma_block = self
+                    .context
+                    .append_basic_block(print_fn, "arr_struct_after_comma");
+
+                self.builder
+                    .build_conditional_branch(is_last_element, no_comma_block, comma_block)
+                    .unwrap();
+
+                self.builder.position_at_end(comma_block);
+                let comma = self
+                    .builder
+                    .build_global_string_ptr(", ", "arr_elem_comma")
+                    .unwrap();
+                self.builder
+                    .build_call(printf_fn, &[comma.as_pointer_value().into()], "")
+                    .unwrap();
+                self.builder
+                    .build_unconditional_branch(after_comma_block)
+                    .unwrap();
+
+                self.builder.position_at_end(no_comma_block);
+                self.builder
+                    .build_unconditional_branch(after_comma_block)
+                    .unwrap();
+
+                self.builder.position_at_end(after_comma_block);
+            } else if metadata.element_type == "Str" {
                 let with_comma = self
                     .builder
                     .build_global_string_ptr("\"%s\", ", "array_elem_fmt_comma")
