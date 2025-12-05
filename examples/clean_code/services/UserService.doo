@@ -1,0 +1,19 @@
+import models::user::{User};
+
+fn promoteToAdmin(user: User) -> User {
+    let newUser = User {
+        Id: user.Id,
+        Name: user.Name,
+        Email: user.Email,
+        Age: user.Age,
+        Role: Role::Admin,
+        Status: user.Status,
+        Address: user.Address,
+    };
+    return newUser;
+}
+
+fn activateUser(user: User) -> User {
+    user.Status = AccountStatus::Active;
+    return user;
+}

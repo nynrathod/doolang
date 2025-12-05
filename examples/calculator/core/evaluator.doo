@@ -1,0 +1,50 @@
+import core::operations::{SafeDiv, SafeMod, SafeSqrt, PowF, SqrtF};
+import core::error::{CalcError};
+
+
+// (a + b) / c
+fn EvalSumDiv(a: Float, b: Float, c: Float) -> Float ! CalcError {
+    let sum = a + b;
+    let result = SafeDiv(sum, c)?;
+    Ok result;
+}
+
+
+// sqrt(a) / sqrt(b)
+fn EvalSqrtRatio(a: Float, b: Float) -> Float ! CalcError {
+    let sa = SafeSqrt(a)?;
+    let sb = SafeSqrt(b)?;
+    Ok SafeDiv(sa, sb)?;
+}
+
+
+// (a / b) + (c / d)
+fn EvalParallel(a: Float, b: Float, c: Float, d: Float) -> Float ! CalcError {
+    let left = SafeDiv(a, b)?;
+    let right = SafeDiv(c, d)?;
+    Ok left + right;
+}
+
+
+// (base^exp) / divisor
+fn EvalPowDiv(base: Float, exp: Int, divisor: Float) -> Float ! CalcError {
+    let powered = PowF(base, exp);
+    Ok SafeDiv(powered, divisor)?;
+}
+
+
+// Pythagorean sqrt(a² + b²)
+fn Hypotenuse(a: Float, b: Float) -> Float ! CalcError {
+    let sum = PowF(a, 2) + PowF(b, 2);
+    Ok SafeSqrt(sum)?;
+}
+
+
+// Quadratic discriminant
+fn Discriminant(a: Float, b: Float, c: Float) -> Float {
+    return PowF(b, 2) - 4.0 * a * c;
+}
+
+fn HasRealRoots(a: Float, b: Float, c: Float) -> Bool {
+    return Discriminant(a, b, c) >= 0.0;
+}

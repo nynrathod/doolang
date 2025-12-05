@@ -1,0 +1,37 @@
+// Task models and types
+
+enum Priority { Low, Medium, High }
+enum Status { Todo, InProgress, Done }
+
+struct Task {
+    Id: Int,
+    Title: Str,
+    Priority: Priority,
+    Status: Status,
+}
+
+fn Task.IsDone(self) -> Bool => self.Status == Status::Done;
+fn Task.IsUrgent(self) -> Bool => self.Priority == Priority::High;
+
+fn Task.Display(self) -> Str {
+    let icon = match self.Status {
+        Status::Todo => "○",
+        Status::InProgress => "◐",
+        Status::Done => "✓",
+    };
+    let pri = match self.Priority {
+        Priority::High => "!",
+        Priority::Medium => "-",
+        Priority::Low => " ",
+    };
+    return "${icon} [${pri}] ${self.Title}";
+}
+
+fn CreateTask(id: Int, title: Str, priority: Priority) -> Task {
+    return Task {
+        Id: id,
+        Title: title,
+        Priority: priority,
+        Status: Status::Todo,
+    };
+}

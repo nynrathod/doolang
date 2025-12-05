@@ -1,0 +1,60 @@
+import models::user::{User};
+import models::role::{Role};
+import models::address::{Address};
+import models::status::{AccountStatus};
+
+struct ValidationError {
+    Field: Str,
+    Message: Str,
+}
+
+fn validateEmail(email: Str) -> Bool ! ValidationError {
+    if email.trim() == "" {
+        Err ValidationError { Field: "Email", Message: "Cannot be empty" };
+    }
+    if email.indexOf("@") == -1 {
+        Err ValidationError { Field: "Email", Message: "Invalid email format" };
+    }
+    Ok true;
+}
+
+fn validateAge(age: Int) -> Bool ! ValidationError {
+    if age < 0 {
+        Err ValidationError { Field: "Age", Message: "Cannot be negative" };
+    }
+    if age > 150 {
+        Err ValidationError { Field: "Age", Message: "Unrealistic value" };
+    }
+    Ok true;
+}
+
+fn validateName(name: Str) -> Bool ! ValidationError {
+    if name.trim() == "" {
+        Err ValidationError { Field: "Name", Message: "Cannot be empty" };
+    }
+    Ok true;
+}
+
+fn createUser(
+    id: Int,
+    name: Str,
+    email: Str,
+    age: Int,
+    role: Role,
+    address: Address
+) -> User ! ValidationError {
+
+    validateName(name)?;
+    validateEmail(email)?;
+    validateAge(age)?;
+
+    Ok User {
+        Id: id,
+        Name: name,
+        Email: email,
+        Age: age,
+        Role: role,
+        Status: AccountStatus::Pending,
+        Address: address,
+    };
+}

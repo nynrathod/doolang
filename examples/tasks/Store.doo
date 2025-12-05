@@ -1,0 +1,43 @@
+// Task storage and operations
+
+import Models::{Task, Priority, Status, CreateTask};
+
+struct TaskStore {
+    Tasks: [Task],
+    NextId: Int,
+}
+
+fn CreateStore() -> TaskStore {
+    return TaskStore { Tasks: [], NextId: 1 };
+}
+
+fn TaskStore.Add(self, title: Str, priority: Priority) -> Task {
+    let task = CreateTask(self.NextId, title, priority);
+    self.Tasks.push(task);
+    self.NextId = self.NextId + 1;
+    return task;
+}
+
+fn TaskStore.GetAll(self) -> [Task] {
+    return self.Tasks;
+}
+
+fn TaskStore.GetPending(self) -> [Task] {
+    return self.Tasks.filter((t) => !t.IsDone());
+}
+
+fn TaskStore.GetDone(self) -> [Task] {
+    return self.Tasks.filter((t) => t.IsDone());
+}
+
+fn TaskStore.GetUrgent(self) -> [Task] {
+    return self.Tasks.filter((t) => t.IsUrgent() && !t.IsDone());
+}
+
+fn TaskStore.Count(self) -> Int {
+    return self.Tasks.len();
+}
+
+fn TaskStore.CountDone(self) -> Int {
+    return self.GetDone().len();
+}

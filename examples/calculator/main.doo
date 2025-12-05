@@ -1,0 +1,41 @@
+import core::evaluator::*;
+import core::error::{CalcError};
+
+fn show(result: Float, label: Str) {
+    print("${label}: ${result}");
+}
+
+fn showErr(err: CalcError) {
+    print("✗ Error in", err.Op, "-", err.Message);
+}
+
+fn main() {
+    print("══ Doo Calculator ══");
+
+    // (a + b) / c
+    let r1, e1 = EvalSumDiv(10.0, 20.0, 5.0);
+    if e1 != nil { showErr(e1); } else { show(r1, "Result 1"); }
+
+    // sqrt(a) / sqrt(b)
+    let r2, e2 = EvalSqrtRatio(16.0, 4.0);
+    if e2 != nil { showErr(e2); } else { show(r2, "Result 2"); }
+
+    // parallel div
+    let r3, e3 = EvalParallel(10.0, 2.0, 6.0, 3.0);
+    if e3 != nil { showErr(e3); } else { show(r3, "Result 3"); }
+
+    // power division
+    let r4, e4 = EvalPowDiv(2.0, 5, 4.0);
+    if e4 != nil { showErr(e4); } else { show(r4, "PowDiv"); }
+
+    // hypotenuse
+    let r5, e5 = Hypotenuse(3.0, 4.0);
+    if e5 != nil { showErr(e5); } else { show(r5, "Hypotenuse"); }
+
+    // discriminant
+    let d = Discriminant(1.0, 5.0, 6.0);
+    print("Discriminant:", d);
+    print("Has real roots?", HasRealRoots(1.0, 5.0, 6.0));
+
+    print("══ Done ══");
+}

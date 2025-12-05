@@ -1,0 +1,18 @@
+import models::role::{Role};
+import models::status::{AccountStatus};
+import models::address::{Address};
+
+struct User {
+    Id: Int,
+    Name: Str,
+    Email: Str,
+    Age: Int,
+    Role: Role,
+    Status: AccountStatus,
+    Address: Address,
+}
+
+fn User.isAdult(self) -> Bool => self.Age >= 18;
+fn User.isAdmin(self) -> Bool => self.Role == Role::Admin;
+fn User.isActive(self) -> Bool => self.Status == AccountStatus::Active;
+fn User.location(self) -> Str => self.Address.display();

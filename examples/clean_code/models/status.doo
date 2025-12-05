@@ -1,0 +1,5 @@
+enum AccountStatus {
+    Active,
+    Suspended,
+    Pending,
+}
