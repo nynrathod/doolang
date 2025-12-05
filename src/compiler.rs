@@ -412,11 +412,16 @@ fn link_object_file(
     mir_program: &crate::mir::mir::MirProgram,
 ) -> Result<(), String> {
     // Collect all FFI libraries needed from the MIR
-    let ffi_libs: std::collections::HashSet<String> = mir_program
+    let mut ffi_libs: std::collections::HashSet<String> = mir_program
         .functions
         .iter()
         .filter_map(|f| f.ffi_lib.clone())
         .collect();
+
+    // Always include doo_runtime - it contains essential runtime functions:
+    // - hash_string (used by maps with string keys)
+    // - json_parse, json_stringify, json_get_* (JSON operations)
+    ffi_libs.insert("doo_runtime".to_string());
 
     // Common: Build search paths for libraries (works on all platforms)
     let exe_dir = env::current_exe()
