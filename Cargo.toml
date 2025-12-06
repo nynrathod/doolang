@@ -10,7 +10,7 @@ resolver = "2"
 incremental = true
 
 [profile.release]
-opt-level = "z"        # Optimize for size
+opt-level = 3        # Optimize for speed and performance
 lto = true             # Link-time optimization
 codegen-units = 1      # Better optimization
 strip = true           # Strip symbols
@@ -18,7 +18,7 @@ panic = "abort"        # Smaller panic handler
 
 [package]
 name = "doo"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 default-run = "doo"
 
