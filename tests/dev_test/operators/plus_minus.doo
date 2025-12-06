@@ -1,0 +1,62 @@
+fn main() {
+
+
+    // ------------------------------------------------------------
+    // Integer increment operator test
+    let mut i: Int = 0;
+    print("Initial i:", i);
+    i++;
+    print("After i++:", i);
+    i++;
+    print("After i++:", i);
+
+    // ------------------------------------------------------------
+    // Integer decrement operator test
+    let mut j: Int = 5;
+    print("Initial j:", j);
+    j--;
+    print("After j--:", j);
+    j--;
+    print("After j--:", j);
+
+    // ------------------------------------------------------------
+    // Float increment operator test
+    let mut x: Float = 1.5;
+    print("Initial x:", x);
+    x++;
+    print("After x++:", x);
+    x++;
+    print("After x++:", x);
+
+    // ------------------------------------------------------------
+    // Float decrement operator test
+    let mut y: Float = 3.5;
+    print("Initial y:", y);
+    y--;
+    print("After y--:", y);
+    y--;
+    print("After y--:", y);
+
+    // ------------------------------------------------------------
+    // Loop increment test
+    print("Loop test:");
+    let mut count: Int = 0;
+    for {
+        if count >= 3 {
+            break;
+        }
+        print("  count:", count);
+        count++;
+    }
+
+    // ------------------------------------------------------------
+    // Multiple variable increment/decrement test
+    let mut a: Int = 10;
+    let mut b: Int = 20;
+    print("Before: a=", a, ", b=", b);
+    a++;
+    b++;
+    a++;
+    b--;
+    print("After: a=", a, ", b=", b);
+}

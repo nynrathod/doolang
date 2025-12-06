@@ -13,8 +13,8 @@
 pub const PARSER_MAX_DEPTH: usize = 64;
 
 /// Maximum recursion depth for semantic analysis
-/// Reduced for AddressSanitizer compatibility
-pub const ANALYZER_MAX_DEPTH: usize = 64;
+/// Increased to handle complex files with many nested expressions
+pub const ANALYZER_MAX_DEPTH: usize = 256;
 
 /// Maximum recursion depth for MIR building
 /// Reduced for AddressSanitizer compatibility
@@ -100,9 +100,9 @@ mod tests {
     #[test]
     fn test_limits_are_reasonable() {
         // Recursion limits should be similar
-        assert!(PARSER_MAX_DEPTH < 256);
-        assert!(ANALYZER_MAX_DEPTH < 256);
-        assert!(MIR_MAX_DEPTH < 256);
-        assert!(CODEGEN_MAX_DEPTH < 256);
+        assert!(PARSER_MAX_DEPTH < 512);
+        assert!(ANALYZER_MAX_DEPTH < 512);
+        assert!(MIR_MAX_DEPTH < 512);
+        assert!(CODEGEN_MAX_DEPTH < 512);
     }
 }

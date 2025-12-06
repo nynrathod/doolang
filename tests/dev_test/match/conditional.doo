@@ -1,0 +1,135 @@
+fn main() {
+
+    // Int comparisons
+    print("\n--- Int comparisons ---");
+    let x = 10;
+    match {
+        x < 0 => print("Negative"),
+        x == 0 => print("Zero"),
+        x > 0 && x < 100 => print("Positive and less than 100"),
+        x >= 100 => print("Large"),
+        _ => print("Other")
+    }
+
+    // Float comparisons
+    print("\n--- Float comparisons ---");
+    let f = -3.14;
+    match {
+        f < 0.0 => print("Negative float"),
+        f == 0.0 => print("Zero float"),
+        f > 0.0 => print("Positive float"),
+        _ => print("Other float")
+    }
+
+    // Bool logic
+    print("\n--- Bool logic ---");
+    let a = true;
+    let b = false;
+    match {
+        a && b => print("Both true"),
+        a || b => print("At least one true"),
+        !a => print("A is false"),
+        _ => print("Both false")
+    }
+
+    // String comparisons
+    print("\n--- String comparisons ---");
+    let s = "hello";
+    match {
+        s == "hello" => print("Greeting"),
+        s == "bye" => print("Farewell"),
+        s != "" => print("Non-empty"),
+        _ => print("Empty")
+    }
+
+    // Membership in array
+    print("\n--- Membership in array ---");
+    let arr = [1, 2, 3];
+    match {
+        2 in arr => print("2 is in array"),
+        4 in arr => print("4 is in array"),
+        arr.len() > 2 => print("Array has more than 2 elements"),
+        _ => print("Other")
+    }
+
+    // Membership in map
+    print("\n--- Membership in map ---");
+    let m = {"key": "value", "foo": "bar"};
+    match {
+        "key" in m => print("Key exists"),
+        "baz" in m => print("Baz exists"),
+        m["foo"] == "bar" => print("Foo is bar"),
+        _ => print("Other")
+    }
+
+    // Nested conditions
+    print("\n--- Nested conditions ---");
+    let n = 5;
+    match {
+        n > 0 && n % 2 == 1 => print("Positive odd"),
+        n > 0 && n % 2 == 0 => print("Positive even"),
+        n < 0 => print("Negative"),
+        _ => print("Zero")
+    }
+
+    // Array length check
+    print("\n--- Array length check ---");
+    let arr2 = [10, 20];
+    match {
+        arr2.len() == 0 => print("Empty array"),
+        arr2.len() == 1 => print("Single element"),
+        arr2.len() == 2 => print("Two elements"),
+        arr2.len() > 2 => print("Many elements"),
+        _ => print("Other")
+    }
+
+    // Map key existence and value check
+    print("\n--- Map key/value check ---");
+    let userName = {"name": "Alice", "role": "admin"};
+    let userAge = {"age": 30, "score": 100};
+    match {
+        "name" in userName && userName["name"] == "Alice" => print("User is Alice"),
+        "age" in userAge && userAge["age"] > 18 => print("Adult user"),
+        "age" in userAge && userAge["age"] < 18 => print("Minor user"),
+        _ => print("Unknown user")
+    }
+
+    // Multiple logical operators
+    print("\n--- Multiple logical operators ---");
+    let score = 85;
+    let passed = true;
+    match {
+        score >= 90 && passed => print("Excellent and passed"),
+        score >= 70 && passed => print("Good and passed"),
+        score < 70 && !passed => print("Failed"),
+        _ => print("Other")
+    }
+
+    // Original tests preserved
+    print("\n--- Test 1: Age condition ---");
+    let age = 25;
+    match {
+        age < 13 => print("Child"),
+        age < 18 => print("Teen"),
+        age < 60 => print("Adult"),
+        _ => print("Senior")
+    }
+
+    print("\n--- Test 2: Temperature condition ---");
+    let temp = 75.5;
+    match {
+        temp < 32.0 => print("Freezing"),
+        temp < 60.0 => print("Cold"),
+        temp < 80.0 => print("Warm"),
+        _ => print("Hot")
+    }
+
+    print("\n--- Test 3: Bool condition ---");
+    let hasAccess = true;
+    let isAdmin = false;
+    match {
+        hasAccess && isAdmin => print("Admin access"),
+        hasAccess => print("User access"),
+        _ => print("No access")
+    }
+}

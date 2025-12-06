@@ -2,13 +2,14 @@ use crate::codegen::core::{CodeGen, Symbol};
 use crate::mir::mir::MirInstr;
 use inkwell::types::{AsTypeRef, BasicType, BasicTypeEnum};
 use inkwell::values::{AsValueRef, BasicValue, BasicValueEnum};
+use inkwell::AddressSpace;
 
 /// This module provides functions for generating LLVM IR for global variables, constants, arrays, maps, and string operations.
 /// It handles the translation of MIR instructions into LLVM global definitions, including constant folding and compile-time string concatenation.
 /// The code here is essential for setting up the global state of a program before function-level code generation begins.
 /// External function from the LLVM C API needed to create constant arrays
 /// of complex types (like arrays of structs, or nested arrays).
-use llvm_sys::core::LLVMConstArray;
+use llvm_sys::core::LLVMConstArray2;
 use llvm_sys::prelude::LLVMValueRef;
 
 /// Implements global code generation logic for the CodeGen struct.
@@ -29,7 +30,7 @@ impl<'ctx> CodeGen<'ctx> {
         // Convert Inkwell values to raw LLVM value references.
         let mut raw: Vec<LLVMValueRef> = values.iter().map(|v| v.as_value_ref()).collect();
         // Call the raw LLVM function to build the constant array.
-        let arr_ref = LLVMConstArray(elem_type.as_type_ref(), raw.as_mut_ptr(), raw.len() as u32);
+        let arr_ref = LLVMConstArray2(elem_type.as_type_ref(), raw.as_mut_ptr(), raw.len() as u64);
         // Convert the raw reference back into an Inkwell ArrayValue.
         unsafe { inkwell::values::ArrayValue::new(arr_ref) }.as_basic_value_enum()
     }
@@ -47,6 +48,11 @@ impl<'ctx> CodeGen<'ctx> {
             // Integer constant global (only i32 for integers)
             MirInstr::ConstInt { name, value } => {
                 let val = self.context.i32_type().const_int(*value as u64, true);
+                self.temp_values.insert(name.clone(), val.into());
+            }
+            // Float constant global (f64 for floating point)
+            MirInstr::ConstFloat { name, value } => {
+                let val = self.context.f32_type().const_float(*value);
                 self.temp_values.insert(name.clone(), val.into());
             }
             // Boolean constant global
@@ -181,7 +187,11 @@ impl<'ctx> CodeGen<'ctx> {
                     .insert(name.clone(), g.as_pointer_value().into());
             }
             // Handles constant array initialization, including nested aggregates.
-            MirInstr::Array { name, elements } => {
+            MirInstr::Array {
+                name,
+                elements,
+                element_type,
+            } => {
                 // Resolve the LLVM constant value for ALL elements.
                 let element_values: Vec<BasicValueEnum<'ctx>> = elements
                     .iter()
@@ -193,8 +203,10 @@ impl<'ctx> CodeGen<'ctx> {
                 let elem_type = first_val.get_type();
                 let _array_type = elem_type.array_type(elements.len() as u32);
 
-                // Determine element type name and if it contains strings
-                let element_type_name = if elem_type.is_int_type() {
+                // Determine element type name - use provided type if available, otherwise infer
+                let element_type_name = if let Some(ref et) = element_type {
+                    et.as_str()
+                } else if elem_type.is_int_type() {
                     "Int"
                 } else if elem_type.is_pointer_type() {
                     "Str"
@@ -219,8 +231,14 @@ impl<'ctx> CodeGen<'ctx> {
                     unsafe { Self::build_const_array(elem_type, element_values) }
                 };
 
-                // Store the final constant array value.
-                self.temp_values.insert(name.clone(), const_array);
+                // Create a global variable to hold the array, so it has a proper address
+                let global = self.module.add_global(const_array.get_type(), None, name);
+                global.set_initializer(&const_array);
+                global.set_constant(true);
+
+                // Store the pointer to the global array
+                self.temp_values
+                    .insert(name.clone(), global.as_pointer_value().into());
 
                 // Create and store metadata for the array
                 let metadata = crate::codegen::ArrayMetadata {
@@ -231,7 +249,12 @@ impl<'ctx> CodeGen<'ctx> {
                 self.array_metadata.insert(name.clone(), metadata);
             }
             // Handles constant map initialization, represented as an array of structs.
-            MirInstr::Map { name, entries } => {
+            MirInstr::Map {
+                name,
+                entries,
+                key_type: _,
+                value_type: _,
+            } => {
                 // Determine the types of the key and value from the first entry.
                 let first_key = self.resolve_global_value(&entries[0].0);
                 let first_val = self.resolve_global_value(&entries[0].1);
@@ -273,8 +296,14 @@ impl<'ctx> CodeGen<'ctx> {
                 let const_array =
                     unsafe { Self::build_const_array(pair_type.into(), struct_values) };
 
-                // Store the final constant map value.
-                self.temp_values.insert(name.clone(), const_array);
+                // Create a global variable to hold the map, so it has a proper address
+                let global = self.module.add_global(const_array.get_type(), None, name);
+                global.set_initializer(&const_array);
+                global.set_constant(true);
+
+                // Store the pointer to the global map
+                self.temp_values
+                    .insert(name.clone(), global.as_pointer_value().into());
 
                 // Create and store metadata for the map
                 let metadata = crate::codegen::MapMetadata {
@@ -283,8 +312,14 @@ impl<'ctx> CodeGen<'ctx> {
                     value_type: value_type_name.to_string(),
                     key_is_string: key_type.is_pointer_type(),
                     value_is_string: val_type.is_pointer_type(),
+                    key_needs_rc: false,
+                    value_needs_rc: false,
                 };
                 self.map_metadata.insert(name.clone(), metadata);
+            }
+            // StructDecl is handled in generate_program pre-scan, skip here
+            MirInstr::StructDecl { .. } => {
+                // Skip - already handled in pre-scan
             }
             // Ignore other MIR instructions
             _ => {}

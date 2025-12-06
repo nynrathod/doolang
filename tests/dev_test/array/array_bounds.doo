@@ -1,0 +1,58 @@
+fn main() {
+    // === Array Bounds Checking ===
+    print("=== Array Bounds Checking ===");
+
+    // Int array - valid access
+    let arr = [10, 20, 30, 40, 50];
+    print("arr:", arr);
+    print("arr length: 5");
+    print("\nValid accesses:");
+    print("arr[0]:", arr[0]);
+    print("arr[2]:", arr[2]);
+    print("arr[4]:", arr[4]);
+
+    // Float array - valid access
+    let floats = [1.1, 2.2, 3.3];
+    print("\nfloats:", floats);
+    print("floats length: 3");
+    print("floats[0]:", floats[0]);
+    print("floats[2]:", floats[2]);
+
+    // Bool array - valid access
+    let flags = [true, false, true, false];
+    print("\nflags:", flags);
+    print("flags length: 4");
+    print("flags[0]:", flags[0]);
+    print("flags[3]:", flags[3]);
+
+    // === Array Set with Bounds Checking ===
+    print("\n=== Array Set Bounds Checking ===");
+
+    let mut nums = [1, 2, 3, 4, 5];
+    print("nums before:", nums);
+    nums[0] = 100;
+    nums[4] = 500;
+    print("nums after valid sets:", nums);
+
+    let mut bools = [true, true, true];
+    print("\nbools before:", bools);
+    bools[0] = false;
+    bools[2] = false;
+    print("bools after valid sets:", bools);
+
+    // === Out of Bounds Panic Tests ===
+    // Uncomment any line below to test runtime panic:
+
+    // Array Get out of bounds:
+    // print(arr[5]);     // panic: index 5, length 5
+    // print(arr[100]);   // panic: index 100, length 5
+    // print(floats[3]);  // panic: index 3, length 3
+    // print(flags[4]);   // panic: index 4, length 4
+
+    // Array Set out of bounds:
+    // nums[5] = 999;     // panic: index 5, length 5
+    // nums[100] = 999;   // panic: index 100, length 5
+    // bools[10] = false; // panic: index 10, length 3
+
+    print("\n=== All bounds tests passed ===");
+}

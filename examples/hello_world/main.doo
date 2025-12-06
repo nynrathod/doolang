@@ -1,0 +1,55 @@
+// ══════════════════════════════════════════════════════════════════════
+//                         Hello, Doo!
+// ══════════════════════════════════════════════════════════════════════
+//
+//  Doo - A statically-typed, compiled language for building APIs fast.
+//
+//  Created by: Nayan Rathod
+//  Version: 0.2.0 (Alpha)
+//  License: MIT
+//
+//  Vision: Build production-ready APIs in minutes, not hours.
+//          Write less code. Ship faster. Stay type-safe.
+//
+//  Run this: doo run
+//
+// ══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    print("══════════════════════════════════════════");
+    print("        Welcome to Doo! ");
+    print("══════════════════════════════════════════");
+    print("");
+    print("  Author:  Nayan Rathod");
+    print("  Version: 0.2.0 (Alpha)");
+    print("");
+    print("══════════════════════════════════════════");
+    print("");
+
+    // Variables with type inference
+    let language = "Doo";
+    let year = 2025;
+    let ready = true;
+
+    print("Language:", language);
+    print("Year:", year);
+    print("Production Ready:", ready);
+    print("");
+
+    // String interpolation
+    let message = "Hello from ${language}!";
+    print(message);
+    print("");
+
+    // Simple array
+    let features = ["Type Safe", "Fast", "Stupid Simple"];
+    print("Core Features:");
+    for feature in features {
+        print("  -", feature);
+    }
+
+    print("");
+    print("══════════════════════════════════════════");
+    print("  Start building with: doo run main.doo");
+    print("══════════════════════════════════════════");
+}

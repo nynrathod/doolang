@@ -1,0 +1,4 @@
+struct CalcError {
+    Op: Str,
+    Message: Str,
+}

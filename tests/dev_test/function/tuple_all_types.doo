@@ -1,0 +1,458 @@
+//
+// Test 1: Basic types
+fn GetBasicTypes() -> Int, Float, Bool, Str {
+    return 42, 3.14, true, "hello";
+}
+
+// Test 2: Array types
+fn GetIntArray() -> [Int], Int {
+    return [1, 2, 3], 10;
+}
+
+fn GetFloatArray() -> [Float], Int {
+    return [1.1, 2.2, 3.3], 20;
+}
+
+fn GetBoolArray() -> [Bool], Int {
+    return [true, false, true], 30;
+}
+
+fn GetStrArray() -> [Str], Int {
+    return ["a", "b", "c"], 40;
+}
+
+// Test 3: Map types with Str key
+fn GetStrIntMap() -> {Str: Int}, Int {
+    return {"a": 1, "b": 2}, 100;
+}
+
+fn GetStrFloatMap() -> {Str: Float}, Int {
+    return {"x": 1.5, "y": 2.5}, 101;
+}
+
+fn GetStrBoolMap() -> {Str: Bool}, Int {
+    return {"flag1": true, "flag2": false}, 102;
+}
+
+fn GetStrStrMap() -> {Str: Str}, Int {
+    return {"key1": "val1", "key2": "val2"}, 103;
+}
+
+// Test 4: Map types with Int key
+fn GetIntIntMap() -> {Int: Int}, Int {
+    return {1: 10, 2: 20}, 200;
+}
+
+fn GetIntFloatMap() -> {Int: Float}, Int {
+    return {1: 1.5, 2: 2.5}, 201;
+}
+
+fn GetIntBoolMap() -> {Int: Bool}, Int {
+    return {1: true, 2: false}, 202;
+}
+
+fn GetIntStrMap() -> {Int: Str}, Int {
+    return {1: "one", 2: "two"}, 203;
+}
+
+// Test 5: Map types with Float key
+fn GetFloatIntMap() -> {Float: Int}, Int {
+    return {1.5: 10, 2.5: 20}, 300;
+}
+
+fn GetFloatFloatMap() -> {Float: Float}, Int {
+    return {1.5: 10.5, 2.5: 20.5}, 301;
+}
+
+fn GetFloatBoolMap() -> {Float: Bool}, Int {
+    return {1.5: true, 2.5: false}, 302;
+}
+
+fn GetFloatStrMap() -> {Float: Str}, Int {
+    return {1.5: "one", 2.5: "two"}, 303;
+}
+
+// Test 6: Map types with Bool key
+fn GetBoolIntMap() -> {Bool: Int}, Int {
+    return {true: 1, false: 0}, 400;
+}
+
+fn GetBoolFloatMap() -> {Bool: Float}, Int {
+    return {true: 1.5, false: 0.5}, 401;
+}
+
+fn GetBoolBoolMap() -> {Bool: Bool}, Int {
+    return {true: false, false: true}, 402;
+}
+
+fn GetBoolStrMap() -> {Bool: Str}, Int {
+    return {true: "yes", false: "no"}, 403;
+}
+
+// Test 7: Multiple arrays in tuple
+fn GetMultiArrays() -> [Int], [Float], [Bool], [Str] {
+    return [1, 2], [1.5, 2.5], [true, false], ["x", "y"];
+}
+
+// Test 8: Mixed complex types
+fn GetComplexMix() -> [Int], {Str: Int}, Float, Bool {
+    return [10, 20, 30], {"key": 100}, 99.9, true;
+}
+
+// --- Additional tests for all possible return types ---
+
+// Single value returns for all types
+fn GetInt() -> Int { return 123; }
+fn GetFloat() -> Float { return 4.56; }
+fn GetBool() -> Bool { return false; }
+fn GetStr() -> Str { return "abc"; }
+fn GetIntArrayOnly() -> [Int] { return [7, 8, 9]; }
+fn GetFloatArrayOnly() -> [Float] { return [7.7, 8.8, 9.9]; }
+fn GetBoolArrayOnly() -> [Bool] { return [false, true]; }
+fn GetStrArrayOnly() -> [Str] { return ["foo", "bar"]; }
+fn GetStrIntMapOnly() -> {Str: Int} { return {"x": 1, "y": 2}; }
+fn GetStrFloatMapOnly() -> {Str: Float} { return {"a": 1.1, "b": 2.2}; }
+fn GetStrBoolMapOnly() -> {Str: Bool} { return {"t": true, "f": false}; }
+fn GetStrStrMapOnly() -> {Str: Str} { return {"hello": "world"}; }
+fn GetIntIntMapOnly() -> {Int: Int} { return {3: 33, 4: 44}; }
+fn GetIntFloatMapOnly() -> {Int: Float} { return {5: 5.5, 6: 6.6}; }
+fn GetIntBoolMapOnly() -> {Int: Bool} { return {7: true, 8: false}; }
+fn GetIntStrMapOnly() -> {Int: Str} { return {9: "nine", 10: "ten"}; }
+fn GetFloatIntMapOnly() -> {Float: Int} { return {3.3: 3, 4.4: 4}; }
+fn GetFloatFloatMapOnly() -> {Float: Float} { return {5.5: 55.5, 6.6: 66.6}; }
+fn GetFloatBoolMapOnly() -> {Float: Bool} { return {7.7: true, 8.8: false}; }
+fn GetFloatStrMapOnly() -> {Float: Str} { return {9.9: "nine", 10.1: "ten"}; }
+fn GetBoolIntMapOnly() -> {Bool: Int} { return {true: 11, false: 12}; }
+fn GetBoolFloatMapOnly() -> {Bool: Float} { return {true: 13.13, false: 14.14}; }
+fn GetBoolBoolMapOnly() -> {Bool: Bool} { return {true: true, false: false}; }
+fn GetBoolStrMapOnly() -> {Bool: Str} { return {true: "true", false: "false"}; }
+
+// === Merged tests from tuple_returns.doo ===
+
+// Test 1: Two ints
+fn GetTwoInts() -> Int, Int {
+    return 10, 20;
+}
+
+// Test 2: Int and string tuple
+fn GetIntStr() -> Int, Str {
+    return 42, "hello";
+}
+
+// Test 3: Mixed types
+fn GetMixedData() -> Str, Float, Bool {
+    return "test", 3.14, true;
+}
+
+// Test 5: Tuple with map
+fn GetMapData() -> {Str: Int}, Str {
+    return {"a": 1, "b": 2}, "key";
+}
+
+// Test 7: All basic types (slightly different order)
+fn GetAllTypes() -> Int, Float, Str, Bool {
+    return 42, 3.14, "hello", true;
+}
+
+// Test 8: Conditional tuple return
+fn GetConditionalData(flag: Bool) -> Int, Str {
+    if flag {
+        return 1, "true";
+    }
+    return 0, "false";
+}
+
+// Test 9: Tuple with two arrays
+fn GetArrays() -> [Int], [Str] {
+    return [1, 2, 3], ["a", "b"];
+}
+
+// Test 10: Tuple with two maps
+fn GetMaps() -> {Int: Str}, {Str: Int} {
+    return {1: "one", 2: "two"}, {"a": 1, "b": 2};
+}
+
+// Test 11: Five element tuple
+fn GetFiveElements() -> Int, Str, Float, Bool, Int {
+    return 1, "two", 3.0, true, 5;
+}
+
+// Test 12: Four ints (renamed to avoid collision with existing GetBasicTypes)
+fn GetFourInts() -> Int, Int, Int, Int {
+    return 10, 20, 30, 40;
+}
+
+// Test 13: Two string arrays
+fn GetStringArray() -> [Str], [Str] {
+    return ["hello", "world"], ["foo", "bar"];
+}
+
+// Test 14: Multiple map returns
+fn GetAllMaps() -> {Str: Int}, {Int: Str}, {Str: Bool} {
+    return {"a": 1}, {1: "one"}, {"flag": true};
+}
+
+
+
+// --- JSON Parse Return Functions for All Types ---
+fn ParseInt(json: Str) -> Int { return JSON.parse(json); }
+fn ParseFloat(json: Str) -> Float { return JSON.parse(json); }
+fn ParseBool(json: Str) -> Bool { return JSON.parse(json); }
+fn ParseStr(json: Str) -> Str { return JSON.parse(json); }
+fn ParseIntArray(json: Str) -> [Int] { return JSON.parse(json); }
+fn ParseFloatArray(json: Str) -> [Float] { return JSON.parse(json); }
+fn ParseBoolArray(json: Str) -> [Bool] { return JSON.parse(json); }
+fn ParseStrArray(json: Str) -> [Str] { return JSON.parse(json); }
+fn ParseStrIntMap(json: Str) -> {Str: Int} { return JSON.parse(json); }
+fn ParseStrFloatMap(json: Str) -> {Str: Float} { return JSON.parse(json); }
+fn ParseStrBoolMap(json: Str) -> {Str: Bool} { return JSON.parse(json); }
+fn ParseStrStrMap(json: Str) -> {Str: Str} { return JSON.parse(json); }
+fn ParseIntIntMap(json: Str) -> {Int: Int} { return JSON.parse(json); }
+fn ParseIntFloatMap(json: Str) -> {Int: Float} { return JSON.parse(json); }
+fn ParseIntBoolMap(json: Str) -> {Int: Bool} { return JSON.parse(json); }
+fn ParseIntStrMap(json: Str) -> {Int: Str} { return JSON.parse(json); }
+fn ParseFloatIntMap(json: Str) -> {Float: Int} { return JSON.parse(json); }
+fn ParseFloatFloatMap(json: Str) -> {Float: Float} { return JSON.parse(json); }
+fn ParseFloatBoolMap(json: Str) -> {Float: Bool} { return JSON.parse(json); }
+fn ParseFloatStrMap(json: Str) -> {Float: Str} { return JSON.parse(json); }
+fn ParseBoolIntMap(json: Str) -> {Bool: Int} { return JSON.parse(json); }
+fn ParseBoolFloatMap(json: Str) -> {Bool: Float} { return JSON.parse(json); }
+fn ParseBoolBoolMap(json: Str) -> {Bool: Bool} { return JSON.parse(json); }
+fn ParseBoolStrMap(json: Str) -> {Bool: Str} { return JSON.parse(json); }
+
+fn main() {
+    print("=== Basic Types Test ===");
+    let i, f, b, s = GetBasicTypes();
+    print("Int: ", i, " Float: ", f, " Bool: ", b, " Str: ", s);
+
+    print("\n=== Array Types Test ===");
+    let iarr, ival = GetIntArray();
+    print("IntArray[0]: ", iarr, iarr[0], " Val: ", ival);
+
+    let farr, fval = GetFloatArray();
+    print("FloatArray[0]: ", farr, farr[0], " Val: ", fval);
+
+    let barr, bval = GetBoolArray();
+    print("BoolArray[0]: ", barr, barr[0], " Val: ", bval);
+
+    let sarr, sval = GetStrArray();
+    print("StrArray[0]: ", sarr, sarr[1], " Val: ", sval);
+
+    print("\n=== Str Key Maps Test ===");
+    let m1, v1 = GetStrIntMap();
+    print("StrIntMap: ", m1, m1["a"], " Val: ", v1);
+
+    let m2, v2 = GetStrFloatMap();
+    print("StrFloatMap: ", m2, m2["x"], " Val: ", v2);
+
+    let m3, v3 = GetStrBoolMap();
+    print("StrBoolMap: ", m3, m3["flag1"], " Val: ", v3);
+
+    let m4, v4 = GetStrStrMap();
+    print("StrStrMap: ", m4, m4["key1"], " Val: ", v4);
+
+    print("\n=== Int Key Maps Test ===");
+    let m5, v5 = GetIntIntMap();
+    print("IntIntMap: ", m5, m5[1], " Val: ", v5);
+
+    let m6, v6 = GetIntFloatMap();
+    print("IntFloatMap: ", m6, m6[1], " Val: ", v6);
+
+    let m7, v7 = GetIntBoolMap();
+    print("IntBoolMap: ", m7, m7[1], " Val: ", v7);
+
+    let m8, v8 = GetIntStrMap();
+    print("IntStrMap: ", m8[1], " Val: ", v8);
+
+    print("\n=== Float Key Maps Test ===");
+    let m9, v9 = GetFloatIntMap();
+    print("FloatIntMap: ", m9, m9[1.5], " Val: ", v9);
+
+    let m10, v10 = GetFloatFloatMap();
+    print("FloatFloatMap: ", m10, m10[1.5], " Val: ", v10);
+
+    let m11, v11 = GetFloatBoolMap();
+    print("FloatBoolMap: ", m11, m11[1.5], " Val: ", v11);
+
+    let m12, v12 = GetFloatStrMap();
+    print("FloatStrMap: ", m12, m12[1.5], " Val: ", v12);
+
+    print("\n=== Bool Key Maps Test ===");
+    let m13, v13 = GetBoolIntMap();
+    print("BoolIntMap: ", m13, m13[true], " Val: ", v13);
+
+    let m14, v14 = GetBoolFloatMap();
+    print("BoolFloatMap: ", m14, m14[true], " Val: ", v14);
+
+    let m15, v15 = GetBoolBoolMap();
+    print("BoolBoolMap: ", m15, m15[true], " Val: ", v15);
+
+    let m16, v16 = GetBoolStrMap();
+    print("BoolStrMap: ", m16, m16[true], " Val: ", v16);
+
+    print("\n=== Multiple Arrays Test ===");
+    let ma1, ma2, ma3, ma4 = GetMultiArrays();
+    print("Arrays: ", ma1[0], " ", ma2[0], " ", ma3[0], " ", ma4[0]);
+
+    print("\n=== Complex Mix Test ===");
+    let cx1, cx2, cx3, cx4 = GetComplexMix();
+    print("Complex: ", cx1[0], " ", cx2["key"], " ", cx3, " ", cx4);
+
+    // --- Additional tests for all possible return types ---
+    print("\n=== Single Value Return Types ===");
+    print("Int: ", GetInt());
+    print("Float: ", GetFloat());
+    print("Bool: ", GetBool());
+    print("Str: ", GetStr());
+    print("[Int]: ", GetIntArrayOnly());
+    print("[Float]: ", GetFloatArrayOnly());
+    print("[Bool]: ", GetBoolArrayOnly());
+    print("[Str]: ", GetStrArrayOnly());
+    print("{Str: Int}: ", GetStrIntMapOnly());
+    print("{Str: Float}: ", GetStrFloatMapOnly());
+    print("{Str: Bool}: ", GetStrBoolMapOnly());
+    print("{Str: Str}: ", GetStrStrMapOnly());
+    print("{Int: Int}: ", GetIntIntMapOnly());
+    print("{Int: Float}: ", GetIntFloatMapOnly());
+    print("{Int: Bool}: ", GetIntBoolMapOnly());
+    print("{Int: Str}: ", GetIntStrMapOnly());
+    print("{Float: Int}: ", GetFloatIntMapOnly());
+    print("{Float: Float}: ", GetFloatFloatMapOnly());
+    print("{Float: Bool}: ", GetFloatBoolMapOnly());
+    print("{Float: Str}: ", GetFloatStrMapOnly());
+    print("{Bool: Int}: ", GetBoolIntMapOnly());
+    print("{Bool: Float}: ", GetBoolFloatMapOnly());
+    print("{Bool: Bool}: ", GetBoolBoolMapOnly());
+    print("{Bool: Str}: ", GetBoolStrMapOnly());
+
+    // --- Merged Tuple Returns Tests (from tuple_returns.doo) ---
+    print("\n=== Merged Tuple Returns Tests ===");
+
+    // Test 1: Two ints
+    let a, b0 = GetTwoInts();
+    print("Two ints: ", a, " ", b0);
+
+    // Test 2: Int and string
+    let x, y = GetIntStr();
+    print("Int and Str: ", x, " ", y);
+
+    // Test 3: Mixed types
+    let strval, floatval, boolval = GetMixedData();
+    print("Mixed: ", strval, " ", floatval, " ", boolval);
+
+    // Test 5: Map in tuple
+    let m22, key2 = GetMapData();
+    print("Map value for a: ", m22["a"], " Key: ", key2);
+
+    // Test 7: All types
+    let ai, af, asv, ab = GetAllTypes();
+    print("All types - Int: ", ai, " Float: ", af, " Str: ", asv, " Bool: ", ab);
+
+    // Test 8: Conditional true / false
+    let condval, condstr = GetConditionalData(true);
+    print("Conditional true: ", condval, " ", condstr);
+
+    let condval2, condstr2 = GetConditionalData(false);
+    print("Conditional false: ", condval2, " ", condstr2);
+
+    // Test 9: Two arrays
+    let inta, stra = GetArrays();
+    print("Int array first: ", inta[0]);
+    print("Str array first: ", stra[0]);
+
+    // Test 10: Two maps
+    let map1, map2 = GetMaps();
+    print("Map1 value for 1: ", map1[1]);
+    print("Map2 value for a: ", map2["a"]);
+
+    // Test 11: Five elements
+    let e1, e2, e3, e4, e5 = GetFiveElements();
+    print("Five: ", e1, " ", e2, " ", e3, " ", e4, " ", e5);
+
+    // Test 12: Basic 4 Ints
+    let ba, bb, bc, bd = GetFourInts();
+    print("Basic 4 Ints: ", ba, " ", bb, " ", bc, " ", bd);
+
+    // Test 13: String arrays
+    let stray1, stray2 = GetStringArray();
+    print("String array 1 first: ", stray1[0]);
+    print("String array 2 first: ", stray2[0]);
+
+    // Test 14: All maps
+    let allmap1, allmap2, allmap3 = GetAllMaps();
+    print("All maps test passed", allmap1["a"], allmap2[1], allmap3["flag"]);
+
+    print("\n=== JSON Parse Return Type Tests (using tuple function values) ===");
+    // Primitive types
+    let pjI, pjF, pjB, pjS = GetBasicTypes();
+    print("ParseInt:", ParseInt(JSON.stringify(pjI)));
+    print("ParseFloat:", ParseFloat(JSON.stringify(pjF)));
+    print("ParseBool:", ParseBool(JSON.stringify(pjB)));
+    print("ParseStr:", ParseStr(JSON.stringify(pjS)));
+
+    // Arrays
+    let pjIntArray, pjIntArrayVal = GetIntArray();
+    print("ParseIntArray:", ParseIntArray(JSON.stringify(pjIntArray)));
+    let pjFloatArray, pjFloatArrayVal = GetFloatArray();
+    print("ParseFloatArray:", ParseFloatArray(JSON.stringify(pjFloatArray)));
+    let pjBoolArray, pjBoolArrayVal = GetBoolArray();
+    print("ParseBoolArray:", ParseBoolArray(JSON.stringify(pjBoolArray)));
+    let pjStrArray, pjStrArrayVal = GetStrArray();
+    print("ParseStrArray:", ParseStrArray(JSON.stringify(pjStrArray)));
+
+    // Maps with Str keys
+    let pjStrIntMap, pjStrIntMapVal = GetStrIntMap();
+    print("ParseStrIntMap:", ParseStrIntMap(JSON.stringify(pjStrIntMap)));
+    let pjStrFloatMap, pjStrFloatMapVal = GetStrFloatMap();
+    print("ParseStrFloatMap:", ParseStrFloatMap(JSON.stringify(pjStrFloatMap)));
+    let pjStrBoolMap, pjStrBoolMapVal = GetStrBoolMap();
+    print("ParseStrBoolMap:", ParseStrBoolMap(JSON.stringify(pjStrBoolMap)));
+    let pjStrStrMap, pjStrStrMapVal = GetStrStrMap();
+    print("ParseStrStrMap:", ParseStrStrMap(JSON.stringify(pjStrStrMap)));
+
+    // Maps with Int keys
+    let pjIntIntMap, pjIntIntMapVal = GetIntIntMap();
+    print("ParseIntIntMap:", ParseIntIntMap(JSON.stringify(pjIntIntMap)));
+    let pjIntFloatMap, pjIntFloatMapVal = GetIntFloatMap();
+    print("ParseIntFloatMap:", ParseIntFloatMap(JSON.stringify(pjIntFloatMap)));
+    let pjIntBoolMap, pjIntBoolMapVal = GetIntBoolMap();
+    print("ParseIntBoolMap:", ParseIntBoolMap(JSON.stringify(pjIntBoolMap)));
+    let pjIntStrMap, pjIntStrMapVal = GetIntStrMap();
+    print("ParseIntStrMap:", ParseIntStrMap(JSON.stringify(pjIntStrMap)));
+
+    // Maps with Float keys
+    let pjFloatIntMap, pjFloatIntMapVal = GetFloatIntMap();
+    print("ParseFloatIntMap:", ParseFloatIntMap(JSON.stringify(pjFloatIntMap)));
+    let pjFloatFloatMap, pjFloatFloatMapVal = GetFloatFloatMap();
+    print("ParseFloatFloatMap:", ParseFloatFloatMap(JSON.stringify(pjFloatFloatMap)));
+    let pjFloatBoolMap, pjFloatBoolMapVal = GetFloatBoolMap();
+    print("ParseFloatBoolMap:", ParseFloatBoolMap(JSON.stringify(pjFloatBoolMap)));
+    let pjFloatStrMap, pjFloatStrMapVal = GetFloatStrMap();
+    print("ParseFloatStrMap:", ParseFloatStrMap(JSON.stringify(pjFloatStrMap)));
+
+    // Maps with Bool keys
+    let pjBoolIntMap, pjBoolIntMapVal = GetBoolIntMap();
+    print("ParseBoolIntMap:", ParseBoolIntMap(JSON.stringify(pjBoolIntMap)));
+    let pjBoolFloatMap, pjBoolFloatMapVal = GetBoolFloatMap();
+    print("ParseBoolFloatMap:", ParseBoolFloatMap(JSON.stringify(pjBoolFloatMap)));
+    let pjBoolBoolMap, pjBoolBoolMapVal = GetBoolBoolMap();
+    print("ParseBoolBoolMap:", ParseBoolBoolMap(JSON.stringify(pjBoolBoolMap)));
+    let pjBoolStrMap, pjBoolStrMapVal = GetBoolStrMap();
+    print("ParseBoolStrMap:", ParseBoolStrMap(JSON.stringify(pjBoolStrMap)));
+
+    // Multiple arrays in tuple
+    let pjMultiArrayInt, pjMultiArrayFloat, pjMultiArrayBool, pjMultiArrayStr = GetMultiArrays();
+    print("ParseIntArray (multi):", ParseIntArray(JSON.stringify(pjMultiArrayInt)));
+    print("ParseFloatArray (multi):", ParseFloatArray(JSON.stringify(pjMultiArrayFloat)));
+    print("ParseBoolArray (multi):", ParseBoolArray(JSON.stringify(pjMultiArrayBool)));
+    print("ParseStrArray (multi):", ParseStrArray(JSON.stringify(pjMultiArrayStr)));
+
+    // Mixed complex types
+    let pjComplexIntArray, pjComplexStrIntMap, pjComplexFloat, pjComplexBool = GetComplexMix();
+    print("ParseIntArray (complex):", ParseIntArray(JSON.stringify(pjComplexIntArray)));
+    print("ParseStrIntMap (complex):", ParseStrIntMap(JSON.stringify(pjComplexStrIntMap)));
+    print("ParseFloat (complex):", ParseFloat(JSON.stringify(pjComplexFloat)));
+    print("ParseBool (complex):", ParseBool(JSON.stringify(pjComplexBool)));
+
+    print("\n=== ALL TESTS PASSED ===");
+}

@@ -1,0 +1,9 @@
+import B::FuncB;
+
+fn FuncA() -> Int {
+    // Simulate conditional import logic (if supported)
+    if true {
+        return FuncB() + 1;
+    }
+    return 0;
+}

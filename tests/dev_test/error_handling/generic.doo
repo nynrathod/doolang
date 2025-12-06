@@ -1,0 +1,337 @@
+//
+// Generic Error Type Test Suite
+// Tests ! Error with multiple different error types being propagated in single function
+//
+
+// Different error type structs
+struct FileError {
+    path: Str,
+    code: Int
+}
+
+struct DbError {
+    query: Str,
+    code: Int
+}
+
+struct NetworkError {
+    url: Str,
+    status: Int
+}
+
+struct ValidationError {
+    field: Str,
+    message: Str
+}
+
+// Functions that return different specific error types
+
+fn readConfig(path: Str) -> Str ! FileError {
+    if path == "" {
+        Err FileError { path: "empty", code: 404 };
+    }
+    if path == "invalid" {
+        Err FileError { path: path, code: 500 };
+    }
+    Ok "config_data";
+}
+
+fn queryDatabase(sql: Str) -> Int ! DbError {
+    if sql == "" {
+        Err DbError { query: "empty", code: 1001 };
+    }
+    if sql == "bad" {
+        Err DbError { query: sql, code: 1002 };
+    }
+    Ok 42;
+}
+
+fn fetchApi(url: Str) -> Str ! NetworkError {
+    if url == "" {
+        Err NetworkError { url: "none", status: 0 };
+    }
+    if url == "timeout" {
+        Err NetworkError { url: url, status: 408 };
+    }
+    Ok "api_response";
+}
+
+fn validateInput(value: Int) -> Int ! ValidationError {
+    if value < 0 {
+        Err ValidationError { field: "value", message: "must be positive" };
+    }
+    if value > 100 {
+        Err ValidationError { field: "value", message: "must be <= 100" };
+    }
+    Ok value;
+}
+
+fn divideNum(a: Int, b: Int) -> Int ! Str {
+    if b == 0 {
+        Err "division by zero";
+    }
+    Ok a / b;
+}
+
+// ============================================
+// Test: Single function propagating multiple error types with ! Error
+// ============================================
+
+fn processAllSuccess() -> Int ! Error {
+    let config = readConfig("app.conf")?;
+    let dbResult = queryDatabase("SELECT * FROM users")?;
+    let apiData = fetchApi("https://api.example.com")?;
+    let validated = validateInput(50)?;
+    let divided = divideNum(100, 2)?;
+    Ok dbResult + validated + divided;
+}
+
+fn processFileError() -> Int ! Error {
+    let config = readConfig("")?;
+    let dbResult = queryDatabase("SELECT")?;
+    Ok dbResult;
+}
+
+fn processDbError() -> Int ! Error {
+    let config = readConfig("valid.conf")?;
+    let dbResult = queryDatabase("")?;
+    Ok dbResult;
+}
+
+fn processNetworkError() -> Int ! Error {
+    let config = readConfig("valid.conf")?;
+    let dbResult = queryDatabase("SELECT")?;
+    let apiData = fetchApi("timeout")?;
+    Ok dbResult;
+}
+
+fn processValidationError() -> Int ! Error {
+    let config = readConfig("valid.conf")?;
+    let validated = validateInput(-5)?;
+    Ok validated;
+}
+
+fn processStrError() -> Int ! Error {
+    let config = readConfig("valid.conf")?;
+    let divided = divideNum(10, 0)?;
+    Ok divided;
+}
+
+// Chain multiple operations - all succeed
+fn chainedSuccess() -> Str ! Error {
+    let c1 = readConfig("a.conf")?;
+    let c2 = readConfig("b.conf")?;
+    let d1 = queryDatabase("q1")?;
+    let d2 = queryDatabase("q2")?;
+    let a1 = fetchApi("url1")?;
+    let v1 = validateInput(10)?;
+    let v2 = validateInput(20)?;
+    Ok "all operations succeeded";
+}
+
+// Chain multiple operations - fail in middle
+fn chainedFailMiddle() -> Str ! Error {
+    let c1 = readConfig("a.conf")?;
+    let d1 = queryDatabase("bad")?;
+    let a1 = fetchApi("url1")?;
+    Ok "should not reach here";
+}
+
+// ============================================
+// Test: Same error type multiple times
+// ============================================
+
+fn multipleFileOps() -> Str ! FileError {
+    let c1 = readConfig("config1.txt")?;
+    let c2 = readConfig("config2.txt")?;
+    let c3 = readConfig("config3.txt")?;
+    Ok "all files read";
+}
+
+fn multipleDbOps() -> Int ! DbError {
+    let r1 = queryDatabase("SELECT 1")?;
+    let r2 = queryDatabase("SELECT 2")?;
+    let r3 = queryDatabase("SELECT 3")?;
+    Ok r1 + r2 + r3;
+}
+
+// ============================================
+// Test: ? without variable assignment (discard result)
+// ============================================
+
+fn noVarSuccess() -> Int ! Error {
+    readConfig("app.conf")?;
+    queryDatabase("SELECT")?;
+    fetchApi("https://api.com")?;
+    validateInput(50)?;
+    divideNum(10, 2)?;
+    Ok 99;
+}
+
+fn noVarFileError() -> Int ! Error {
+    readConfig("")?;
+    queryDatabase("SELECT")?;
+    Ok 99;
+}
+
+fn noVarDbError() -> Int ! Error {
+    readConfig("ok")?;
+    queryDatabase("")?;
+    Ok 99;
+}
+
+fn noVarNetworkError() -> Int ! Error {
+    readConfig("ok")?;
+    queryDatabase("ok")?;
+    fetchApi("timeout")?;
+    Ok 99;
+}
+
+fn noVarStrError() -> Int ! Error {
+    readConfig("ok")?;
+    divideNum(10, 0)?;
+    Ok 99;
+}
+
+// ============================================
+// Main test runner
+// ============================================
+
+fn main() {
+    print("=== Generic Error Type (! Error) Test Suite ===\n");
+
+    // Test 1: All operations succeed with generic Error
+    print("Test 1: All operations succeed");
+    let r1, e1 = processAllSuccess();
+    if e1 != nil {
+        print("  FAIL: Unexpected error");
+    } else {
+        print("  PASS: Result =", r1);
+    }
+
+    // Test 2: FileError propagates through ! Error
+    print("\nTest 2: FileError propagates");
+    let r2, e2 = processFileError();
+    if e2 != nil {
+        print("  PASS: Error propagated correctly");
+    } else {
+        print("  FAIL: Expected error but got result:", r2);
+    }
+
+    // Test 3: DbError propagates through ! Error
+    print("\nTest 3: DbError propagates");
+    let r3, e3 = processDbError();
+    if e3 != nil {
+        print("  PASS: Error propagated correctly");
+    } else {
+        print("  FAIL: Expected error but got result:", r3);
+    }
+
+    // Test 4: NetworkError propagates through ! Error
+    print("\nTest 4: NetworkError propagates");
+    let r4, e4 = processNetworkError();
+    if e4 != nil {
+        print("  PASS: Error propagated correctly");
+    } else {
+        print("  FAIL: Expected error but got result:", r4);
+    }
+
+    // Test 5: ValidationError propagates through ! Error
+    print("\nTest 5: ValidationError propagates");
+    let r5, e5 = processValidationError();
+    if e5 != nil {
+        print("  PASS: Error propagated correctly");
+    } else {
+        print("  FAIL: Expected error but got result:", r5);
+    }
+
+    // Test 6: Str error propagates through ! Error
+    print("\nTest 6: Str error propagates");
+    let r6, e6 = processStrError();
+    if e6 != nil {
+        print("  PASS: Error propagated correctly");
+    } else {
+        print("  FAIL: Expected error but got result:", r6);
+    }
+
+    // Test 7: Chained operations all succeed
+    print("\nTest 7: Chained operations all succeed");
+    let r7, e7 = chainedSuccess();
+    if e7 != nil {
+        print("  FAIL: Unexpected error");
+    } else {
+        print("  PASS:", r7);
+    }
+
+    // Test 8: Chained operations fail in middle
+    print("\nTest 8: Chained operations fail in middle");
+    let r8, e8 = chainedFailMiddle();
+    if e8 != nil {
+        print("  PASS: Error in chain propagated correctly");
+    } else {
+        print("  FAIL: Expected error but got result:", r8);
+    }
+
+    // Test 9: Multiple same-type errors (FileError)
+    print("\nTest 9: Multiple FileError operations");
+    let r9, e9 = multipleFileOps();
+    if e9 != nil {
+        print("  Error:", e9.path, e9.code);
+    } else {
+        print("  PASS:", r9);
+    }
+
+    // Test 10: Multiple same-type errors (DbError)
+    print("\nTest 10: Multiple DbError operations");
+    let r10, e10 = multipleDbOps();
+    if e10 != nil {
+        print("  Error:", e10.query, e10.code);
+    } else {
+        print("  PASS: Sum =", r10);
+    }
+
+    // Tests for ? without variable assignment
+    print("\n--- Tests: ? without variable assignment ---");
+
+    print("\nTest 11: No variable - all succeed");
+    let r11, e11 = noVarSuccess();
+    if e11 != nil {
+        print("  FAIL: Unexpected error");
+    } else {
+        print("  PASS: Result =", r11);
+    }
+
+    print("\nTest 12: No variable - FileError");
+    let r12, e12 = noVarFileError();
+    if e12 != nil {
+        print("  PASS: Error propagated");
+    } else {
+        print("  FAIL: Expected error, got:", r12);
+    }
+
+    print("\nTest 13: No variable - DbError");
+    let r13, e13 = noVarDbError();
+    if e13 != nil {
+        print("  PASS: Error propagated");
+    } else {
+        print("  FAIL: Expected error, got:", r13);
+    }
+
+    print("\nTest 14: No variable - NetworkError");
+    let r14, e14 = noVarNetworkError();
+    if e14 != nil {
+        print("  PASS: Error propagated");
+    } else {
+        print("  FAIL: Expected error, got:", r14);
+    }
+
+    print("\nTest 15: No variable - Str error");
+    let r15, e15 = noVarStrError();
+    if e15 != nil {
+        print("  PASS: Error propagated");
+    } else {
+        print("  FAIL: Expected error, got:", r15);
+    }
+
+    print("\n=== Generic Error Type Tests Complete ===");
+}

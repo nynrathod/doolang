@@ -1,0 +1,80 @@
+fn Abs(x: Int) -> Int {
+    if x < 0 {
+        return 0 - x;
+    }
+    return x;
+}
+
+fn Pow(base: Int, exponent: Int) -> Int {
+    if exponent < 0 {
+        return 0;
+    }
+    if exponent == 0 {
+        return 1;
+    }
+
+    let mut result: Int = 1;
+    for i in 0..exponent {
+        result = result * base;
+    }
+    return result;
+}
+
+fn Sqrt(x: Int) -> Int {
+    if x < 0 {
+        return 0;
+    }
+    if x == 0 || x == 1 {
+        return x;
+    }
+    let mut guess: Int = x;
+    let mut prev: Int = 0;
+
+    for i in 0..100 {
+        if guess == prev {
+            break;
+        }
+        prev = guess;
+        let sum = guess + x / guess;
+        guess = sum / 2;
+    }
+    return guess;
+}
+
+fn Min(a: Int, b: Int) -> Int {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+fn Max(a: Int, b: Int) -> Int {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+fn Floor(x: Float) -> Int {
+    return x as Int;
+}
+
+fn Ceil(x: Float) -> Int {
+    let i = x as Int;
+    if x > 0.0 {
+        if i as Float < x {
+            return i + 1;
+        }
+    }
+    return i;
+}
+
+fn Round(x: Float) -> Int {
+    let result = 0;
+    if x >= 0.0 {
+        let adjusted = x + 0.5;
+        return adjusted as Int;
+    }
+    let adjusted = x - 0.5;
+    return adjusted as Int;
+}

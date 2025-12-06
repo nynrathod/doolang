@@ -1,4 +1,0 @@
-fn main() {
-    let x: Int = "not an int"; // Error: assigning string to Int
-    print(x);
-}

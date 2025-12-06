@@ -1,6 +1,7 @@
+use crate::codegen::core::helpers::parse_tuple_types;
 use crate::codegen::core::CodeGen;
 use crate::mir::mir::{CodegenBlock, MirBlock, MirFunction, MirInstr, MirProgram, MirTerminator};
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, StructType};
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
 use std::collections::HashMap;
@@ -13,9 +14,130 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn generate_program(&mut self, program: &MirProgram) {
         // Initialize RC runtime FIRST to ensure reference counting functions are available.
         self.init_rc_runtime();
+        // Declare builtin string conversion functions.
+        self.declare_builtin_functions();
 
         // Store the global instructions for later use (e.g., initialization).
         self.globals = program.globals.clone();
+
+        // Copy enum_table, enum_variant_order, and struct_table from MirProgram for type metadata access
+        self.enum_table = program.enum_table.clone();
+        self.enum_variant_order = program.enum_variant_order.clone();
+        self.struct_table = program.struct_table.clone();
+
+        // --- PRE-PROCESSING ---
+        // CRITICAL: Scan for struct declarations FIRST to populate metadata and create canonical types
+        // This MUST happen BEFORE predeclaring functions so that struct parameter types are recognized
+        // Pre-scan for enum declarations to register types
+        for instr in &program.globals {
+            if let MirInstr::EnumDecl {
+                enum_name,
+                variants,
+            } = instr
+            {
+                // Register enum in enum_table (variant -> payload type)
+                let mut variant_map = std::collections::HashMap::new();
+                // Register enum variants (variant -> tag)
+                let mut variant_list = Vec::new();
+
+                for (idx, variant) in variants.iter().enumerate() {
+                    variant_map.insert(variant.name.clone(), variant.payload.clone());
+                    variant_list.push((variant.name.clone(), idx as u32));
+                }
+                self.enum_table.insert(enum_name.clone(), variant_map);
+                self.enum_variants.insert(enum_name.clone(), variant_list);
+            }
+        }
+
+        for instr in &program.globals {
+            if let MirInstr::StructDecl {
+                struct_name,
+                field_names,
+                field_types,
+            } = instr
+            {
+                // Store metadata for this struct type
+                let metadata = crate::codegen::core::context::StructMetadata {
+                    field_names: field_names.clone(),
+                    field_types: field_types.clone(),
+                };
+                self.struct_metadata.insert(struct_name.clone(), metadata);
+
+                // Create the canonical LLVM struct type
+                let llvm_field_types: Vec<BasicTypeEnum> = field_types
+                    .iter()
+                    .map(|type_str| self.type_string_to_llvm_type(type_str))
+                    .collect();
+
+                let struct_type = self.context.struct_type(&llvm_field_types, false);
+                self.canonical_struct_types
+                    .insert(struct_name.clone(), struct_type);
+            }
+        }
+
+        // WORKAROUND: Manually add FileError and FileMetadata struct metadata since imported structs
+        // are not included in the MIR globals. This should be fixed by propagating
+        // struct declarations from imported modules.
+        if !self.struct_metadata.contains_key("FileError") {
+            let metadata = crate::codegen::core::context::StructMetadata {
+                field_names: vec!["Message".to_string()],
+                field_types: vec!["Str".to_string()],
+            };
+            self.struct_metadata
+                .insert("FileError".to_string(), metadata);
+
+            // Also create the canonical LLVM struct type
+            let llvm_field_types = vec![self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()];
+            let struct_type = self.context.struct_type(&llvm_field_types, false);
+            self.canonical_struct_types
+                .insert("FileError".to_string(), struct_type);
+        }
+
+        if !self.struct_metadata.contains_key("FileMetadata") {
+            let metadata = crate::codegen::core::context::StructMetadata {
+                field_names: vec![
+                    "isFile".to_string(),
+                    "isDir".to_string(),
+                    "isSymlink".to_string(),
+                    "size".to_string(),
+                    "readonly".to_string(),
+                    "created".to_string(),
+                    "modified".to_string(),
+                    "accessed".to_string(),
+                ],
+                field_types: vec![
+                    "Bool".to_string(),
+                    "Bool".to_string(),
+                    "Bool".to_string(),
+                    "Int".to_string(),
+                    "Bool".to_string(),
+                    "Int".to_string(),
+                    "Int".to_string(),
+                    "Int".to_string(),
+                ],
+            };
+            self.struct_metadata
+                .insert("FileMetadata".to_string(), metadata);
+
+            // Also create the canonical LLVM struct type
+            // Bool fields are i32 (0 or 1), Int fields are i32, i64 for size/timestamps
+            let llvm_field_types = vec![
+                self.context.i32_type().into(), // isFile (Bool as i32)
+                self.context.i32_type().into(), // isDir (Bool as i32)
+                self.context.i32_type().into(), // isSymlink (Bool as i32)
+                self.context.i64_type().into(), // size (i64 from FFI)
+                self.context.i32_type().into(), // readonly (Bool as i32)
+                self.context.i64_type().into(), // created (i64 timestamp)
+                self.context.i64_type().into(), // modified (i64 timestamp)
+                self.context.i64_type().into(), // accessed (i64 timestamp)
+            ];
+            let struct_type = self.context.struct_type(&llvm_field_types, false);
+            self.canonical_struct_types
+                .insert("FileMetadata".to_string(), struct_type);
+        }
 
         // Pre-scan and declare all functions for forward references
         // This allows functions to call each other regardless of definition order
@@ -23,7 +145,47 @@ impl<'ctx> CodeGen<'ctx> {
             self.predeclare_function(func);
         }
 
-        // --- PRE-PROCESSING ---
+        // Pre-scan all functions to populate return types and mark those returning heap-allocated types
+        // This ensures both function_return_types and functions_returning_heap are populated
+        // BEFORE we generate function bodies, so that function calls can properly detect
+        // which functions return heap values and what their return types are
+        for func in &program.functions {
+            if let Some(ref ret_type_str) = func.return_type {
+                // Store the return type for all functions under Doo name
+                self.function_return_types
+                    .insert(func.name.clone(), ret_type_str.clone());
+
+                // For FFI functions, also store under the FFI symbol name
+                // This ensures lookup works when we resolve File::Exists -> doo_file_exists
+                if let Some(ref ffi_symbol) = func.ffi_symbol {
+                    self.function_return_types
+                        .insert(ffi_symbol.clone(), ret_type_str.clone());
+                }
+
+                // Mark functions that return heap-allocated types
+                if ret_type_str.contains("Array")
+                    || ret_type_str.contains("Map")
+                    || ret_type_str.contains("Str")
+                {
+                    self.functions_returning_heap.insert(func.name.clone());
+                    if let Some(ref ffi_symbol) = func.ffi_symbol {
+                        self.functions_returning_heap.insert(ffi_symbol.clone());
+                    }
+                }
+            }
+
+            // Store error type if function can fail
+            if let Some(ref err_type_str) = func.error_type {
+                self.function_error_types
+                    .insert(func.name.clone(), err_type_str.clone());
+                // Also store under FFI symbol name
+                if let Some(ref ffi_symbol) = func.ffi_symbol {
+                    self.function_error_types
+                        .insert(ffi_symbol.clone(), err_type_str.clone());
+                }
+            }
+        }
+
         // Scan all global instructions to identify strings involved in concatenation.
         // This helps optimize string handling and memory management.
         for instr in &program.globals {
@@ -60,6 +222,19 @@ impl<'ctx> CodeGen<'ctx> {
             return;
         }
 
+        // Check if this is an FFI function
+        let is_ffi = func.ffi_lib.is_some();
+        let symbol_name = func.ffi_symbol.as_ref().unwrap_or(&func.name);
+
+        // Store parameter types as strings for JSON.parse conversion
+        let param_type_strings: Vec<String> = func
+            .param_types
+            .iter()
+            .map(|type_opt| type_opt.clone().unwrap_or_else(|| "Int".to_string()))
+            .collect();
+        self.function_param_types
+            .insert(func.name.clone(), param_type_strings);
+
         // Build parameter types
         let param_types: Vec<BasicMetadataTypeEnum> = func
             .param_types
@@ -67,44 +242,376 @@ impl<'ctx> CodeGen<'ctx> {
             .map(|type_opt| self.map_type_to_llvm(type_opt))
             .collect();
 
-        // Determine return type
-        let fn_type = if func.name == "main" {
+        // Determine base return type first
+        let base_return_type = if func.name == "main" {
             // Force main to be i32 () for C/Clang compatibility
-            self.context.i32_type().fn_type(&param_types, false)
+            Some(self.context.i32_type().into())
         } else if let Some(ref ret_type_str) = func.return_type {
-            if ret_type_str.contains("Void") {
-                self.context.void_type().fn_type(&param_types, false)
-            } else if ret_type_str.contains("String") || ret_type_str.contains("Str") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else if ret_type_str.contains("Array") || ret_type_str.contains("Map") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
+            // Check for Void return type - these should be declared as void, not i32
+            if ret_type_str == "Void" {
+                None
             } else {
-                self.context.i32_type().fn_type(&param_types, false)
+                Some(self.get_llvm_return_type(ret_type_str))
+            }
+        } else {
+            None
+        };
+
+        // If function has error type, wrap return in Result struct { i32 tag, value }
+        let fn_type = if func.name == "main" {
+            self.context.i32_type().fn_type(&param_types, false)
+        } else if let Some(base_type) = base_return_type {
+            if func.error_type.is_some() {
+                // CRITICAL: FFI functions with error types return a POINTER to Result struct
+                // (not struct by value) to avoid ABI/calling convention issues
+                // Non-FFI functions still return Result struct by value
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let result_struct = self
+                    .context
+                    .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                if is_ffi {
+                    // FFI: return pointer to Result struct
+                    ptr_type.fn_type(&param_types, false)
+                } else {
+                    // Non-FFI: return Result struct by value
+                    result_struct.fn_type(&param_types, false)
+                }
+            } else {
+                // Convert BasicTypeEnum to a function type
+                match base_type {
+                    BasicTypeEnum::IntType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::FloatType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::PointerType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::StructType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::ArrayType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::VectorType(t) => t.fn_type(&param_types, false),
+                    BasicTypeEnum::ScalableVectorType(t) => t.fn_type(&param_types, false),
+                }
+            }
+        } else if func.error_type.is_some() {
+            // Void return type but has error type - still needs to return Result struct
+            // This handles functions like `fn Validate(x: Int) -> ! Str`
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let result_struct = self
+                .context
+                .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+            if is_ffi {
+                // FFI: return pointer to Result struct (consistent with other FFI error functions)
+                ptr_type.fn_type(&param_types, false)
+            } else {
+                // Non-FFI: return Result struct by value
+                result_struct.fn_type(&param_types, false)
             }
         } else {
             self.context.void_type().fn_type(&param_types, false)
         };
 
-        // Declare function
-        self.module.add_function(&func.name, fn_type, None);
+        // Declare function (use external symbol name for FFI)
+        let llvm_func = self.module.add_function(symbol_name, fn_type, None);
+
+        // For FFI functions, set external linkage
+        if is_ffi {
+            llvm_func.set_linkage(inkwell::module::Linkage::External);
+
+            // If FFI function has a different symbol name, create alias mapping
+            // so that calls using the Doo function name can find the FFI symbol
+            if symbol_name != &func.name {
+                self.function_aliases
+                    .insert(func.name.clone(), symbol_name.clone());
+            }
+        }
+
         self.declared_functions.insert(func.name.clone());
+    }
+
+    fn get_llvm_return_type(&mut self, ret_type_str: &str) -> BasicTypeEnum<'ctx> {
+        if ret_type_str.contains("Void") {
+            // Void is not a BasicType, so return i32 as placeholder
+            return self.context.i32_type().into();
+        }
+
+        let parsed_types = parse_tuple_types(ret_type_str);
+        let is_tuple_return = if ret_type_str.starts_with("Tuple(") {
+            true
+        } else {
+            parsed_types.len() > 1
+        };
+
+        if is_tuple_return {
+            // Multi-value return - create a struct type
+            let inner_types = if ret_type_str.starts_with("Tuple(") && ret_type_str.ends_with(')') {
+                &ret_type_str[6..ret_type_str.len() - 1]
+            } else {
+                ret_type_str
+            };
+            let types = parse_tuple_types(inner_types);
+            let mut field_types: Vec<BasicTypeEnum> = Vec::new();
+
+            for type_str in &types {
+                let llvm_type = if type_str.contains("String") || type_str.contains("Str") {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                } else if type_str.contains("Array") || type_str.contains("Map") {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                } else if type_str.contains("Float") {
+                    self.context.f64_type().into()
+                } else if type_str.contains("Bool") {
+                    // Use i32 for Bool to match internal representation
+                    self.context.i32_type().into()
+                } else {
+                    self.context.i32_type().into()
+                };
+                field_types.push(llvm_type);
+            }
+
+            let struct_type = self.context.struct_type(&field_types, false);
+            let tuple_type_str = format!("Tuple({})", ret_type_str);
+            self.tuple_struct_types.insert(tuple_type_str, struct_type);
+            struct_type.into()
+        } else if ret_type_str.contains("String") || ret_type_str.contains("Str") {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if ret_type_str.contains("Array") || ret_type_str.contains("Map") {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if ret_type_str.contains("Float") {
+            self.context.f64_type().into()
+        } else if ret_type_str.contains("Bool") {
+            // Use i32 for Bool to match internal representation
+            self.context.i32_type().into()
+        } else if ret_type_str.contains("Struct(")
+            || self.struct_metadata.contains_key(ret_type_str)
+        {
+            // Struct return types are pointers to heap-allocated structs
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if ret_type_str.starts_with("Enum(") || self.enum_table.contains_key(ret_type_str) {
+            // Enum return types are { i32 tag, ptr payload } structs
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            self.context
+                .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                .into()
+        } else {
+            self.context.i32_type().into()
+        }
     }
 
     fn map_type_to_llvm(&self, type_opt: &Option<String>) -> BasicMetadataTypeEnum<'ctx> {
         if let Some(type_str) = type_opt {
-            if type_str.contains("String") || type_str.contains("Str") {
+            // Check if this is a known struct type (either "Struct(Name)" or just "Name")
+            let is_struct =
+                type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
+
+            // Check if this is an enum type
+            let is_enum = type_str.starts_with("Enum(") || self.enum_table.contains_key(type_str);
+
+            // Primitives (Int, Float, Bool) are passed by value
+            // Strings, Arrays, Maps, and Structs are passed by pointer
+            // Enums are passed as struct { i32 tag, ptr payload } by value
+            if type_str == "Int" {
+                self.context.i32_type().into()
+            } else if type_str == "Float" {
+                self.context.f64_type().into()
+            } else if type_str == "Bool" {
+                // Use i32 for Bool to match internal representation (bool values stored as i32)
+                self.context.i32_type().into()
+            } else if type_str.contains("String") || type_str.contains("Str") {
                 self.context.ptr_type(AddressSpace::default()).into()
             } else if type_str.contains("Array") || type_str.contains("Map") {
+                self.context.ptr_type(AddressSpace::default()).into()
+            } else if is_enum {
+                // Enum is represented as { i32 tag, ptr payload }
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let enum_struct_type = self
+                    .context
+                    .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                enum_struct_type.into()
+            } else if is_struct {
+                // Struct parameters are passed as pointers
                 self.context.ptr_type(AddressSpace::default()).into()
             } else {
                 self.context.i32_type().into()
             }
         } else {
             self.context.i32_type().into()
+        }
+    }
+
+    /// Extract the element type from an Array type string
+    /// Format: "Array(Int)", "Array(Str)", "Array(StructName)", etc.
+    fn extract_array_element_type(type_str: &str) -> &str {
+        if type_str.contains("Array(Str)") {
+            "Str"
+        } else if type_str.contains("Array(Float)") {
+            "Float"
+        } else if type_str.contains("Array(Bool)") {
+            "Bool"
+        } else if type_str.contains("Array(Int)") {
+            "Int"
+        } else if type_str.starts_with("Array(") && type_str.ends_with(")") {
+            // Extract the element type for struct arrays like Array(Task)
+            let inner = &type_str[6..type_str.len() - 1];
+            inner
+        } else {
+            "Int" // default
+        }
+    }
+
+    /// Extract key and value types from a Map type string
+    /// Format: "Map(key,value) format
+    fn extract_map_types(type_str: &str) -> (&str, &str) {
+        // Handle Map(key,value) format
+        if type_str.contains("Map(Str,Str)") || type_str.contains("Map(String,String)") {
+            ("Str", "Str")
+        } else if type_str.contains("Map(Str,Int)") || type_str.contains("Map(String,Int)") {
+            ("Str", "Int")
+        } else if type_str.contains("Map(Str,Float)") || type_str.contains("Map(String,Float)") {
+            ("Str", "Float")
+        } else if type_str.contains("Map(Str,Bool)") || type_str.contains("Map(String,Bool)") {
+            ("Str", "Bool")
+        } else if type_str.contains("Map(Int,Str)") || type_str.contains("Map(Int,String)") {
+            ("Int", "Str")
+        } else if type_str.contains("Map(Int,Int)") {
+            ("Int", "Int")
+        } else if type_str.contains("Map(Int,Float)") {
+            ("Int", "Float")
+        } else if type_str.contains("Map(Int,Bool)") {
+            ("Int", "Bool")
+        } else if type_str.contains("Map(Float,Str)") || type_str.contains("Map(Float,String)") {
+            ("Float", "Str")
+        } else if type_str.contains("Map(Float,Int)") {
+            ("Float", "Int")
+        } else if type_str.contains("Map(Float,Float)") {
+            ("Float", "Float")
+        } else if type_str.contains("Map(Float,Bool)") {
+            ("Float", "Bool")
+        } else if type_str.contains("Map(Bool,Str)") || type_str.contains("Map(Bool,String)") {
+            ("Bool", "Str")
+        } else if type_str.contains("Map(Bool,Int)") {
+            ("Bool", "Int")
+        } else if type_str.contains("Map(Bool,Float)") {
+            ("Bool", "Float")
+        } else if type_str.contains("Map(Bool,Bool)") {
+            ("Bool", "Bool")
+        } else {
+            ("Int", "Int") // default
+        }
+    }
+
+    /// Convert a type string to an LLVM BasicTypeEnum
+    /// Handles primitives, pointers (Str, Array, Map), and structs
+    fn type_string_to_llvm_type(&self, type_str: &str) -> BasicTypeEnum<'ctx> {
+        let type_str = type_str.trim();
+
+        if type_str == "Int" || type_str == "i32" {
+            self.context.i32_type().into()
+        } else if type_str == "Float" || type_str == "f64" {
+            self.context.f64_type().into()
+        } else if type_str == "Bool" {
+            // Use i32 for Bool to match internal representation (all Bools are stored as i32)
+            self.context.i32_type().into()
+        } else if type_str == "Str" || type_str == "String" {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if type_str.starts_with("Array") {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if type_str.starts_with("Map") {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if type_str.starts_with("Struct(") {
+            // Extract struct name from "Struct(Name)"
+            let struct_name = type_str
+                .trim_start_matches("Struct(")
+                .trim_end_matches(")")
+                .trim();
+
+            // If we already have a canonical type for this struct, use it
+            if let Some(struct_type) = self.canonical_struct_types.get(struct_name) {
+                (*struct_type).into()
+            } else {
+                // Fallback to pointer for forward-declared structs
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
+        } else if self.struct_metadata.contains_key(type_str) {
+            // Handle bare struct names (without "Struct()" wrapper) - nested structs
+            // For nested structs, we store them as pointers
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else if self.enum_table.contains_key(type_str) || type_str.starts_with("Enum(") {
+            // Handle enums - represented as { i32 tag, ptr payload } struct
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            self.context
+                .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                .into()
+        } else {
+            // Default fallback
+            self.context.i32_type().into()
+        }
+    }
+
+    /// Extract element type from Array return type string
+    /// Format: "Array(Int)", "Array(Str)", "Array(User)", etc.
+    pub fn extract_array_element_type_from_return(type_str: &str) -> String {
+        // Try to parse Array(Type) format
+        if let Some(start) = type_str.find("Array(") {
+            let inner_start = start + 6; // Length of "Array("
+            if let Some(end) = type_str[inner_start..].find(')') {
+                let element_type = &type_str[inner_start..inner_start + end];
+                return element_type.to_string();
+            }
+        }
+        // Fallback for common types
+        if type_str.contains("Array(Str)") {
+            "Str".to_string()
+        } else if type_str.contains("Array(Float)") {
+            "Float".to_string()
+        } else if type_str.contains("Array(Bool)") {
+            "Bool".to_string()
+        } else {
+            "Int".to_string() // default
+        }
+    }
+
+    /// Extract key and value types from a Map return type string
+    /// Format: "Map(Str,Int)", "Map(Int,Float)", etc.
+    pub fn extract_map_types_from_return(type_str: &str) -> (&str, &str) {
+        // Handle Map(key,value) format
+        // String key types
+        if type_str.contains("Map(Str,Str)") {
+            ("Str", "Str")
+        } else if type_str.contains("Map(Str,Float)") {
+            ("Str", "Float")
+        } else if type_str.contains("Map(Str,Bool)") {
+            ("Str", "Bool")
+        } else if type_str.contains("Map(Str,Int)") {
+            ("Str", "Int")
+        }
+        // Int key types
+        else if type_str.contains("Map(Int,Str)") {
+            ("Int", "Str")
+        } else if type_str.contains("Map(Int,Float)") {
+            ("Int", "Float")
+        } else if type_str.contains("Map(Int,Bool)") {
+            ("Int", "Bool")
+        } else if type_str.contains("Map(Int,Int)") {
+            ("Int", "Int")
+        }
+        // Float key types
+        else if type_str.contains("Map(Float,Str)") {
+            ("Float", "Str")
+        } else if type_str.contains("Map(Float,Float)") {
+            ("Float", "Float")
+        } else if type_str.contains("Map(Float,Bool)") {
+            ("Float", "Bool")
+        } else if type_str.contains("Map(Float,Int)") {
+            ("Float", "Int")
+        }
+        // Bool key types
+        else if type_str.contains("Map(Bool,Str)") {
+            ("Bool", "Str")
+        } else if type_str.contains("Map(Bool,Float)") {
+            ("Bool", "Float")
+        } else if type_str.contains("Map(Bool,Bool)") {
+            ("Bool", "Bool")
+        } else if type_str.contains("Map(Bool,Int)") {
+            ("Bool", "Int")
+        } else {
+            ("Int", "Int") // default
         }
     }
 
@@ -117,6 +624,27 @@ impl<'ctx> CodeGen<'ctx> {
 
         let entry_bb = self.context.append_basic_block(main_func, "entry");
         self.builder.position_at_end(entry_bb);
+
+        // Enable UTF-8 console output on Windows
+        // Call SetConsoleOutputCP(65001) to enable UTF-8
+        // This is always generated in LLVM IR; on non-Windows platforms it will be a no-op
+        let set_console_cp_type = self
+            .context
+            .i32_type()
+            .fn_type(&[self.context.i32_type().into()], false);
+        let set_console_cp_fn = self
+            .module
+            .get_function("SetConsoleOutputCP")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("SetConsoleOutputCP", set_console_cp_type, None)
+            });
+
+        // 65001 is UTF-8 code page
+        let utf8_codepage = self.context.i32_type().const_int(65001, false);
+        self.builder
+            .build_call(set_console_cp_fn, &[utf8_codepage.into()], "set_utf8")
+            .unwrap();
 
         // Execute any runtime instructions from global scope (like Print, BinaryOp for runtime values)
         // NOTE: Skip ConstString instructions - they are already processed in generate_global
@@ -158,25 +686,72 @@ impl<'ctx> CodeGen<'ctx> {
     /// - Handles block terminators (return, jump, conditional jump).
     /// Returns the LLVM FunctionValue for further manipulation or optimization.
     pub fn generate_function(&mut self, func: &MirFunction) -> FunctionValue<'ctx> {
+        // FFI functions are external - don't generate body
+        if func.ffi_lib.is_some() {
+            let symbol_name = func.ffi_symbol.as_ref().unwrap_or(&func.name);
+            return self.module.get_function(symbol_name).expect(&format!(
+                "FFI function '{}' should have been predeclared",
+                func.name
+            ));
+        }
+
         // Reset recursion depth for this function to prevent accumulation across functions
         self.recursion_depth = 0;
+
+        // Set current function context for error handling
+        self.current_function_name = Some(func.name.clone());
+        self.current_error_type = func.error_type.clone();
+
+        // Clear no_storage_vars to ensure fresh state for this function
+        self.no_storage_vars.clear();
+
+        // Pre-scan Call instructions to identify tuple pointer variables from Result returns
+        // These should NOT get stack allocations since they're just pointers
+        // This MUST happen before cross-block analysis and allocation
+        for block in &func.blocks {
+            for instr in &block.instrs {
+                if let crate::mir::MirInstr::Call {
+                    dest, func: callee, ..
+                } = instr
+                {
+                    // Check if this function returns a Result with multi-value Ok
+                    if let Some(error_type) = self.function_error_types.get(callee) {
+                        if !error_type.is_empty() {
+                            // This function can fail (returns Result)
+                            if let Some(return_type) = self.function_return_types.get(callee) {
+                                // Check if return type is multi-value
+                                let is_multi_value =
+                                    return_type.contains(',') || return_type.starts_with("Tuple(");
+
+                                if is_multi_value && !dest.is_empty() {
+                                    // Mark first dest as no-storage (it's the tuple pointer)
+                                    self.no_storage_vars.insert(dest[0].clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Clear symbols table to prevent conflicts between functions
         self.symbols.clear();
         self.temp_values.clear();
         self.heap_strings.clear();
-        self.heap_arrays.clear();
-        self.heap_maps.clear();
-        self.array_metadata.clear();
-        self.map_metadata.clear();
+        // DO NOT clear heap_arrays and heap_maps!
+        // They track return values from function calls within this function's body
+        // and need to persist so print can detect them as arrays/maps
+        // self.heap_arrays.clear();
+        // self.heap_maps.clear();
+        // DO NOT clear array_metadata and map_metadata here!
+        // They need to persist to track results from function calls within this function
+        // self.array_metadata.clear();
+        // self.map_metadata.clear();
         self.composite_string_ptrs.clear();
         self.composite_strings.clear();
 
-        // Store function return type for RC tracking when this function is called
-        if let Some(ref ret_type_str) = func.return_type {
-            self.function_return_types
-                .insert(func.name.clone(), ret_type_str.clone());
-        }
+        // Note: function return types are already stored in the pre-scan phase above
+        // No need to store them again here
 
         // Track function parameters for RC handling on return
         self.current_function_params.clear();
@@ -186,73 +761,11 @@ impl<'ctx> CodeGen<'ctx> {
                 .push((param_name.clone(), param_type));
         }
 
-        // Build parameter types based on function signature
-        let param_types: Vec<BasicMetadataTypeEnum> = func
-            .param_types
-            .iter()
-            .map(|type_opt| {
-                if let Some(type_str) = type_opt {
-                    // Map MIR type strings to LLVM types
-                    if type_str.contains("String") || type_str.contains("Str") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Array") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else if type_str.contains("Map") {
-                        self.context.ptr_type(AddressSpace::default()).into()
-                    } else {
-                        self.context.i32_type().into()
-                    }
-                } else {
-                    self.context.i32_type().into()
-                }
-            })
-            .collect();
-
-        // Determine return type and create function signature
-        let fn_type = if func.name == "main" {
-            // Force main to be i32 () for C/Clang compatibility
-            self.context.i32_type().fn_type(&param_types, false)
-        } else if let Some(ref ret_type_str) = func.return_type {
-            // Map MIR type strings to LLVM types
-            if ret_type_str.contains("Void") {
-                self.context.void_type().fn_type(&param_types, false)
-            } else if ret_type_str.contains("String") || ret_type_str.contains("Str") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else if ret_type_str.contains("Array") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else if ret_type_str.contains("Map") {
-                self.context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&param_types, false)
-            } else {
-                self.context.i32_type().fn_type(&param_types, false)
-            }
-        } else {
-            self.context.void_type().fn_type(&param_types, false)
-        };
-
-        // Check if function was already declared (for forward references/imports)
-        let llvm_func = if let Some(existing_func) = self.module.get_function(&func.name) {
-            // Verify signature matches
-            if existing_func.get_type() == fn_type {
-                existing_func
-            } else {
-                eprintln!(
-                    "Warning: Function {} signature mismatch between declaration and definition",
-                    func.name
-                );
-                eprintln!("  Declared: {:?}", existing_func.get_type());
-                eprintln!("  Expected: {:?}", fn_type);
-                // Create new function with correct signature
-                self.module.add_function(&func.name, fn_type, None)
-            }
-        } else {
-            self.module.add_function(&func.name, fn_type, None)
-        };
+        // Use the predeclared function (which already has correct signature with Result wrapping if needed)
+        let llvm_func = self.module.get_function(&func.name).expect(&format!(
+            "Function '{}' should have been predeclared",
+            func.name
+        ));
 
         // Create a separate entry block for parameter allocation
         let entry_block = self.context.append_basic_block(llvm_func, "entry");
@@ -278,6 +791,9 @@ impl<'ctx> CodeGen<'ctx> {
         self.composite_string_ptrs.clear();
         self.loop_stack.clear();
         self.loop_local_vars.clear();
+        self.struct_field_sources.clear();
+        self.struct_instance_types.clear();
+        self.variable_types.clear();
 
         // Allocate space for parameters and store their incoming values in the entry block.
         // This ensures parameters are available as local variables in the function scope.
@@ -286,12 +802,39 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Get the correct type for this parameter
             let param_type = if let Some(Some(ref type_str)) = func.param_types.get(i) {
+                // Check if this is a known struct type (either "Struct(Name)" or just "Name")
+                let is_struct =
+                    type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
+
+                // Check if this is an enum type
+                let is_enum =
+                    type_str.starts_with("Enum(") || self.enum_table.contains_key(type_str);
+
                 // Map MIR type strings to LLVM types
-                if type_str.contains("String") || type_str.contains("Str") {
+                // Primitives (Int, Float, Bool) are passed by value
+                // Strings, Arrays, Maps, and Structs are passed by pointer
+                // Enums are passed as struct { i32 tag, ptr payload } by value
+                if type_str == "Int" {
+                    self.context.i32_type().into()
+                } else if type_str == "Float" {
+                    self.context.f64_type().into()
+                } else if type_str == "Bool" {
+                    // Use i32 for Bool to match parameter type (now i32 not i1)
+                    self.context.i32_type().into()
+                } else if type_str.contains("String") || type_str.contains("Str") {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Array") {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else if type_str.contains("Map") {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                } else if is_enum {
+                    // Enum is represented as { i32 tag, ptr payload }
+                    let ptr_type = self.context.ptr_type(AddressSpace::default());
+                    self.context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                        .into()
+                } else if is_struct {
+                    // Struct parameters are passed as pointers
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else {
                     self.context.i32_type().into()
@@ -305,7 +848,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_alloca(param_type, param)
                 .expect("Failed to allocate function parameter");
 
-            self.builder.build_store(alloca, param_val);
+            // Store the incoming parameter value into the allocated space
+            self.builder
+                .build_store(alloca, param_val)
+                .expect("Failed to store parameter value");
 
             // Register the parameter in the symbol table for future lookups.
             self.symbols.insert(
@@ -315,6 +861,136 @@ impl<'ctx> CodeGen<'ctx> {
                     ty: param_type,
                 },
             );
+
+            // Track parameter type and struct instance metadata for downstream codegen
+            if let Some(Some(ref type_str)) = func.param_types.get(i) {
+                self.variable_types.insert(param.clone(), type_str.clone());
+
+                // If this is a struct parameter, record the struct name for field accesses
+                let is_struct =
+                    type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
+                if is_struct {
+                    let struct_name = if type_str.starts_with("Struct(") && type_str.ends_with(")")
+                    {
+                        type_str
+                            .trim_start_matches("Struct(")
+                            .trim_end_matches(')')
+                            .to_string()
+                    } else {
+                        type_str.clone()
+                    };
+                    self.struct_instance_types
+                        .insert(param.clone(), struct_name.clone());
+                    self.struct_instance_types
+                        .insert(format!("%{}", param), struct_name);
+                }
+            }
+
+            // Create metadata for array and map parameters
+            // This is crucial for imported functions to work with arrays/maps
+            if let Some(Some(ref type_str)) = func.param_types.get(i) {
+                // Check if this is a known struct type (either "Struct(Name)" or just "Name")
+                let is_struct =
+                    type_str.contains("Struct(") || self.struct_metadata.contains_key(type_str);
+
+                if type_str.contains("Array") {
+                    // Extract element type from Array(Type) format
+                    let element_type = Self::extract_array_element_type(type_str);
+
+                    let contains_strings = element_type == "Str";
+
+                    // We don't know the actual length, so we need to extract it from the array pointer
+                    // For now, we'll mark it as having unknown length (0) and rely on builtin methods
+                    // The actual length will be computed when needed via array.len()
+                    self.array_metadata.insert(
+                        param.clone(),
+                        crate::codegen::ArrayMetadata {
+                            length: 0, // Unknown at function entry - will use runtime length checks
+                            element_type: element_type.to_string(),
+                            contains_strings,
+                        },
+                    );
+
+                    // Also store the parameter value so it can be resolved
+                    self.temp_values.insert(param.clone(), param_val);
+                } else if type_str.contains("Map") {
+                    // Extract key and value types from Map(Key,Value) format
+                    let (key_type, value_type) = Self::extract_map_types(type_str);
+
+                    let key_is_string = key_type == "Str";
+                    let value_is_string = value_type == "Str";
+
+                    self.map_metadata.insert(
+                        param.clone(),
+                        crate::codegen::MapMetadata {
+                            length: 0, // Unknown at function entry
+                            key_type: key_type.to_string(),
+                            value_type: value_type.to_string(),
+                            key_is_string,
+                            value_is_string,
+                            key_needs_rc: key_is_string,
+                            value_needs_rc: value_is_string,
+                        },
+                    );
+
+                    // Also store the parameter value so it can be resolved
+                    self.temp_values.insert(param.clone(), param_val);
+                } else if type_str == "Int" || type_str == "Float" || type_str == "Bool" {
+                    // Store primitive parameters in temp_values for direct resolution
+                    self.temp_values.insert(param.clone(), param_val);
+                    // Track variable types for print formatting
+                    self.variable_types.insert(param.clone(), type_str.clone());
+                    // Mark Bool parameters for proper "true"/"false" printing
+                    if type_str == "Bool" {
+                        self.boolean_temps.insert(param.clone());
+                    }
+                } else if type_str.starts_with("Enum(") || self.enum_table.contains_key(type_str) {
+                    // Enum parameter - store in temp_values and track type
+                    self.temp_values.insert(param.clone(), param_val);
+
+                    // Normalize the type string to "Enum(Name)" format
+                    let normalized_type = if type_str.starts_with("Enum(") {
+                        type_str.clone()
+                    } else {
+                        format!("Enum({})", type_str)
+                    };
+                    self.variable_types.insert(param.clone(), normalized_type);
+                } else if is_struct {
+                    // Extract the actual struct name from type string
+                    let struct_name = if type_str.starts_with("Struct(") && type_str.ends_with(")")
+                    {
+                        // Extract name from "Struct(Name)" format
+                        &type_str[7..type_str.len() - 1]
+                    } else {
+                        // It's already just the struct name
+                        type_str.as_str()
+                    };
+
+                    // Normalize the type string to "Struct(Name)" format
+                    let normalized_type = format!("Struct({})", struct_name);
+
+                    // Store struct type metadata and temp value for struct parameters
+                    self.variable_types.insert(param.clone(), normalized_type);
+                    self.temp_values.insert(param.clone(), param_val);
+
+                    // Track struct instance type for method lookup (with multiple name variations)
+                    self.struct_instance_types
+                        .insert(param.clone(), struct_name.to_string());
+                    if param.starts_with('%') {
+                        self.struct_instance_types.insert(
+                            param.trim_start_matches('%').to_string(),
+                            struct_name.to_string(),
+                        );
+                    }
+                    if !param.starts_with('%') {
+                        self.struct_instance_types
+                            .insert(format!("%{}", param), struct_name.to_string());
+                    }
+
+                    // Don't track structs in heap_arrays - that's only for actual arrays
+                    // Structs have their own tracking via struct_instance_types
+                }
+            }
         }
 
         // Pre-allocate variables that are used across multiple blocks
@@ -332,41 +1008,138 @@ impl<'ctx> CodeGen<'ctx> {
                 match instr {
                     crate::mir::MirInstr::Assign { name, value, .. } => {
                         block_defs.insert(name.clone());
-                        if !value.starts_with('%')
-                            && !value.parse::<i32>().is_ok()
-                            && value != "true"
-                            && value != "false"
-                        {
+                        // Track ALL variable uses, including temps starting with %
+                        // This is critical for detecting cross-block temps from ternary/conditional expressions
+                        if !value.parse::<i32>().is_ok() && value != "true" && value != "false" {
                             block_uses.insert(value.clone());
                         }
                     }
                     crate::mir::MirInstr::BinaryOp(_, _, left, right) => {
-                        if !left.starts_with('%')
-                            && !left.parse::<i32>().is_ok()
-                            && left != "true"
-                            && left != "false"
-                        {
+                        // Track ALL variable uses, including temps starting with %
+                        if !left.parse::<i32>().is_ok() && left != "true" && left != "false" {
                             block_uses.insert(left.clone());
                         }
-                        if !right.starts_with('%')
-                            && !right.parse::<i32>().is_ok()
-                            && right != "true"
-                            && right != "false"
-                        {
+                        if !right.parse::<i32>().is_ok() && right != "true" && right != "false" {
                             block_uses.insert(right.clone());
                         }
                     }
                     crate::mir::MirInstr::ArrayLen { array, .. } => {
-                        if !array.starts_with('%') {
-                            block_uses.insert(array.clone());
-                        }
+                        // Track ALL variable uses, including temps
+                        block_uses.insert(array.clone());
                     }
                     crate::mir::MirInstr::ArrayGet { array, index, .. } => {
-                        if !array.starts_with('%') {
-                            block_uses.insert(array.clone());
+                        // Track ALL variable uses, including temps
+                        block_uses.insert(array.clone());
+                        block_uses.insert(index.clone());
+                    }
+                    // TupleGet defines a variable from a tuple element
+                    // This is critical for match arm payload bindings
+                    crate::mir::MirInstr::TupleGet { name, tuple, .. } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(tuple.clone());
+                    }
+                    // EnumGetPayload defines a variable from enum payload
+                    crate::mir::MirInstr::EnumGetPayload {
+                        name, enum_value, ..
+                    } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(enum_value.clone());
+                    }
+                    // ConstInt/ConstString/ConstBool/ConstFloat define variables
+                    crate::mir::MirInstr::ConstInt { name, .. } => {
+                        block_defs.insert(name.clone());
+                    }
+                    crate::mir::MirInstr::ConstFloat { name, .. } => {
+                        block_defs.insert(name.clone());
+                    }
+                    crate::mir::MirInstr::ConstBool { name, .. } => {
+                        block_defs.insert(name.clone());
+                    }
+                    crate::mir::MirInstr::ConstString { name, .. } => {
+                        block_defs.insert(name.clone());
+                    }
+                    // Call defines destination variables
+                    crate::mir::MirInstr::Call { dest, args, .. } => {
+                        for d in dest {
+                            block_defs.insert(d.clone());
                         }
-                        if !index.starts_with('%') {
-                            block_uses.insert(index.clone());
+                        for arg in args {
+                            if !arg.parse::<i32>().is_ok() && arg != "true" && arg != "false" {
+                                block_uses.insert(arg.clone());
+                            }
+                        }
+                    }
+                    // StructInit defines a variable
+                    crate::mir::MirInstr::StructInit { name, fields, .. } => {
+                        block_defs.insert(name.clone());
+                        for (_, val) in fields {
+                            if !val.parse::<i32>().is_ok() && val != "true" && val != "false" {
+                                block_uses.insert(val.clone());
+                            }
+                        }
+                    }
+                    // StructGet defines a variable and uses the struct instance
+                    crate::mir::MirInstr::StructGet {
+                        name,
+                        struct_instance,
+                        ..
+                    } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(struct_instance.clone());
+                    }
+                    // StructSet uses the struct instance and value
+                    crate::mir::MirInstr::StructSet {
+                        struct_instance,
+                        value,
+                        ..
+                    } => {
+                        block_uses.insert(struct_instance.clone());
+                        if !value.parse::<i32>().is_ok() && value != "true" && value != "false" {
+                            block_uses.insert(value.clone());
+                        }
+                    }
+                    // EnumInit defines a variable
+                    crate::mir::MirInstr::EnumInit { name, value, .. } => {
+                        block_defs.insert(name.clone());
+                        if let Some(v) = value {
+                            if !v.parse::<i32>().is_ok() && v != "true" && v != "false" {
+                                block_uses.insert(v.clone());
+                            }
+                        }
+                    }
+                    // EnumGetTag defines a variable
+                    crate::mir::MirInstr::EnumGetTag {
+                        name, enum_value, ..
+                    } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(enum_value.clone());
+                    }
+                    // Print uses variables
+                    crate::mir::MirInstr::Print { values } => {
+                        for val in values {
+                            if !val.parse::<i32>().is_ok() && val != "true" && val != "false" {
+                                block_uses.insert(val.clone());
+                            }
+                        }
+                    }
+                    // StringConcat defines a variable and uses operands
+                    crate::mir::MirInstr::StringConcat { name, left, right } => {
+                        block_defs.insert(name.clone());
+                        block_uses.insert(left.clone());
+                        block_uses.insert(right.clone());
+                    }
+                    // Cast defines a variable and uses the source
+                    crate::mir::MirInstr::Cast { name, value, .. } => {
+                        block_defs.insert(name.clone());
+                        if !value.parse::<i32>().is_ok() && value != "true" && value != "false" {
+                            block_uses.insert(value.clone());
+                        }
+                    }
+                    // TryPropagate defines a variable and uses the result
+                    crate::mir::MirInstr::TryPropagate { name, result, .. } => {
+                        block_defs.insert(name.clone());
+                        if !result.parse::<i32>().is_ok() && result != "true" && result != "false" {
+                            block_uses.insert(result.clone());
                         }
                     }
                     _ => {}
@@ -377,11 +1150,8 @@ impl<'ctx> CodeGen<'ctx> {
             if let Some(term) = &block.terminator {
                 match term {
                     crate::mir::MirInstr::CondJump { cond, .. } => {
-                        if !cond.starts_with('%')
-                            && !cond.parse::<i32>().is_ok()
-                            && cond != "true"
-                            && cond != "false"
-                        {
+                        // Track ALL variable uses, including temps starting with %
+                        if !cond.parse::<i32>().is_ok() && cond != "true" && cond != "false" {
                             block_uses.insert(cond.clone());
                         }
                     }
@@ -408,14 +1178,53 @@ impl<'ctx> CodeGen<'ctx> {
                 if defined_elsewhere {
                     cross_block_vars.insert(var.clone());
                 }
+                // Also check: if var starts with % and is NOT defined in ANY block,
+                // it's a temp from nested expression that needs allocation
+                if var.starts_with('%') && !defined_vars.values().any(|defs| defs.contains(var)) {
+                    // This temp is used but never defined - likely from nested match
+                    cross_block_vars.insert(var.clone());
+                }
             }
         }
 
         // Determine variable types by scanning instructions that define them
         let mut var_types: HashMap<String, BasicTypeEnum<'ctx>> = HashMap::new();
+        // Track which function produced each tuple (for TupleExtract type resolution)
+        let mut tuple_sources: HashMap<String, String> = HashMap::new();
+        // Track which function call produced each temp result (for TryPropagate to trace back)
+        let mut call_sources: HashMap<String, String> = HashMap::new();
+        // Track tuple element types from EnumGetPayload (for TupleGet type resolution)
+        let mut tuple_element_types: HashMap<String, Vec<BasicTypeEnum<'ctx>>> = HashMap::new();
+
+        // First pass: process all instructions except Assign
         for block in &func.blocks {
             for instr in &block.instrs {
                 match instr {
+                    // StructDecl - register struct metadata and canonical type for local structs
+                    crate::mir::MirInstr::StructDecl {
+                        struct_name,
+                        field_names,
+                        field_types,
+                    } => {
+                        // Only register if not already registered (e.g., from globals)
+                        if !self.struct_metadata.contains_key(struct_name) {
+                            let metadata = crate::codegen::core::context::StructMetadata {
+                                field_names: field_names.clone(),
+                                field_types: field_types.clone(),
+                            };
+                            self.struct_metadata.insert(struct_name.clone(), metadata);
+
+                            // Create the canonical LLVM struct type
+                            let llvm_field_types: Vec<BasicTypeEnum> = field_types
+                                .iter()
+                                .map(|type_str| self.type_string_to_llvm_type(type_str))
+                                .collect();
+
+                            let struct_type = self.context.struct_type(&llvm_field_types, false);
+                            self.canonical_struct_types
+                                .insert(struct_name.clone(), struct_type);
+                        }
+                    }
                     // Arrays are always pointers
                     crate::mir::MirInstr::Array { name, .. } => {
                         var_types.insert(
@@ -430,6 +1239,50 @@ impl<'ctx> CodeGen<'ctx> {
                             self.context.ptr_type(AddressSpace::default()).into(),
                         );
                     }
+                    // ArraySlice results are always pointers (heap-allocated arrays)
+                    crate::mir::MirInstr::ArraySlice { name, .. } => {
+                        var_types.insert(
+                            name.clone(),
+                            self.context.ptr_type(AddressSpace::default()).into(),
+                        );
+                    }
+                    // ArrayGet results - check if array contains structs (pointers) or primitives
+                    crate::mir::MirInstr::ArrayGet { name, array, .. } => {
+                        // Check if the array contains struct elements by looking at array metadata
+                        // or by checking if the array name suggests it's a struct array
+                        // For now, default to pointer type for struct arrays
+                        // This will be refined at codegen time based on actual array metadata
+                        if let Some(arr_type) = var_types.get(array) {
+                            if arr_type.is_pointer_type() {
+                                // Array of pointers - element is also a pointer (struct)
+                                var_types.insert(
+                                    name.clone(),
+                                    self.context.ptr_type(AddressSpace::default()).into(),
+                                );
+                            } else {
+                                // Array of primitives - element is the primitive type
+                                var_types.insert(name.clone(), *arr_type);
+                            }
+                        } else {
+                            // Default to pointer for struct arrays (most common case in loops)
+                            var_types.insert(
+                                name.clone(),
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                            );
+                        }
+
+                        // CRITICAL: Track struct instance type for ArrayGet result
+                        // This is needed for method calls on loop iteration variables
+                        // Look up the array's element type from array_metadata
+                        if let Some(arr_meta) = self.array_metadata.get(array) {
+                            let elem_type = &arr_meta.element_type;
+                            // Check if element type is a struct
+                            if self.struct_metadata.contains_key(elem_type) {
+                                self.struct_instance_types
+                                    .insert(name.clone(), elem_type.clone());
+                            }
+                        }
+                    }
                     // Strings are always pointers
                     crate::mir::MirInstr::ConstString { name, .. } => {
                         var_types.insert(
@@ -440,6 +1293,18 @@ impl<'ctx> CodeGen<'ctx> {
                     // Variables with "_array" or "_map" suffix are pointers
                     // BUT: exclude index variables (ending with __index)
                     crate::mir::MirInstr::Assign { name, value, .. } => {
+                        // CRITICAL: Propagate struct_instance_types from value to name
+                        // This ensures loop iteration variables have correct struct type tracking
+                        if let Some(struct_type) = self.struct_instance_types.get(value).cloned() {
+                            self.struct_instance_types.insert(name.clone(), struct_type);
+                        }
+
+                        // CRITICAL: Propagate array_metadata from value to name
+                        // This ensures loop array copies (task_array = tasks) have correct element type info
+                        if let Some(arr_meta) = self.array_metadata.get(value).cloned() {
+                            self.array_metadata.insert(name.clone(), arr_meta);
+                        }
+
                         // Index variables are always i32
                         if name.ends_with("__index") || name.ends_with("_end") {
                             var_types.insert(name.clone(), self.context.i32_type().into());
@@ -454,13 +1319,11 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.context.ptr_type(AddressSpace::default()).into(),
                             );
                         }
-                        // If assigned from a known pointer type, it's also a pointer
+                        // If assigned from a known type, preserve that type
                         // BUT: not if this is an index variable
                         else if !name.ends_with("__index") && !name.ends_with("_end") {
                             if let Some(val_type) = var_types.get(value) {
-                                if val_type.is_pointer_type() {
-                                    var_types.insert(name.clone(), *val_type);
-                                }
+                                var_types.insert(name.clone(), *val_type);
                             }
                         }
                     }
@@ -476,24 +1339,648 @@ impl<'ctx> CodeGen<'ctx> {
                     crate::mir::MirInstr::ConstInt { name, .. } => {
                         var_types.insert(name.clone(), self.context.i32_type().into());
                     }
+                    // Float constants are f64
+                    crate::mir::MirInstr::ConstFloat { name, .. } => {
+                        var_types.insert(name.clone(), self.context.f64_type().into());
+                    }
                     // Boolean constants are i32
                     crate::mir::MirInstr::ConstBool { name, .. } => {
                         var_types.insert(name.clone(), self.context.i32_type().into());
                     }
-                    // Binary operations produce i32
-                    crate::mir::MirInstr::BinaryOp(_, name, ..) => {
-                        var_types.insert(name.clone(), self.context.i32_type().into());
+                    // EnumInit - enums are represented as { i32, ptr } structs
+                    crate::mir::MirInstr::EnumInit { name, .. } => {
+                        let ptr_type = self.context.ptr_type(AddressSpace::default());
+                        let enum_struct_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                        var_types.insert(name.clone(), enum_struct_type.into());
                     }
+                    // TupleCreate - tuples are stored as pointers to heap-allocated structs
+                    crate::mir::MirInstr::TupleCreate { name, .. } => {
+                        var_types.insert(
+                            name.clone(),
+                            self.context.ptr_type(AddressSpace::default()).into(),
+                        );
+                    }
+                    // StructInit - structs are stored as pointers (heap-allocated)
+                    crate::mir::MirInstr::StructInit { name, .. } => {
+                        var_types.insert(
+                            name.clone(),
+                            self.context.ptr_type(AddressSpace::default()).into(),
+                        );
+                    }
+                    // StructGet - field access, type depends on field
+                    crate::mir::MirInstr::StructGet {
+                        name,
+                        struct_instance,
+                        field,
+                        ..
+                    } => {
+                        // Try to determine the actual field type from struct metadata
+                        let field_type = if let Some(struct_type_str) =
+                            self.variable_types.get(struct_instance)
+                        {
+                            // Extract struct name from type string
+                            let struct_name = if struct_type_str.starts_with("Struct(")
+                                && struct_type_str.ends_with(")")
+                            {
+                                &struct_type_str[7..struct_type_str.len() - 1]
+                            } else if !struct_type_str.is_empty()
+                                && struct_type_str != "Unknown"
+                                && !struct_type_str.starts_with("Array")
+                                && !struct_type_str.starts_with("Map")
+                                && !struct_type_str.starts_with("Int")
+                                && !struct_type_str.starts_with("Float")
+                                && !struct_type_str.starts_with("Bool")
+                                && !struct_type_str.starts_with("Str")
+                            {
+                                struct_type_str.as_str()
+                            } else {
+                                ""
+                            };
+
+                            // Look up field type from struct metadata
+                            if let Some(metadata) = self.struct_metadata.get(struct_name) {
+                                if let Some(field_index) =
+                                    metadata.field_names.iter().position(|f| f == field)
+                                {
+                                    if let Some(field_type_name) =
+                                        metadata.field_types.get(field_index)
+                                    {
+                                        // Determine LLVM type based on field type name
+                                        if field_type_name == "Str" || field_type_name == "String" {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        } else if field_type_name.starts_with("Array(") {
+                                            // CRITICAL: Also populate array_metadata for array fields
+                                            // This ensures methods like push() work on struct array fields
+                                            let element_type =
+                                                &field_type_name[6..field_type_name.len() - 1];
+                                            let contains_strings = element_type == "Str";
+                                            self.array_metadata.insert(
+                                                name.clone(),
+                                                crate::codegen::ArrayMetadata {
+                                                    length: 0,
+                                                    element_type: element_type.to_string(),
+                                                    contains_strings,
+                                                },
+                                            );
+                                            // Also track as heap array
+                                            self.heap_arrays.insert(name.clone());
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        } else if field_type_name.starts_with("Map(") {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        } else if self.struct_metadata.contains_key(field_type_name)
+                                        {
+                                            // Nested struct - pointer type
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        } else if self.enum_table.contains_key(field_type_name)
+                                            || field_type_name.starts_with("Enum(")
+                                        {
+                                            // Enum type - represented as { i32 tag, ptr payload } struct
+                                            let ptr_type =
+                                                self.context.ptr_type(AddressSpace::default());
+                                            self.context
+                                                .struct_type(
+                                                    &[
+                                                        self.context.i32_type().into(),
+                                                        ptr_type.into(),
+                                                    ],
+                                                    false,
+                                                )
+                                                .into()
+                                        } else if field_type_name == "Float" {
+                                            self.context.f64_type().into()
+                                        } else if field_type_name == "Bool" {
+                                            self.context.i32_type().into()
+                                        } else {
+                                            // Default to i32 for Int and unknown types
+                                            self.context.i32_type().into()
+                                        }
+                                    } else {
+                                        self.context.i32_type().into()
+                                    }
+                                } else {
+                                    self.context.i32_type().into()
+                                }
+                            } else {
+                                self.context.i32_type().into()
+                            }
+                        } else {
+                            // No type info available, default to i32
+                            self.context.i32_type().into()
+                        };
+
+                        var_types.insert(name.clone(), field_type);
+                    }
+                    // StringConcat - result is a string pointer
+                    crate::mir::MirInstr::StringConcat { name, .. } => {
+                        var_types.insert(
+                            name.clone(),
+                            self.context.ptr_type(AddressSpace::default()).into(),
+                        );
+                    }
+                    // TupleExtract - determine type from tuple element
+                    crate::mir::MirInstr::TupleExtract {
+                        name,
+                        source,
+                        index,
+                    } => {
+                        // Look up the function that produced this tuple via tuple_sources
+                        if let Some(func_name) = tuple_sources.get(source) {
+                            if let Some(return_type_str) = self.function_return_types.get(func_name)
+                            {
+                                // Strip Tuple() wrapper if present
+                                let inner = if return_type_str.starts_with("Tuple(")
+                                    && return_type_str.ends_with(')')
+                                {
+                                    &return_type_str[6..return_type_str.len() - 1]
+                                } else {
+                                    return_type_str.as_str()
+                                };
+                                let types = parse_tuple_types(inner);
+                                if let Some(type_str) = types.get(*index) {
+                                    let llvm_type = if type_str.starts_with('[')
+                                        || type_str.starts_with("Array")
+                                    {
+                                        // Array type
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    } else if type_str.starts_with('{')
+                                        || type_str.starts_with("Map")
+                                    {
+                                        // Map type
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    } else if type_str.contains("Str")
+                                        || type_str.contains("String")
+                                    {
+                                        // String type
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    } else if type_str.contains("Float") {
+                                        // Float type
+                                        self.context.f64_type().into()
+                                    } else if type_str.contains("Bool") {
+                                        // Bool type
+                                        self.context.i32_type().into()
+                                    } else {
+                                        // Int or default
+                                        self.context.i32_type().into()
+                                    };
+                                    var_types.insert(name.clone(), llvm_type);
+                                }
+                            }
+                        }
+                    }
+                    // Call - determine type from function return type
+                    crate::mir::MirInstr::Call { dest, func, .. } => {
+                        if let Some(return_type_str) = self.function_return_types.get(func) {
+                            if dest.len() == 1 {
+                                let dest_name = &dest[0];
+                                // Track which function produced this result (for TryPropagate)
+                                call_sources.insert(dest_name.clone(), func.clone());
+                                // Check if this is a tuple return by parsing the type
+                                // Strip Tuple() wrapper if present
+                                let inner = if return_type_str.starts_with("Tuple(")
+                                    && return_type_str.ends_with(')')
+                                {
+                                    &return_type_str[6..return_type_str.len() - 1]
+                                } else {
+                                    return_type_str.as_str()
+                                };
+                                let types = crate::codegen::core::helpers::parse_tuple_types(inner);
+                                if types.len() > 1 {
+                                    // This is a tuple return - track it so TupleExtract can find types
+                                    tuple_sources.insert(dest_name.clone(), func.clone());
+                                } else {
+                                    // Single return value
+                                    if return_type_str.contains("Array")
+                                        || return_type_str.contains("Map")
+                                        || return_type_str.contains("Str")
+                                    {
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.ptr_type(AddressSpace::default()).into(),
+                                        );
+                                    } else if return_type_str.contains("Float") {
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.f64_type().into(),
+                                        );
+                                    } else if return_type_str.contains("Bool") {
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.i32_type().into(),
+                                        );
+                                    } else {
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.i32_type().into(),
+                                        );
+                                    }
+
+                                    // CRITICAL: Track struct_instance_types for struct return types
+                                    // This ensures method calls on function results work correctly
+                                    // e.g., let store = CreateStore(); store.Add(...);
+                                    let struct_name = if return_type_str.starts_with("Struct(")
+                                        && return_type_str.ends_with(")")
+                                    {
+                                        Some(&return_type_str[7..return_type_str.len() - 1])
+                                    } else if self.struct_metadata.contains_key(return_type_str) {
+                                        Some(return_type_str.as_str())
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(sname) = struct_name {
+                                        self.struct_instance_types
+                                            .insert(dest_name.clone(), sname.to_string());
+                                        // Also set var_type to pointer for struct types
+                                        var_types.insert(
+                                            dest_name.clone(),
+                                            self.context.ptr_type(AddressSpace::default()).into(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // MethodCall - determine type from method (especially JSON.stringify/parse)
+                    crate::mir::MirInstr::MethodCall {
+                        dest,
+                        object,
+                        method,
+                        ..
+                    } => {
+                        // JSON methods return strings (pointers)
+                        if object == "JSON" {
+                            if method == "stringify" || method == "parse" {
+                                var_types.insert(
+                                    dest.clone(),
+                                    self.context.ptr_type(AddressSpace::default()).into(),
+                                );
+                            }
+                        }
+                        // String methods that return strings
+                        else if method == "trim"
+                            || method == "toLowerCase"
+                            || method == "toUpperCase"
+                            || method == "toUpper"
+                            || method == "toLower"
+                            || method == "replace"
+                            || method == "substring"
+                            || method == "slice"
+                            || method == "split"
+                            || method == "join"
+                            || method == "concat"
+                            || method == "repeat"
+                            || method == "padStart"
+                            || method == "padEnd"
+                            || method == "charAt"
+                            || method == "reverse"
+                        {
+                            var_types.insert(
+                                dest.clone(),
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                            );
+                        }
+                        // String methods that return integers
+                        else if method == "length"
+                            || method == "indexOf"
+                            || method == "lastIndexOf"
+                        {
+                            var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
+                        // Int.toString returns string
+                        else if method == "toString" {
+                            var_types.insert(
+                                dest.clone(),
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                            );
+                        }
+                        // Array methods that return arrays (pointers)
+                        else if method == "map" || method == "filter" {
+                            var_types.insert(
+                                dest.clone(),
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                            );
+                        }
+                        // Array reduce returns the accumulator type (default to i32)
+                        else if method == "reduce" {
+                            var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
+                        // String startsWith/endsWith/contains/includes return bool (i32)
+                        else if method == "startsWith"
+                            || method == "endsWith"
+                            || method == "contains"
+                            || method == "includes"
+                        {
+                            var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
+                        // String len returns i32
+                        else if method == "len" {
+                            var_types.insert(dest.clone(), self.context.i32_type().into());
+                        }
+                        // Check if this is a user-defined struct method
+                        // Look up the struct type and method return type from function_return_types
+                        else {
+                            // Try to find struct type for the object from multiple sources:
+                            // 1. struct_instance_types (populated during earlier passes)
+                            // 2. variable_types (may have type info)
+                            // 3. Scan function_return_types for methods matching this object's possible types
+                            let struct_type = self
+                                .struct_instance_types
+                                .get(object)
+                                .cloned()
+                                .or_else(|| {
+                                    // Check variable_types
+                                    self.variable_types.get(object).and_then(|vt| {
+                                        if vt.starts_with("Struct(") && vt.ends_with(")") {
+                                            Some(vt[7..vt.len() - 1].to_string())
+                                        } else if self.struct_metadata.contains_key(vt) {
+                                            Some(vt.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .or_else(|| {
+                                    // Scan function_return_types for any Type::method that matches
+                                    // This handles cases where struct_instance_types isn't populated yet
+                                    for func_name in self.function_return_types.keys() {
+                                        if func_name.ends_with(&format!("::{}", method)) {
+                                            // Extract the struct name from "StructName::method"
+                                            if let Some(struct_name) =
+                                                func_name.strip_suffix(&format!("::{}", method))
+                                            {
+                                                // Verify this is actually a struct type
+                                                if self.struct_metadata.contains_key(struct_name) {
+                                                    return Some(struct_name.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None
+                                });
+
+                            if let Some(struct_name) = struct_type {
+                                // Build the method name as "StructName::MethodName"
+                                let full_method_name = format!("{}::{}", struct_name, method);
+                                if let Some(return_type_str) =
+                                    self.function_return_types.get(&full_method_name)
+                                {
+                                    // Determine the LLVM type from the return type string
+                                    let llvm_type = match return_type_str.as_str() {
+                                        "Str" | "String" => {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        }
+                                        "Int" => self.context.i32_type().into(),
+                                        "Float" => self.context.f64_type().into(),
+                                        "Bool" => self.context.i32_type().into(),
+                                        t if t.starts_with("Array(") => {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        }
+                                        t if t.starts_with("Map(") => {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        }
+                                        t if t.starts_with("Struct(") => {
+                                            self.context.ptr_type(AddressSpace::default()).into()
+                                        }
+                                        _ => {
+                                            // Check if it's a struct type reference
+                                            if self.struct_metadata.contains_key(return_type_str) {
+                                                self.context
+                                                    .ptr_type(AddressSpace::default())
+                                                    .into()
+                                            } else {
+                                                // Default to i32 for unknown types
+                                                self.context.i32_type().into()
+                                            }
+                                        }
+                                    };
+                                    var_types.insert(dest.clone(), llvm_type);
+                                }
+                            }
+                        }
+                    }
+                    // Binary operations - determine type from op string
+                    crate::mir::MirInstr::BinaryOp(op, name, ..) => {
+                        // Op format is "operator:type" e.g. "add:float", "mul:int", "ge:int"
+                        // Comparison and logical operators ALWAYS return Bool (stored as i32)
+                        // regardless of operand type
+                        let is_comparison = op.starts_with("eq:")
+                            || op.starts_with("ne:")
+                            || op.starts_with("lt:")
+                            || op.starts_with("le:")
+                            || op.starts_with("gt:")
+                            || op.starts_with("ge:")
+                            || op.starts_with("and:")
+                            || op.starts_with("or:");
+
+                        let op_type = if is_comparison {
+                            // Comparisons and logical ops return Bool (i32)
+                            self.context.i32_type().into()
+                        } else if op.contains(":float") {
+                            self.context.f64_type().into()
+                        } else {
+                            // Default to i32 for int operations
+                            self.context.i32_type().into()
+                        };
+                        var_types.insert(name.clone(), op_type);
+                    }
+                    // Cast operations - determine type from target_type
+                    crate::mir::MirInstr::Cast {
+                        name, target_type, ..
+                    } => {
+                        let cast_type = match target_type.as_str() {
+                            "Float" => self.context.f64_type().into(),
+                            "String" => self.context.ptr_type(AddressSpace::default()).into(),
+                            "Bool" => self.context.i32_type().into(),
+                            _ => self.context.i32_type().into(),
+                        };
+                        var_types.insert(name.clone(), cast_type);
+                    }
+                    // TupleGet - determine type from tuple_element_types tracked from EnumGetPayload
+                    // This is critical for match arm payload bindings that use tuple elements
+                    crate::mir::MirInstr::TupleGet { name, tuple, index } => {
+                        // Look up the tuple element types from the source tuple
+                        if let Some(elem_types) = tuple_element_types.get(tuple) {
+                            if let Some(elem_type) = elem_types.get(*index) {
+                                var_types.insert(name.clone(), *elem_type);
+                            } else {
+                                // Index out of bounds - default to i32
+                                var_types.insert(name.clone(), self.context.i32_type().into());
+                            }
+                        } else {
+                            // No tuple element types found - default to i32
+                            var_types.insert(name.clone(), self.context.i32_type().into());
+                        }
+                    }
+                    // EnumGetPayload - determine type from payload_type
+                    crate::mir::MirInstr::EnumGetPayload {
+                        name, payload_type, ..
+                    } => {
+                        let payload_llvm_type: BasicTypeEnum = if let Some(ref ptype) = payload_type
+                        {
+                            match ptype {
+                                crate::parser::ast::TypeNode::Int => self.context.i32_type().into(),
+                                crate::parser::ast::TypeNode::Float => {
+                                    self.context.f64_type().into()
+                                }
+                                crate::parser::ast::TypeNode::Bool => {
+                                    // Bool is stored as i32 in symbols
+                                    self.context.i32_type().into()
+                                }
+                                crate::parser::ast::TypeNode::String => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::Array(_) => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::Map(_, _) => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::Tuple(_) => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::TypeRef(_) => {
+                                    // Nested enum - stored as struct pointer
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                crate::parser::ast::TypeNode::Enum(_, _) => {
+                                    self.context.ptr_type(AddressSpace::default()).into()
+                                }
+                                _ => self.context.i32_type().into(),
+                            }
+                        } else {
+                            // No payload type info - default to i32
+                            self.context.i32_type().into()
+                        };
+                        var_types.insert(name.clone(), payload_llvm_type);
+
+                        // If this is a tuple payload, also track the element types for TupleGet
+                        if let Some(crate::parser::ast::TypeNode::Tuple(types)) = payload_type {
+                            let elem_types: Vec<BasicTypeEnum<'ctx>> = types
+                                .iter()
+                                .map(|t| match t {
+                                    crate::parser::ast::TypeNode::Int => {
+                                        self.context.i32_type().into()
+                                    }
+                                    crate::parser::ast::TypeNode::Float => {
+                                        self.context.f64_type().into()
+                                    }
+                                    crate::parser::ast::TypeNode::Bool => {
+                                        // Bool is stored as i32 in symbols
+                                        self.context.i32_type().into()
+                                    }
+                                    crate::parser::ast::TypeNode::String => {
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    }
+                                    crate::parser::ast::TypeNode::Array(_) => {
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    }
+                                    crate::parser::ast::TypeNode::Map(_, _) => {
+                                        self.context.ptr_type(AddressSpace::default()).into()
+                                    }
+                                    _ => self.context.i32_type().into(),
+                                })
+                                .collect();
+                            tuple_element_types.insert(name.clone(), elem_types);
+                        }
+                    }
+                    // TryPropagate - the result is a Result struct { i32, ptr }
+                    // The unwrapped value type depends on the Ok type of the Result
+                    crate::mir::MirInstr::TryPropagate { name, result, .. } => {
+                        // The TryPropagate instruction produces the unwrapped Ok value
+                        // Try to trace back to the function that produced this result
+                        if let Some(func_name) = call_sources.get(result) {
+                            // Found the source function - check its return type
+                            if let Some(return_type_str) = self.function_return_types.get(func_name)
+                            {
+                                // Strip Tuple() wrapper if present
+                                let inner = if return_type_str.starts_with("Tuple(")
+                                    && return_type_str.ends_with(')')
+                                {
+                                    &return_type_str[6..return_type_str.len() - 1]
+                                } else {
+                                    return_type_str.as_str()
+                                };
+                                let types = crate::codegen::core::helpers::parse_tuple_types(inner);
+                                if types.len() > 1 {
+                                    // Multi-value return - TryPropagate produces a tuple pointer
+                                    // Track this so TupleExtract can resolve element types
+                                    tuple_sources.insert(name.clone(), func_name.clone());
+                                    var_types.insert(
+                                        name.clone(),
+                                        self.context.ptr_type(AddressSpace::default()).into(),
+                                    );
+                                } else if types.len() == 1 {
+                                    // Single value return
+                                    let type_str = &types[0];
+                                    if type_str.contains("Str") || type_str.contains("String") {
+                                        var_types.insert(
+                                            name.clone(),
+                                            self.context.ptr_type(AddressSpace::default()).into(),
+                                        );
+                                    } else if type_str.contains("Float") {
+                                        var_types
+                                            .insert(name.clone(), self.context.f64_type().into());
+                                    } else if type_str.contains("Array") || type_str.contains("Map")
+                                    {
+                                        var_types.insert(
+                                            name.clone(),
+                                            self.context.ptr_type(AddressSpace::default()).into(),
+                                        );
+                                    } else {
+                                        var_types
+                                            .insert(name.clone(), self.context.i32_type().into());
+                                    }
+                                } else {
+                                    var_types.insert(name.clone(), self.context.i32_type().into());
+                                }
+                            } else {
+                                var_types.insert(name.clone(), self.context.i32_type().into());
+                            }
+                        } else if let Some(result_type) = var_types.get(result) {
+                            // If result is a Result struct, the unwrapped value could be various types
+                            // For now, propagate the type or default to i32
+                            var_types.insert(name.clone(), *result_type);
+                        } else {
+                            // Default to i32 for simple Ok values
+                            var_types.insert(name.clone(), self.context.i32_type().into());
+                        }
+                    }
+                    // Skip Assign in first pass
+                    crate::mir::MirInstr::Assign { .. } => {}
                     _ => {}
                 }
             }
         }
 
+        // Second pass: process Assign instructions to propagate types
+        for block in &func.blocks {
+            for instr in &block.instrs {
+                if let crate::mir::MirInstr::Assign { name, value, .. } = instr {
+                    // If the source value has a known type, propagate it to the destination
+                    if let Some(&source_type) = var_types.get(value) {
+                        var_types.insert(name.clone(), source_type);
+                    }
+                }
+            }
+        }
+
         // Allocate stack space for cross-block variables with correct types
+        // Store cross-block vars in CodeGen so Assign doesn't remove their symbols
+        for var in &cross_block_vars {
+            self.cross_block_vars.insert(var.clone());
+        }
+
         for var in &cross_block_vars {
             if !self.symbols.contains_key(var) {
                 // Skip function parameters - they are already initialized from incoming values
                 if func.params.contains(var) {
+                    continue;
+                }
+
+                // Skip variables marked as no-storage (e.g., tuple pointers from Result unwrapping)
+                if self.no_storage_vars.contains(var) {
                     continue;
                 }
 
@@ -559,7 +2046,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Convert MIR block terminators to a unified structure for easier handling.
         // This simplifies codegen for control flow instructions.
-        let codegen_blocks: Vec<CodegenBlock> = func
+        let _: Vec<CodegenBlock> = func
             .blocks
             .iter()
             // The map operation transforms the block structure to handle terminators uniformly.
@@ -571,7 +2058,7 @@ impl<'ctx> CodeGen<'ctx> {
                     Some(MirInstr::Return { values }) => Some(MirTerminator::Return {
                         values: values.clone(),
                     }),
-                    Some(MirInstr::Jump { target }) => Some(MirTerminator::Jump {
+                    Some(MirInstr::Jump { label: target }) => Some(MirTerminator::Jump {
                         target: target.clone(),
                     }),
                     Some(MirInstr::CondJump {
@@ -698,9 +2185,91 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // Cleanup arrays
+        // Cleanup arrays (RC-managed)
         for var_name in heap_arrays {
+            // Skip aliases to struct fields; the struct owns their lifetime and pushes may have updated the field pointer
+            if self.struct_field_sources.contains_key(&var_name) {
+                continue;
+            }
             self.emit_decref(&var_name);
+        }
+
+        // Cleanup sliced arrays (malloc'd without RC header - use free directly)
+        let mut slice_arrays: Vec<String> = self
+            .slice_arrays
+            .iter()
+            .filter(|name| {
+                !self.loop_local_vars.contains(*name)
+                    && !is_compiler_temp(name)
+                    && self.symbols.contains_key(*name)
+            })
+            .cloned()
+            .collect();
+        slice_arrays.reverse();
+
+        let free_fn = self.module.get_function("free").unwrap_or_else(|| {
+            let fn_type = self.context.void_type().fn_type(
+                &[self
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into()],
+                false,
+            );
+            self.module.add_function("free", fn_type, None)
+        });
+
+        for var_name in slice_arrays {
+            if let Some(sym) = self.symbols.get(&var_name) {
+                let ptr_val = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        sym.ptr,
+                        &format!("{}_load", var_name),
+                    )
+                    .unwrap();
+
+                // Check if pointer is not null before freeing
+                let null_ptr = self
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .const_null();
+                let is_not_null = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        ptr_val.into_pointer_value(),
+                        null_ptr,
+                        "is_not_null",
+                    )
+                    .unwrap();
+
+                // Only free if not null
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let free_bb = self.context.append_basic_block(current_fn, "free_slice");
+                let skip_bb = self.context.append_basic_block(current_fn, "skip_free");
+                let merge_bb = self.context.append_basic_block(current_fn, "merge_free");
+
+                self.builder
+                    .build_conditional_branch(is_not_null, free_bb, skip_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(free_bb);
+                self.builder
+                    .build_call(free_fn, &[ptr_val.into()], &format!("{}_free", var_name))
+                    .unwrap();
+                self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+                self.builder.position_at_end(skip_bb);
+                self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+                self.builder.position_at_end(merge_bb);
+            }
         }
 
         // Cleanup maps
@@ -713,51 +2282,21 @@ impl<'ctx> CodeGen<'ctx> {
             self.emit_decref(&var_name);
         }
 
-        // Cleanup temporary heap strings (intermediate concat results, etc.)
-        // These are heap-allocated strings that are NOT in symbols (no alloca)
-        // but ARE tracked in heap_strings (e.g., intermediate concat results)
-        let mut temp_heap_strs: Vec<String> = self
-            .heap_strings
-            .iter()
-            .filter(|name| {
-                // Only temps (not in symbols, not loop-local vars)
-                !self.symbols.contains_key(*name)
-                    && !self.loop_local_vars.contains(*name)
-                    && !is_compiler_temp(name)
-                    && self.temp_values.contains_key(*name)
-            })
-            .cloned()
-            .collect();
-        temp_heap_strs.reverse();
-
-        for temp_name in temp_heap_strs {
-            // For temps, we need to get the pointer from temp_values and decref
-            if let Some(val) = self.temp_values.get(&temp_name) {
-                if val.is_pointer_value() {
-                    let data_ptr = val.into_pointer_value();
-                    let rc_header = unsafe {
-                        self.builder.build_in_bounds_gep(
-                            self.context.i8_type(),
-                            data_ptr,
-                            &[self.context.i32_type().const_int((-8_i32) as u64, true)],
-                            "rc_header",
-                        )
-                    }
-                    .unwrap();
-
-                    let decref = self.decref_fn.unwrap();
-                    self.builder
-                        .build_call(decref, &[rc_header.into()], "")
-                        .unwrap();
-                }
-            }
-        }
-
-        // NOTE: Other temp_values (non-heap) are NOT cleaned here.
-        // temp_values contains temporary SSA values (GEP results, block-local pointers).
-        // These either:
-        //  1. Are already covered by symbols (if they were stored), OR
-        //  2. Are block-local and should not be accessed in cleanup (would cause segfault)
+        // NOTE: We intentionally DO NOT cleanup temporary heap strings that only exist in temp_values.
+        // These are SSA values created inside conditional blocks (if/else, match arms) and using them
+        // at function exit would cause LLVM verification errors ("Instruction does not dominate all uses!")
+        // because the cleanup code is in a block that doesn't dominate the conditional blocks where
+        // the temps were created.
+        //
+        // Heap strings that need cleanup MUST be stored into symbols (allocas) at creation time.
+        // Only symbols can be safely accessed at function exit because allocas are in the entry block.
+        //
+        // The proper fix for leaking temps would be to:
+        // 1. Store concat results into allocas when inside conditional contexts, OR
+        // 2. Track which temps were created in which blocks and only cleanup those that dominate exit
+        //
+        // For now, we accept the minor leak for intermediate concat results in conditionals.
+        // The strings will be freed when the process exits.
     }
 
     /// Generates LLVM IR for a single MIR block.
@@ -968,7 +2507,7 @@ impl<'ctx> CodeGen<'ctx> {
                 MirInstr::Return { values } => MirTerminator::Return {
                     values: values.clone(),
                 },
-                MirInstr::Jump { target } => MirTerminator::Jump {
+                MirInstr::Jump { label: target } => MirTerminator::Jump {
                     target: target.clone(),
                 },
                 MirInstr::CondJump {
@@ -996,7 +2535,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         term: &MirTerminator,
         func: FunctionValue<'ctx>,
-        bb_map: &HashMap<String, inkwell::basic_block::BasicBlock<'ctx>>,
+        _bb_map: &HashMap<String, inkwell::basic_block::BasicBlock<'ctx>>,
     ) {
         match term {
             // Handles function return.
@@ -1055,6 +2594,15 @@ impl<'ctx> CodeGen<'ctx> {
                     None
                 };
 
+                // Helper to detect compiler temps (do not decref them here)
+                let is_compiler_temp = |name: &str| {
+                    name.starts_with('%')
+                        || name.starts_with("data_ptr")
+                        || name.starts_with("temp_")
+                        || name.contains("_ptr")
+                        || name.contains("elem_")
+                };
+
                 // 2. Free arrays (exclude return value)
                 let mut heap_array_vars: Vec<String> = self
                     .symbols
@@ -1062,12 +2610,20 @@ impl<'ctx> CodeGen<'ctx> {
                     .filter(|name| {
                         self.heap_arrays.contains(*name)
                             && return_value_name.map_or(true, |ret| ret != *name)
+                            && !self.struct_field_sources.contains_key(*name)
+                            && !is_compiler_temp(name)
                     })
                     .cloned()
                     .collect();
                 heap_array_vars.reverse();
 
                 for var_name in heap_array_vars {
+                    if self.struct_field_sources.contains_key(&var_name) {
+                        continue;
+                    }
+                    if is_compiler_temp(&var_name) {
+                        continue;
+                    }
                     self.emit_decref(&var_name);
                 }
 
@@ -1103,45 +2659,14 @@ impl<'ctx> CodeGen<'ctx> {
                     self.emit_decref(&var_name);
                 }
 
-                // 5. Free temporary heap strings (intermediate concat results, etc.)
-                // These are heap-allocated strings that are NOT in symbols (no alloca)
-                // but ARE tracked in heap_strings (e.g., intermediate concat results)
-                let mut temp_heap_strs: Vec<String> = self
-                    .heap_strings
-                    .iter()
-                    .filter(|name| {
-                        // Only temps (not in symbols), and not the return value
-                        !self.symbols.contains_key(*name)
-                            && !self.loop_local_vars.contains(*name)
-                            && return_value_name.map_or(true, |ret| ret != *name)
-                            && self.temp_values.contains_key(*name)
-                    })
-                    .cloned()
-                    .collect();
-                temp_heap_strs.reverse();
-
-                for temp_name in temp_heap_strs {
-                    // For temps, we need to get the pointer from temp_values and decref
-                    if let Some(val) = self.temp_values.get(&temp_name) {
-                        if val.is_pointer_value() {
-                            let data_ptr = val.into_pointer_value();
-                            let rc_header = unsafe {
-                                self.builder.build_in_bounds_gep(
-                                    self.context.i8_type(),
-                                    data_ptr,
-                                    &[self.context.i32_type().const_int((-8_i32) as u64, true)],
-                                    "rc_header",
-                                )
-                            }
-                            .unwrap();
-
-                            let decref = self.decref_fn.unwrap();
-                            self.builder
-                                .build_call(decref, &[rc_header.into()], "")
-                                .unwrap();
-                        }
-                    }
-                }
+                // NOTE: We intentionally DO NOT cleanup temporary heap strings that only exist in temp_values.
+                // These are SSA values created inside conditional blocks (if/else, match arms) and using them
+                // at function exit would cause LLVM verification errors ("Instruction does not dominate all uses!")
+                // because the cleanup code is in a block that doesn't dominate the conditional blocks where
+                // the temps were created.
+                //
+                // Heap strings that need cleanup MUST be stored into symbols (allocas) at creation time.
+                // Only symbols can be safely accessed at function exit because allocas are in the entry block.
 
                 if values.is_empty() {
                     // Check if this is the main function - it must return i32 0
@@ -1149,11 +2674,47 @@ impl<'ctx> CodeGen<'ctx> {
                     if fn_name == "main" {
                         let zero = self.context.i32_type().const_int(0, false);
                         self.builder.build_return(Some(&zero)).unwrap();
+                    } else if self.current_error_type.is_some() {
+                        // Void return with error type - wrap in Ok Result with null pointer
+                        let ptr_type = self.context.ptr_type(AddressSpace::default());
+                        let result_struct_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                        let ok_tag = self.context.i32_type().const_int(0, false); // 0 = Ok
+                        let null_ptr = ptr_type.const_null();
+
+                        let result_alloca = self
+                            .builder
+                            .build_alloca(result_struct_type, "void_ok_result")
+                            .unwrap();
+
+                        // Set tag field
+                        let tag_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
+                            .unwrap();
+                        self.builder.build_store(tag_ptr, ok_tag).unwrap();
+
+                        // Set value field (null for Void)
+                        let value_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
+                            .unwrap();
+                        self.builder.build_store(value_ptr, null_ptr).unwrap();
+
+                        // Load and return the Result struct
+                        let result_val = self
+                            .builder
+                            .build_load(result_struct_type, result_alloca, "void_ok_result_val")
+                            .unwrap();
+                        self.builder.build_return(Some(&result_val)).unwrap();
                     } else {
-                        // Void return - no value
+                        // Void return - no value, no error type
                         self.builder.build_return(None).unwrap();
                     }
-                } else {
+                } else if values.len() == 1 {
+                    // Single return value
                     let return_value_name = &values[0];
 
                     // Track if this function returns a heap-allocated value
@@ -1166,58 +2727,404 @@ impl<'ctx> CodeGen<'ctx> {
                         self.functions_returning_heap.insert(fn_name.to_string());
                     }
 
-                    // Check if we're returning a function parameter that needs RC increment
-                    let needs_incref =
-                        self.current_function_params
-                            .iter()
-                            .any(|(param_name, param_type)| {
-                                if param_name == return_value_name {
-                                    // Check if this parameter is RC-typed
-                                    if let Some(type_str) = param_type {
-                                        return type_str.contains("String")
-                                            || type_str.contains("Str")
-                                            || type_str.contains("Array")
-                                            || type_str.contains("Map");
-                                    }
-                                }
-                                false
-                            });
+                    let mut val = self.resolve_value(return_value_name);
 
-                    let val = self.resolve_value(return_value_name);
+                    // Check if we need to convert JSON.parse result (heap string) to expected return type
+                    let fn_name = func.get_name().to_str().unwrap();
+                    if self.heap_strings.contains(return_value_name) && val.is_pointer_value() {
+                        if let Some(return_type_str) = self.function_return_types.get(fn_name) {
+                            let json_str_ptr = val.into_pointer_value();
+                            if return_type_str == "Int" {
+                                // Convert JSON string to Int using atoi
+                                let atoi_fn =
+                                    self.module.get_function("atoi").unwrap_or_else(|| {
+                                        let fn_type = self.context.i32_type().fn_type(
+                                            &[self
+                                                .context
+                                                .ptr_type(AddressSpace::default())
+                                                .into()],
+                                            false,
+                                        );
+                                        self.module.add_function("atoi", fn_type, None)
+                                    });
+                                val = self
+                                    .builder
+                                    .build_call(atoi_fn, &[json_str_ptr.into()], "parsed_int")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap();
+                            } else if return_type_str == "Float" {
+                                // Convert JSON string to Float using atof
+                                let atof_fn =
+                                    self.module.get_function("atof").unwrap_or_else(|| {
+                                        let fn_type = self.context.f64_type().fn_type(
+                                            &[self
+                                                .context
+                                                .ptr_type(AddressSpace::default())
+                                                .into()],
+                                            false,
+                                        );
+                                        self.module.add_function("atof", fn_type, None)
+                                    });
+                                val = self
+                                    .builder
+                                    .build_call(atof_fn, &[json_str_ptr.into()], "parsed_float")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap();
+                            } else if return_type_str == "Bool" {
+                                // Convert JSON string to Bool - check first char
+                                let first_char = self
+                                    .builder
+                                    .build_load(self.context.i8_type(), json_str_ptr, "first_char")
+                                    .unwrap()
+                                    .into_int_value();
+                                let is_t = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        first_char,
+                                        self.context.i8_type().const_int(b't' as u64, false),
+                                        "is_t",
+                                    )
+                                    .unwrap();
+                                let is_1 = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        first_char,
+                                        self.context.i8_type().const_int(b'1' as u64, false),
+                                        "is_1",
+                                    )
+                                    .unwrap();
+                                let bool_i1 = self.builder.build_or(is_t, is_1, "bool_i1").unwrap();
+                                let bool_val = self
+                                    .builder
+                                    .build_int_z_extend(
+                                        bool_i1,
+                                        self.context.i32_type(),
+                                        "bool_val",
+                                    )
+                                    .unwrap();
+                                val = bool_val.into();
+                            }
+                        }
+                    }
 
-                    // If returning an RC-typed parameter, mark function as returning heap
-                    // and incref it (caller expects ownership)
-                    if needs_incref {
+                    // Check if we're returning a locally-created heap value (not a parameter)
+                    // Only locally-created heap values have RC headers that we should increment
+                    let is_local_heap_value = self.heap_strings.contains(return_value_name)
+                        || self.heap_arrays.contains(return_value_name)
+                        || self.heap_maps.contains(return_value_name);
+
+                    if is_local_heap_value {
                         let fn_name = func.get_name().to_str().unwrap();
                         self.functions_returning_heap.insert(fn_name.to_string());
+
+                        // Only call incref if this is a locally-created heap value with an RC header
+                        // CRITICAL: Must check for null BEFORE computing ptr - 8, otherwise we get
+                        // an invalid address like 0xFFFFFFF8 which passes the null check in __incref
+                        if val.is_pointer_value() {
+                            let ptr = val.into_pointer_value();
+
+                            // Add null check before computing RC header offset
+                            let current_fn = self
+                                .builder
+                                .get_insert_block()
+                                .unwrap()
+                                .get_parent()
+                                .unwrap();
+                            let do_incref_block = self
+                                .context
+                                .append_basic_block(current_fn, "return_do_incref");
+                            let skip_incref_block = self
+                                .context
+                                .append_basic_block(current_fn, "return_skip_incref");
+
+                            let is_null = self
+                                .builder
+                                .build_is_null(ptr, "return_ptr_is_null")
+                                .unwrap();
+                            self.builder
+                                .build_conditional_branch(
+                                    is_null,
+                                    skip_incref_block,
+                                    do_incref_block,
+                                )
+                                .unwrap();
+
+                            // Do incref block - pointer is not null
+                            self.builder.position_at_end(do_incref_block);
+                            let rc_header = unsafe {
+                                self.builder.build_in_bounds_gep(
+                                    self.context.i8_type(),
+                                    ptr,
+                                    &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                                    "return_rc_header",
+                                )
+                            }
+                            .unwrap();
+
+                            let incref_fn = self.incref_fn.unwrap();
+                            self.builder
+                                .build_call(incref_fn, &[rc_header.into()], "")
+                                .unwrap();
+                            self.builder
+                                .build_unconditional_branch(skip_incref_block)
+                                .unwrap();
+
+                            // Skip incref block - continue to return
+                            self.builder.position_at_end(skip_incref_block);
+                        }
+                    } else {
+                        // If returning an RC-typed parameter (not a locally-created value),
+                        // just mark the function as returning heap but DON'T incref
+                        // (parameters are owned by caller, not this function)
+                        let is_rc_param =
+                            self.current_function_params
+                                .iter()
+                                .any(|(param_name, param_type)| {
+                                    if param_name == return_value_name {
+                                        if let Some(type_str) = param_type {
+                                            return type_str.contains("String")
+                                                || type_str.contains("Str")
+                                                || type_str.contains("Array")
+                                                || type_str.contains("Map");
+                                        }
+                                    }
+                                    false
+                                });
+
+                        if is_rc_param {
+                            let fn_name = func.get_name().to_str().unwrap();
+                            self.functions_returning_heap.insert(fn_name.to_string());
+                        }
                     }
 
-                    if needs_incref && val.is_pointer_value() {
-                        let ptr = val.into_pointer_value();
-                        let rc_header = unsafe {
-                            self.builder.build_in_bounds_gep(
-                                self.context.i8_type(),
-                                ptr,
-                                &[self.context.i32_type().const_int((-8_i32) as u64, true)],
-                                "return_rc_header",
-                            )
+                    // If this function returns a Result type (has error_type), wrap the value in Ok Result
+                    // UNLESS the value is already a Result struct (from ResultOk/ResultErr)
+                    if self.current_error_type.is_some() {
+                        // Check if the value is already a Result struct
+                        let is_already_result = val.is_struct_value()
+                            && self.result_types.contains_key(return_value_name)
+                            || self
+                                .variable_types
+                                .get(return_value_name)
+                                .map_or(false, |t| t == "Result");
+
+                        if is_already_result {
+                            // Value is already a Result struct from ResultOk/ResultErr - return as-is
+                            self.builder.build_return(Some(&val)).unwrap();
+                        } else {
+                            // Value needs to be wrapped in Result struct
+                            // Create Result struct: { i32 tag = 0 (Ok), ptr value }
+                            let ptr_type = self.context.ptr_type(AddressSpace::default());
+                            let result_struct_type = self.context.struct_type(
+                                &[self.context.i32_type().into(), ptr_type.into()],
+                                false,
+                            );
+
+                            // Convert the value to a pointer for storage in Result
+                            let value_as_ptr = if val.is_pointer_value() {
+                                // Already a pointer (String, Array, Map, Struct)
+                                val.into_pointer_value()
+                            } else if val.is_int_value() {
+                                // Convert i32 to pointer
+                                let int_val = val.into_int_value();
+                                let i64_val = self
+                                    .builder
+                                    .build_int_z_extend(
+                                        int_val,
+                                        self.context.i64_type(),
+                                        "i32_to_i64",
+                                    )
+                                    .unwrap();
+                                self.builder
+                                    .build_int_to_ptr(
+                                        i64_val,
+                                        self.context.ptr_type(AddressSpace::default()),
+                                        "i32_to_ptr",
+                                    )
+                                    .unwrap()
+                            } else if val.is_float_value() {
+                                // Convert f64 to pointer
+                                let float_val = val.into_float_value();
+                                let alloca = self
+                                    .builder
+                                    .build_alloca(self.context.f64_type(), "f64_tmp")
+                                    .unwrap();
+                                self.builder.build_store(alloca, float_val).unwrap();
+                                let i64_ptr = self
+                                    .builder
+                                    .build_pointer_cast(
+                                        alloca,
+                                        self.context.ptr_type(AddressSpace::default()),
+                                        "f64_ptr_cast",
+                                    )
+                                    .unwrap();
+                                let i64_val = self
+                                    .builder
+                                    .build_load(self.context.i64_type(), i64_ptr, "f64_as_i64")
+                                    .unwrap()
+                                    .into_int_value();
+                                self.builder
+                                    .build_int_to_ptr(
+                                        i64_val,
+                                        self.context.ptr_type(AddressSpace::default()),
+                                        "f64_to_ptr",
+                                    )
+                                    .unwrap()
+                            } else {
+                                // Fallback: null pointer
+                                ptr_type.const_null()
+                            };
+
+                            // Build the Ok Result struct
+                            let ok_tag = self.context.i32_type().const_int(0, false); // 0 = Ok
+                            let result_alloca = self
+                                .builder
+                                .build_alloca(result_struct_type, "ok_result")
+                                .unwrap();
+
+                            // Set tag field
+                            let tag_ptr = self
+                                .builder
+                                .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
+                                .unwrap();
+                            self.builder.build_store(tag_ptr, ok_tag).unwrap();
+
+                            // Set value field
+                            let value_ptr = self
+                                .builder
+                                .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
+                                .unwrap();
+                            self.builder.build_store(value_ptr, value_as_ptr).unwrap();
+
+                            // Load and return the Result struct
+                            let result_val = self
+                                .builder
+                                .build_load(result_struct_type, result_alloca, "ok_result_val")
+                                .unwrap();
+                            self.builder.build_return(Some(&result_val)).unwrap();
                         }
+                    } else {
+                        // Normal return (no error type)
+                        // Check if we need to convert Bool type (i32 -> i1)
+                        let return_type = func.get_type().get_return_type();
+                        let final_val = if let Some(ret_type) = return_type {
+                            if ret_type.is_int_type() && val.is_int_value() {
+                                let ret_int_type = ret_type.into_int_type();
+                                let val_int = val.into_int_value();
+                                // Convert i32 to i1 if needed (Bool return type)
+                                if ret_int_type.get_bit_width() == 1
+                                    && val_int.get_type().get_bit_width() == 32
+                                {
+                                    let i1_val = self
+                                        .builder
+                                        .build_int_truncate(val_int, ret_int_type, "bool_trunc")
+                                        .unwrap();
+                                    i1_val.into()
+                                } else {
+                                    val
+                                }
+                            } else {
+                                val
+                            }
+                        } else {
+                            val
+                        };
+                        self.builder.build_return(Some(&final_val)).unwrap();
+                    }
+                } else {
+                    // Multiple return values - build a struct
+                    let return_values: Vec<BasicValueEnum> =
+                        values.iter().map(|v| self.resolve_value(v)).collect();
+
+                    let types: Vec<BasicTypeEnum> =
+                        return_values.iter().map(|v| v.get_type()).collect();
+
+                    let struct_type = self.context.struct_type(&types, false);
+                    let struct_alloca =
+                        self.builder.build_alloca(struct_type, "ret_tuple").unwrap();
+
+                    for (i, val) in return_values.iter().enumerate() {
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                struct_type,
+                                struct_alloca,
+                                i as u32,
+                                &format!("ret_field_{}", i),
+                            )
+                            .unwrap();
+                        self.builder.build_store(field_ptr, *val).unwrap();
+                    }
+
+                    let tuple_val = self
+                        .builder
+                        .build_load(struct_type, struct_alloca, "ret_tuple_val")
                         .unwrap();
 
-                        let incref_fn = self.incref_fn.unwrap();
-                        self.builder
-                            .build_call(incref_fn, &[rc_header.into()], "")
-                            .unwrap();
-                    }
+                    // If this function returns a Result type (has error_type), wrap the tuple in Ok Result
+                    if self.current_error_type.is_some() {
+                        // Create Result struct: { i32 tag = 0 (Ok), ptr value }
+                        let ptr_type = self.context.ptr_type(AddressSpace::default());
+                        let result_struct_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
 
-                    self.builder.build_return(Some(&val)).unwrap();
+                        // Allocate space for the tuple on heap and store pointer in Result
+                        let tuple_heap = self
+                            .builder
+                            .build_alloca(struct_type, "tuple_heap")
+                            .unwrap();
+                        self.builder.build_store(tuple_heap, tuple_val).unwrap();
+
+                        let tuple_ptr = self
+                            .builder
+                            .build_pointer_cast(tuple_heap, ptr_type, "tuple_as_ptr")
+                            .unwrap();
+
+                        // Build the Ok Result struct
+                        let ok_tag = self.context.i32_type().const_int(0, false); // 0 = Ok
+                        let result_alloca = self
+                            .builder
+                            .build_alloca(result_struct_type, "tuple_ok_result")
+                            .unwrap();
+
+                        // Set tag field
+                        let tag_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
+                            .unwrap();
+                        self.builder.build_store(tag_ptr, ok_tag).unwrap();
+
+                        // Set value field
+                        let value_ptr = self
+                            .builder
+                            .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
+                            .unwrap();
+                        self.builder.build_store(value_ptr, tuple_ptr).unwrap();
+
+                        // Load and return the Result struct
+                        let result_val = self
+                            .builder
+                            .build_load(result_struct_type, result_alloca, "tuple_ok_result_val")
+                            .unwrap();
+                        self.builder.build_return(Some(&result_val)).unwrap();
+                    } else {
+                        // Normal multi-value return (no error type)
+                        self.builder.build_return(Some(&tuple_val)).unwrap();
+                    }
                 }
             }
             // Handles unconditional jump (goto).
             MirTerminator::Jump { target } => {
-                let target_bb = bb_map.get(target).expect("Target BB not found");
-                // Generates `br label %target`
-                self.builder.build_unconditional_branch(*target_bb);
+                if let Some(target_bb) = _bb_map.get(target) {
+                    self.builder.build_unconditional_branch(*target_bb).unwrap();
+                }
             }
             // Handles conditional jump (if/else).
             MirTerminator::CondJump {
@@ -1251,11 +3158,14 @@ impl<'ctx> CodeGen<'ctx> {
                     self.context.i32_type().const_zero()
                 };
 
-                let then_bb = bb_map.get(then_block).expect("Then BB not found");
-                let else_bb = bb_map.get(else_block).expect("Else BB not found");
-                // Generates `br i1 %cond, label %then, label %else`
-                self.builder
-                    .build_conditional_branch(cond_i1, *then_bb, *else_bb);
+                // Emit conditional branch
+                if let (Some(then_bb), Some(else_bb)) =
+                    (_bb_map.get(then_block), _bb_map.get(else_block))
+                {
+                    self.builder
+                        .build_conditional_branch(cond_i1, *then_bb, *else_bb)
+                        .unwrap();
+                }
             }
         }
     }
@@ -1308,6 +3218,10 @@ impl<'ctx> CodeGen<'ctx> {
                 | MirInstr::ForMap { .. }
                 | MirInstr::ForInfinite { .. } => {
                     self.generate_for_loop(instr, bb_map);
+                    // For loops handle their own control flow and position the builder
+                    // at a different block (body_bb), so we must return to avoid
+                    // adding a terminator to the wrong block
+                    return;
                 }
 
                 MirInstr::LoadArrayElement { dest, array, index } => {
@@ -1371,8 +3285,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // If this is a loop body, handle increment and loop back.
         if is_loop_body {
-            if let (Some(var), Some(inc_bb), Some(cond_bb)) =
-                (loop_var, loop_increment_bb, loop_cond_bb)
+            if let (Some(var), Some(_), Some(cond_bb)) = (loop_var, loop_increment_bb, loop_cond_bb)
             {
                 // Generate increment: var = var + 1
                 if let Some(symbol) = self.symbols.get(&var) {
@@ -1403,7 +3316,7 @@ impl<'ctx> CodeGen<'ctx> {
                 MirInstr::Return { values } => crate::mir::mir::MirTerminator::Return {
                     values: values.clone(),
                 },
-                MirInstr::Jump { target } => crate::mir::mir::MirTerminator::Jump {
+                MirInstr::Jump { label: target } => crate::mir::mir::MirTerminator::Jump {
                     target: target.clone(),
                 },
                 MirInstr::CondJump {

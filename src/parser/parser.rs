@@ -1,4 +1,4 @@
-use crate::lexar::token::{Token, TokenType};
+use crate::lexer::token::{Token, TokenType};
 use crate::limits::PARSER_MAX_DEPTH;
 use crate::parser::ast::AstNode;
 use std::fmt;
@@ -11,13 +11,13 @@ pub const MAX_DEPTH: usize = PARSER_MAX_DEPTH;
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum ParseError {
-    UnexpectedToken(String), // Legacy: without position
+    UnexpectedToken(String),
     UnexpectedTokenAt {
         msg: String,
         line: usize,
         col: usize,
     },
-    EndOfInput, // Used if input ends unexpectedly.
+    EndOfInput,
 }
 
 /// Standard result type for parsing.
@@ -27,20 +27,20 @@ pub type ParseResult<T> = Result<T, ParseError>;
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::UnexpectedToken(msg) => write!(f, "parse error: {}", msg),
+            ParseError::UnexpectedToken(msg) => write!(f, "Parse error: {}", msg),
             ParseError::UnexpectedTokenAt { msg, line, col } => {
-                write!(f, "parse error at {}:{}: {}", line, col, msg)
+                write!(f, "Parse error at {}:{}: {}", line, col, msg)
             }
-            ParseError::EndOfInput => write!(f, "parse error: unexpected end of input"),
+            ParseError::EndOfInput => write!(f, "Parse error: unexpected end of input"),
         }
     }
 }
 
-/// The Parser struct is the stateful engine. It consumes tokens (from lexar)
+/// The Parser struct is the stateful engine. It consumes tokens (from lexer)
 /// and builds AST nodes (for analyzer, codegen, etc).
 #[derive(Debug)]
 pub struct Parser<'a> {
-    pub tokens: &'a [Token<'a>], // Reference to a slice of tokens from lexar.
+    pub tokens: &'a [Token<'a>], // Reference to a slice of tokens from lexer.
     pub current: usize,          // Current index; tracks progress through tokens.
     pub depth: usize,            // Current recursion depth to prevent stack overflow.
 }
@@ -59,6 +59,12 @@ impl<'a> Parser<'a> {
     /// Used in almost every parse function to check what's next.
     pub fn peek(&self) -> Option<&Token<'a>> {
         self.tokens.get(self.current)
+    }
+
+    /// Peek ahead N tokens without advancing.
+    /// Used to look ahead for patterns like :: in enum matching.
+    pub fn peek_ahead(&self, n: usize) -> Option<&Token<'a>> {
+        self.tokens.get(self.current + n)
     }
 
     /// Checks if the current token matches a given kind.
@@ -101,12 +107,49 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Expect an identifier or allow keywords like Ok/Err for enum variants
+    pub(crate) fn expect_ident_or_keyword(&mut self) -> ParseResult<String> {
+        match self.advance() {
+            Some(tok) => match tok.kind {
+                TokenType::Identifier => Ok(tok.value.to_string()),
+                TokenType::Ok => Ok("Ok".to_string()),
+                TokenType::Err => Ok("Err".to_string()),
+                _ => Err(ParseError::UnexpectedTokenAt {
+                    msg: format!("Expected Identifier, got {:?} ({:?})", tok.kind, tok.value),
+                    line: tok.line,
+                    col: tok.col,
+                }),
+            },
+            None => Err(ParseError::EndOfInput),
+        }
+    }
+
     /// Parses a single statement.
     /// Dispatches to the correct parse function based on the current token.
     /// Handles declarations, control flow, assignments, and expression statements.
     pub fn parse_statement(&mut self) -> ParseResult<AstNode> {
         match self.peek() {
             Some(tok) => match tok.kind {
+                // Decorators (for FFI functions, etc.)
+                TokenType::At => {
+                    // Parse decorators and then the following function
+                    let mut decorators = Vec::new();
+                    while self.peek_is(TokenType::At) {
+                        self.advance(); // consume '@'
+                        let decorator = self.parse_decorator()?;
+                        decorators.push(decorator);
+                    }
+
+                    // After decorators, we expect a function declaration
+                    if self.peek_is(TokenType::Function) {
+                        return self.parse_functional_decl_with_decorators(decorators);
+                    } else {
+                        return Err(ParseError::UnexpectedToken(
+                            "Decorators are currently only supported on functions".into(),
+                        ));
+                    }
+                }
+
                 // Declarations
                 TokenType::Let => self.parse_let_decl(),
                 TokenType::Function => self.parse_functional_decl(),
@@ -119,10 +162,28 @@ impl<'a> Parser<'a> {
                 // Statements
                 TokenType::If => self.parse_conditional_stmt(),
                 TokenType::For => self.parse_for_stmt(),
+                TokenType::Match => {
+                    // Parse match expression - no semicolon required after }
+                    self.parse_match_expr()
+                }
                 TokenType::Return => self.parse_return(),
                 TokenType::Break => self.parse_break(),
                 TokenType::Continue => self.parse_continue(),
                 TokenType::Print => self.parse_print(),
+
+                // Ok and Err expressions as statements (implicit returns in Result functions)
+                TokenType::Ok | TokenType::Err => {
+                    let expr = self.parse_expression()?;
+                    self.expect(TokenType::Semi)?;
+                    Ok(expr)
+                }
+
+                TokenType::OpenBrace => {
+                    // Handle empty block or block statement: {}
+                    self.advance(); // consume '{'
+                    self.expect(TokenType::CloseBrace)?; // expect '}'
+                    Ok(AstNode::Block(vec![]))
+                }
 
                 // Handles statements that start with an identifier.
                 // Could be assignment (x = 5;) or compound assignment (x += 1;) or expression statement (abc();)
@@ -138,17 +199,35 @@ impl<'a> Parser<'a> {
                                 let value = self.parse_expression()?;
                                 self.expect(TokenType::Semi)?;
 
-                                // Extract identifier from expr for assignment
-                                if let AstNode::Identifier(name) = expr {
-                                    return Ok(AstNode::Assignment {
-                                        pattern: crate::parser::ast::Pattern::Identifier(name),
-                                        value: Box::new(value),
-                                    });
-                                } else {
-                                    return Err(ParseError::UnexpectedToken(
-                                        "Only single-variable assignment is allowed without 'let'"
-                                            .into(),
-                                    ));
+                                // Handle array/map element assignment: arr[index] = value
+                                // Handle field assignment: obj.field = value
+                                match expr {
+                                    AstNode::Identifier(name) => {
+                                        return Ok(AstNode::Assignment {
+                                            pattern: crate::parser::ast::Pattern::Identifier(name),
+                                            value: Box::new(value),
+                                        });
+                                    }
+                                    AstNode::ElementAccess { array, index } => {
+                                        return Ok(AstNode::ElementAssignment {
+                                            array,
+                                            index,
+                                            value: Box::new(value),
+                                        });
+                                    }
+                                    AstNode::FieldAccess { object, field } => {
+                                        return Ok(AstNode::FieldAssignment {
+                                            object,
+                                            field,
+                                            value: Box::new(value),
+                                        });
+                                    }
+                                    _ => {
+                                        return Err(ParseError::UnexpectedToken(
+                                            "Only single-variable, element, or field assignment is allowed without 'let'"
+                                                .into(),
+                                        ));
+                                    }
                                 }
                             }
                             TokenType::PlusEq
@@ -175,6 +254,21 @@ impl<'a> Parser<'a> {
                                     ));
                                 }
                             }
+                            TokenType::PlusPlus | TokenType::MinusMinus => {
+                                let op = tok.kind;
+                                self.advance(); // consume ++ or --
+                                self.expect(TokenType::Semi)?;
+
+                                // Extract identifier from expr for increment/decrement
+                                if let AstNode::Identifier(name) = expr {
+                                    return Ok(AstNode::IncrementDecrement { variable: name, op });
+                                } else {
+                                    return Err(ParseError::UnexpectedToken(
+                                        "Only single-variable increment/decrement is allowed"
+                                            .into(),
+                                    ));
+                                }
+                            }
                             _ => {
                                 // It's an expression statement (like function call)
                                 self.expect(TokenType::Semi)?;
@@ -189,10 +283,12 @@ impl<'a> Parser<'a> {
                 }
 
                 TokenType::Number | TokenType::Float => {
-                    // Disallow number/float literals as statements
+                    // Disallow number/float literals as statements.
+                    // Example: `42;` or `3.14;` is not allowed as a statement.
                     let tok = self.peek().unwrap();
                     return Err(ParseError::UnexpectedTokenAt {
-                        msg: "Invalid expression as statement".to_string(),
+                        msg: "Invalid expression as statement (e.g. `42;` is not allowed)"
+                            .to_string(),
                         line: tok.line,
                         col: tok.col,
                     });
@@ -218,37 +314,6 @@ impl<'a> Parser<'a> {
             statements.push(stmt);
         }
         Ok(AstNode::Program(statements))
-    }
-
-    /// Parses an import statement.
-    /// Syntax: import models::User::Createuser;
-    /// Path will be ["models", "User"], symbol will be Some("Createuser")
-    pub fn parse_import(&mut self) -> ParseResult<AstNode> {
-        self.expect(TokenType::Import)?;
-        // Parse all identifiers separated by ::
-        let mut all_parts = Vec::new();
-
-        // Parse first identifier
-        let first = self.expect(TokenType::Identifier)?;
-        all_parts.push(first.value.to_string());
-
-        // Parse :: separated path
-        while self.peek_is(TokenType::Colon) {
-            self.advance(); // :
-            self.expect(TokenType::Colon)?; // second :
-            let next = self.expect(TokenType::Identifier)?;
-            all_parts.push(next.value.to_string());
-        }
-
-        self.expect(TokenType::Semi)?;
-
-        // Split into path and symbol
-        // Last element is the symbol (function/type name)
-        // Everything before is the module path (file path)
-        let symbol = all_parts.pop(); // Remove and return last element
-        let path = all_parts; // Remaining elements are the path
-
-        Ok(AstNode::Import { path, symbol })
     }
 
     /// Parses a comma-separated list of items until an end token is reached.
@@ -286,87 +351,78 @@ impl<'a> Parser<'a> {
         Ok(items)
     }
 
-    /// Parses a single simple expression, including literals.
-    pub fn parse_simple_expression(&mut self) -> ParseResult<AstNode> {
-        match self.peek() {
-            Some(tok) => {
-                match tok.kind {
-                    TokenType::Number => {
-                        let tok = self.advance().unwrap();
-                        let value_str = tok.value;
-                        let value_line = tok.line;
-                        let value_col = tok.col;
-                        // Mutable borrow ends here, now peek is allowed
-                        if let Some(next) = self.peek() {
-                            if next.kind == TokenType::Dot
-                                || next.kind == TokenType::RangeExc
-                                || next.kind == TokenType::RangeInc
-                            {
-                                return Err(ParseError::UnexpectedTokenAt {
-                                    msg: format!(
-                                        "Invalid number/range/dot sequence after number: {:?}",
-                                        next.kind
-                                    ),
-                                    line: next.line,
-                                    col: next.col,
-                                });
-                            }
-                        }
-                        let value = value_str.parse::<i32>().map_err(|_| {
-                            ParseError::UnexpectedTokenAt {
-                                msg: format!("Invalid integer literal: {}", value_str),
-                                line: value_line,
-                                col: value_col,
-                            }
-                        })?;
-                        Ok(AstNode::NumberLiteral(value))
-                    }
-                    TokenType::Float => {
-                        let tok = self.advance().unwrap();
-                        let value_str = tok.value;
-                        let value_line = tok.line;
-                        let value_col = tok.col;
-                        // Mutable borrow ends here, now peek is allowed
-                        if let Some(next) = self.peek() {
-                            if next.kind == TokenType::Dot
-                                || next.kind == TokenType::RangeExc
-                                || next.kind == TokenType::RangeInc
-                            {
-                                return Err(ParseError::UnexpectedTokenAt {
-                                    msg: format!(
-                                        "Invalid number/range/dot sequence after float: {:?}",
-                                        next.kind
-                                    ),
-                                    line: next.line,
-                                    col: next.col,
-                                });
-                            }
-                        }
-                        let value = value_str.parse::<f64>().map_err(|_| {
-                            ParseError::UnexpectedTokenAt {
-                                msg: format!("Invalid float literal: {}", value_str),
-                                line: value_line,
-                                col: value_col,
-                            }
-                        })?;
-                        Ok(AstNode::FloatLiteral(value))
-                    }
-                    TokenType::String => {
-                        let tok = self.advance().unwrap();
-                        Ok(AstNode::StringLiteral(tok.value.to_string()))
-                    }
-                    // ... handle other expression types as before ...
-                    _ => {
-                        // Fallback to existing logic or error
-                        Err(ParseError::UnexpectedTokenAt {
-                            msg: format!("Unexpected token in expression: {:?}", tok.kind),
+    /// Parses a comma-separated list of items until an end token is reached.
+    /// This version does NOT allow trailing commas - returns error if comma is followed by end token.
+    ///
+    /// - `parse_item`: a closure that parses a single item from the stream.
+    /// - `end_token`: the token that marks the end of the list (e.g., `)` or `}`).
+    ///
+    /// Example usage:
+    ///     parse_comma_separated_strict(|p| p.parse_type_annotation(), TokenType::CloseParen)
+    pub fn parse_comma_separated_strict<T, F>(
+        &mut self,
+        mut parse_item: F,
+        end_token: TokenType,
+    ) -> ParseResult<Vec<T>>
+    where
+        F: FnMut(&mut Self) -> ParseResult<T>,
+    {
+        let mut items = Vec::new();
+        // Continue parsing items until the end token is found
+        while !self.peek_is(end_token) {
+            // Parse a single item using the provided closure
+            items.push(parse_item(self)?);
+            // If there's a comma, check for trailing comma
+            if self.consume_if(TokenType::Comma) {
+                // Check if this is a trailing comma (comma followed by end token)
+                if self.peek_is(end_token) {
+                    if let Some(tok) = self.peek() {
+                        return Err(ParseError::UnexpectedTokenAt {
+                            msg: "Trailing comma is not allowed".to_string(),
                             line: tok.line,
                             col: tok.col,
-                        })
+                        });
                     }
                 }
+            } else {
+                break;
             }
-            None => Err(ParseError::EndOfInput),
         }
+        Ok(items)
+    }
+
+    /// Process escape sequences in string literals
+    /// Converts \n, \t, \r, \\, \", etc. to their actual characters
+    pub fn process_escape_sequences(s: &str) -> String {
+        let mut result = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(&next_ch) = chars.peek() {
+                    chars.next(); // consume the escaped character
+                    match next_ch {
+                        'n' => result.push('\n'),
+                        't' => result.push('\t'),
+                        'r' => result.push('\r'),
+                        '\\' => result.push('\\'),
+                        '"' => result.push('"'),
+                        '0' => result.push('\0'),
+                        _ => {
+                            // Unknown escape sequence - keep as is
+                            result.push('\\');
+                            result.push(next_ch);
+                        }
+                    }
+                } else {
+                    // Backslash at end of string
+                    result.push('\\');
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        result
     }
 }

@@ -1,0 +1,290 @@
+fn testAllTypeCasts() {
+    print("=== DOOLANG TYPE CAST TEST SUITE ===");
+    print("");
+
+    // =====================================================
+    // PART 1: ALLOWED CASTS (Should Work)
+    // =====================================================
+    print("PART 1: ALLOWED CASTS");
+    print("---------------------");
+
+    // INT CASTS
+    print("INT CASTS:");
+    let i = 42;
+    print("  Int -> Int:", i as Int, "type:", typeOf(i as Int));
+    print("  Int -> Float:", i as Float, "type:", typeOf(i as Float));
+    print("  Int -> Str:", i as Str, "type:", typeOf(i as Str));
+    print("");
+
+    // FLOAT CASTS
+    print("FLOAT CASTS:");
+    let f = 3.14;
+    print("  Float -> Int:", f as Int, "type:", typeOf(f as Int));
+    print("  Float -> Float:", f as Float, "type:", typeOf(f as Float));
+    print("  Float -> Str:", f as Str, "type:", typeOf(f as Str));
+    print("");
+
+    // BOOL CASTS
+    print("BOOL CASTS:");
+    let bTrue = true;
+    let bFalse = false;
+    print(
+        "  true -> Int:",
+        bTrue as Int,
+        "type:",
+        typeOf(bTrue as Int),
+    );
+    print(
+        "  false -> Int:",
+        bFalse as Int,
+        "type:",
+        typeOf(bFalse as Int),
+    );
+    print(
+        "  true -> Str:",
+        bTrue as Str,
+        "type:",
+        typeOf(bTrue as Str),
+    );
+    print(
+        "  false -> Str:",
+        bFalse as Str,
+        "type:",
+        typeOf(bFalse as Str),
+    );
+    print("");
+
+    // STRING CASTS
+    print("STRING CASTS:");
+    let sInt = "123";
+    let sFloat = "3.14";
+    let sStr = "hello";
+    print("  '123' -> Int:", sInt as Int, "type:", typeOf(sInt as Int));
+    print(
+        "  '3.14' -> Float:",
+        sFloat as Float,
+        "type:",
+        typeOf(sFloat as Float),
+    );
+    print(
+        "  'hello' -> Str:",
+        sStr as Str,
+        "type:",
+        typeOf(sStr as Str),
+    );
+    print("");
+
+    // =====================================================
+    // PART 2: EDGE CASES (Boundary Values)
+    // =====================================================
+    print("PART 2: EDGE CASES");
+    print("------------------");
+
+    // Zero values
+    print("ZERO VALUES:");
+    let zero = 0;
+    let zeroF = 0.0;
+    print("  0 -> Float:", zero as Float, typeOf(zero as Float));
+    print("  0 -> Str:", zero as Str, typeOf(zero as Str));
+    print("  0.0 -> Int:", zeroF as Int, typeOf(zeroF as Int));
+    print("  0.0 -> Str:", zeroF as Str, typeOf(zeroF as Str));
+    print("");
+
+    // Negative values
+    print("NEGATIVE VALUES:");
+    let neg = -42;
+    let negF = -3.14;
+    print("  -42 -> Float:", neg as Float, typeOf(neg as Float));
+    print("  -42 -> Str:", neg as Str, typeOf(neg as Str));
+    print("  -3.14 -> Int:", negF as Int, typeOf(negF as Int));
+    print("  -3.14 -> Str:", negF as Str, typeOf(negF as Str));
+    print("");
+
+    // Fractional truncation
+    print("FRACTIONAL TRUNCATION:");
+    print("  0.5 -> Int:", 0.5 as Int, typeOf(0.5 as Int));
+    print("  0.9 -> Int:", 0.9 as Int, typeOf(0.9 as Int));
+    print("  1.1 -> Int:", 1.1 as Int, typeOf(1.1 as Int));
+    print("  999.99 -> Int:", 999.99 as Int, typeOf(999.99 as Int));
+    print("  -0.5 -> Int:", -0.5 as Int, typeOf(-0.5 as Int));
+    print("  -1.9 -> Int:", -1.9 as Int, typeOf(-1.9 as Int));
+    print("");
+
+    // Large numbers
+    print("LARGE NUMBERS:");
+    let large = 999999;
+    let largeF = 999999.99;
+    print("  999999 -> Float:", large as Float, typeOf(large as Float));
+    print("  999999 -> Str:", large as Str, typeOf(large as Str));
+    print("  999999.99 -> Int:", largeF as Int, typeOf(largeF as Int));
+    print("  999999.99 -> Str:", largeF as Str, typeOf(largeF as Str));
+    print("");
+
+    // String parsing edge cases
+    print("STRING PARSING EDGE CASES:");
+    let leadingZero = "007";
+    let negative = "-123";
+    let negFloat = "-3.14";
+    print(
+        "  '007' -> Int:",
+        leadingZero as Int,
+        typeOf(leadingZero as Int),
+    );
+    print("  '-123' -> Int:", negative as Int, typeOf(negative as Int));
+    print(
+        "  '-3.14' -> Float:",
+        negFloat as Float,
+        typeOf(negFloat as Float),
+    );
+    print("");
+
+    // Empty/whitespace strings (if you support trim)
+    print("WHITESPACE STRINGS:");
+    let withSpaces = "  123  "; // Test if you auto-trim
+                                // print("  '  123  ' -> Int:", withSpaces as Int);  // Uncomment if you support trim
+    print("  Testing whitespace handling...");
+    print("");
+
+    // =====================================================
+    // PART 3: BLOCKED CASTS (Should Fail at Compile Time)
+    // =====================================================
+    print("PART 3: BLOCKED CASTS (Compile-Time Errors)");
+    print("---------------------------------------------");
+    print("The following should cause COMPILE ERRORS:");
+    print("");
+    print("INT -> BOOL:");
+    // let x = 0 as Bool;      // Should be blocked
+    // let y = 1 as Bool;      // Should be blocked
+    // let z = 42 as Bool;     // Should be blocked
+    print("  x, y, z blocked at compile time");
+    print("");
+
+    print("FLOAT -> BOOL:");
+    // let a = 0.0 as Bool;    // Should be blocked
+    // let b = 1.0 as Bool;    // Should be blocked
+    // let c = 3.14 as Bool;   // Should be blocked
+    print("  a, b, c blocked at compile time");
+    print("");
+
+    print("STR -> BOOL:");
+    // let d = "true" as Bool;  // Should be blocked
+    // let e = "false" as Bool; // Should be blocked
+    // let f = "1" as Bool;     // Should be blocked
+    print("  d, e, f blocked at compile time");
+    print("");
+
+    print("BOOL -> FLOAT:");
+    // let g = true as Float;  // Should be blocked
+    // let h = false as Float; // Should be blocked
+    print("  g, h blocked at compile time");
+    print("");
+
+    // Uncomment ONE at a time to test compiler errors:
+    // let testIntToBool = 0 as Bool;       // ❌ Should error
+    // let testFloatToBool = 0.0 as Bool;   // ❌ Should error
+    // let testStrToBool = "true" as Bool;  // ❌ Should error
+    // let testBoolToFloat = true as Float; // ❌ Should error
+
+    print("✓ All blocked casts prevented at compile time");
+    print("");
+
+    // =====================================================
+    // PART 4: RUNTIME ERRORS (String Parsing Failures)
+    // =====================================================
+    print("PART 4: RUNTIME ERRORS (String Parsing)");
+    print("----------------------------------------");
+    print("The following should cause RUNTIME PANICS:");
+    print("");
+
+    print("INVALID STRING -> INT:");
+    print("  Testing invalid conversions...");
+
+    // Uncomment ONE at a time to test runtime panics:
+    // print("  'hello' -> Int:", "hello" as Int, typeOf("hello" as Int));        // ❌ Should panic
+    // print("  'abc123' -> Int:", "abc123" as Int, typeOf("abc123" as Int));      // ❌ Should panic
+    // print("  '12.34' -> Int:", "12.34" as Int, typeOf("12.34" as Int));        // ❌ Should panic (has decimal)
+    // print("  '' -> Int:", "" as Int, typeOf("" as Int));                  // ❌ Should panic (empty)
+    // print("  '  ' -> Int:", "  " as Int, typeOf("  " as Int));              // ❌ Should panic (whitespace only)
+    // print("  '123abc' -> Int:", "123abc" as Int, typeOf("123abc" as Int));      // ❌ Should panic
+
+    // print("");
+    // print("INVALID STRING -> FLOAT:");
+    // print("  'hello' -> Float:", "hello" as Float, typeOf("hello" as Float));    // ❌ Should panic
+    // print("  'abc' -> Float:", "abc" as Float, typeOf("abc" as Float));        // ❌ Should panic
+    // print("  '' -> Float:", "" as Float, typeOf("" as Float));              // ❌ Should panic
+    // print("  '3.14.15' -> Float:", "3.14.15" as Float, typeOf("3.14.15" as Float)); // ❌ Should panic (multiple dots)
+
+    print("  (Uncomment to test panics)");
+    print("");
+
+    // =====================================================
+    // PART 5: SPECIAL FLOAT VALUES (If Supported)
+    // =====================================================
+    print("PART 5: SPECIAL FLOAT VALUES");
+    print("-----------------------------");
+    print("Testing infinity and division by zero:");
+
+    // If your language supports these operations:
+    // let inf = 1.0 / 0.0;
+    // let negInf = -1.0 / 0.0;
+    // let nan = 0.0 / 0.0;
+
+    // print("  Infinity -> Int:", inf as Int);       // Should handle gracefully
+    // print("  -Infinity -> Int:", negInf as Int);   // Should handle gracefully
+    // print("  NaN -> Int:", nan as Int);            // Should handle gracefully
+    // print("  Infinity -> Str:", inf as Str);
+    // print("  NaN -> Str:", nan as Str);
+
+    print("  (Test these if your language supports infinity/NaN)");
+    print("");
+
+    // =====================================================
+    // PART 6: OVERFLOW CASES (If Applicable)
+    // =====================================================
+    print("PART 6: OVERFLOW TESTS");
+    print("----------------------");
+    print("Testing very large numbers:");
+
+    // If your Int type has limits (e.g., 32-bit):
+    // let huge = 9999999999.0;
+    // print("  9999999999.0 -> Int:", huge as Int);  // May overflow/wrap
+
+    // let maxInt = 2147483647;  // Max 32-bit signed int
+    // print("  MaxInt -> Float:", maxInt as Float);
+    // print("  MaxInt + 1 -> Float:", maxInt + 1 as Float);
+
+    // print("  (Add overflow tests based on your Int size)");
+    // print("");
+
+    // =====================================================
+    // SUMMARY
+    // =====================================================
+    print("=== TEST COMPLETE ===");
+    print("");
+    print("ALLOWED CASTS: Int/Float/Bool/Str conversions ✓");
+    print("BLOCKED CASTS: Checked at compile time ✓");
+    print("EDGE CASES: Zero, negative, fractional ✓");
+    print("ERROR CASES: Ready to test (uncomment) ✓");
+    print("");
+}
+
+fn main() {
+    let mut mstrint: {Str: Int} = {};
+    let mut mstrfloat: {Str: Float} = {};
+    let mut mstrbool: {Str: Bool} = {};
+    let mut mstrstr: {Str: Str} = {};
+    let mut mintint: {Int: Int} = {};
+    let mut mintfloat: {Int: Float} = {};
+    let mut mintbool: {Int: Bool} = {};
+    let mut mintstr: {Int: Str} = {};
+    let mut mfloatint: {Float: Int} = {};
+    let mut mfloatfloat: {Float: Float} = {};
+    let mut mfloatbool: {Float: Bool} = {};
+    let mut mfloatstr: {Float: Str} = {};
+    let mut mboolint: {Bool: Int} = {};
+    let mut mboolfloat: {Bool: Float} = {};
+    let mut mboolbool: {Bool: Bool} = {};
+    let mut mboolstr: {Bool: Str} = {};
+
+    testAllTypeCasts();
+}

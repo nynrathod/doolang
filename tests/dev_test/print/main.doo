@@ -1,0 +1,128 @@
+fn main() {
+    print("========================================");
+    print("  DOO LANGUAGE - PRINT EDGE CASES & ALL TYPES DEMO");
+    print("========================================");
+    print("");
+
+    // Primitive types
+    let intVal = 0;
+    let negInt = -42;
+    let bigInt = 2147483647;
+    let floatVal = 3.14;
+    let negFloat = -2.718;
+    let boolTrue = true;
+    let boolFalse = false;
+    let strVal = "hello";
+    let emptyStr = "";
+    print("Int: ${intVal}, NegInt: ${negInt}, BigInt: ${bigInt}");
+    print("Float: ${floatVal}, NegFloat: ${negFloat}");
+    print("Bool True: ${boolTrue}, Bool False: ${boolFalse}");
+    print("Str: '${strVal}', EmptyStr: '${emptyStr}'");
+
+    // Arrays
+    let intArr = [1, 2, 3];
+    let mut emptyIntArr = [];
+    let floatArr = [1.1, 2.2, 3.3];
+    let boolArr = [true, false, true];
+    let strArr = ["foo", "bar"];
+    let mut emptyStrArr = [];
+    print("Array of Int: ${intArr}");
+    print("Empty Array of Int: ${emptyIntArr}");
+    print("Array of Float: ${floatArr}");
+    print("Array of Bool: ${boolArr}");
+    print("Array of Str: ${strArr}");
+    print("Empty Array of Str: ${emptyStrArr}");
+
+    // Maps
+    let mapStrInt = {"a": 1, "b": 2};
+    let mut emptyMapStrInt = {};
+    let mapStrFloat = {"x": 1.5, "y": 2.5};
+    let mapStrBool = {"flag": true, "other": false};
+    let mapStrStr = {"first": "one", "second": "two"};
+    print("Map {Str: Int}: ${mapStrInt}");
+    print("Empty Map {Str: Int}: ${emptyMapStrInt}");
+    print("Map {Str: Float}: ${mapStrFloat}");
+    print("Map {Str: Bool}: ${mapStrBool}");
+    print("Map {Str: Str}: ${mapStrStr}");
+
+    let mapIntInt = {1: 10, 2: 20};
+    let mapIntFloat = {1: 1.1, 2: 2.2};
+    let mapIntBool = {1: true, 2: false};
+    let mapIntStr = {1: "one", 2: "two"};
+    print("Map {Int: Int}: ${mapIntInt}");
+    print("Map {Int: Float}: ${mapIntFloat}");
+    print("Map {Int: Bool}: ${mapIntBool}");
+    print("Map {Int: Str}: ${mapIntStr}");
+
+    let mapFloatInt = {1.1: 10, 2.2: 20};
+    let mapFloatFloat = {1.1: 1.11, 2.2: 2.22};
+    let mapFloatBool = {1.1: true, 2.2: false};
+    let mapFloatStr = {1.1: "one", 2.2: "two"};
+    print("Map {Float: Int}: ${mapFloatInt}");
+    print("Map {Float: Float}: ${mapFloatFloat}");
+    print("Map {Float: Bool}: ${mapFloatBool}");
+    print("Map {Float: Str}: ${mapFloatStr}");
+
+    let mapBoolInt = {true: 100, false: 200};
+    let mapBoolFloat = {true: 1.5, false: 2.5};
+    let mapBoolBool = {true: false, false: true};
+    let mapBoolStr = {true: "yes", false: "no"};
+    print("Map {Bool: Int}: ${mapBoolInt}");
+    print("Map {Bool: Float}: ${mapBoolFloat}");
+    print("Map {Bool: Bool}: ${mapBoolBool}");
+    print("Map {Bool: Str}: ${mapBoolStr}");
+
+    // Struct
+    struct Point {
+        x: Int,
+        y: Int,
+    }
+    let point = Point { x: 10, y: 20 };
+    print("Struct Point: ${point}");
+
+    // Enum
+    enum Status {
+        Active,
+        Inactive,
+        Pending,
+    }
+    let status = Status::Active;
+    print("Enum Status: ${status}");
+
+
+    // Print with escape characters
+    print("Line1\nLine2\tTabbed");
+
+    // Print with Unicode/emoji
+    let emoji = "🚀";
+    print("Emoji: ${emoji}");
+
+    // Print with non-Latin script
+    let chinese = "世界";
+    print("Chinese: ${chinese}");
+
+    // Print direct values
+    print(123);
+    print(3.1415);
+    print(true);
+    print("Direct string");
+
+    // Print empty string
+    print("");
+
+    // Print complex interpolation
+    let a = 100;
+    let b = 50;
+    print("Complex: ${a * 2 - b}");
+
+    // Print expressions directly
+    print(a + b);
+    print(a * b);
+
+    let x = 10;
+    let y = 5;
+    print("Math: ${x} + ${y} = ${x + y}");
+    print("Math: ${x} * ${y} = ${x * y}");
+
+    print("=== All print edge cases and type tests completed ===");
+}

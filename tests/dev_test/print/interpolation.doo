@@ -1,0 +1,63 @@
+fn main() {
+    print("=== String Interpolation Tests ===");
+    print("");
+
+    // Test 1: Basic variable interpolation
+    print("Test 1: Basic variable interpolation");
+    let name = "Alice";
+    let greeting = "Hello ${name}!";
+    print(greeting);
+    print("");
+
+    // Test 2: Multiple variables
+    print("Test 2: Multiple variables");
+    let firstName = "Bob";
+    let lastName = "Smith";
+    let fullName = "${firstName} ${lastName}";
+    print(fullName);
+    print("");
+
+    // Test 3: Numbers in interpolation
+    print("Test 3: Numbers in interpolation");
+    let age = 25;
+    let message = "I am ${age} years old";
+    print(message);
+    print("");
+
+    // Test 4: Expressions in interpolation
+    print("Test 4: Expressions in interpolation");
+    let x = 10;
+    let y = 5;
+    let result = "${x} + ${y} = ${x + y}";
+    print(result);
+    print("");
+
+    // Test 5: UTF-8 with interpolation
+    print("Test 5: UTF-8 with interpolation");
+    let emoji = "🚀";
+    let rocket = "Launch ${emoji} to the moon!";
+    print(rocket);
+    print("");
+
+    // Test 6: Chinese with interpolation
+    print("Test 6: Chinese with interpolation");
+    let chinese = "世界";
+    let hello = "你好 ${chinese}!";
+    print(hello);
+    print("");
+
+    // Test 7: Direct print with interpolation
+    print("Test 7: Direct print with interpolation");
+    let user = "Charlie";
+    print("Welcome ${user} to Doo language!");
+    print("");
+
+    // Test 8: Complex expression
+    print("Test 8: Complex expression");
+    let a = 100;
+    let b = 50;
+    print("Result: ${a * 2 - b}");
+    print("");
+
+    print("=== All interpolation tests completed ===");
+}

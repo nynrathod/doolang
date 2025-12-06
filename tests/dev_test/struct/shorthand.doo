@@ -1,0 +1,57 @@
+struct User {
+    name: Str,
+    email: Str,
+    age: Int,
+}
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn main() {
+    print("=== STRUCT SHORTHAND SYNTAX TEST ===");
+
+    // ------------------------------------------------------------
+    // Test 1: Basic struct shorthand initialization
+    let name = "Alice";
+    let email = "alice@example.com";
+    let age = 30;
+    let user1 = User { name, email, age };
+    print("user1.name:", user1.name);
+    print("user1.email:", user1.email);
+    print("user1.age:", user1.age);
+
+    // ------------------------------------------------------------
+    // Test 2: Mixed shorthand and explicit field assignment
+    let x = 10;
+    let point1 = Point { x, y: 20 };
+    print("point1.x:", point1.x);
+    print("point1.y:", point1.y);
+
+    // ------------------------------------------------------------
+    // Test 3: All explicit field assignment (baseline)
+    let user2 = User {
+        name: "Bob",
+        email: "bob@example.com",
+        age: 25,
+    };
+    print("user2.name:", user2.name);
+    print("user2.email:", user2.email);
+    print("user2.age:", user2.age);
+
+    // ------------------------------------------------------------
+    // Test 4: Multiple fields shorthand and variable mapping
+    let name2 = "Charlie";
+    let myemail = "charlie@test.com";
+    let myage = 35;
+    let user3 = User {
+        name: name2,
+        email: myemail,
+        age: myage,
+    };
+    print("user3.name:", user3.name);
+    print("user3.age:", user3.age);
+
+    print("\n=== ALL STRUCT SHORTHAND TESTS COMPLETE ===");
+}

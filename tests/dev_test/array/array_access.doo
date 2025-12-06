@@ -1,0 +1,57 @@
+fn main() {
+    // === Array Get with [] ===
+    print("=== Array Get ===");
+
+    // Int array
+    let arr = [10, 20, 30, 40, 50];
+    print("arr:", arr);
+    print("arr[0]:", arr[0]);
+    print("arr[2]:", arr[2]);
+    print("arr[4]:", arr[4]);
+
+    // Float array
+    let floats = [1.5, 2.5, 3.5];
+    print("\nfloats:", floats);
+    print("floats[0]:", floats[0]);
+    print("floats[1]:", floats[1]);
+
+    // Bool array
+    let flags = [true, false, true];
+    print("\nflags:", flags);
+    print("flags[0]:", flags[0]);
+    print("flags[1]:", flags[1]);
+    print("flags[2]:", flags[2]);
+
+    // String array
+    let names = ["Alice", "Bob", "Charlie"];
+    print("\nnames:", names);
+    print("names[0]:", names[0]);
+    print("names[2]:", names[2]);
+
+    // === Array Set with [] ===
+    print("\n=== Array Set ===");
+
+    // Int array set
+    let mut nums = [1, 2, 3, 4, 5];
+    print("nums before:", nums);
+    nums[0] = 100;
+    nums[2] = 300;
+    nums[4] = 500;
+    print("nums after:", nums);
+
+    // Float array set
+    let mut fvals = [1.1, 2.2, 3.3];
+    print("\nfvals before:", fvals);
+    fvals[1] = 9.9;
+    print("fvals after:", fvals);
+
+    // Bool array set
+    let mut bools = [true, true, true];
+    print("\nbools before:", bools);
+    bools[1] = false;
+    print("bools after:", bools);
+
+    // === Out of Bounds (uncomment to test panic) ===
+    // print(arr[10]);    // panic: index 10, length 5
+    // nums[100] = 999;   // panic: index 100, length 5
+}

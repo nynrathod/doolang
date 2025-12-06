@@ -1,0 +1,5 @@
+import C::FuncC;
+
+fn FuncB() -> Int {
+    return FuncC() + 2;
+}

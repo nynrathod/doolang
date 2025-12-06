@@ -1,0 +1,17 @@
+import models::user::{User};
+
+struct UserDirectory {
+    Users: {Int: User},
+}
+
+fn UserDirectory.add(self, user: User) {
+    self.Users[user.Id] = user;
+}
+
+fn UserDirectory.get(self, id: Int) -> User {
+    return self.Users[id];
+}
+
+fn UserDirectory.list(self) -> [User] {
+    return self.Users.values();
+}

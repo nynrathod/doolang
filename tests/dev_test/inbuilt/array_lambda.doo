@@ -1,0 +1,177 @@
+//
+// Lambda/Arrow Function Tests for Array Methods
+// Covers: [Int], [Float], [Bool], [Str]
+// Methods: map, filter, reduce, chaining, inline and block syntax, edge cases
+//
+
+fn main() {
+    print("=== Array Lambda Method Tests ===\n");
+
+    // ------------------------------------------------------------
+    // [Int] Array: map, filter, reduce, chaining, edge cases
+    print("--- [Int] Array ---");
+    let nums: [Int] = [1, 2, 3, 4, 5];
+
+    // Inline: double each value
+    let doubled = nums.map((x) => x * 2);
+    print("map (x*2):", doubled);
+
+    // Block: double each value
+    let doubledBlock = nums.map((x) => {
+        let result = x * 2;
+        return result;
+    });
+    print("map block (x*2):", doubledBlock);
+
+    // Inline: filter even numbers
+    let evens = nums.filter((x) => x % 2 == 0);
+    print("filter (even):", evens);
+
+    // Block: filter odd numbers
+    let oddsBlock = nums.filter((x) => {
+        let isOdd = x % 2 == 1;
+        return isOdd;
+    });
+    print("filter block (odd):", oddsBlock);
+
+    // Reduce: sum (inline)
+    let sum = nums.reduce(0, (a, b) => a + b);
+    print("reduce (sum):", sum);
+
+    // Reduce: product (block)
+    let productBlock = nums.reduce(1, (a, b) => {
+        let prod = a * b;
+        return prod;
+    });
+    print("reduce block (product):", productBlock);
+
+    // Chaining: filter > map > reduce
+    let chain = nums.filter((x) => x > 2).map((x) => x * 3).reduce(0, (a, b) => a + b);
+    print("chain (filter>map>reduce):", chain);
+
+    // Edge: empty array
+    let mut empty: [Int] = [];
+    let emptyMap = empty.map((x) => x + 1);
+    print("map on empty:", emptyMap);
+
+    // Edge: single element
+    let single: [Int] = [42];
+    let singleFilter = single.filter((x) => x > 40);
+    print("filter on single:", singleFilter);
+
+    // ------------------------------------------------------------
+    // [Float] Array: map, filter, reduce, chaining, edge cases
+    print("\n--- [Float] Array ---");
+    let floats: [Float] = [1.5, 2.5, 3.5, 4.5];
+
+    // Inline: square each value
+    let squared = floats.map((x) => x * x);
+    print("map (x*x):", squared);
+
+    // Block: add 1.0 to each value
+    let plusOneBlock = floats.map((x) => {
+        let result = x + 1.0;
+        return result;
+    });
+    print("map block (+1.0):", plusOneBlock);
+
+    // Inline: filter > 2.0
+    let gtTwo = floats.filter((x) => x > 2.0);
+    print("filter (>2):", gtTwo);
+
+    // Block: filter < 4.0
+    let ltFourBlock = floats.filter((x) => {
+        let isLess = x < 4.0;
+        return isLess;
+    });
+    print("filter block (<4):", ltFourBlock);
+
+    // Reduce: product (inline)
+    let product = floats.reduce(1.0, (a, b) => a * b);
+    print("reduce (product):", product);
+
+    // Reduce: sum (block)
+    let sumBlock = floats.reduce(0.0, (a, b) => {
+        let s = a + b;
+        return s;
+    });
+    print("reduce block (sum):", sumBlock);
+
+    // Chaining: filter > map > reduce
+    let chainFloat = floats.filter((x) => x < 4.0).map((x) => x + 1.0).reduce(0.0, (a, b) => a + b);
+    print("chain (filter>map>reduce):", chainFloat);
+
+    // Edge: empty array
+    let mut emptyFloat: [Float] = [];
+    let emptyFloatReduce = emptyFloat.reduce(1.0, (a, b) => a * b);
+    print("reduce on empty:", emptyFloatReduce);
+
+    // Edge: single element
+    let singleFloat: [Float] = [7.7];
+    let singleFloatMap = singleFloat.map((x) => x / 2.0);
+    print("map on single:", singleFloatMap);
+
+    // ------------------------------------------------------------
+    // [Bool] Array: map, filter, reduce, chaining, edge cases
+    print("\n--- [Bool] Array ---");
+    let bools: [Bool] = [true, false, true, false, true];
+
+    // Inline: invert
+    let inverted = bools.map((b) => !b);
+    print("map (!b):", inverted);
+
+    // Block: keep trues
+    let truesBlock = bools.filter((b) => {
+        return b == true;
+    });
+    print("filter block (true):", truesBlock);
+
+    // Reduce: count trues (inline)
+    let countTrue = bools.reduce(0, (a, b) => a + (if b { 1 } else { 0 }));
+    print("reduce (count true):", countTrue);
+
+    // Chaining: filter > map
+    let chainBool = bools.filter((b) => b).map((b) => !b);
+    print("chain (filter>map):", chainBool);
+
+    // Edge: all false
+    let allFalse: [Bool] = [false, false];
+    let allFalseFilter = allFalse.filter((b) => b);
+    print("filter all false:", allFalseFilter);
+
+    // Edge: empty array
+    let mut emptyBool: [Bool] = [];
+    let emptyBoolReduce = emptyBool.reduce(0, (a, b) => a + (if b { 1 } else { 0 }));
+    print("reduce on empty:", emptyBoolReduce);
+
+    // ------------------------------------------------------------
+    // [Str] Array: map, filter, chaining, edge cases
+    print("\n--- [Str] Array ---");
+    let words: [Str] = ["apple", "banana", "cherry", "date"];
+
+    // Inline: add "!" to each word
+    let excited = words.map((s) => s + "!");
+    print("map (+!):", excited);
+
+    // Block: keep words with length > 5
+    let longWordsBlock = words.filter((s) => {
+        return s.len() > 5;
+    });
+    print("filter block (len>5):", longWordsBlock);
+
+    // Chaining: filter > map
+    let chainStr = words.filter((s) => s.startsWith("b")).map((s) => s + "?");
+    print("chain (filter>map):", chainStr);
+
+    // Edge: empty array
+    let mut emptyStr: [Str] = [];
+    let emptyStrMap = emptyStr.map((s) => s + "!");
+    print("map on empty:", emptyStrMap);
+
+    // Edge: single element
+    let singleStr: [Str] = ["solo"];
+    let singleStrFilter = singleStr.filter((s) => s.len() > 2);
+    print("filter on single:", singleStrFilter);
+
+    print("\n=== All Array Lambda Method Tests Complete ===");
+}

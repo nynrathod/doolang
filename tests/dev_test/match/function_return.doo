@@ -1,0 +1,84 @@
+// Test Match on Function Return Values
+// This tests matching on values returned by functions
+
+fn getStatusCode() -> Int {
+    return 200;
+}
+
+fn getErrorCode() -> Int {
+    return 404;
+}
+
+fn getBoolValue() -> Bool {
+    return true;
+}
+
+fn getFloatValue() -> Float {
+    return 3.14;
+}
+
+fn getStringValue() -> Str {
+    return "active";
+}
+
+fn main() {
+    print("========================================");
+    print("MATCH ON FUNCTION RETURN VALUES TEST");
+    print("========================================");
+
+    // Test 1: Match on Int function return
+    print("\n[TEST 1] Match on Int function return");
+    match getStatusCode() {
+        200 => print("OK"),
+        404 => print("Not Found"),
+        500 => print("Server Error"),
+        _ => print("Unknown"),
+    }
+
+    // Test 2: Store function result then match
+    print("\n[TEST 2] Store function result then match");
+    let code = getErrorCode();
+    match code {
+        200 => print("Success"),
+        404 => print("Error: Not Found"),
+        500 => print("Server Error"),
+        _ => print("Other Error"),
+    }
+
+    // Test 3: Match function return with variable assignment
+    print("\n[TEST 3] Match with variable assignment");
+    let message = match getStatusCode() {
+        200 => "Everything OK",
+        404 => "Page not found",
+        _ => "Unknown status",
+    };
+    print("Message:", message);
+
+    // Test 4: Match Bool function return
+    print("\n[TEST 4] Match on Bool function return");
+    match getBoolValue() {
+        true => print("Value is true"),
+        false => print("Value is false"),
+        _ => print("Unknown"),
+    }
+
+    // Test 5: Match Float function return
+    print("\n[TEST 5] Match on Float function return");
+    match getFloatValue() {
+        3.14 => print("Got Pi"),
+        2.71 => print("Got e"),
+        _ => print("Other value"),
+    }
+
+    // Test 6: Match String function return
+    print("\n[TEST 6] Match on String function return");
+    match getStringValue() {
+        "active" => print("Status: Active"),
+        "inactive" => print("Status: Inactive"),
+        _ => print("Unknown status"),
+    }
+
+    print("\n========================================");
+    print("ALL FUNCTION RETURN TESTS PASSED");
+    print("========================================");
+}

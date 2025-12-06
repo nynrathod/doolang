@@ -1,0 +1,9 @@
+struct Address {
+    Street: Str,
+    City: Str,
+    Country: Str,
+    Zipcode: Str,
+}
+
+fn Address.display(self) -> Str => "${self.City}, ${self.Country}";
+fn Address.full(self) -> Str => "${self.Street}, ${self.City} ${self.Zipcode}, ${self.Country}";

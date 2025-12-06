@@ -4,7 +4,7 @@ use crate::analyzer::types::SemanticError;
 use crate::analyzer::SemanticAnalyzer;
 use crate::codegen::core::CodeGen;
 use crate::diagnostics::{print_grouped, DiagnosticRecord};
-use crate::lexar::lexer::lex;
+use crate::lexer::lexer::lex;
 use crate::mir::builder::MirBuilder;
 use crate::parser::{ParseError, Parser};
 use bumpalo::Bump;
@@ -41,7 +41,7 @@ fn extract_embedded_linker() -> Result<PathBuf, String> {
         let mut file = fs::File::create(&linker_path)
             .map_err(|e| format!("Failed to create linker file: {}", e))?;
         file.write_all(EMBEDDED_LINKER)
-            .map_err(|e| format!("Failed to write linker: {}", e))?;
+            .map_err(|e| format!("Failed to link (Windows): {}", e))?;
     }
 
     Ok(linker_path)
@@ -153,7 +153,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     let mut analyzer = SemanticAnalyzer::new(Some(project_root.clone()));
 
-    if let Err(e) = analyzer.analyze_program(&mut statements) {
+    let is_circular_import = if let Err(e) = analyzer.analyze_program(&mut statements) {
         match &e {
             SemanticError::ParseErrorInModule { file, error } => {
                 let re = Regex::new(r"at (\d+):(\d+): (.+)").expect("Regex pattern is valid");
@@ -181,6 +181,18 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                     }
                 }
                 error_count += 1;
+                false
+            }
+            SemanticError::CircularImport { .. } => {
+                diagnostics.push(DiagnosticRecord {
+                    filename: input_path.display().to_string(),
+                    message: e.to_string(),
+                    line: None,
+                    col: None,
+                    is_parse: false,
+                });
+                error_count += 1;
+                true
             }
             _ => {
                 diagnostics.push(DiagnosticRecord {
@@ -191,51 +203,57 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                     is_parse: false,
                 });
                 error_count += 1;
+                false
             }
         }
-    }
+    } else {
+        false
+    };
 
-    for error in &analyzer.collected_errors {
-        match error {
-            SemanticError::ParseErrorInModule {
-                file,
-                error: err_msg,
-            } => {
-                let re = Regex::new(r"at (\d+):(\d+): (.+)").expect("Regex pattern is valid");
-                let (line, col, msg) = if let Some(caps) = re.captures(err_msg) {
-                    (
-                        caps.get(1).and_then(|m| m.as_str().parse().ok()),
-                        caps.get(2).and_then(|m| m.as_str().parse().ok()),
-                        caps.get(3)
-                            .map(|m| m.as_str().to_string())
-                            .unwrap_or_else(|| err_msg.clone()),
-                    )
-                } else {
-                    (None, None, err_msg.clone())
-                };
-                diagnostics.push(DiagnosticRecord {
-                    filename: file.clone(),
-                    message: msg,
-                    line,
-                    col,
-                    is_parse: true,
-                });
-                if !sources.contains_key(file) {
-                    if let Ok(src) = std::fs::read_to_string(file) {
-                        sources.insert(file.clone(), src);
+    // Skip processing collected_errors if circular import was detected
+    if !is_circular_import {
+        for error in &analyzer.collected_errors {
+            match error {
+                SemanticError::ParseErrorInModule {
+                    file,
+                    error: err_msg,
+                } => {
+                    let re = Regex::new(r"at (\d+):(\d+): (.+)").expect("Regex pattern is valid");
+                    let (line, col, msg) = if let Some(caps) = re.captures(err_msg) {
+                        (
+                            caps.get(1).and_then(|m| m.as_str().parse().ok()),
+                            caps.get(2).and_then(|m| m.as_str().parse().ok()),
+                            caps.get(3)
+                                .map(|m| m.as_str().to_string())
+                                .unwrap_or_else(|| err_msg.clone()),
+                        )
+                    } else {
+                        (None, None, err_msg.clone())
+                    };
+                    diagnostics.push(DiagnosticRecord {
+                        filename: file.clone(),
+                        message: msg,
+                        line,
+                        col,
+                        is_parse: true,
+                    });
+                    if !sources.contains_key(file) {
+                        if let Ok(src) = std::fs::read_to_string(file) {
+                            sources.insert(file.clone(), src);
+                        }
                     }
+                    error_count += 1;
                 }
-                error_count += 1;
-            }
-            _ => {
-                diagnostics.push(DiagnosticRecord {
-                    filename: input_path.display().to_string(),
-                    message: error.to_string(),
-                    line: None,
-                    col: None,
-                    is_parse: false,
-                });
-                error_count += 1;
+                _ => {
+                    diagnostics.push(DiagnosticRecord {
+                        filename: input_path.display().to_string(),
+                        message: error.to_string(),
+                        line: None,
+                        col: None,
+                        is_parse: false,
+                    });
+                    error_count += 1;
+                }
             }
         }
     }
@@ -269,15 +287,27 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         });
     }
 
-    let mut all_nodes = analyzer.imported_functions.clone();
+    // Merge imported structs and functions into the AST for MIR generation
+    let mut all_nodes = analyzer.imported_structs.clone();
+    all_nodes.extend(analyzer.imported_functions.clone());
     all_nodes.extend(statements);
 
     if opts.print_ast {}
 
     let mut mir_builder = MirBuilder::new();
+    mir_builder.enum_table = std::sync::Arc::new(analyzer.enum_table.clone());
+    mir_builder.enum_variant_order = std::sync::Arc::new(analyzer.enum_variant_order.clone());
+    mir_builder.function_table = std::sync::Arc::new(analyzer.function_table.clone());
+    mir_builder.method_table = std::sync::Arc::new(analyzer.method_table.clone());
+    mir_builder.struct_table = std::sync::Arc::new(analyzer.struct_table.clone());
     mir_builder.set_is_main_entry(true); // Mark this as the main entry point
     mir_builder.build_program(&all_nodes);
     mir_builder.finalize();
+
+    // Validate MIR before codegen
+    if let Err(e) = mir_builder.program.validate() {
+        return Err(format!("MIR validation failed: {}", e));
+    }
 
     // Check that main() function exists before code generation
     let has_main = mir_builder
@@ -293,6 +323,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     let context = inkwell::context::Context::create();
     let mut codegen = CodeGen::new("main_module", &context);
+    codegen.function_aliases = analyzer.function_aliases.clone();
     codegen.generate_program(&mir_builder.program);
 
     if opts.dev_mode {
@@ -316,7 +347,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     };
     let exe_path = current_dir.join(&exe_name);
 
-    compile_to_native(&codegen, &opts, &exe_path)?;
+    compile_to_native(&codegen, &opts, &exe_path, &mir_builder.program)?;
 
     if !exe_path.exists() {
         return Ok(CompileResult {
@@ -338,6 +369,7 @@ fn compile_to_native(
     codegen: &CodeGen,
     opts: &CompileOptions,
     exe_path: &Path,
+    mir_program: &crate::mir::mir::MirProgram,
 ) -> Result<(), String> {
     Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("Failed to initialize target: {}", e))?;
@@ -361,6 +393,12 @@ fn compile_to_native(
         .ok_or("Failed to create target machine")?;
 
     let obj_file = format!("{}.o", opts.output_name);
+    if let Err(e) = codegen.module.verify() {
+        return Err(format!(
+            "LLVM Module verification failed: {}",
+            e.to_string()
+        ));
+    }
     target_machine
         .write_to_file(&codegen.module, FileType::Object, Path::new(&obj_file))
         .map_err(|e| format!("Failed to write object file: {}", e))?;
@@ -368,7 +406,12 @@ fn compile_to_native(
     let exe_path_str = exe_path
         .to_str()
         .ok_or_else(|| "Could not convert executable path to string".to_string())?;
-    link_object_file(&obj_file, exe_path_str, opts.dev_mode)?;
+    link_object_file(
+        &obj_file,
+        exe_path.to_str().unwrap(),
+        opts.dev_mode,
+        mir_program,
+    )?;
 
     // Always remove .o file after linking unless keep_obj is true
     if !opts.keep_obj {
@@ -380,7 +423,110 @@ fn compile_to_native(
     Ok(())
 }
 
-fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), String> {
+fn link_object_file(
+    obj_file: &str,
+    output: &str,
+    _dev_mode: bool,
+    mir_program: &crate::mir::mir::MirProgram,
+) -> Result<(), String> {
+    // Collect all FFI libraries needed from the MIR
+    let mut ffi_libs: std::collections::HashSet<String> = mir_program
+        .functions
+        .iter()
+        .filter_map(|f| f.ffi_lib.clone())
+        .collect();
+
+    // Runtime functions (hash_string, json_*, file_*, panic_runtime) are now
+    // compiled into libdoo.dylib (the main compiler library).
+    // Always include it so compiled programs can access these runtime functions.
+    ffi_libs.insert("doo".to_string());
+
+    // Common: Build search paths for libraries (works on all platforms)
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let cwd = env::current_dir().ok();
+
+    let mut search_paths: Vec<PathBuf> = Vec::new();
+
+    // 1. Same directory as doo executable
+    if let Some(ref dir) = exe_dir {
+        search_paths.push(dir.clone());
+    }
+
+    // 2. target/release and target/debug (for development)
+    if let Some(ref c) = cwd {
+        search_paths.push(c.join("target").join("release"));
+        search_paths.push(c.join("target").join("debug"));
+    }
+
+    // 3. System locations (Unix only, but harmless on Windows)
+    search_paths.push(PathBuf::from("/usr/local/lib"));
+    search_paths.push(PathBuf::from("/usr/lib"));
+
+    // 4. User home lib directory and doo installation directory
+    if let Ok(home) = env::var("HOME") {
+        let home_path = PathBuf::from(&home);
+        // Primary: ~/.local/bin/doo (where xtask installs on Linux/macOS)
+        search_paths.push(home_path.join(".local").join("bin").join("doo"));
+        // Fallback: ~/.local/lib
+        search_paths.push(home_path.join(".local").join("lib"));
+    }
+    if let Ok(home) = env::var("USERPROFILE") {
+        search_paths.push(PathBuf::from(home).join(".local").join("lib"));
+    }
+
+    // Helper: Find FFI library in search paths
+    let find_ffi_lib = |lib_name: &str, paths: &[PathBuf]| -> Option<(PathBuf, PathBuf)> {
+        for search_path in paths {
+            // Windows: .dll.lib or .lib
+            #[cfg(target_os = "windows")]
+            {
+                let dll_lib = search_path.join(format!("{}.dll.lib", lib_name));
+                if dll_lib.exists() {
+                    return Some((search_path.clone(), dll_lib));
+                }
+                let lib = search_path.join(format!("{}.lib", lib_name));
+                if lib.exists() {
+                    return Some((search_path.clone(), lib));
+                }
+            }
+            // Unix: lib*.so, lib*.dylib, lib*.a
+            #[cfg(not(target_os = "windows"))]
+            {
+                let so = search_path.join(format!("lib{}.so", lib_name));
+                if so.exists() {
+                    return Some((search_path.clone(), so));
+                }
+                let dylib = search_path.join(format!("lib{}.dylib", lib_name));
+                if dylib.exists() {
+                    return Some((search_path.clone(), dylib));
+                }
+                let a = search_path.join(format!("lib{}.a", lib_name));
+                if a.exists() {
+                    return Some((search_path.clone(), a));
+                }
+            }
+        }
+        None
+    };
+
+    // Also search in ffi_libs directory structure
+    let mut ffi_search_paths = search_paths.clone();
+    if let Some(ref c) = cwd {
+        for ffi_lib in &ffi_libs {
+            let ffi_dir = c
+                .join("ffi_libs")
+                .join(format!("lib{}", ffi_lib))
+                .join("target")
+                .join("release");
+            if ffi_dir.exists() {
+                ffi_search_paths.push(ffi_dir);
+            }
+        }
+    }
+
+    // ========== WINDOWS LINKING ==========
     #[cfg(target_os = "windows")]
     {
         let linker = extract_embedded_linker()?;
@@ -392,6 +538,7 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
             .arg("/SUBSYSTEM:CONSOLE")
             .arg("/ENTRY:main");
 
+        // Add Windows SDK paths
         if let Some(paths) = sdk_paths {
             if let Some(ucrt) = paths.ucrt_lib {
                 cmd.arg(format!("/LIBPATH:{}", ucrt));
@@ -408,8 +555,39 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
                 .arg("libcmt.lib");
         }
 
+        // Link FFI libraries
+        let mut added_paths = std::collections::HashSet::new();
+        for ffi_lib in &ffi_libs {
+            if let Some((lib_dir, lib_file)) = find_ffi_lib(ffi_lib, &ffi_search_paths) {
+                // Add library path if not already added
+                if added_paths.insert(lib_dir.clone()) {
+                    cmd.arg(format!("/LIBPATH:{}", lib_dir.display()));
+                }
+                // Add Windows system libs needed by Rust FFI
+                cmd.arg("ws2_32.lib")
+                    .arg("userenv.lib")
+                    .arg("bcrypt.lib")
+                    .arg("kernel32.lib")
+                    .arg("advapi32.lib");
+                // Link the library
+                cmd.arg(lib_file.to_str().unwrap());
+            } else {
+                // FFI library not found - provide helpful error
+                return Err(format!(
+                    "FFI library '{}.dll.lib' not found.\n\
+                    Build it first:\n\
+                      cd ffi_libs\\lib{} && cargo build --release\n\
+                    Then rebuild doo:\n\
+                      cargo build --release\n\
+                    \n\
+                    Searched in: {:?}",
+                    ffi_lib, ffi_lib, ffi_search_paths
+                ));
+            }
+        }
+
         let result = cmd.output();
-        match result {
+        return match result {
             Ok(r) if r.status.success() => Ok(()),
             Ok(r) => Err(format!(
                 "Linking failed:\nSTDOUT:\n{}\nSTDERR:\n{}",
@@ -417,14 +595,14 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
                 String::from_utf8_lossy(&r.stderr)
             )),
             Err(e) => Err(format!("Linker error: {}", e)),
-        }
+        };
     }
 
+    // ========== UNIX LINKING (Linux & macOS) ==========
     #[cfg(not(target_os = "windows"))]
     {
-        // Use clang on Unix - simple and reliable
-        let clang_check = Command::new("clang").arg("--version").output();
-        if clang_check.is_err() {
+        // Check for clang
+        if Command::new("clang").arg("--version").output().is_err() {
             return Err("Clang not found. Install with:\n\
                 - Ubuntu/Debian: sudo apt install clang\n\
                 - Fedora: sudo dnf install clang\n\
@@ -432,20 +610,68 @@ fn link_object_file(obj_file: &str, output: &str, dev_mode: bool) -> Result<(), 
                 .to_string());
         }
 
-        let result = Command::new("clang")
-            .arg(obj_file)
-            .arg("-o")
-            .arg(output)
-            .output();
+        let mut cmd = Command::new("clang");
+        cmd.arg(obj_file).arg("-o").arg(output).arg("-lm");
 
-        match result {
+        // Platform-specific system libraries
+        #[cfg(target_os = "linux")]
+        cmd.arg("-lpthread").arg("-ldl");
+
+        #[cfg(target_os = "macos")]
+        {
+            cmd.arg("-lpthread");
+            cmd.arg("-framework").arg("Security");
+            cmd.arg("-framework").arg("CoreFoundation");
+        }
+
+        // Link FFI libraries
+        let mut added_paths = std::collections::HashSet::new();
+        for ffi_lib in &ffi_libs {
+            if let Some((lib_dir, lib_file)) = find_ffi_lib(ffi_lib, &ffi_search_paths) {
+                // For shared libraries, add -L and -l flags with rpath
+                let is_shared = lib_file
+                    .extension()
+                    .map(|e| e == "so" || e == "dylib")
+                    .unwrap_or(false);
+
+                if is_shared {
+                    if added_paths.insert(lib_dir.clone()) {
+                        cmd.arg(format!("-L{}", lib_dir.display()));
+                        cmd.arg(format!("-Wl,-rpath,{}", lib_dir.display()));
+                    }
+                    cmd.arg(format!("-l{}", ffi_lib));
+                } else {
+                    // Static library - link directly
+                    cmd.arg(lib_file.to_str().unwrap());
+                }
+            } else {
+                // FFI library not found - provide helpful error
+                let lib_name = format!("lib{}.so", ffi_lib);
+                #[cfg(target_os = "macos")]
+                let lib_name = format!("lib{}.dylib", ffi_lib);
+
+                return Err(format!(
+                    "FFI library '{}' not found.\n\
+                    Build it first:\n\
+                      cd ffi_libs/lib{} && cargo build --release\n\
+                    Then rebuild doo:\n\
+                      cargo build --release\n\
+                    \n\
+                    Searched in: {:?}",
+                    lib_name, ffi_lib, ffi_search_paths
+                ));
+            }
+        }
+
+        let result = cmd.output();
+        return match result {
             Ok(r) if r.status.success() => Ok(()),
             Ok(r) => Err(format!(
                 "Linking failed:\n{}",
                 String::from_utf8_lossy(&r.stderr)
             )),
             Err(e) => Err(format!("Linker error: {}", e)),
-        }
+        };
     }
 }
 
@@ -516,7 +742,7 @@ fn find_msvc_lib_path(base: &str) -> Option<String> {
 fn skip_to_next_statement(parser: &mut Parser) {
     while parser.current < parser.tokens.len() {
         if let Some(tok) = parser.peek() {
-            if matches!(tok.kind, crate::lexar::token::TokenType::Semi) {
+            if matches!(tok.kind, crate::lexer::token::TokenType::Semi) {
                 parser.advance();
                 break;
             }

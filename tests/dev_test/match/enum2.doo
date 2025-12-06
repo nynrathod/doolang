@@ -1,0 +1,123 @@
+enum Response {
+    Okkk(Int, Str),
+    Errorrr(Str, Bool),
+}
+
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+enum Wrapper {
+    Wrapped(Status),
+    Raw(Int),
+}
+
+enum Data {
+    Numbers([Int]),
+    Properties({Str: Str}),
+}
+
+enum HttpCode {
+    Success(Int),
+    NotFound(Int),
+    ServerError(Str),
+}
+
+fn statusmessage(s: Status) -> Str {
+    match s {
+        Status::Active => "active",
+        Status::Inactive => "inactive",
+        Status::Pending => "pending",
+        _ => "unknown",
+    }
+}
+
+fn main() {
+    print("========================================");
+    print("ADVANCED ENUM PATTERNS DEMO");
+    print("========================================");
+
+    // 1. Enums with Multiple Payloads
+    let resp = Response::Okkk(200, "Success");
+    match resp {
+        Response::Okkk(code, msg) => print("Code:", code, "Msg:", msg),
+        Response::Errorrr(msg, fatal) => print("Error:", msg, "Fatal:", fatal),
+        _ => print("Unknown"),
+    }
+
+    // 2. Nested Enums
+    let w = Wrapper::Wrapped(Status::Active);
+    match w {
+        Wrapper::Wrapped(s) => match s {
+            Status::Active => print("Wrapped Active"),
+            Status::Inactive => print("Wrapped Inactive"),
+            Status::Pending => print("Wrapped Pending"),
+            _ => print("Other status"),
+        },
+        Wrapper::Raw(i) => print("Raw:", i),
+        _ => print("Unknown"),
+    }
+
+    // 3. Enums with Array or Map Payloads
+    let d = Data::Numbers([1,2,3]);
+    match d {
+        Data::Numbers(arr) => print("Array:", arr),
+        Data::Properties(map) => print("Map:", map),
+        _ => print("Unknown"),
+    }
+
+    let d2 = Data::Properties({"name": "Alice", "role": "admin"});
+    match d2 {
+        Data::Numbers(arr) => print("Array:", arr),
+        Data::Properties(map) => print("Map:", map),
+        _ => print("Unknown"),
+    }
+
+    // 4. Pattern Matching with Guards
+    let code = HttpCode::Success(404);
+    match code {
+        // HttpCode::Success(val) if val == 404 => print("Special case: 404"),
+        HttpCode::Success(val) => print("Other success:", val),
+        HttpCode::NotFound(val) => print("Not found:", val),
+        HttpCode::ServerError(msg) => print("Server error:", msg),
+        _ => print("Other"),
+    }
+
+    let code2 = HttpCode::Success(200);
+    match code2 {
+        // HttpCode::Success(val) if val == 404 => print("Special case: 404"),
+        HttpCode::Success(val) => print("Other success:", val),
+        HttpCode::NotFound(val) => print("Not found:", val),
+        HttpCode::ServerError(msg) => print("Server error:", msg),
+        _ => print("Other"),
+    }
+
+    // 5. Enum Methods
+    print(statusmessage(Status::Active));
+    print(statusmessage(Status::Inactive));
+    print(statusmessage(Status::Pending));
+
+    // 6. Exhaustive Matching and Default Cases
+    let status = Status::Inactive;
+    match status {
+        Status::Active => print("Active"),
+        Status::Inactive => print("Inactive"),
+        Status::Pending => print("Pending"),
+        _ => print("Unknown"),
+    }
+
+    let resp3 = Response::Okkk(100, "Partial");
+    match resp3 {
+        // Response::Okkk(code, msg) if code < 200 => print("Partial Ok:", code, msg),
+        Response::Okkk(code, msg) => print("Full Ok:", code, msg),
+        // Response::Errorrr(msg, fatal) if fatal => print("Fatal Error:", msg),
+        Response::Errorrr(msg, fatal) => print("Non-fatal Error:", msg),
+        _ => print("Unknown"),
+    }
+
+    print("========================================");
+    print("ALL ADVANCED ENUM MATCHING TESTS COMPLETED");
+    print("========================================");
+}

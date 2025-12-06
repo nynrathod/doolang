@@ -1,0 +1,23 @@
+// fail_private_field.doo - Test that private field access is REJECTED (SHOULD FAIL)
+// This file tests that PRIVATE fields CANNOT be accessed from outside the module
+// Visibility convention for struct fields:
+//   - PascalCase = public field (can be accessed)
+//   - camelCase = private field (cannot be accessed)
+
+import defs::types::{PublicUser, CreateUser};
+
+fn main() {
+    // Create a user using the public factory function
+    let user = CreateUser(1, "Alice", "alice@example.com");
+
+    // These PUBLIC fields (PascalCase) work fine:
+    print("User ID:", user.Id);
+    print("User Name:", user.Name);
+    print("User Email:", user.Email);
+
+    // This PRIVATE field (camelCase) should cause a compile error:
+    // The field 'internalId' is private because it starts with lowercase
+    print("Internal ID:", user.internalId);
+
+    // This file should not compile because we're accessing a private field!
+}

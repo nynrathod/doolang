@@ -1,0 +1,8 @@
+// expect-fail: indirect circular import
+import A::FuncA;
+
+fn main() {
+    print("Testing indirect circular import detection...");
+    let result = FuncA();
+    print("Result:", result);
+}

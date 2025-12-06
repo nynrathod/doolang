@@ -1,0 +1,135 @@
+fn main() {
+    print("=== Testing all map types with iteration patterns ===");
+
+    // Test 1: {Str: Int} with all iteration patterns
+    print("\n--- {Str: Int} ---");
+    let map1 = {"age": 30, "score": 100};
+    for key, value in map1 { print(key, value); }
+    for _, value in map1 { print(value); }
+    for key, _ in map1 { print(key); }
+    for _, _ in map1 { print("loop"); }
+
+    // Test 2: {Str: Float}
+    print("\n--- {Str: Float} ---");
+    let map2 = {"height": 1.75, "weight": 65.5};
+    for key, value in map2 { print(key, value); }
+    for _, value in map2 { print(value); }
+    for key, _ in map2 { print(key); }
+    for _, _ in map2 { print("loop"); }
+
+    // Test 3: {Str: Bool}
+    print("\n--- {Str: Bool} ---");
+    let map3 = {"active": true, "verified": false};
+    for key, value in map3 { print(key, value); }
+    for _, value in map3 { print(value); }
+    for key, _ in map3 { print(key); }
+    for _, _ in map3 { print("loop"); }
+
+    // Test 4: {Str: Str}
+    print("\n--- {Str: Str} ---");
+    let map4 = {"name": "Alice", "role": "admin"};
+    for key, value in map4 { print(key, value); }
+    for _, value in map4 { print(value); }
+    for key, _ in map4 { print(key); }
+    for _, _ in map4 { print("loop"); }
+
+    // Test 5: {Int: Int}
+    print("\n--- {Int: Int} ---");
+    let map5 = {1: 10, 2: 20, 3: 30};
+    for key, value in map5 { print(key, value); }
+    for _, value in map5 { print(value); }
+    for key, _ in map5 { print(key); }
+    for _, _ in map5 { print("loop"); }
+
+    // Test 6: {Int: Float}
+    print("\n--- {Int: Float} ---");
+    let map6 = {1: 1.1, 2: 2.2, 3: 3.3};
+    for key, value in map6 { print(key, value); }
+    for _, value in map6 { print(value); }
+    for key, _ in map6 { print(key); }
+    for _, _ in map6 { print("loop"); }
+
+    // Test 7: {Int: Bool}
+    print("\n--- {Int: Bool} ---");
+    let map7 = {1: true, 2: false, 3: true};
+    for key, value in map7 { print(key, value); }
+    for _, value in map7 { print(value); }
+    for key, _ in map7 { print(key); }
+    for _, _ in map7 { print("loop"); }
+
+    // Test 8: {Int: Str}
+    print("\n--- {Int: Str} ---");
+    let map8 = {1: "one", 2: "two", 3: "three"};
+    for key, value in map8 { print(key, value); }
+    for _, value in map8 { print(value); }
+    for key, _ in map8 { print(key); }
+    for _, _ in map8 { print("loop"); }
+
+    // Test 9: {Float: Int}
+    print("\n--- {Float: Int} ---");
+    let map9 = {1.1: 10, 2.2: 20, 3.3: 30};
+    for key, value in map9 { print(key, value); }
+    for _, value in map9 { print(value); }
+    for key, _ in map9 { print(key); }
+    for _, _ in map9 { print("loop"); }
+
+    // Test 10: {Float: Float}
+    print("\n--- {Float: Float} ---");
+    let map10 = {1.1: 1.11, 2.2: 2.22, 3.3: 3.33};
+    for key, value in map10 { print(key, value); }
+    for _, value in map10 { print(value); }
+    for key, _ in map10 { print(key); }
+    for _, _ in map10 { print("loop"); }
+
+    // Test 11: {Float: Bool}
+    print("\n--- {Float: Bool} ---");
+    let map11 = {1.1: true, 2.2: false, 3.3: true};
+    for key, value in map11 { print(key, value); }
+    for _, value in map11 { print(value); }
+    for key, _ in map11 { print(key); }
+    for _, _ in map11 { print("loop"); }
+
+    // Test 12: {Float: Str}
+    print("\n--- {Float: Str} ---");
+    let map12 = {1.1: "one", 2.2: "two", 3.3: "three"};
+    for key, value in map12 { print(key, value); }
+    for _, value in map12 { print(value); }
+    for key, _ in map12 { print(key); }
+    for _, _ in map12 { print("loop"); }
+
+    // Test 13: {Bool: Int}
+    print("\n--- {Bool: Int} ---");
+    let map13 = {true: 100, false: 200};
+    for key, value in map13 { print(key, value); }
+    for _, value in map13 { print(value); }
+    for key, _ in map13 { print(key); }
+    for _, _ in map13 { print("loop"); }
+
+    // Test 14: {Bool: Float}
+    print("\n--- {Bool: Float} ---");
+    let map14 = {true: 1.5, false: 2.5};
+    for key, value in map14 { print(key, value); }
+    for _, value in map14 { print(value); }
+    for key, _ in map14 { print(key); }
+    for _, _ in map14 { print("loop"); }
+
+    // Test 15: {Bool: Bool}
+    print("\n--- {Bool: Bool} ---");
+    let map15 = {true: false, false: true};
+    for key, value in map15 { print(key, value); }
+    for _, value in map15 { print(value); }
+    for key, _ in map15 { print(key); }
+    for _, _ in map15 { print("loop"); }
+
+    // Test 16: {Bool: Str}
+    print("\n--- {Bool: Str} ---");
+    let map16 = {true: "yes", false: "no"};
+    for key, value in map16 { print(key, value); }
+    for _, value in map16 { print(value); }
+    for key, _ in map16 { print(key); }
+    for _, _ in map16 { print("loop"); }
+
+
+
+    print("\n=== All tests complete ===");
+}

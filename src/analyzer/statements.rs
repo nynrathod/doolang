@@ -1,12 +1,13 @@
 use super::analyzer::SemanticAnalyzer;
 use super::types::{NamedError, SemanticError, TypeMismatch};
 use crate::analyzer::analyzer::SymbolInfo;
-use crate::lexar::token::TokenType;
+use crate::lexer::token::TokenType;
 use crate::parser::ast::{AstNode, Pattern, TypeNode};
 use std::collections::HashMap;
 
 impl SemanticAnalyzer {
     /// Analyze an assignment statement
+    /// 🟡 TODO: Tuple assignment not supported yet.
     /// (e.g., `(x, y) = foo()` if lhs x,y types match with right foo return types).
     /// Checks that the left and right sides match in number and type,
     /// and binds variables to the symbol table.
@@ -139,6 +140,41 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
+    /// Analyze an increment/decrement statement (e.g., `i++`, `i--`)
+    /// Checks that:
+    /// 1. The variable exists and is mutable
+    /// 2. The variable is of numeric type (Int or Float)
+    pub fn analyze_increment_decrement(&mut self, variable: &str) -> Result<(), SemanticError> {
+        // Check if variable exists
+        let var_info = match self.symbol_table.get(variable) {
+            Some(info) => info.clone(),
+            None => {
+                return Err(SemanticError::UndeclaredVariable(NamedError {
+                    name: variable.to_string(),
+                }));
+            }
+        };
+
+        // Check if variable is mutable
+        if !var_info.mutable {
+            return Err(SemanticError::InvalidAssignmentTarget {
+                target: format!("Cannot modify immutable variable '{}'", variable),
+            });
+        }
+
+        // Check if the variable is of numeric type (Int or Float)
+        match var_info.ty {
+            TypeNode::Int | TypeNode::Float => Ok(()),
+            _ => Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                expected: TypeNode::Int,
+                found: var_info.ty.clone(),
+                value: None,
+                line: None,
+                col: None,
+            })),
+        }
+    }
+
     /// Flattens a pattern (e.g., `(x, y, _)`) into a flat list of variables.
     /// Ensures each identifier is valid (not reserved, not empty, etc.).
     pub fn collect_and_validate_targets(
@@ -168,11 +204,6 @@ impl SemanticAnalyzer {
                         }
                     }
                 }
-            }
-            _ => {
-                return Err(SemanticError::InvalidAssignmentTarget {
-                    target: format!("{:?}", pattern),
-                });
             }
         }
         Ok(targets)
@@ -212,12 +243,90 @@ impl SemanticAnalyzer {
             // Function call: check validity and return types
             AstNode::FunctionCall { func, args } => self.check_function_call(func, args),
 
+            // EnumVariant: could be enum variant or namespaced function call (e.g., File::Read)
+            // For manual error extraction, we need to handle this case
+            AstNode::EnumVariant {
+                enum_name,
+                variant,
+                payload,
+            } => {
+                // Try to look it up as a namespaced function first
+                let qualified_name = format!("{}::{}", enum_name, variant);
+
+                if let Some((param_types, ret_ty, err_ty)) =
+                    self.function_table.get(&qualified_name)
+                {
+                    // It's a function call with error type - verify arguments
+                    // Type check each argument
+                    if param_types.len() != payload.len() {
+                        return Err(SemanticError::FunctionArgumentMismatch {
+                            name: qualified_name.clone(),
+                            expected: param_types.len(),
+                            found: payload.len(),
+                        });
+                    }
+
+                    // Type check each argument
+                    for (arg, expected_type) in payload.iter().zip(param_types.iter()) {
+                        let arg_type = self.infer_type(arg)?;
+                        // Basic type checking (simplified for now)
+                        // TODO: Add more comprehensive type checking
+                    }
+
+                    // If the function has an error type, this is a Result
+                    // For manual error extraction (let val, err = ...), we need to return Ok type(s) + error type
+                    if let Some(error_type) = err_ty {
+                        // Build list of types: Ok value(s) + error type
+                        let mut result_types = match ret_ty {
+                            TypeNode::Tuple(types) => types.clone(),
+                            TypeNode::Void => vec![], // No ok value for Void
+                            _ => vec![ret_ty.clone()],
+                        };
+                        result_types.push(error_type.clone());
+                        Ok(result_types)
+                    } else {
+                        // No error type - just return the return type(s)
+                        match ret_ty {
+                            TypeNode::Tuple(types) => Ok(types.clone()),
+                            _ => Ok(vec![ret_ty.clone()]),
+                        }
+                    }
+                } else if self.enum_table.contains_key(enum_name) {
+                    // It's an enum variant - just infer its type normally
+                    Ok(vec![self.infer_type(value)?])
+                } else {
+                    // Neither function nor enum found
+                    Err(SemanticError::UndeclaredVariable(NamedError {
+                        name: format!("Undefined enum type or function '{}'", qualified_name),
+                    }))
+                }
+            }
+
             // Tuple literal: infer each element's type
             AstNode::TupleLiteral(elements) => {
                 elements.iter().map(|e| self.infer_type(e)).collect()
             }
 
-            // If LHS expects multiple values but RHS isn’t tuple/function → error
+            // Try propagate (? operator): unwrap the Result and return the Ok type(s)
+            AstNode::TryPropagate { expr } => {
+                // First check what the inner expression returns
+                let expr_type = self.infer_type(expr)?;
+
+                // If it's a Result type, unwrap it to get the Ok type(s)
+                match expr_type {
+                    TypeNode::Result(ok_type, _err_type) => {
+                        // The Ok type might be a Tuple (for multi-value returns)
+                        match *ok_type {
+                            TypeNode::Tuple(types) => Ok(types),
+                            single_type => Ok(vec![single_type]),
+                        }
+                    }
+                    // If not a Result type, just return it as-is (shouldn't happen with ?)
+                    other => Ok(vec![other]),
+                }
+            }
+
+            // If LHS expects multiple values but RHS isn't tuple/function → error
             _ if lhs_count > 1 => Err(SemanticError::InvalidFunctionCall {
                 func: format!("{:?}", value),
             }),
@@ -246,33 +355,55 @@ impl SemanticAnalyzer {
         };
 
         // Look up function definition in the table
-        if let Some((param_types, ret_ty)) = self.function_table.get(name.as_str()) {
-            // Check number of arguments
-            if args.len() != param_types.len() {
-                return Err(SemanticError::FunctionArgumentMismatch {
-                    name: name.clone(),
-                    expected: param_types.len(),
-                    found: args.len(),
-                });
-            }
-
-            // Check argument types
-            for (arg, expected_ty) in args.iter().zip(param_types.iter()) {
-                let arg_ty = self.infer_type(arg)?;
-                if &arg_ty != expected_ty {
-                    return Err(SemanticError::FunctionArgumentTypeMismatch {
+        if let Some((param_types, ret_ty, error_ty)) = self.function_table.get(name.as_str()) {
+            // Skip argument checking for variadic built-in functions
+            if name != "print" && name != "println" && name != "panic" && name != "typeOf" {
+                // Check number of arguments
+                if args.len() != param_types.len() {
+                    return Err(SemanticError::FunctionArgumentMismatch {
                         name: name.clone(),
-                        expected: expected_ty.clone(),
-                        found: arg_ty,
+                        expected: param_types.len(),
+                        found: args.len(),
                     });
+                }
+
+                // Check argument types
+                for (arg, expected_ty) in args.iter().zip(param_types.iter()) {
+                    // Use infer_type_with_expected to handle Any types (from JSON.parse)
+                    let arg_ty = self.infer_type_with_expected(arg, expected_ty)?;
+                    if !super::analyzer::types_compatible(
+                        &arg_ty,
+                        expected_ty,
+                        &self.struct_table,
+                        &self.enum_table,
+                    ) {
+                        return Err(SemanticError::FunctionArgumentTypeMismatch {
+                            name: name.clone(),
+                            expected: expected_ty.clone(),
+                            found: arg_ty,
+                        });
+                    }
+                }
+            } else {
+                // For variadic functions, just validate that all arguments can be inferred
+                for arg in args {
+                    let _ = self.infer_type(arg)?;
                 }
             }
 
             // Return type(s)
-            Ok(match ret_ty {
-                TypeNode::Tuple(types) => types.clone(), // multi-value
-                t => vec![t.clone()],                    // single value
-            })
+            // If the function has an error type, wrap return type in Result
+            if let Some(error_type) = error_ty {
+                Ok(vec![TypeNode::Result(
+                    Box::new(ret_ty.clone()),
+                    Box::new(error_type.clone()),
+                )])
+            } else {
+                Ok(match ret_ty {
+                    TypeNode::Tuple(types) => types.clone(), // multi-value
+                    t => vec![t.clone()],                    // single value
+                })
+            }
         } else {
             Err(SemanticError::UndeclaredFunction(NamedError {
                 name: name.clone(),
@@ -317,16 +448,22 @@ impl SemanticAnalyzer {
                     | TypeNode::String
                     | TypeNode::Array(_)
                     | TypeNode::Map(_, _)
-                    | TypeNode::Tuple(_) => {
-                        // Supported type for printing.
+                    | TypeNode::Tuple(_)
+                    | TypeNode::Result(_, _)
+                    | TypeNode::Struct(_, _)
+                    | TypeNode::Enum(_, _)
+                    | TypeNode::TypeRef(_)
+                    | TypeNode::Any => {
+                        // Supported type for printing (TypeRef includes struct references).
+                        // Any is supported for dynamic types like JSON.parse results.
                     }
                     _ => {
                         // If the type is not supported, return an error.
                         return Err(SemanticError::InvalidPrintType { found: ty });
                     }
                 }
-                // Recursively analyze the expression for semantic correctness.
-                self.analyze_node(expr)?;
+                // Note: infer_type already validates the expression structure,
+                // so we don't need to call analyze_node again (avoids double recursion)
             }
             Ok(())
         } else {
@@ -423,16 +560,23 @@ impl SemanticAnalyzer {
 
             match iter_type {
                 TypeNode::Array(elem_type) => {
-                    // For arrays, only a single variable pattern is allowed.
+                    // For arrays, allow either single variable or tuple (index, value) pattern
                     if let Pattern::Tuple(patterns) = pattern {
-                        if patterns.len() != 1 {
+                        if patterns.len() == 2 {
+                            // Tuple pattern (index, value) - first is Int (index), second is element type
+                            self.bind_pattern_to_type(&mut patterns[0], &TypeNode::Int)?;
+                            self.bind_pattern_to_type(&mut patterns[1], &*elem_type)?;
+                        } else if patterns.len() == 1 {
+                            // Single element tuple - just the value
+                            self.bind_pattern_to_type(&mut patterns[0], &*elem_type)?;
+                        } else {
                             return Err(SemanticError::InvalidAssignmentTarget {
-                                target: "Cannot use tuple pattern when iterating an array"
+                                target: "Array iteration expects either a single variable or tuple (index, value)"
                                     .to_string(),
                             });
                         }
-                        self.bind_pattern_to_type(&mut patterns[0], &*elem_type)?;
                     } else {
+                        // Single variable pattern - just the element
                         self.bind_pattern_to_type(pattern, &*elem_type)?;
                     }
                 }
@@ -555,13 +699,225 @@ impl SemanticAnalyzer {
                     });
                 }
             },
+        }
+        Ok(())
+    }
+
+    /// Analyze an element assignment statement (e.g., `arr[0] = 5` or `map["key"] = value`)
+    /// Checks that:
+    /// 1. The array/map exists and is mutable
+    /// 2. The index type is valid for the array/map
+    /// 3. The value type matches the element type
+    pub fn analyze_element_assignment(
+        &mut self,
+        array: &AstNode,
+        index: &AstNode,
+        value: &AstNode,
+    ) -> Result<(), SemanticError> {
+        // Get the array/map type - can be either a direct identifier or a field access
+        let array_or_map_type = match array {
+            AstNode::Identifier(name) => {
+                // Check if the variable exists and is mutable
+                match self.symbol_table.get(name) {
+                    Some(info) => {
+                        if !info.mutable {
+                            return Err(SemanticError::InvalidAssignmentTarget {
+                                target: format!(
+                                    "Cannot assign to element of immutable variable '{}'",
+                                    name
+                                ),
+                            });
+                        }
+                        info.ty.clone()
+                    }
+                    None => {
+                        return Err(SemanticError::UndeclaredVariable(NamedError {
+                            name: name.clone(),
+                        }));
+                    }
+                }
+            }
+            AstNode::FieldAccess { object, field } => {
+                // For field access like self.Users[key], we need to:
+                // 1. Check that the object (e.g., self) is mutable
+                // 2. Get the type of the field being accessed
+
+                // Check object mutability
+                if let AstNode::Identifier(obj_name) = object.as_ref() {
+                    if let Some(info) = self.symbol_table.get(obj_name) {
+                        // For 'self', we allow mutation in methods
+                        if obj_name != "self" && !info.mutable {
+                            return Err(SemanticError::InvalidAssignmentTarget {
+                                target: format!(
+                                    "Cannot assign to field '{}' of immutable variable '{}'",
+                                    field, obj_name
+                                ),
+                            });
+                        }
+                    }
+                }
+
+                // Infer the type of the field access (e.g., self.Users)
+                self.infer_type(array)?
+            }
             _ => {
-                // Any other pattern is invalid.
                 return Err(SemanticError::InvalidAssignmentTarget {
-                    target: format!("{:?}", pattern),
+                    target: "Element assignment target must be a variable or field access"
+                        .to_string(),
+                });
+            }
+        };
+
+        // Get the index type
+        let index_type = self.infer_type(index)?;
+
+        // Get the value type
+        let value_type = self.infer_type(value)?;
+
+        // Verify the array/map type and element assignment
+        match &array_or_map_type {
+            TypeNode::Array(elem_type) => {
+                // For arrays, index must be Int
+                if index_type != TypeNode::Int {
+                    return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                        expected: TypeNode::Int,
+                        found: index_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+                // Value type must match element type
+                if value_type != **elem_type {
+                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                        expected: (**elem_type).clone(),
+                        found: value_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+            }
+            TypeNode::Map(key_type, value_type_in_map) => {
+                // For maps, index type must match key type
+                if index_type != **key_type {
+                    return Err(SemanticError::OperatorTypeMismatch(TypeMismatch {
+                        expected: (**key_type).clone(),
+                        found: index_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+                // Value type must match the map's value type
+                if value_type != **value_type_in_map {
+                    return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                        expected: (**value_type_in_map).clone(),
+                        found: value_type,
+                        value: None,
+                        line: None,
+                        col: None,
+                    }));
+                }
+            }
+            _ => {
+                return Err(SemanticError::InvalidAssignmentTarget {
+                    target: format!("Cannot assign to element of unsupported type"),
                 });
             }
         }
+
+        Ok(())
+    }
+
+    /// Analyze a field assignment statement (e.g., `self.field = value` or `obj.field = value`)
+    /// Checks that:
+    /// 1. The object is mutable (or is `self` in a method)
+    /// 2. The field exists on the struct
+    /// 3. The value type matches the field type
+    pub fn analyze_field_assignment(
+        &mut self,
+        object: &AstNode,
+        field: &str,
+        value: &AstNode,
+    ) -> Result<(), SemanticError> {
+        // Get the object type
+        let object_type = self.infer_type(object)?;
+
+        // Check if object is mutable
+        match object {
+            AstNode::Identifier(name) => {
+                // Check if the variable exists and is mutable
+                if let Some(info) = self.symbol_table.get(name) {
+                    // Allow 'self' to be mutated in methods (it's implicitly mutable)
+                    if name != "self" && !info.mutable {
+                        return Err(SemanticError::InvalidAssignmentTarget {
+                            target: format!(
+                                "Cannot assign to field '{}' of immutable variable '{}'",
+                                field, name
+                            ),
+                        });
+                    }
+                }
+            }
+            _ => {
+                // For more complex expressions, we don't check mutability here
+                // The codegen will handle it
+            }
+        }
+
+        // Get the value type
+        let value_type = self.infer_type(value)?;
+
+        // Check that the field exists and matches the value type
+        match &object_type {
+            TypeNode::Struct(struct_name, fields) => {
+                if let Some(field_type) = fields.get(field) {
+                    if *field_type != value_type {
+                        return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                            expected: field_type.clone(),
+                            found: value_type,
+                            value: None,
+                            line: None,
+                            col: None,
+                        }));
+                    }
+                } else {
+                    return Err(SemanticError::InvalidAssignmentTarget {
+                        target: format!("Field '{}' not found on struct '{}'", field, struct_name),
+                    });
+                }
+            }
+            TypeNode::TypeRef(type_name) => {
+                // Look up the struct type from struct_table
+                if let Some(fields) = self.struct_table.get(type_name) {
+                    if let Some(field_type) = fields.get(field) {
+                        if *field_type != value_type {
+                            return Err(SemanticError::VarTypeMismatch(TypeMismatch {
+                                expected: field_type.clone(),
+                                found: value_type,
+                                value: None,
+                                line: None,
+                                col: None,
+                            }));
+                        }
+                    } else {
+                        return Err(SemanticError::InvalidAssignmentTarget {
+                            target: format!(
+                                "Field '{}' not found on struct '{}'",
+                                field, type_name
+                            ),
+                        });
+                    }
+                }
+            }
+            _ => {
+                return Err(SemanticError::InvalidAssignmentTarget {
+                    target: format!("Cannot assign to field '{}' of non-struct type", field),
+                });
+            }
+        }
+
         Ok(())
     }
 }

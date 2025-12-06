@@ -28,6 +28,9 @@ impl<'ctx> CodeGen<'ctx> {
         // Add the function to the module
         let function = self.module.add_function("__incref", fn_type, None);
         let entry = self.context.append_basic_block(function, "entry");
+        let check_validity = self.context.append_basic_block(function, "check_validity");
+        let do_incref = self.context.append_basic_block(function, "do_incref");
+        let exit_block = self.context.append_basic_block(function, "exit");
 
         // Position builder at the entry block
         self.builder.position_at_end(entry);
@@ -35,8 +38,17 @@ impl<'ctx> CodeGen<'ctx> {
         // Get the RC header pointer from the function parameter
         let rc_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
 
+        // Check if the pointer is null
+        let is_null = self.builder.build_is_null(rc_ptr, "is_null").unwrap();
+        self.builder
+            .build_conditional_branch(is_null, exit_block, check_validity)
+            .unwrap();
+
+        // Check validity block - verify the RC value looks reasonable
+        self.builder.position_at_end(check_validity);
+
         // Cast the RC header pointer to i32* (reference count is stored as i32)
-        let i32_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let i32_ptr_type = self.context.ptr_type(AddressSpace::default());
         let rc_ptr_typed = self
             .builder
             .build_pointer_cast(rc_ptr, i32_ptr_type, "rc_ptr")
@@ -49,6 +61,37 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap()
             .into_int_value();
 
+        // Check if RC is positive (not garbage memory) and reasonable (< 1000000)
+        let is_positive = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                rc,
+                self.context.i32_type().const_int(0, false),
+                "is_positive",
+            )
+            .unwrap();
+        let is_reasonable = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                rc,
+                self.context.i32_type().const_int(1000000, false),
+                "is_reasonable",
+            )
+            .unwrap();
+        let is_valid_rc = self
+            .builder
+            .build_and(is_positive, is_reasonable, "is_valid_rc")
+            .unwrap();
+
+        self.builder
+            .build_conditional_branch(is_valid_rc, do_incref, exit_block)
+            .unwrap();
+
+        // Do incref block
+        self.builder.position_at_end(do_incref);
+
         // Increment the reference count by 1
         let new_rc = self
             .builder
@@ -57,7 +100,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Store the new reference count back to memory
         self.builder.build_store(rc_ptr_typed, new_rc).unwrap();
-        // Return void
+        self.builder.build_unconditional_branch(exit_block).unwrap();
+
+        // Exit block - return void
+        self.builder.position_at_end(exit_block);
         self.builder.build_return(None).unwrap();
 
         function
@@ -98,7 +144,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(check_validity);
 
         // Cast the RC header pointer to i32* (reference count is stored as i32)
-        let i32_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let i32_ptr_type = self.context.ptr_type(AddressSpace::default());
         let rc_ptr_typed = self
             .builder
             .build_pointer_cast(rc_ptr, i32_ptr_type, "rc_ptr")
@@ -190,7 +236,7 @@ impl<'ctx> CodeGen<'ctx> {
     /// Retrieves the LLVM function for freeing memory (free).
     /// If not already declared, declares it in the module.
     /// Returns the LLVM FunctionValue for free.
-    fn get_or_declare_free(&self) -> FunctionValue<'ctx> {
+    pub fn get_or_declare_free(&self) -> FunctionValue<'ctx> {
         // Check if the function is already declared
         if let Some(func) = self.module.get_function("free") {
             return func;
@@ -304,6 +350,21 @@ impl<'ctx> CodeGen<'ctx> {
 
             let data_ptr = loaded_value.into_pointer_value();
 
+            // Check if the pointer is null before computing RC header
+            let is_null = self.builder.build_is_null(data_ptr, "is_null").unwrap();
+
+            let current_block = self.builder.get_insert_block().unwrap();
+            let func = current_block.get_parent().unwrap();
+            let decref_block = self.context.append_basic_block(func, "do_decref");
+            let continue_block = self.context.append_basic_block(func, "after_decref");
+
+            self.builder
+                .build_conditional_branch(is_null, continue_block, decref_block)
+                .unwrap();
+
+            // In decref_block, compute RC header and call decref
+            self.builder.position_at_end(decref_block);
+
             // Compute the RC header pointer by subtracting 8 bytes
             let rc_header = unsafe {
                 self.builder.build_in_bounds_gep(
@@ -320,6 +381,13 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder
                 .build_call(decref, &[rc_header.into()], "")
                 .unwrap();
+
+            self.builder
+                .build_unconditional_branch(continue_block)
+                .unwrap();
+
+            // Continue with the rest of the code
+            self.builder.position_at_end(continue_block);
         }
     }
 }

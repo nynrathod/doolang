@@ -1,0 +1,42 @@
+import std::File;
+
+fn main() {
+    print("=== FileMetadata Test ===");
+    print("");
+
+    // Create a test file
+    print("Creating test file...");
+    File::Write("metadata_test.txt", "Test content for metadata")?;
+    print("Test file created");
+    print("");
+
+    // Get metadata
+    print("Getting file metadata...");
+    let meta, err = File::Metadata("metadata_test.txt");
+
+    if err != nil {
+        print("Error getting metadata:", err);
+        print("Error message:", err.Message);
+    } else {
+        print("Metadata retrieved successfully!");
+        print("");
+        print("Full metadata struct:");
+        print(meta);
+        print("");
+        print("Individual fields:");
+        print("  isFile:", meta.IsFile);
+        print("  isDir:", meta.IsDir);
+        print("  isSymlink:", meta.IsSymlink);
+        print("  size: ${meta.Size} bytes");
+        print("  readonly:", meta.Readonly);
+        print("  created:", meta.Created);
+        print("  modified:", meta.Modified);
+        print("  accessed:", meta.Accessed);
+    }
+    print("");
+
+    // Cleanup
+    print("Cleaning up...");
+    File::Delete("metadata_test.txt")?;
+    print("Test complete!");
+}

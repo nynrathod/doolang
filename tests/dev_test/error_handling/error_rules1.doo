@@ -1,0 +1,283 @@
+// ============================================================================
+// Error Handling Rules Test File 1
+// Testing Rules 1-8: Return types, keywords, error matching, auto-propagation
+// ============================================================================
+
+// ============================================================================
+// Rule 1: Return Type Determines Keywords
+// ============================================================================
+
+// Rule 1a: Has error type -> Must use Ok and Err
+fn Divide(a: Int, b: Int) -> Int ! Str {
+    if b == 0 {
+        Err "division by zero";
+    }
+    Ok a / b;
+}
+
+// Rule 1b: Only return type -> Must use Ok only
+fn GetValue() -> Int {
+    Ok 42;
+}
+
+// Rule 1c: Only error type -> Must use Err only (or empty Ok)
+fn AlwaysFails() -> ! Str {
+    Err "always fails";
+}
+
+// Rule 1d: No return type -> No keywords needed
+fn DoSomething() {
+    print("done");
+}
+
+// ============================================================================
+// Rule 2: Error Type Matching
+// ============================================================================
+
+// Rule 2a: Single error type
+fn TestSingleError() -> Int ! Str {
+    let result = Divide(10, 2)?;
+    Ok result;
+}
+
+// Rule 2b: Multiple error types -> Use Error (generic)
+// Note: This tests that Str errors can be propagated
+fn TestMultipleErrors() -> Int ! Str {
+    let val1 = Divide(10, 2)?;
+    let val2 = Divide(20, 4)?;
+    Ok val1 + val2;
+}
+
+// ============================================================================
+// Rule 3: Auto-Propagation with ?
+// ============================================================================
+
+// Rule 3a: Function has error type - ? works
+fn TestAutoPropagation() -> Int ! Str {
+    let x = Divide(100, 10)?;  // Auto-returns Err if fails
+    let y = Divide(x, 2)?;
+    Ok y;
+}
+
+// Rule 3b: Nested propagation
+fn InnerPropagation() -> Int ! Str {
+    Divide(10, 0)?;
+    Ok 42;
+}
+
+fn OuterPropagation() -> Int ! Str {
+    let value = InnerPropagation()?;  // Error propagates up
+    Ok value * 2;
+}
+
+// ============================================================================
+// Rule 4: Manual Error Handling
+// ============================================================================
+
+fn TestManualHandling() -> Int ! Str {
+    // Manual handling with let result, err = ...
+    let result, err = Divide(10, 2);
+    if err != nil {
+        print("Error:", err);
+        Err err;
+    }
+
+    // Then auto-propagate another call
+    Divide(20, 4)?;
+
+    Ok result;
+}
+
+// Ignore success value
+fn TestIgnoreSuccess() -> Int ! Str {
+    let _, err = Divide(10, 0);
+    if err != nil {
+        Err "caught division error";
+    }
+    Ok 0;
+}
+
+// Ignore error (but use success value) - note: no error type since we never return error
+fn TestIgnoreError() -> Int {
+    let result, _ = Divide(10, 2);
+    Ok result;
+}
+
+// ============================================================================
+// Rule 5: Main Function Rules (tested via main itself)
+// ============================================================================
+
+// ============================================================================
+// Rule 6: Missing Ok - All paths must return Ok or Err
+// ============================================================================
+
+fn TestAllPathsReturn(flag: Bool) -> Int ! Str {
+    if flag {
+        Ok 42;
+    } else {
+        Err "flag was false";
+    }
+}
+
+fn TestNestedPaths(a: Int, b: Int) -> Int ! Str {
+    if a > 0 {
+        if b > 0 {
+            Ok a + b;
+        } else {
+            Err "b must be positive";
+        }
+    } else {
+        Err "a must be positive";
+    }
+}
+
+// ============================================================================
+// Rule 7: Invalid Err Usage (compile-time check - these patterns should fail)
+// Note: Invalid patterns are commented out to show what should NOT work
+// ============================================================================
+
+// INVALID: Using Err without error type
+// fn InvalidErrUsage() -> Int {
+//     if false { Ok 42; }
+//     else { Err "error"; }  // Error: No ! E in signature
+// }
+
+// ============================================================================
+// Rule 8: Missing Error Type (compile-time check)
+// Note: Invalid patterns are commented out to show what should NOT work
+// ============================================================================
+
+// INVALID: Has Err but no error type
+// fn MissingErrorType() -> Int {
+//     if true { Ok 42; }
+//     Err "error";  // Error: Need ! Str in signature
+// }
+
+// ============================================================================
+// Test: Multiple return values with Ok
+// ============================================================================
+
+fn GetUserData(id: Int) -> Str, Int ! Str {
+    if id < 0 {
+        Err "invalid id";
+    }
+    Ok "Alice", 25;
+}
+
+fn TestMultiValueOk() -> Int ! Str {
+    let name, age = GetUserData(5)?;
+    print("Name:", name, "Age:", age);
+    Ok age;
+}
+
+// Ignore one of the values
+fn TestMultiValueIgnore() -> Str ! Str {
+    let name, _ = GetUserData(10)?;
+    Ok name;
+}
+
+// ============================================================================
+// Test: return Ok and return Err syntax (Rule 16)
+// ============================================================================
+
+fn TestReturnOk(x: Int) -> Int ! Str {
+    if x < 0 {
+        return Err "negative not allowed";
+    }
+    return Ok x * 2;
+}
+
+fn TestReturnErrOnly() -> Int ! Str {
+    if true {
+        return Ok 100;
+    }
+    return Err "unreachable";
+}
+
+
+// Optional here it can use return instead Ok if no error handling
+fn GetData() -> Int {
+    return 42;
+}
+
+// ============================================================================
+// Main function - tests Rule 5 (main can use ? without declaring ! Error)
+// ============================================================================
+
+fn main() {
+    print("=== Error Handling Rules Test 1 ===");
+    print("");
+
+    // Test Rule 1: Return type determines keywords
+    print("Rule 1: Return Type Determines Keywords");
+    let divResult, divErr = Divide(10, 2);
+    if divErr != nil {
+        print("  Divide failed:", divErr);
+    } else {
+        print("  Divide(10, 2) =", divResult);
+    }
+
+    let val = GetValue()?;
+    print("  GetValue() =", val);
+
+    DoSomething();
+    print("");
+
+    // Test Rule 2 & 3: Error matching and auto-propagation
+    print("Rule 2 & 3: Error Matching and Auto-Propagation");
+    let single = TestSingleError()?;
+    print("  TestSingleError() =", single);
+
+    let multi = TestMultipleErrors()?;
+    print("  TestMultipleErrors() =", multi);
+
+    let autoProp = TestAutoPropagation()?;
+    print("  TestAutoPropagation() =", autoProp);
+    print("");
+
+    // Test Rule 4: Manual error handling
+    print("Rule 4: Manual Error Handling");
+    let manual = TestManualHandling()?;
+    print("  TestManualHandling() =", manual);
+    print("");
+
+    // Test Rule 6: All paths return
+    print("Rule 6: All Paths Must Return");
+    let pathTrue = TestAllPathsReturn(true)?;
+    print("  TestAllPathsReturn(true) =", pathTrue);
+
+    let nested = TestNestedPaths(5, 10)?;
+    print("  TestNestedPaths(5, 10) =", nested);
+    print("");
+
+    // Test multiple return values
+    print("Multiple Return Values with Errors");
+    let age = TestMultiValueOk()?;
+    print("  TestMultiValueOk() returned age =", age);
+
+    let name = TestMultiValueIgnore()?;
+    print("  TestMultiValueIgnore() returned name =", name);
+    print("");
+
+    // Test return Ok/Err syntax
+    print("Rule 16: Optional return keyword");
+    let retOk = TestReturnOk(5)?;
+    print("  TestReturnOk(5) =", retOk);
+
+    let retErr = TestReturnErrOnly()?;
+    print("  TestReturnErrOnly() =", retErr);
+    print("");
+
+    // Test error case (will exit on error in main)
+    print("Testing error case with ? in main...");
+    let _, failErr = Divide(10, 0);
+    if failErr != nil {
+        print("  Caught expected error:", failErr);
+    }
+
+    let value = GetData();
+    print("  GetData() =", value);
+
+    print("");
+    print("=== All Error Handling Tests Passed! ===");
+}

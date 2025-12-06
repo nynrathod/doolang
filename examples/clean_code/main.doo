@@ -1,0 +1,48 @@
+import models::role::{Role};
+import models::address::{Address};
+
+import services::validation::{createUser};
+import services::directory::{UserDirectory};
+
+fn printUser(u: User) {
+    print("── User Info ──");
+    print("ID:", u.Id);
+    print("Name:", u.Name);
+    print("Email:", u.Email);
+    print("Age:", u.Age);
+    print("Role:", u.Role);
+    print("Active:", u.isActive());
+    print("Location:", u.location());
+    print("Address:", u.Address.full());
+}
+
+fn main() {
+    print("══ User Management Application ══");
+
+    let addr = Address {
+        Street: "123 Tech Lane",
+        City: "San Francisco",
+        Country: "USA",
+        Zipcode: "94102",
+    };
+
+    let u1, err1 = createUser(1, "Alice", "alice@company.com", 30, Role::Admin, addr);
+
+    if err1 != nil {
+        print("Error:", err1.Field, "-", err1.Message);
+    }
+
+    let dir = UserDirectory { Users: {} };
+    dir.add(u1);
+
+    print("✓ User created and stored.");
+    printUser(u1);
+
+    print("── Directory List ──");
+    let all = dir.list();
+    for u in all {
+        print("*", u.Name, "-", u.Email);
+    }
+
+    print("\nDone.");
+}

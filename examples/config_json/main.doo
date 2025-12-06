@@ -1,0 +1,73 @@
+struct Config {
+    host: Str,
+    port: Int,
+    debug: Bool,
+}
+
+fn Config.url(self) -> Str => "http://${self.host}:${self.port}";
+
+fn main() {
+    print("═══ JSON & Config ═══\n");
+
+    // ── JSON Stringify ──
+    print("── Stringify ──");
+    let data = {
+        "name": "Doo",
+        "version": "0.2.0",
+        "stable": "true",
+    };
+
+    let jsonStr = JSON.stringify(data);
+    print("Map to JSON:", jsonStr);
+
+
+    let numbers = [1, 2, 3, 4, 5];
+    print("Array to JSON:", JSON.stringify(numbers));
+
+    // ── JSON Parse ──
+    print("\n── Parse ──");
+    let parsed: {Str: Str} = JSON.parse("{\"lang\": \"doo\", \"type\": \"compiled\"}");
+    print("Parsed map:", parsed);
+    print("Language:", parsed["lang"]);
+
+    // ── Struct to JSON ──
+    print("\n── Struct JSON ──");
+    let config = Config { host: "localhost", port: 8080, debug: true };
+    let configJson = JSON.stringify(config);
+    print("Config JSON:", configJson);
+
+
+    let restored: Config = JSON.parse(configJson);
+    print("Restored:", restored.url());
+
+    // ── String Operations ──
+    print("\n── String Methods ──");
+    let text = "Hello, Doo!";
+    print("Original:", text);
+    print("Length:", text.len());
+    print("Upper:", text.toUpper());
+    print("Lower:", text.toLower());
+    print("Contains 'Doo':", text.contains("Doo"));
+    print("Starts with 'Hello':", text.startsWith("Hello"));
+
+    // ── String Interpolation ──
+    print("\n── Interpolation ──");
+    let name = "Developer";
+    let count = 42;
+    print("Hello ${name}, you have ${count} messages");
+    print("Config: ${config.host}:${config.port} (debug=${config.debug})");
+
+    // ── Escape Sequences ──
+    print("\n── Escape Sequences ──");
+    let json = "{\"key\": \"value\"}";
+    print("JSON string:", json);
+
+    let multiline = "Line 1\nLine 2\nLine 3";
+    print("Multiline:");
+    print(multiline);
+
+    let tabbed = "Col1\tCol2\tCol3";
+    print("Tabbed:", tabbed);
+
+    print("\n═══ Done ═══");
+}

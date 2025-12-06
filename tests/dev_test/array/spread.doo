@@ -1,0 +1,133 @@
+struct User {
+    name: Str,
+    email: Str,
+    age: Int
+}
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn main() {
+
+    // Basic slicing
+    let nums = [1, 2, 3, 4, 5];
+    let slice = nums[1..4];    // [2, 3, 4]
+    let last = nums[4];        // 5
+    // let firstTwo = nums[..2];  // [1, 2]
+    // let lastTwo = nums[2..];   // [4, 5]
+    print("  nums =", nums);
+    print("  slice =", slice);
+    print("  last =", last);
+    // print("  firsttwo =", firsttwo);
+
+    // Spread: single array
+    print("\nExample 1: Spread single array");
+    let arr1 = [1, 2, 3];
+    let arr2 = [...arr1, 4, 5];
+    print("  arr1 =", arr1);
+    print("  arr2 =", arr2);
+    print("  arr2 indices:", arr2[0], arr2[1], arr2[2], arr2[3], arr2[4]);
+
+    // Spread: multiple arrays
+    print("\nExample 2: Spread multiple arrays");
+    let nums1 = [10, 20];
+    let nums2 = [30, 40];
+    let combined = [...nums1, ...nums2, 50];
+    print("  nums1 =", nums1);
+    print("  nums2 =", nums2);
+    print("  combined =", combined);
+    print("  combined indices:", combined[0], combined[1], combined[2], combined[3], combined[4]);
+
+    // Spread at start
+    print("\nExample 3: Spread at start");
+    let base = [100, 200];
+    let extended = [0, ...base];
+    print("  base =", base);
+    print("  extended =", extended);
+    print("  extended indices:", extended[0], extended[1], extended[2]);
+
+    // Spread with Float arrays
+    print("\nExample 4: Works with Float arrays");
+    let floats1 = [1.1, 2.2];
+    let floats2 = [...floats1, 3.3];
+    print("  floats1 =", floats1);
+    print("  floats2 =", floats2);
+    print("  floats2 indices:", floats2[0], floats2[1], floats2[2]);
+
+    // Spread with String arrays
+    print("\nExample 5: Works with String arrays");
+    let strs1 = ["hello", "world"];
+    let strs2 = [...strs1, "test"];
+    print("  strs1 =", strs1);
+    print("  strs2 =", strs2);
+    print("  strs2 indices:", strs2[0], strs2[1], strs2[2]);
+
+    // Multiple spreads
+    print("\nExample 6: Multiple spreads");
+    let a = [1];
+    let b = [2];
+    let c = [3];
+    let abc = [...a, ...b, ...c];
+    print("  abc =", abc);
+
+    // Combined Usage (structs & arrays)
+    print("\nFEATURE: Combined Usage (structs & arrays)");
+    let username = "Bob";
+    let useremail = "bob@test.com";
+    let userage = 25;
+    let newuser = User{name: username, email: useremail, age: userage};
+
+    let data1 = [5, 10];
+    let data2 = [15, 20];
+    let allData = [...data1, ...data2];
+    print("  Created user:", newuser.name, "-", newuser.email);
+    print("  allData =", allData);
+    print("  allData indices:", allData[0], allData[1], allData[2], allData[3]);
+
+    // Array Slicing
+    print("\nFEATURE: Array Slicing");
+    let numbers = [10, 20, 30, 40, 50, 60];
+
+    // Exclusive range [start..end)
+    let slice1 = numbers[1..4];
+    print("  numbers[1..4] (exclusive):", slice1);
+    print("    slice1 elements:", slice1[0], slice1[1], slice1[2]);
+
+    // Inclusive range [start..=end]
+    let slice2 = numbers[1..=4];
+    print("  numbers[1..=4] (inclusive):", slice2);
+    print("    slice2 elements:", slice2[0], slice2[1], slice2[2], slice2[3]);
+
+    // Slice from beginning
+    let slice3 = numbers[0..3];
+    print("  numbers[0..3]:", slice3);
+    print("    slice3 elements:", slice3[0], slice3[1], slice3[2]);
+
+    // Combined Spread + Slice
+    print("\nFEATURE: Combined Spread + Slice");
+    let extra = [300, 400, 500]; // reuse `base` declared above
+    let allvalues = [...base, ...extra];
+    print("  allvalues =", allvalues);
+    print("  allvalues indices:", allvalues[0], allvalues[1], allvalues[2], allvalues[3], allvalues[4]);
+
+    // Slice the combined array
+    let subset = allvalues[1..4];
+    print("  Sliced allvalues[1..4]:", subset);
+    print("    subset indices:", subset[0], subset[1], subset[2]);
+
+    // Float array slice
+    print("\nTest: Float array slice");
+    let fvals = [1.5, 2.5, 3.5, 4.5];
+    let fslice = fvals[1..3];
+    print("  fslice =", fslice);
+    print("    fslice indices:", fslice[0], fslice[1]);
+
+    // Bool array slice
+    print("\nTest: Bool array slice");
+    let flags = [true, false, true, false];
+    let bslice = flags[0..2];
+    print("  bslice =", bslice);
+    print("    bslice indices:", bslice[0], bslice[1]);
+}

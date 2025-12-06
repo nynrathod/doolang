@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// Centralized diagnostics and error formatting for doo.
 /// Provides colorized output, error code extraction, and source snippet rendering.
 /// Used for both semantic and parse errors, as well as grouped reporting.
@@ -6,6 +8,7 @@ use crate::parser::parser::ParseError;
 use std::collections::HashMap;
 
 /// Color helpers for terminal output (ANSI escape codes).
+
 fn color_red(s: &str) -> String {
     format!("\x1b[31m{}\x1b[0m", s)
 }
@@ -249,7 +252,7 @@ pub fn print_grouped(records: &[DiagnosticRecord], sources: &HashMap<String, Str
         } else {
             // No source available for this file
             for r in recs {
-                if let (Some(line), Some(col)) = (r.line, r.col) {
+                if let (Some(line), Some(_)) = (r.line, r.col) {
                     if let Some((code, rest)) = extract_error_code(&r.message) {
                         eprintln!(
                             "{} {}:{}: {}",

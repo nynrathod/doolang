@@ -1,0 +1,49 @@
+// main.doo - Test public/private visibility with imports (SHOULD SUCCEED)
+// This file tests that PUBLIC types/functions can be imported and used correctly
+
+import defs::types::{PublicUser, CreateUser, Status, GetDefaultStatus, GetTimeout, IsReady};
+
+fn main() {
+    print("=== Testing Public/Private Visibility ===");
+    print("All imports are PUBLIC (PascalCase) - this should compile and run\n");
+
+    // Test 1: Public function that returns public struct
+    print("Test 1: Public function creates struct");
+    let user = CreateUser(1, "Alice", "alice@example.com");
+    print("  User ID:", user.Id);       // Public field (PascalCase) - OK
+    print("  User Name:", user.Name);   // Public field (PascalCase) - OK
+    print("  User Email:", user.Email); // Public field (PascalCase) - OK
+    // Note: user.internalId is private (camelCase) - cannot access from here
+
+    // Test 2: Public enum via public function
+    print("\nTest 2: Public enum via function");
+    let status = GetDefaultStatus();
+    print("  Status:", status);
+
+    // Test 3: Create public enum variant directly
+    print("\nTest 3: Public enum variant");
+    let inactive = Status::Inactive;
+    print("  Inactive status:", inactive);
+    let pending = Status::Pending;
+    print("  Pending status:", pending);
+
+    // Test 4: Public function that uses private internals
+    print("\nTest 4: Public function using private internals");
+    let timeout = GetTimeout();
+    print("  Timeout value:", timeout);
+
+    // Test 5: Public function that uses private enum internally
+    print("\nTest 5: Public function using private enum");
+    let ready = IsReady();
+    print("  Is ready:", ready);
+
+    // Test 6: Match on public enum
+    print("\nTest 6: Match on public enum");
+    match status {
+        Status::Active => print("  Matched: Active"),
+        Status::Inactive => print("  Matched: Inactive"),
+        Status::Pending => print("  Matched: Pending"),
+    }
+
+    print("\n=== All visibility tests passed! ===");
+}

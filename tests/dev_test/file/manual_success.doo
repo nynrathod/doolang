@@ -1,0 +1,180 @@
+import std::File;
+
+//
+// Manual Success Test Suite for File Operations
+// Covers all major success cases for std::File API
+//
+
+fn main() {
+    print("=== Manual Success Test - All File Operations ===\n");
+
+    // 1. Write to a file
+    print("1. Write to file");
+    let _, errWrite = File::Write("test_manual.txt", "Hello World");
+    if errWrite == nil {
+        print("  Success: File written");
+    } else {
+        print("  Error:", errWrite.Message);
+    }
+    print("");
+
+    // 2. Read the file we just wrote
+    print("2. Read file we wrote");
+    let contentRead, errRead = File::Read("test_manual.txt");
+    if errRead == nil {
+        print("  Success: Content =", contentRead);
+    } else {
+        print("  Error:", errRead.Message);
+    }
+    print("");
+
+    // 3. Append to file
+    print("3. Append to file");
+    let _, errAppend = File::Append("test_manual.txt", "\nAppended line");
+    if errAppend == nil {
+        print("  Success: Content appended");
+    } else {
+        print("  Error:", errAppend.Message);
+    }
+    print("");
+
+    // 4. Check if file exists
+    print("4. Check file exists");
+    let exists = File::Exists("test_manual.txt");
+    print("  File exists:", exists);
+    print("");
+
+    // 5. Get file size
+    print("5. Get file size");
+    let size, errSize = File::Size("test_manual.txt");
+    if errSize == nil {
+        print("  Success: File size =", size, "byte");
+    } else {
+        print("  Error:", errSize.Message);
+    }
+    print("");
+
+    // 6. Get file metadata
+    print("6. Get file metadata");
+    let meta, errMeta = File::Metadata("test_manual.txt");
+    if errMeta == nil {
+        print("  Success: Metadata =", meta);
+    } else {
+        print("  Error:", errMeta.Message);
+    }
+    print("");
+
+    // 7. Read lines from file
+    print("7. ReadLines");
+    let lines, errLines = File::ReadLines("test_manual.txt");
+    if errLines == nil {
+        print("  Success: Lines read =", lines);
+    } else {
+        print("  Error:", errLines.Message);
+    }
+    print("");
+
+    // 8. Copy file
+    print("8. Copy file");
+    let _, errCopy = File::Copy("test_manual.txt", "test_manual_copy.txt");
+    if errCopy == nil {
+        print("  Success: File copied");
+    } else {
+        print("  Error:", errCopy.Message);
+    }
+    print("");
+
+    // 9. Move/rename file
+    print("9. Move/rename file");
+    let _, errMove = File::Move("test_manual_copy.txt", "test_manual_renamed.txt");
+    if errMove == nil {
+        print("  Success: File moved/renamed");
+    } else {
+        print("  Error:", errMove.Message);
+    }
+    print("");
+
+    // 10. Create directory
+    print("10. Create directory");
+    let _, errMkDir = File::MkDir("test_dir_manual");
+    if errMkDir == nil {
+        print("  Success: Directory created");
+    } else {
+        print("  Error:", errMkDir.Message);
+    }
+    print("");
+
+    // 11. Get directory metadata
+    print("11. Get directory metadata");
+    let metaDir, errMetaDir = File::Metadata("test_dir_manual");
+    if errMetaDir == nil {
+        print("  Success: Directory metadata =", metaDir);
+    } else {
+        print("  Error:", errMetaDir.Message);
+    }
+    print("");
+
+    // 12. List directory
+    print("12. List directory");
+    let list, errList = File::ListDir(".");
+    if errList == nil {
+        print("  Success: Found files in directory =", list);
+    } else {
+        print("  Error:", errList.Message);
+    }
+    print("");
+
+    // 13. Remove empty directory
+    print("13. Remove empty directory");
+    let _, errRmDir = File::RmDir("test_dir_manual");
+    if errRmDir == nil {
+        print("  Success: Directory removed");
+    } else {
+        print("  Error:", errRmDir.Message);
+    }
+    print("");
+
+    // 14. Create directory with files for recursive delete
+    print("14. Create directory for recursive delete");
+    let _, errMkDir2 = File::MkDir("test_dir_recursive");
+    File::Write("test_dir_recursive/file1.txt", "data");
+    File::Write("test_dir_recursive/file2.txt", "data");
+    if errMkDir2 == nil {
+        print("  Success: Directory with files created");
+    } else {
+        print("  Error:", errMkDir2.Message);
+    }
+    print("");
+
+    // 15. Remove directory recursively
+    print("15. Remove directory recursively");
+    let _, errRmDirAll = File::RmDirAll("test_dir_recursive");
+    if errRmDirAll == nil {
+        print("  Success: Directory and contents removed");
+    } else {
+        print("  Error:", errRmDirAll.Message);
+    }
+    print("");
+
+    // 16. Delete file
+    print("16. Delete file");
+    let _, errDelete = File::Delete("test_manual.txt");
+    if errDelete == nil {
+        print("  Success: File deleted");
+    } else {
+        print("  Error:", errDelete.Message);
+    }
+    print("");
+
+    // 17. Cleanup: Delete renamed file if exists
+    print("17. Cleanup: Delete renamed file");
+    let _, errClean = File::Delete("test_manual_renamed.txt");
+    if errClean == nil {
+        print("  Success: Cleanup complete");
+    } else {
+        print("  Warning: Cleanup failed -", errClean.Message);
+    }
+    print("");
+
+    print("=== All Success Tests Complete ===");
+}

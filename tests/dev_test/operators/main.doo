@@ -1,0 +1,115 @@
+fn main() {
+    print("=== Arithmetic Operators ===");
+
+    // ------------------------------------------------------------
+    // Int arithmetic operator tests
+    let mut i: Int = 10;
+    let mut j: Int = 3;
+    print("i + j:", i + j);
+    print("i - j:", i - j);
+    print("i * j:", i * j);
+    print("i / j:", i / j);
+    print("i % j:", i % j);
+
+    i += 5;
+    print("i += 5:", i);
+    i -= 2;
+    print("i -= 2:", i);
+    i *= 2;
+    print("i *= 2:", i);
+    i /= 3;
+    print("i /= 3:", i);
+    i %= 4;
+    print("i %= 4:", i);
+
+    i++;
+    print("i++:", i);
+    i--;
+    print("i--:", i);
+
+    // ------------------------------------------------------------
+    // Float arithmetic operator tests
+    let mut x: Float = 5.5;
+    let mut y: Float = 2.0;
+    print("x + y:", x + y);
+    print("x - y:", x - y);
+    print("x * y:", x * y);
+    print("x / y:", x / y);
+
+    x += 1.5;
+    print("x += 1.5:", x);
+    x -= 0.5;
+    print("x -= 0.5:", x);
+    x *= 2.0;
+    print("x *= 2.0:", x);
+    x /= 3.0;
+    print("x /= 3.0:", x);
+
+    x++;
+    print("x++:", x);
+    x--;
+    print("x--:", x);
+
+    // ------------------------------------------------------------
+    // Edge case: negative and zero arithmetic
+    let mut neg: Int = -10;
+    let mut zero: Int = 0;
+    print("neg + zero:", neg + zero);
+    print("neg - zero:", neg - zero);
+    print("neg * zero:", neg * zero);
+
+    // ------------------------------------------------------------
+    // Comparison operator tests
+    print("\n=== Comparison Operators ===");
+    let a: Int = 7;
+    let b: Int = 7;
+    let c: Int = 10;
+    print("a == b:", a == b);
+    print("a != c:", a != c);
+    print("a < c:", a < c);
+    print("c > a:", c > a);
+    print("a <= b:", a <= b);
+    print("c >= a:", c >= a);
+
+    let fa: Float = 2.5;
+    let fb: Float = 2.5;
+    let fc: Float = 3.1;
+    print("fa == fb:", fa == fb);
+    print("fa != fc:", fa != fc);
+    print("fa < fc:", fa < fc);
+    print("fc > fa:", fc > fa);
+    print("fa <= fb:", fa <= fb);
+    print("fc >= fa:", fc >= fa);
+
+    // ------------------------------------------------------------
+    // Logical operator tests
+    print("\n=== Logical Operators ===");
+    let t: Bool = true;
+    let f: Bool = false;
+    print("t && t:", t && t);
+    print("t && f:", t && f);
+    print("t || f:", t || f);
+    print("f || f:", f || f);
+
+    // ------------------------------------------------------------
+    // Combined arithmetic and logical operator test
+    print("\n=== Combined Arithmetic and Logical ===");
+    let x1: Int = 5;
+    let x2: Int = 10;
+    let cond: Bool = x1 < x2 && x2 % x1 == 0;
+    print("cond ((x1 < x2) && (x2 % x1 == 0)):", cond);
+
+    // ------------------------------------------------------------
+    // Loop with arithmetic and logical operator test
+    print("\n=== Loop Test ===");
+    let mut count: Int = 0;
+    for {
+        if count < 5 {
+            break;
+        }
+        print("  count:", count);
+        count += 1;
+    }
+
+    print("\n=== All Operator Tests Complete ===");
+}

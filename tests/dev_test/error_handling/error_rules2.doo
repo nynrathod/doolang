@@ -1,0 +1,421 @@
+// ============================================================================
+// Error Handling Rules Test File 2
+// Testing Rules 9-16: Struct errors, panic, nested propagation, edge cases
+// ============================================================================
+
+// ============================================================================
+// Rule 9: Struct Errors
+// ============================================================================
+
+struct DivideError {
+    message: Str,
+    code: Int,
+}
+
+// String error
+fn TestStringError() -> Int ! Str {
+    Err "simple string error";
+}
+
+// Struct error
+fn TestStructError() -> Int ! DivideError {
+    Err DivideError { message: "complex error", code: 500 };
+}
+
+// Function returning struct error
+fn SafeDivide(a: Int, b: Int) -> Int ! DivideError {
+    if b == 0 {
+        Err DivideError { message: "cannot divide by zero", code: 100 };
+    }
+    Ok a / b;
+}
+
+// ============================================================================
+// Rule 10: Unreachable Code After ? (informational - not enforced)
+// ============================================================================
+
+fn MayFail() -> Int ! Str {
+    if false {
+        Err "random failure";
+    }
+    Ok 42;
+}
+
+fn TestUnreachableCode() -> Int ! Str {
+    MayFail()?;
+    print("This runs if MayFail succeeds");
+    Ok 100;
+}
+
+// ============================================================================
+// Rule 11: All Paths Must Return
+// ============================================================================
+
+fn TestAllPathsComplex(a: Int, b: Int, c: Bool) -> Int ! Str {
+    if a > 0 {
+        if b > 0 {
+            if c {
+                Ok a + b;
+            } else {
+                Ok a - b;
+            }
+        } else {
+            Err "b must be positive";
+        }
+    } else {
+        if c {
+            Err "a must be positive when c is true";
+        } else {
+            Ok 0;
+        }
+    }
+}
+
+fn TestElseIfChain(x: Int) -> Str ! Str {
+    if x < 0 {
+        Err "negative";
+    } else if x == 0 {
+        Ok "zero";
+    } else if x < 10 {
+        Ok "small";
+    } else if x < 100 {
+        Ok "medium";
+    } else {
+        Ok "large";
+    }
+}
+
+// ============================================================================
+// Rule 12: Ignore Error Values (compile-time check for ignoring both)
+// ============================================================================
+
+fn GetData() -> Int ! Str {
+    if false {
+        Err "never happens";
+    }
+    Ok 42;
+}
+
+// Valid: Ignore success value
+fn TestValidIgnoreSuccess() -> Str ! Str {
+    let _, err = GetData();
+    if err != nil {
+        Err err;
+    }
+    Ok "success";
+}
+
+// Valid: Ignore error value - note: no error type since we never return error
+fn TestValidIgnoreError() -> Int {
+    let result, _ = GetData();
+    Ok result;
+}
+
+// INVALID: Can't ignore both (this should fail compilation)
+// fn TestInvalidIgnoreBoth() -> Int ! Str {
+//     let _, _ = GetData();  // Compile error: Must capture at least one
+//     Ok 0;
+// }
+
+// ============================================================================
+// Rule 13: Panic for Unrecoverable Errors (using ?? panic)
+// ============================================================================
+
+fn GetCriticalValue() -> Int ! Str {
+    if false {
+        Err "critical failure";
+    }
+    Ok 99;
+}
+
+fn TestUnwrapOrPanic() -> Int {
+    // Use ?? to unwrap or panic with a custom message
+    let value = GetCriticalValue() ?? panic("Critical value required!");
+    Ok value * 2;
+}
+
+fn TestMultiplePanics() -> Int {
+    let a = GetCriticalValue() ?? panic("First value required");
+    let b = GetCriticalValue() ?? panic("Second value required");
+    Ok a + b;
+}
+
+// ============================================================================
+// Rule 14: Nested Error Propagation
+// ============================================================================
+
+fn Level3(fail: Bool) -> Int ! Str {
+    if fail {
+        Err "level 3 error";
+    }
+    Ok 3;
+}
+
+fn Level2() -> Int ! Str {
+    let val = Level3(false)?;
+    Ok val * 2;
+}
+
+fn Level1() -> Int ! Str {
+    let val = Level2()?;
+    Ok val * 3;
+}
+
+fn TestNestedPropagation() -> Int ! Str {
+    let result = Level1()?;
+    Ok result;  // Should be 3 * 2 * 3 = 18
+}
+
+// Deep nesting
+fn DeepA() -> Int ! Str {
+    if false {
+        Err "deep error";
+    }
+    Ok 1;
+}
+
+fn DeepB() -> Int ! Str {
+    let a = DeepA()?;
+    Ok a + 1;
+}
+
+fn DeepC() -> Int ! Str {
+    let b = DeepB()?;
+    Ok b + 1;
+}
+
+fn DeepD() -> Int ! Str {
+    let c = DeepC()?;
+    Ok c + 1;
+}
+
+fn DeepE() -> Int ! Str {
+    let d = DeepD()?;
+    Ok d + 1;
+}
+
+fn TestDeepNesting() -> Int ! Str {
+    let result = DeepE()?;
+    Ok result;  // Should be 5
+}
+
+// ============================================================================
+// Rule 15: Multiple Return Values with Errors
+// ============================================================================
+
+fn GetCoordinates(valid: Bool) -> Int, Int ! Str {
+    if !valid {
+        Err "invalid coordinates";
+    }
+    Ok 10, 20;
+}
+
+fn GetTriple(id: Int) -> Int, Str, Bool ! Str {
+    if id < 0 {
+        Err "invalid id";
+    }
+    Ok id, "data", true;
+}
+
+fn TestMultipleReturns() -> Int ! Str {
+    let x, y = GetCoordinates(true)?;
+    Ok x + y;
+}
+
+fn TestTripleReturn() -> Str ! Str {
+    let id, data, flag = GetTriple(42)?;
+    print("Got:", id, data, flag);
+    Ok data;
+}
+
+// Ignore some values in multiple returns
+fn TestPartialCapture() -> Int ! Str {
+    let x, _ = GetCoordinates(true)?;
+    Ok x;
+}
+
+// ============================================================================
+// Rule 16: Optional return keyword
+// ============================================================================
+
+fn WithExplicitReturn(x: Int) -> Int ! Str {
+    if x < 0 {
+        return Err "negative";
+    }
+    if x == 0 {
+        return Ok 0;
+    }
+    return Ok x * x;
+}
+
+fn WithImplicitReturn(x: Int) -> Int ! Str {
+    if x < 0 {
+        Err "negative";
+    } else if x == 0 {
+        Ok 0;
+    } else {
+        Ok x * x;
+    }
+}
+
+fn MixedReturns(x: Int) -> Int ! Str {
+    if x < 0 {
+        return Err "early exit for negative";
+    }
+    // Implicit return for positive
+    Ok x * 2;
+}
+
+// ============================================================================
+// Edge Cases and Advanced Patterns
+// ============================================================================
+
+// Error in loop
+fn FindPositive(arr: [Int]) -> Int ! Str {
+    for i, val in arr {
+        if val > 0 {
+            Ok val;
+        }
+    }
+    Err "no positive number found";
+}
+
+// Conditional error propagation
+fn ProcessValue(x: Int) -> Int ! Str {
+    if x > 100 {
+        Err "value too large";
+    }
+    if x < 0 {
+        Err "value too small";
+    }
+    Ok x * 2;
+}
+
+fn ProcessMultiple() -> Int ! Str {
+    let a = ProcessValue(50)?;
+    let b = ProcessValue(30)?;
+    let c = ProcessValue(20)?;
+    Ok a + b + c;
+}
+
+// Error handling with match-like pattern
+fn Classify(x: Int) -> Str ! Str {
+    if x < 0 {
+        Err "cannot classify negative";
+    } else if x == 0 {
+        Ok "zero";
+    } else if x < 10 {
+        Ok "single digit";
+    } else if x < 100 {
+        Ok "double digit";
+    } else {
+        Ok "large number";
+    }
+}
+
+// ============================================================================
+// Main function
+// ============================================================================
+
+fn main() {
+    print("=== Error Handling Rules Test 2 ===");
+    print("");
+
+    // Test Rule 9: Struct Errors
+    print("Rule 9: Struct Errors");
+    let structResult, structErr = SafeDivide(100, 5);
+    if structErr != nil {
+        print("  SafeDivide error occurred");
+    } else {
+        print("  SafeDivide(100, 5) =", structResult);
+    }
+    print("");
+
+    // Test Rule 11: All paths return
+    print("Rule 11: All Paths Must Return");
+    let complex = TestAllPathsComplex(5, 3, true)?;
+    print("  TestAllPathsComplex(5, 3, true) =", complex);
+
+    let chain = TestElseIfChain(50)?;
+    print("  TestElseIfChain(50) =", chain);
+    print("");
+
+    // Test Rule 12: Ignore values
+    print("Rule 12: Ignore Error Values");
+    let ignoreSuccess = TestValidIgnoreSuccess()?;
+    print("  TestValidIgnoreSuccess() =", ignoreSuccess);
+
+    let ignoreError = TestValidIgnoreError()?;
+    print("  TestValidIgnoreError() =", ignoreError);
+    print("");
+
+    // Test Rule 13: Panic operator
+    print("Rule 13: Panic for Unrecoverable Errors");
+    let panicTest = TestUnwrapOrPanic()?;
+    print("  TestUnwrapOrPanic() =", panicTest);
+
+    let multiPanic = TestMultiplePanics()?;
+    print("  TestMultiplePanics() =", multiPanic);
+    print("");
+
+    // Test Rule 14: Nested propagation
+    print("Rule 14: Nested Error Propagation");
+    let nested = TestNestedPropagation()?;
+    print("  TestNestedPropagation() =", nested);
+
+    let deep = TestDeepNesting()?;
+    print("  TestDeepNesting() =", deep);
+    print("");
+
+    // Test Rule 15: Multiple return values
+    print("Rule 15: Multiple Return Values with Errors");
+    let multiRet = TestMultipleReturns()?;
+    print("  TestMultipleReturns() =", multiRet);
+
+    let triple = TestTripleReturn()?;
+    print("  TestTripleReturn() =", triple);
+
+    let partial = TestPartialCapture()?;
+    print("  TestPartialCapture() =", partial);
+    print("");
+
+    // Test Rule 16: Optional return
+    print("Rule 16: Optional return keyword");
+    let explicit = WithExplicitReturn(5)?;
+    print("  WithExplicitReturn(5) =", explicit);
+
+    let implicit = WithImplicitReturn(4)?;
+    print("  WithImplicitReturn(4) =", implicit);
+
+    let mixed = MixedReturns(7)?;
+    print("  MixedReturns(7) =", mixed);
+    print("");
+
+    // Test edge cases
+    print("Edge Cases");
+    let arr = [0-5, 0-3, 0, 2, 5];
+    let positive = FindPositive(arr)?;
+    print("  FindPositive([-5, -3, 0, 2, 5]) =", positive);
+
+    let processed = ProcessMultiple()?;
+    print("  ProcessMultiple() =", processed);
+
+    let classified = Classify(42)?;
+    print("  Classify(42) =", classified);
+    print("");
+
+    // Test error case handling
+    print("Testing error handling...");
+    let _, _, coordErr = GetCoordinates(false);
+    if coordErr != nil {
+        print("  Caught expected error: invalid coordinates");
+    }
+
+    let _, divErr = SafeDivide(10, 0);
+    if divErr != nil {
+        print("  Caught struct error from SafeDivide");
+    }
+
+    print("");
+    print("=== All Advanced Error Handling Tests Passed! ===");
+}

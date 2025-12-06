@@ -1,0 +1,8 @@
+// expect-fail: circular import with re-export
+import A::FuncA;
+
+fn main() {
+    print("Testing circular import with re-export detection...");
+    let result = FuncA();
+    print("Result:", result);
+}

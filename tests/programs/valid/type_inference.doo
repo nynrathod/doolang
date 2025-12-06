@@ -1,8 +1,0 @@
-fn main() {
-    let x = 42;        // Inferred as Int
-    let s = "hello";   // Inferred as Str
-    let b = true;      // Inferred as Bool
-    let arr = [1, 2, 3];  // Inferred as [Int]
-
-    print(x, s, b, arr);
-}

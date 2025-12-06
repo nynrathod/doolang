@@ -1,4 +1,5 @@
 use crate::limits::CODEGEN_MAX_DEPTH;
+use crate::parser::ast::{AstNode, TypeNode};
 use inkwell::{
     builder::Builder,
     context::Context,
@@ -33,6 +34,15 @@ pub struct MapMetadata {
     pub value_type: String,
     pub key_is_string: bool,
     pub value_is_string: bool,
+    pub key_needs_rc: bool,
+    pub value_needs_rc: bool,
+}
+
+/// Metadata for tracking struct field information
+#[derive(Debug, Clone)]
+pub struct StructMetadata {
+    pub field_names: Vec<String>,
+    pub field_types: Vec<String>,
 }
 
 /// Loop type enumeration
@@ -80,6 +90,7 @@ pub struct CodeGen<'ctx> {
     pub heap_strings: std::collections::HashSet<String>,
 
     pub heap_arrays: std::collections::HashSet<String>,
+    pub slice_arrays: std::collections::HashSet<String>, // Sliced arrays (malloc'd but no RC header)
     pub heap_maps: std::collections::HashSet<String>,
 
     pub composite_strings: HashMap<String, Vec<String>>,
@@ -90,13 +101,49 @@ pub struct CodeGen<'ctx> {
     pub loop_stack: Vec<LoopContext>,
     pub loop_local_vars: std::collections::HashSet<String>, // Track variables allocated inside loop bodies (must not be cleaned up at function level)
     pub arrayget_sources: HashMap<String, String>, // Maps ArrayGet result names to their source array names
+    pub struct_field_sources: HashMap<String, (String, String)>, // Maps temp names to (struct_instance, field_name) for struct field access tracking
+    pub cross_block_vars: std::collections::HashSet<String>, // Track variables used across multiple blocks (allocated once in entry block)
     pub current_function_params: Vec<(String, Option<String>)>, // Track current function parameters (name, type) for RC on return
     pub function_return_types: HashMap<String, String>, // Track function return types for proper RC handling on call results
+    pub function_param_types: HashMap<String, Vec<String>>, // Track function parameter types for JSON.parse conversion
     pub functions_returning_heap: std::collections::HashSet<String>, // Track functions that return heap-allocated values
+
+    pub boolean_temps: std::collections::HashSet<String>, // Track temporary variables from boolean-returning methods
+    pub variable_types: HashMap<String, String>, // Track variable types for typeOf function
+    pub struct_metadata: HashMap<String, StructMetadata>, // Track struct type definitions (name -> field info)
+    pub struct_instance_types: HashMap<String, String>, // Track what struct type each instance is (temp_var -> struct_name)
+    pub canonical_struct_types: HashMap<String, inkwell::types::StructType<'ctx>>, // Canonical LLVM struct types by name
+    pub tuple_struct_types: HashMap<String, inkwell::types::StructType<'ctx>>, // Cache for tuple struct types
+    pub tuple_types: HashMap<String, String>, // Maps temporary values to their tuple type strings (e.g., "Tuple(Int,Str,Float)")
+    pub tuple_field_types: HashMap<String, Vec<inkwell::types::BasicTypeEnum<'ctx>>>, // Store LLVM types for tuple fields for reconstruction
 
     pub declared_functions: std::collections::HashSet<String>,
     pub external_modules: HashMap<String, Vec<String>>,
+    pub function_aliases: HashMap<String, String>, // Maps alias names to original function names
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
+    pub function_error_types: HashMap<String, String>, // Track function error types for Result handling
+    pub heap_pointers: HashMap<String, inkwell::values::PointerValue<'ctx>>, // Track full heap pointers for tuple returns
+
+    // Result/Error type tracking
+    pub result_types: HashMap<String, (String, String)>, // Maps temp to (ok_type, err_type) e.g., ("Int", "Str")
+    pub result_values: HashMap<String, (bool, String)>, // Maps temp to (is_ok, value_temp) to track Ok vs Err
+    pub no_storage_vars: std::collections::HashSet<String>, // Track variables that should NOT get stack allocations (e.g., tuple pointers from Result unwrapping)
+
+    // Enum tracking
+    pub enum_variants: HashMap<String, Vec<(String, u32)>>, // Maps enum_name to vec of (variant_name, tag_value)
+    pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
+    pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
+    pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
+
+    // Current function context
+    pub current_function_name: Option<String>, // Track the name of the function being currently generated
+    pub current_error_type: Option<String>, // Track the error type of the current function (for Result handling)
+
+    // Closure body storage for on-demand string closure generation
+    pub closure_bodies: HashMap<String, (Vec<String>, Box<AstNode>)>, // Maps closure name to (params, body_ast)
+
+    // Track struct temps that may be null (from sparse arrays like map.values())
+    pub nullable_struct_temps: std::collections::HashSet<String>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -129,24 +176,79 @@ impl<'ctx> CodeGen<'ctx> {
 
             heap_strings: std::collections::HashSet::new(),
             heap_arrays: std::collections::HashSet::new(),
+            slice_arrays: std::collections::HashSet::new(),
             heap_maps: std::collections::HashSet::new(),
 
             composite_strings: HashMap::new(),
             composite_string_ptrs: HashMap::new(),
+            no_storage_vars: std::collections::HashSet::new(),
 
             array_metadata: HashMap::new(),
             map_metadata: HashMap::new(),
             loop_stack: Vec::new(),
             loop_local_vars: std::collections::HashSet::new(),
             arrayget_sources: HashMap::new(),
+            struct_field_sources: HashMap::new(),
+            cross_block_vars: std::collections::HashSet::new(),
             current_function_params: Vec::new(),
             function_return_types: HashMap::new(),
+            function_param_types: HashMap::new(),
             functions_returning_heap: std::collections::HashSet::new(),
+
+            boolean_temps: std::collections::HashSet::new(),
+            variable_types: HashMap::new(),
+            struct_metadata: HashMap::new(),
+            struct_instance_types: HashMap::new(),
+            canonical_struct_types: HashMap::new(),
+            tuple_struct_types: HashMap::new(),
+            tuple_types: HashMap::new(),
+            tuple_field_types: HashMap::new(),
 
             declared_functions: std::collections::HashSet::new(),
             external_modules: HashMap::new(),
+            function_aliases: HashMap::new(),
             recursion_depth: 0,
+            function_error_types: HashMap::new(),
+            heap_pointers: HashMap::new(),
+            result_types: HashMap::new(),
+            result_values: HashMap::new(),
+            enum_variants: HashMap::new(),
+            enum_table: HashMap::new(),
+            enum_variant_order: HashMap::new(),
+            struct_table: HashMap::new(),
+            current_function_name: None,
+            current_error_type: None,
+            closure_bodies: HashMap::new(),
+            nullable_struct_temps: std::collections::HashSet::new(),
         }
+    }
+
+    /// Declare builtin string conversion functions
+    pub fn declare_builtin_functions(&mut self) {
+        // Declare StringToInt(ptr: *const u8, len: usize) -> i32
+        let i32_type = self.context.i32_type();
+        let i64_type = self.context.i64_type();
+        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+
+        let string_to_int_fn_type = i32_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
+        self.module
+            .add_function("StringToInt", string_to_int_fn_type, None);
+
+        // Declare StringToFloat(ptr: *const u8, len: usize) -> f64
+        let f64_type = self.context.f64_type();
+        let string_to_float_fn_type = f64_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
+        self.module
+            .add_function("StringToFloat", string_to_float_fn_type, None);
+
+        // Declare IntToString(value: i32) -> *const u8
+        let int_to_string_fn_type = ptr_type.fn_type(&[i32_type.into()], false);
+        self.module
+            .add_function("IntToString", int_to_string_fn_type, None);
+
+        // Declare FloatToString(value: f64) -> *const u8
+        let float_to_string_fn_type = ptr_type.fn_type(&[f64_type.into()], false);
+        self.module
+            .add_function("FloatToString", float_to_string_fn_type, None);
     }
 
     /// Prints the final generated LLVM IR to standard error (stderr).
@@ -187,8 +289,18 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Check if a variable is a loop iteration variable in any active loop
+    /// Checks both the loop_stack (for active loops) and loop_local_vars (for variables
+    /// that were allocated as loop variables, even if the loop context has been popped)
     pub fn is_loop_var(&self, var: &str) -> bool {
         let var_base = var.trim_start_matches('%').trim_end_matches("_array");
+
+        // First check loop_local_vars - this is the authoritative source
+        // because loop variables are marked here when created and cleaned up later
+        if self.loop_local_vars.contains(var) || self.loop_local_vars.contains(var_base) {
+            return true;
+        }
+
+        // Also check the loop_stack for active loops
         for loop_ctx in &self.loop_stack {
             for loop_var in &loop_ctx.loop_vars {
                 let loop_var_base = loop_var.trim_start_matches('%').trim_end_matches("_array");

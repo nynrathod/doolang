@@ -1,0 +1,101 @@
+fn main() {
+    print("=== Find Operator Test for Arrays (Implicit & Explicit Types) ===");
+
+    // ------------------------------------------------------------
+    // Int Array - Implicit
+    print("\n--- Int Array (Implicit) ---");
+    let arrInt = [1, 2, 3, 4, 5];
+    if 3 in arrInt {
+        print("✓ 3 found");
+    }
+    if 10 in arrInt {
+        print("✗ 10 found (should not happen)");
+    } else {
+        print("✓ 10 not found");
+    }
+
+    // Int Array - Explicit
+    print("\n--- Int Array (Explicit) ---");
+    let arrIntExplicit: [Int] = [1, 2, 3, 4, 5];
+    if 4 in arrIntExplicit {
+        print("✓ 4 found");
+    }
+    if 0 in arrIntExplicit {
+        print("✗ 0 found (should not happen)");
+    } else {
+        print("✓ 0 not found");
+    }
+
+    // ------------------------------------------------------------
+    // Float Array - Implicit
+    print("\n--- Float Array (Implicit) ---");
+    let arrFloat = [1.1, 2.2, 3.3, 4.4];
+    if 2.2 in arrFloat {
+        print("✓ 2.2 found");
+    }
+    if 5.5 in arrFloat {
+        print("✗ 5.5 found (should not happen)");
+    } else {
+        print("✓ 5.5 not found");
+    }
+
+    // Float Array - Explicit
+    print("\n--- Float Array (Explicit) ---");
+    let arrFloatExplicit: [Float] = [1.1, 2.2, 3.3, 4.4];
+    if 3.3 in arrFloatExplicit {
+        print("✓ 3.3 found");
+    }
+    if 0.0 in arrFloatExplicit {
+        print("✗ 0.0 found (should not happen)");
+    } else {
+        print("✓ 0.0 not found");
+    }
+
+    // ------------------------------------------------------------
+    // Bool Array - Implicit
+    print("\n--- Bool Array (Implicit) ---");
+    let arrBool = [true, false, true];
+    if true in arrBool {
+        print("✓ true found");
+    }
+    if false in arrBool {
+        print("✓ false found");
+    }
+
+    // Bool Array - Explicit
+    print("\n--- Bool Array (Explicit) ---");
+    let arrBoolExplicit: [Bool] = [false, false, true];
+    if true in arrBoolExplicit {
+        print("✓ true found");
+    }
+    if false in arrBoolExplicit {
+        print("✓ false found");
+    }
+
+    // ------------------------------------------------------------
+    // Str Array - Implicit
+    print("\n--- Str Array (Implicit) ---");
+    let arrStr = ["apple", "banana", "cherry"];
+    if "banana" in arrStr {
+        print("✓ banana found");
+    }
+    if "date" in arrStr {
+        print("✗ date found (should not happen)");
+    } else {
+        print("✓ date not found");
+    }
+
+    // Str Array - Explicit
+    print("\n--- Str Array (Explicit) ---");
+    let arrStrExplicit: [Str] = ["apple", "banana", "cherry"];
+    if "cherry" in arrStrExplicit {
+        print("✓ cherry found");
+    }
+    if "fig" in arrStrExplicit {
+        print("✗ fig found (should not happen)");
+    } else {
+        print("✓ fig not found");
+    }
+
+    print("\n=== All Array Find Tests Passed! ===");
+}

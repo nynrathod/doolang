@@ -1,3 +1,0 @@
-fn Usergreet(user: Str) -> Str {
-    return "Hello, " + user;
-}

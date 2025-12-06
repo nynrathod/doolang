@@ -1,0 +1,123 @@
+fn main() {
+    print("=== Inline If-Else with Statements Test ===");
+    print("");
+
+    // -------------------------------------------------------------------------
+    // Test 1: Simple inline if-else (baseline)
+    // -------------------------------------------------------------------------
+    print("Test 1: Simple inline if-else");
+    let x = 10;
+    let result1 = if x > 5 { "big" } else { "small" };
+    print("result1:", result1);
+    print("");
+
+    // -------------------------------------------------------------------------
+    // Test 2: If-else with let statement before result
+    // -------------------------------------------------------------------------
+    print("Test 2: If-else with let statement in then branch");
+    let age = 25;
+    let status = if age >= 18 {
+        let msg = "adult";
+        msg
+    } else {
+        "minor"
+    };
+    print("status:", status);
+    print("");
+
+    // -------------------------------------------------------------------------
+    // Test 3: If-else with multiple statements in both branches
+    // -------------------------------------------------------------------------
+    print("Test 3: Multiple statements in both branches");
+    let score = 85;
+    let grade = if score >= 90 {
+        let letter = "A";
+        let comment = "Excellent";
+        letter
+    } else {
+        let letter = "B";
+        let comment = "Good";
+        letter
+    };
+    print("grade:", grade);
+    print("");
+
+    // -------------------------------------------------------------------------
+    // Test 4: Nested if-else with statements
+    // -------------------------------------------------------------------------
+    print("Test 4: Nested if-else with statements");
+    let value = 50;
+    let category = if value > 100 {
+        let cat = "high";
+        cat
+    } else if value > 50 {
+        let cat = "medium";
+        cat
+    } else {
+        let cat = "low";
+        cat
+    };
+    print("category:", category);
+    print("");
+
+    // -------------------------------------------------------------------------
+    // Test 5: If-else-if chain with compound conditions
+    // -------------------------------------------------------------------------
+    print("Test 5: If-else-if with compound conditions");
+    let age2 = 25;
+    let verified = true;
+    let status2 = if age2 >= 18 && verified {
+        let temp = "adult_verified";
+        temp
+    } else if age2 >= 18 {
+        let temp = "adult_unverified";
+        temp
+    } else {
+        let temp = "minor";
+        temp
+    };
+    print("status2:", status2);
+    print("");
+
+    // -------------------------------------------------------------------------
+    // Test 6: Using computed values in block
+    // -------------------------------------------------------------------------
+    print("Test 6: Computed values in block");
+    let a = 10;
+    let b = 20;
+    let maxVal = if a > b {
+        let result = a;
+        result
+    } else {
+        let result = b;
+        result
+    };
+    print("max_val:", maxVal);
+    print("");
+
+    // -------------------------------------------------------------------------
+    // Test 7: Block with print statement (side effect)
+    // -------------------------------------------------------------------------
+    print("Test 7: Block with side effects");
+    let flag = true;
+    let output = if flag {
+        print("  Inside true branch");
+        "yes"
+    } else {
+        print("  Inside false branch");
+        "no"
+    };
+    print("output:", output);
+    print("");
+
+    // -------------------------------------------------------------------------
+    // Test 8: Expression without statements (no semicolon needed)
+    // -------------------------------------------------------------------------
+    print("Test 8: Single expression (no semicolon)");
+    let num = 42;
+    let parity = if num % 2 == 0 { "even" } else { "odd" };
+    print("parity:", parity);
+    print("");
+
+    print("=== All Tests Completed ===");
+}

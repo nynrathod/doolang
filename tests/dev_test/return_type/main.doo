@@ -1,0 +1,151 @@
+fn returnInt() -> Int {
+    return 42;
+}
+
+fn returnFloat() -> Float {
+    return 3.14;
+}
+
+fn returnBool() -> Bool {
+    return true;
+}
+
+fn returnStr() -> Str {
+    return "Hello";
+}
+
+fn returnArrayInt() -> [Int] {
+    return [1, 2, 3];
+}
+
+fn returnArrayFloat() -> [Float] {
+    return [1.5, 2.5, 3.5];
+}
+
+fn returnArrayBool() -> [Bool] {
+    return [true, false, true];
+}
+
+fn returnArrayStr() -> [Str] {
+    return ["one", "two", "three"];
+}
+
+fn returnMapStrInt() -> { Str: Int } {
+    return {"a": 1, "b": 2};
+}
+
+fn returnMapStrFloat() -> { Str: Float } {
+    return {"x": 1.5, "y": 2.5};
+}
+
+fn returnMapStrBool() -> { Str: Bool } {
+    return {"yes": true, "no": false};
+}
+
+fn returnMapStrStr() -> { Str: Str } {
+    return {"key": "value"};
+}
+
+fn returnMapIntInt() -> { Int: Int } {
+    return {1: 10, 2: 20};
+}
+
+fn returnMapIntFloat() -> { Int: Float } {
+    return {1: 1.5, 2: 2.5};
+}
+
+fn returnMapIntBool() -> { Int: Bool } {
+    return {1: true, 2: false};
+}
+
+fn returnMapIntStr() -> { Int: Str } {
+    return {1: "one", 2: "two"};
+}
+
+fn returnMapFloatInt() -> { Float: Int } {
+    return {1.1: 100, 2.2: 200};
+}
+
+fn returnMapFloatFloat() -> { Float: Float } {
+    return {1.1: 1.11, 2.2: 2.22};
+}
+
+fn returnMapFloatBool() -> { Float: Bool } {
+    return {1.1: true, 2.2: false};
+}
+
+fn returnMapFloatStr() -> { Float: Str } {
+    return {1.1: "one.one", 2.2: "two.two"};
+}
+
+fn returnMapBoolInt() -> { Bool: Int } {
+    return {true: 1, false: 0};
+}
+
+fn returnMapBoolFloat() -> { Bool: Float } {
+    return {true: 1.1, false: 0.0};
+}
+
+fn returnMapBoolBool() -> { Bool: Bool } {
+    return {true: false, false: true};
+}
+
+fn returnMapBoolStr() -> { Bool: Str } {
+    return {true: "yes", false: "no"};
+}
+
+fn testPrimitiveReturns() {
+    print("TEST 1: Primitive Returns");
+    print("  returnInt():", returnInt());
+    print("  returnFloat():", returnFloat());
+    print("  returnBool():", returnBool());
+    print("  returnStr():", returnStr());
+}
+
+fn testArrayReturns() {
+    print("TEST 2: Array Returns");
+    print("  returnArrayInt():", returnArrayInt());
+    print("  returnArrayFloat():", returnArrayFloat());
+    print("  returnArrayBool():", returnArrayBool());
+    print("  returnArrayStr():", returnArrayStr());
+}
+
+fn testMapReturns() {
+    print("TEST 3: Map Returns");
+    print("  returnMapStrInt():", returnMapStrInt());
+    print("  returnMapStrFloat():", returnMapStrFloat());
+    print("  returnMapStrBool():", returnMapStrBool());
+    print("  returnMapStrStr():", returnMapStrStr());
+    print("  returnMapIntInt():", returnMapIntInt());
+    print("  returnMapIntFloat():", returnMapIntFloat());
+    print("  returnMapIntBool():", returnMapIntBool());
+    print("  returnMapIntStr():", returnMapIntStr());
+    print("  returnMapFloatInt():", returnMapFloatInt());
+    print("  returnMapFloatFloat():", returnMapFloatFloat());
+    print("  returnMapFloatBool():", returnMapFloatBool());
+    print("  returnMapFloatStr():", returnMapFloatStr());
+    print("  returnMapBoolInt():", returnMapBoolInt());
+    print("  returnMapBoolFloat():", returnMapBoolFloat());
+    print("  returnMapBoolBool():", returnMapBoolBool());
+    print("  returnMapBoolStr():", returnMapBoolStr());
+}
+
+fn main() {
+    print("===========================================================");
+    print("DOO RETURN TYPES - COMPREHENSIVE TEST");
+    print("===========================================================");
+    print("");
+
+    testPrimitiveReturns();
+    print("");
+
+    testArrayReturns();
+    print("");
+
+    testMapReturns();
+    print("");
+
+    print("===========================================================");
+    print("TEST COMPLETE");
+    print("===========================================================");
+}

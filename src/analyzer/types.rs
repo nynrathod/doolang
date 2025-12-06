@@ -44,6 +44,16 @@ pub enum SemanticError {
     InvalidFunctionCall {
         func: String,
     },
+    MethodNotFoundOnType {
+        object_type: String,
+        method_name: String,
+        correct_type: Option<String>,
+    },
+    InvalidMethodCall {
+        method: String,
+        type_name: String,
+        message: String,
+    },
     FunctionArgumentMismatch {
         name: String,
         expected: usize,
@@ -69,6 +79,9 @@ pub enum SemanticError {
     // Type/Operator Errors
     OperatorTypeMismatch(TypeMismatch),
     EmptyCollectionTypeInferenceError(TypeMismatch),
+    ImmutableEmptyCollection {
+        found: TypeNode,
+    },
     InvalidConditionType(TypeMismatch),
 
     // Print
@@ -115,15 +128,51 @@ pub enum SemanticError {
 
     // --- Module Import Errors ---
     ModuleNotFound(String),
+    /// Error when trying to import a private function (camelCase name)
+    PrivateFunctionImport {
+        name: String,
+        module: String,
+    },
+    /// Error when trying to import a private struct (camelCase name)
+    PrivateStructImport {
+        name: String,
+        module: String,
+    },
+    /// Error when trying to import a private enum (camelCase name)
+    PrivateEnumImport {
+        name: String,
+        module: String,
+    },
+    /// Error when trying to access a private field (camelCase name) from outside the module
+    PrivateFieldAccess {
+        struct_name: String,
+        field_name: String,
+    },
     /// Dedicated error for circular imports, includes the cycle of modules
     CircularImport {
         cycle: Vec<String>,
     },
     ParseError,
+    ParseErrorMsg(String),
 
     ParseErrorInModule {
         file: String,
         error: String,
+    },
+
+    // Error handling
+    UnhandledResult {
+        ok_type: TypeNode,
+        error_type: TypeNode,
+    },
+    MissingOkInFunctionWithReturnType {
+        function: String,
+    },
+    MissingErrInFunctionWithErrorType {
+        function: String,
+    },
+    UnexpectedReturnWithReturnType {
+        function: String,
     },
 }
 
@@ -132,8 +181,9 @@ impl fmt::Display for TypeNode {
         match self {
             TypeNode::Float => write!(f, "Float"),
             TypeNode::Int => write!(f, "Int"),
-            TypeNode::String => write!(f, "String"),
+            TypeNode::String => write!(f, "Str"),
             TypeNode::Bool => write!(f, "Bool"),
+            TypeNode::Nil => write!(f, "Nil"),
             TypeNode::Array(t) => write!(f, "Array<{}>", t),
             TypeNode::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
             TypeNode::Tuple(ts) => {
@@ -141,6 +191,7 @@ impl fmt::Display for TypeNode {
                 write!(f, "({})", parts.join(", "))
             }
             TypeNode::Void => write!(f, "Void"),
+            TypeNode::Optional(t) => write!(f, "{}?", t),
             TypeNode::Struct(name, _) => write!(f, "Struct {}", name),
             TypeNode::Enum(name, _) => write!(f, "Enum {}", name),
             TypeNode::Range(a, b, inclusive) => write!(
@@ -151,13 +202,25 @@ impl fmt::Display for TypeNode {
                 if *inclusive { ", inclusive" } else { "" }
             ),
             TypeNode::TypeRef(s) => write!(f, "{}", s),
+            TypeNode::Function(params, ret) => {
+                let param_strs: Vec<String> = params.iter().map(|t| t.to_string()).collect();
+                write!(f, "Fn({}) -> {}", param_strs.join(", "), ret)
+            }
+            TypeNode::Result(ok_type, err_type) => {
+                write!(f, "Result<{}, {}>", ok_type, err_type)
+            }
+            TypeNode::Builtin(name) => write!(f, "Builtin({})", name),
+            TypeNode::Any => write!(f, "Any"),
+            TypeNode::Error => write!(f, "Error"),
         }
     }
 }
 
 impl fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "expected {}, found {}", self.expected, self.found)
+        let expected = self.expected.to_string().to_lowercase();
+        let found = self.found.to_string().to_lowercase();
+        write!(f, "expected {}, found {}", expected, found)
     }
 }
 
@@ -186,6 +249,8 @@ impl SemanticError {
             SemanticError::UndeclaredFunction(_) => "E0104",
             SemanticError::InvalidFunctionCall { .. } => "E0105",
             SemanticError::FunctionArgumentMismatch { .. } => "E0106",
+            SemanticError::MethodNotFoundOnType { .. } => "E0112",
+            SemanticError::InvalidMethodCall { .. } => "E0113",
             SemanticError::FunctionArgumentTypeMismatch { .. } => "E0107",
             SemanticError::MissingFunctionReturn { .. } => "E0108",
             SemanticError::InvalidReturnInVoidFunction { .. } => "E0109",
@@ -195,6 +260,7 @@ impl SemanticError {
             // Type/Operator Errors
             SemanticError::OperatorTypeMismatch(_) => "E0201",
             SemanticError::EmptyCollectionTypeInferenceError(_) => "E0202",
+            SemanticError::ImmutableEmptyCollection { .. } => "E0204",
             SemanticError::InvalidConditionType(_) => "E0203",
 
             // Print
@@ -220,9 +286,20 @@ impl SemanticError {
             // Module Import / Parse
             SemanticError::ModuleNotFound(_) => "E0701",
             SemanticError::ParseError => "E0702",
+            SemanticError::ParseErrorMsg(_) => "E0703",
 
-            SemanticError::ParseErrorInModule { .. } => "E0703",
-            SemanticError::CircularImport { .. } => "E0704",
+            SemanticError::ParseErrorInModule { .. } => "E0704",
+            SemanticError::CircularImport { .. } => "E0705",
+            SemanticError::PrivateFunctionImport { .. } => "E0706",
+            SemanticError::PrivateStructImport { .. } => "E0707",
+            SemanticError::PrivateEnumImport { .. } => "E0708",
+            SemanticError::PrivateFieldAccess { .. } => "E0709",
+
+            // Error handling
+            SemanticError::UnhandledResult { .. } => "E0801",
+            SemanticError::MissingOkInFunctionWithReturnType { .. } => "E0802",
+            SemanticError::MissingErrInFunctionWithErrorType { .. } => "E0803",
+            SemanticError::UnexpectedReturnWithReturnType { .. } => "E0804",
         }
     }
 }
@@ -242,13 +319,13 @@ impl fmt::Display for SemanticError {
             // Variable Declaration/Assignment Errors
             E::VariableRedeclaration(n) => write!(
                 f,
-                "error[{}]: variable '{}' redeclared in this scope",
+                "error[{}]: duplicate variable '{}'",
                 self.code(),
                 n
             ),
             E::UndeclaredVariable(n) => write!(
                 f,
-                "error[{}]: use of undeclared variable '{}'",
+                "error[{}]: use of undefined variable '{}'",
                 self.code(),
                 n
             ),
@@ -279,14 +356,20 @@ impl fmt::Display for SemanticError {
                 expected,
                 found
             ),
+            E::ImmutableEmptyCollection { found } => write!(
+                f,
+                "error[{}]: immutable variables cannot be initialized with empty collections; only mutable variables (with 'mut' keyword) are allowed to be empty. Found: {}",
+                self.code(),
+                found
+            ),
 
             // Function Declaration/Call Errors
             E::FunctionRedeclaration(n) => {
-                write!(f, "error[{}]: function '{}' redeclared", self.code(), n)
+                write!(f, "error[{}]: duplicate function '{}'", self.code(), n)
             }
             E::FunctionParamRedeclaration(n) => write!(
                 f,
-                "error[{}]: duplicate parameter name '{}'",
+                "error[{}]: duplicate parameter '{}'",
                 self.code(),
                 n
             ),
@@ -298,7 +381,7 @@ impl fmt::Display for SemanticError {
             ),
             E::UndeclaredFunction(n) => write!(
                 f,
-                "error[{}]: call to undeclared function '{}'",
+                "error[{}]: undefined function '{}'",
                 self.code(),
                 n
             ),
@@ -308,13 +391,43 @@ impl fmt::Display for SemanticError {
                 self.code(),
                 func
             ),
+            E::MethodNotFoundOnType { object_type, method_name, correct_type } => {
+                if let Some(ct) = correct_type {
+                    write!(
+                        f,
+                        "error[{}]: {} type does not have method '{}' (this is a {} method)",
+                        self.code(),
+                        object_type,
+                        method_name,
+                        ct
+                    )
+                } else {
+                    write!(
+                        f,
+                        "error[{}]: {} type does not have method '{}'",
+                        self.code(),
+                        object_type,
+                        method_name
+                    )
+                }
+            }
+            E::InvalidMethodCall { method, type_name, message } => {
+                write!(
+                    f,
+                    "error[{}]: {}.{}() is not allowed: {}",
+                    self.code(),
+                    type_name,
+                    method,
+                    message
+                )
+            }
             E::FunctionArgumentMismatch {
                 name,
                 expected,
                 found,
             } => write!(
                 f,
-                "error[{}]: function '{}' expects {} arguments, found {}",
+                "error[{}]: function '{}' expects {} parameters as arguments, found {}",
                 self.code(),
                 name,
                 expected,
@@ -360,7 +473,7 @@ impl fmt::Display for SemanticError {
 
             // Type/Operator Errors
             E::OperatorTypeMismatch(m) => {
-                write!(f, "error[{}]: operator type mismatch: {}", self.code(), m)
+                write!(f, "error[{}]: type mismatch: {}", self.code(), m)
             }
             E::EmptyCollectionTypeInferenceError(m) => write!(
                 f,
@@ -369,7 +482,7 @@ impl fmt::Display for SemanticError {
                 m
             ),
             E::InvalidConditionType(m) => {
-                write!(f, "error[{}]: invalid condition type: {}", self.code(), m)
+                write!(f, "error[{}]: condition must be bool, {}", self.code(), m)
             }
 
             // Print
@@ -449,10 +562,65 @@ impl fmt::Display for SemanticError {
             // Module Import / Parse
             E::ModuleNotFound(p) => write!(f, "error[{}]: module not found: {}", self.code(), p),
             E::ParseError => write!(f, "error[{}]: parse error in imported module", self.code()),
-
+            E::ParseErrorMsg(msg) => write!(f, "error[{}]: {}", self.code(), msg),
             E::ParseErrorInModule { file, error } => {
                 write!(f, "error[{}] in {}: {}", self.code(), file, error)
             }
+            E::PrivateFunctionImport { name, module } => write!(
+                f,
+                "error[{}]: cannot import private function '{}' from module '{}'. Private functions (camelCase) are not accessible outside their module. Use PascalCase for public functions.",
+                self.code(),
+                name,
+                module
+            ),
+            E::PrivateStructImport { name, module } => write!(
+                f,
+                "error[{}]: cannot import private struct '{}' from module '{}'. Private structs (camelCase) are not accessible outside their module. Use PascalCase for public structs.",
+                self.code(),
+                name,
+                module
+            ),
+            E::PrivateEnumImport { name, module } => write!(
+                f,
+                "error[{}]: cannot import private enum '{}' from module '{}'. Private enums (camelCase) are not accessible outside their module. Use PascalCase for public enums.",
+                self.code(),
+                name,
+                module
+            ),
+            E::PrivateFieldAccess { struct_name, field_name } => write!(
+                f,
+                "error[{}]: cannot access private field '{}' on struct '{}'. Private fields (camelCase) are not accessible outside their module. Use PascalCase for public fields.",
+                self.code(),
+                field_name,
+                struct_name
+            ),
+
+            // Error handling
+            E::UnhandledResult { ok_type, error_type } => write!(
+                f,
+                "error[{}]: unhandled Result type: function returns Result({}, {}). Error handling is mandatory - use '?' operator to propagate, or manually extract with 'let ok, err = ...'",
+                self.code(),
+                ok_type,
+                error_type
+            ),
+            E::MissingOkInFunctionWithReturnType { function } => write!(
+                f,
+                "error[{}]: function '{}' declares a return type but uses bare 'Return' statements. Functions with return types MUST use 'Ok' expression. Use 'Ok value;' instead of 'return value;'",
+                self.code(),
+                function
+            ),
+            E::MissingErrInFunctionWithErrorType { function } => write!(
+                f,
+                "error[{}]: function '{}' declares an error type (! ErrorType) but has no error handling path (no Err expression). Either add an 'Err value;' branch or remove the error type declaration",
+                self.code(),
+                function
+            ),
+            E::UnexpectedReturnWithReturnType { function } => write!(
+                f,
+                "error[{}]: function '{}' declares a return type but uses bare 'Return' statement. Functions with return types MUST use 'Ok' expression instead. Use 'Ok value;' instead of 'return value;'",
+                self.code(),
+                function
+            ),
         }
     }
 }

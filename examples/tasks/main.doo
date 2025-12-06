@@ -1,0 +1,47 @@
+// Task CLI - Simple task management example
+
+import Models::{Task, Priority, Status};
+import Store::{TaskStore, CreateStore};
+
+fn PrintTasks(title: Str, tasks: [Task]) {
+    print(title);
+    if tasks.len() == 0 {
+        print("  (none)");
+    } else {
+        for task in tasks {
+            print("  ", task.Display());
+        }
+    }
+}
+
+fn main() {
+    print("═══════════════════════════════════════");
+    print("            Task Manager CLI");
+    print("═══════════════════════════════════════\n");
+
+    // Create store
+    let mut store = CreateStore();
+
+    // Add some tasks
+    print("Adding tasks...\n");
+    store.Add("Setup project structure", Priority::High);
+    store.Add("Write documentation", Priority::Medium);
+    store.Add("Add unit tests", Priority::Medium);
+    store.Add("Deploy to production", Priority::High);
+    store.Add("Code review", Priority::Low);
+
+    // Display all tasks
+    PrintTasks("── All Tasks ──", store.GetAll());
+
+    // Display urgent tasks
+    print("");
+    PrintTasks("── Urgent Tasks ──", store.GetUrgent());
+
+    // Display stats
+    print("\n── Statistics ──");
+    print("  Total:", store.Count());
+    print("  Pending:", store.GetPending().len());
+    print("  Done:", store.CountDone());
+
+    print("\n═══════════════════════════════════════");
+}

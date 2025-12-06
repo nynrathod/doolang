@@ -1,0 +1,5 @@
+import CircularX::FunctionX;
+
+fn FunctionZ() -> Int {
+    return FunctionX() + 30;
+}

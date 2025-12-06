@@ -1,0 +1,65 @@
+import core::error::{CalcError};
+
+// Float power function
+fn PowF(base: Float, exp: Int) -> Float {
+    if exp < 0 {
+        return 0.0;
+    }
+    if exp == 0 {
+        return 1.0;
+    }
+
+    let mut result: Float = 1.0;
+    for i in 0..exp {
+        result = result * base;
+    }
+    return result;
+}
+
+// Float square root using Newton's method
+fn SqrtF(x: Float) -> Float {
+    if x < 0.0 {
+        return 0.0;
+    }
+    if x == 0.0 {
+        return 0.0;
+    }
+    if x == 1.0 {
+        return 1.0;
+    }
+
+    let mut guess: Float = x / 2.0;
+
+    for i in 0..50 {
+        let next = (guess + x / guess) / 2.0;
+        if next == guess {
+            break;
+        }
+        guess = next;
+    }
+    return guess;
+}
+
+// Safe division
+fn SafeDiv(a: Float, b: Float) -> Float ! CalcError {
+    if b == 0.0 {
+        Err CalcError { Op: "div", Message: "Division by zero" };
+    }
+    Ok a / b;
+}
+
+// Safe modulo
+fn SafeMod(a: Int, b: Int) -> Int ! CalcError {
+    if b == 0 {
+        Err CalcError { Op: "mod", Message: "Modulo by zero" };
+    }
+    Ok a % b;
+}
+
+// Safe square root
+fn SafeSqrt(x: Float) -> Float ! CalcError {
+    if x < 0.0 {
+        Err CalcError { Op: "sqrt", Message: "Cannot sqrt negative number" };
+    }
+    Ok SqrtF(x);
+}

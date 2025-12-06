@@ -4,9 +4,10 @@ use crate::mir::{
     expresssions::build_expression, statements::build_statement, MirBlock, MirFunction, MirInstr,
     MirProgram,
 };
-use crate::parser::ast::{AstNode, Pattern};
-use std::collections::HashSet;
+use crate::parser::ast::{AstNode, Pattern, TypeNode};
+use std::collections::{HashMap, HashSet};
 use std::mem::discriminant;
+use std::sync::Arc;
 
 /// This struct is responsible for translating parsed AST nodes into MIR instructions.
 /// It manages temporary variable generation, block labeling, loop context for break/continue,
@@ -19,6 +20,14 @@ pub struct MirBuilder {
     pub rc_tracked_vars: Vec<Vec<String>>, // Stack of scopes with reference-counted variables
     pub mir_symbol_table: std::collections::HashMap<String, crate::parser::ast::TypeNode>, // Track variable types for MIR
     pub recursion_depth: usize, // Track recursion depth to prevent stack overflow
+    pub enum_table: Arc<HashMap<String, HashMap<String, Option<TypeNode>>>>, // Shared enum table for enum variant resolution
+    pub enum_variant_order: Arc<HashMap<String, Vec<(String, Option<TypeNode>)>>>, // Ordered enum variants for correct tag values
+    pub function_table: Arc<HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Shared function table for namespace resolution
+    pub method_table:
+        Arc<HashMap<String, HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>>, // Methods per type: TypeName -> MethodName -> (params, return_type, error_type)
+    pub current_function_error_type: Option<TypeNode>, // Track if current function has error type for Ok/Err handling
+    pub struct_table: Arc<HashMap<String, HashMap<String, TypeNode>>>, // Struct definitions: name -> field_name -> field_type
+    pub current_struct_name: Option<String>, // Track current struct context for method analysis
 }
 
 /// Context for tracking loop break/continue targets
@@ -37,6 +46,9 @@ impl MirBuilder {
                 functions: vec![],
                 globals: vec![],
                 is_main_entry: true, // Default to true; can be set to false for imported modules
+                enum_table: HashMap::new(),
+                struct_table: HashMap::new(),
+                enum_variant_order: HashMap::new(),
             },
             tmp_counter: 1,
             block_counter: 0,
@@ -44,6 +56,13 @@ impl MirBuilder {
             rc_tracked_vars: vec![vec![]],
             mir_symbol_table: std::collections::HashMap::new(),
             recursion_depth: 0,
+            enum_table: Arc::new(HashMap::new()),
+            enum_variant_order: Arc::new(HashMap::new()),
+            function_table: Arc::new(HashMap::new()),
+            method_table: Arc::new(HashMap::new()),
+            current_function_error_type: None,
+            struct_table: Arc::new(HashMap::new()),
+            current_struct_name: None,
         }
     }
 
@@ -150,21 +169,25 @@ impl MirBuilder {
                 }
 
                 // Handle struct declarations (type definitions, not instances).
-                AstNode::StructDecl { name, fields } => {
-                    // For demonstration, create a placeholder instance showing the structure.
-                    let tmp = self.next_tmp();
-                    let field_vals: Vec<(String, String)> = fields
+                AstNode::StructDecl {
+                    name,
+                    fields,
+                    is_public,
+                } => {
+                    // Extract field names and types from the StructField metadata
+                    let field_names: Vec<String> =
+                        fields.iter().map(|field| field.name.clone()).collect();
+
+                    let field_types: Vec<String> = fields
                         .iter()
-                        .map(|(fname, _typ)| {
-                            let val_tmp = self.next_tmp();
-                            (fname.clone(), val_tmp)
-                        })
+                        .map(|field| field.field_type.format_type_string())
                         .collect();
 
-                    self.program.globals.push(MirInstr::StructInit {
-                        name: tmp,
+                    // Emit StructDecl with complete type information
+                    self.program.globals.push(MirInstr::StructDecl {
                         struct_name: name.clone(),
-                        fields: field_vals,
+                        field_names,
+                        field_types,
                     });
                 }
 
@@ -186,28 +209,16 @@ impl MirBuilder {
                     });
                 }
 
-                AstNode::EnumDecl { name, variants } => {
-                    for (variant_name, opt_type) in variants {
-                        let tmp = self.next_tmp();
-                        let value_tmp = if opt_type.is_some() {
-                            Some(self.next_tmp())
-                        } else {
-                            None
-                        };
-
-                        self.program.globals.push(MirInstr::EnumInit {
-                            name: tmp.clone(),
-                            enum_name: name.clone(),
-                            variant: variant_name.clone(),
-                            value: value_tmp,
-                        });
-
-                        self.program.globals.push(MirInstr::Assign {
-                            name: format!("global_enum_{}_{}", name, variant_name),
-                            value: tmp,
-                            mutable: false,
-                        });
-                    }
+                AstNode::EnumDecl {
+                    name,
+                    variants,
+                    is_public: _,
+                } => {
+                    // Emit EnumDecl so codegen can register types
+                    self.program.globals.push(MirInstr::EnumDecl {
+                        enum_name: name.clone(),
+                        variants: variants.clone(),
+                    });
                 }
 
                 // Handle global assignments (outside functions).
@@ -226,6 +237,32 @@ impl MirBuilder {
                             name: name.clone(),
                             value: value_tmp,
                             mutable: true,
+                        });
+                    }
+                }
+
+                // Handle global element assignments (e.g., arr[0] = 5).
+                AstNode::ElementAssignment {
+                    array,
+                    index,
+                    value,
+                } => {
+                    let mut temp_block = MirBlock {
+                        label: "temp".to_string(),
+                        instrs: vec![],
+                        terminator: None,
+                    };
+
+                    let _array_tmp = build_expression(self, array, &mut temp_block);
+                    let index_tmp = build_expression(self, index, &mut temp_block);
+                    let value_tmp = build_expression(self, value, &mut temp_block);
+                    self.program.globals.extend(temp_block.instrs);
+
+                    if let AstNode::Identifier(array_name) = &**array {
+                        self.program.globals.push(MirInstr::ArraySet {
+                            array: array_name.clone(),
+                            index: index_tmp,
+                            value: value_tmp,
                         });
                     }
                 }
@@ -257,7 +294,10 @@ impl MirBuilder {
                         params: vec![],
                         param_types: vec![],
                         return_type: None,
+                        error_type: None,
                         blocks: vec![],
+                        ffi_lib: None,
+                        ffi_symbol: None,
                     };
 
                     let block_label = self.next_block();
@@ -282,12 +322,15 @@ impl MirBuilder {
                 AstNode::ForLoopStmt { .. } => {
                     // Wrap the loop in a temporary function for isolation.
                     let loop_func_name = self.create_temp_function("loop");
-                    let mut temp_func = MirFunction {
+                    let mut loop_func = MirFunction {
                         name: loop_func_name.clone(),
                         params: vec![],
                         param_types: vec![],
                         return_type: None,
+                        error_type: None,
                         blocks: vec![],
+                        ffi_lib: None,
+                        ffi_symbol: None,
                     };
 
                     let block_label = self.next_block();
@@ -300,8 +343,8 @@ impl MirBuilder {
 
                     // Build the for loop in the temporary function.
                     build_statement(self, node, &mut block);
-                    temp_func.blocks.push(block);
-                    self.program.functions.push(temp_func);
+                    loop_func.blocks.push(block);
+                    self.program.functions.push(loop_func);
                     let call_tmp = self.next_tmp();
                     self.program.globals.push(MirInstr::Call {
                         dest: vec![call_tmp],
@@ -379,7 +422,13 @@ impl MirBuilder {
     /// - Removes empty blocks (but keeps referenced ones).
     /// - Deduplicates global constants/assignments.
     /// - Optionally merges consecutive assignments to the same target.
+    /// - Copies enum_table and struct_table metadata to the program for codegen.
     pub fn finalize(&mut self) {
+        // Copy enum_table and struct_table to the program so codegen has access to type metadata
+        self.program.enum_table = (*self.enum_table).clone();
+        self.program.enum_variant_order = (*self.enum_variant_order).clone();
+        self.program.struct_table = HashMap::new(); // TODO: populate from analyzer
+
         // 1. Remove empty blocks (blocks without instructions and no terminator)
         //    BUT: keep blocks that are referenced by other blocks
         for func in &mut self.program.functions {
@@ -388,7 +437,7 @@ impl MirBuilder {
             for block in &func.blocks {
                 if let Some(term) = &block.terminator {
                     match term {
-                        MirInstr::Jump { target } => {
+                        MirInstr::Jump { label: target } => {
                             referenced_blocks.insert(target.clone());
                         }
                         MirInstr::CondJump {

@@ -1,0 +1,78 @@
+// ARRAY UTILITY FUNCTIONS - Standard Library
+// Note: Built-in methods (len, get, push, pop, set, sort, reverse, etc.) are NOT duplicated here
+// This file contains only stdlib-specific array utilities
+
+fn Unique(arr: [Int]) -> [Int] {
+    let mut result: [Int] = [];
+    let len: Int = arr.len();
+
+    for i in 0..len {
+        let item: Int = arr[i];
+        if result.contains(item) == false {
+            result.push(item);
+        }
+    }
+
+    return result;
+}
+
+fn Range(start: Int, end: Int) -> [Int] {
+    let mut result: [Int] = [];
+
+    if start > end {
+        return result;
+    }
+
+    for i in start..end {
+        result.push(i);
+    }
+
+    return result;
+}
+
+fn Sum(arr: [Int]) -> Int {
+    let mut total: Int = 0;
+    let len: Int = arr.len();
+
+    for i in 0..len {
+        total = total + arr[i];
+    }
+
+    return total;
+}
+
+fn MinArr(arr: [Int]) -> Int {
+    let len: Int = arr.len();
+    if len == 0 {
+        return 0;
+    }
+
+    let mut minVal: Int = arr[0];
+
+    for i in 1..len {
+        let item: Int = arr[i];
+        if item < minVal {
+            minVal = item;
+        }
+    }
+
+    return minVal;
+}
+
+fn MaxArr(arr: [Int]) -> Int {
+    let len: Int = arr.len();
+    if len == 0 {
+        return 0;
+    }
+
+    let mut maxVal: Int = arr[0];
+
+    for i in 1..len {
+        let item: Int = arr[i];
+        if item > maxVal {
+            maxVal = item;
+        }
+    }
+
+    return maxVal;
+}
