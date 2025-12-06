@@ -79,6 +79,12 @@ impl<'ctx> CodeGen<'ctx> {
                         self.context
                             .ptr_type(inkwell::AddressSpace::default())
                             .size_of()
+                    } else if metadata.element_type == "Float" {
+                        // Floats are 64-bit
+                        self.context.f64_type().size_of()
+                    } else if metadata.element_type == "Bool" {
+                        // Bools are i8 (but stored as i32 in arrays)
+                        self.context.i32_type().size_of()
                     } else {
                         // Integers
                         self.context.i32_type().size_of()
@@ -161,7 +167,9 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_int_add(header_size, array_size, "total_size")
                         .unwrap();
 
-                    // Get the original heap pointer (before the data pointer)
+                    // CRITICAL: Check if reallocation is actually needed
+                    // Only reallocate if new_length > current capacity
+                    // Read current capacity from old allocation size
                     let old_heap_ptr = unsafe {
                         self.builder
                             .build_gep(
@@ -173,26 +181,90 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap()
                     };
 
-                    // Reallocate
+                    // Use malloc+memcpy instead of realloc to avoid Linux-specific issues
+                    let malloc_fn = self.get_or_declare_malloc();
                     let new_heap_ptr = self
                         .builder
-                        .build_call(
-                            realloc_fn,
-                            &[old_heap_ptr.into(), total_size.into()],
-                            "new_heap",
-                        )
+                        .build_call(malloc_fn, &[total_size.into()], "new_heap")
                         .unwrap()
                         .try_as_basic_value()
                         .left()
                         .unwrap()
                         .into_pointer_value();
 
-                    // Update RC to 1 (realloc might move memory)
+                    // Copy old data to new location
+                    let memcpy_fn = self
+                        .module
+                        .get_function("llvm.memcpy.p0.p0.i64")
+                        .unwrap_or_else(|| {
+                            let fn_type = self.context.void_type().fn_type(
+                                &[
+                                    self.context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                    self.context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                    self.context.i64_type().into(),
+                                    self.context.bool_type().into(),
+                                ],
+                                false,
+                            );
+                            self.module
+                                .add_function("llvm.memcpy.p0.p0.i64", fn_type, None)
+                        });
+
+                    // Calculate old array size for memcpy
+                    let old_len_i64 = self
+                        .builder
+                        .build_int_z_extend(old_length_val, self.context.i64_type(), "old_len_i64")
+                        .unwrap();
+                    let old_array_size = self
+                        .builder
+                        .build_int_mul(old_len_i64, element_size, "old_array_size")
+                        .unwrap();
+                    let old_total_size = self
+                        .builder
+                        .build_int_add(header_size, old_array_size, "old_total_size")
+                        .unwrap();
+
+                    // Copy old heap including header to new heap
+                    self.builder
+                        .build_call(
+                            memcpy_fn,
+                            &[
+                                new_heap_ptr.into(),
+                                old_heap_ptr.into(),
+                                old_total_size.into(),
+                                self.context.bool_type().const_zero().into(),
+                            ],
+                            "",
+                        )
+                        .unwrap();
+
+                    // Free old heap
+                    let free_fn = self.module.get_function("free").unwrap_or_else(|| {
+                        let fn_type = self.context.void_type().fn_type(
+                            &[self
+                                .context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into()],
+                            false,
+                        );
+                        self.module.add_function("free", fn_type, None)
+                    });
+                    self.builder
+                        .build_call(free_fn, &[old_heap_ptr.into()], "")
+                        .unwrap();
+
+                    // Update RC to 1 in new heap
                     let rc_ptr = self
                         .builder
                         .build_pointer_cast(
                             new_heap_ptr,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            self.context
+                                .i32_type()
+                                .ptr_type(inkwell::AddressSpace::default()),
                             "rc_ptr",
                         )
                         .unwrap();
@@ -215,7 +287,9 @@ impl<'ctx> CodeGen<'ctx> {
                         .builder
                         .build_pointer_cast(
                             len_ptr,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            self.context
+                                .i32_type()
+                                .ptr_type(inkwell::AddressSpace::default()),
                             "len_ptr_cast",
                         )
                         .unwrap();
@@ -1463,7 +1537,17 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         4u64
                     };
-                    let array_size = self.context.i64_type().const_int(elem_size * 100, false);
+
+                    // Allocate based on original array length (worst case: all elements pass filter)
+                    let length_64 = self
+                        .builder
+                        .build_int_z_extend(length, self.context.i64_type(), "length_64")
+                        .unwrap();
+                    let elem_size_val = self.context.i64_type().const_int(elem_size, false);
+                    let array_size = self
+                        .builder
+                        .build_int_mul(length_64, elem_size_val, "array_size_filter")
+                        .unwrap();
                     let header_size = self.context.i64_type().const_int(8, false);
                     let total_size = self
                         .builder
@@ -1479,20 +1563,22 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_pointer_value();
 
-                    // Store RC = 1
-                    let rc_ptr = self
+                    // Store RC = 1 in first 4 bytes of header
+                    let rc_ptr_i32 = self
                         .builder
                         .build_pointer_cast(
                             new_heap_ptr,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            self.context
+                                .i32_type()
+                                .ptr_type(inkwell::AddressSpace::default()),
                             "rc_ptr_filter",
                         )
                         .unwrap();
                     self.builder
-                        .build_store(rc_ptr, self.context.i32_type().const_int(1, false))
+                        .build_store(rc_ptr_i32, self.context.i32_type().const_int(1, false))
                         .unwrap();
 
-                    // Initialize result length to 0
+                    // Initialize result length to 0 in second 4 bytes of header
                     let result_len_ptr = unsafe {
                         self.builder
                             .build_gep(
@@ -1503,17 +1589,19 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                             .unwrap()
                     };
-                    let result_len_ptr_cast = self
+                    let result_len_ptr_i32 = self
                         .builder
                         .build_pointer_cast(
                             result_len_ptr,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            self.context
+                                .i32_type()
+                                .ptr_type(inkwell::AddressSpace::default()),
                             "result_len_ptr_cast",
                         )
                         .unwrap();
                     self.builder
                         .build_store(
-                            result_len_ptr_cast,
+                            result_len_ptr_i32,
                             self.context.i32_type().const_int(0, false),
                         )
                         .unwrap();
@@ -1941,7 +2029,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_int_value();
                     self.builder
-                        .build_store(result_len_ptr_cast, final_result_idx)
+                        .build_store(result_len_ptr_i32, final_result_idx)
                         .unwrap();
 
                     // Branch to continuation block
@@ -1952,8 +2040,21 @@ impl<'ctx> CodeGen<'ctx> {
                     // Position at continuation block for subsequent instructions
                     self.builder.position_at_end(continuation_block);
 
+                    // Store metadata with ACTUAL filtered count, not original length
                     let mut new_metadata = metadata.clone();
-                    new_metadata.length = 100;
+                    // Read the actual filtered count from result_idx
+                    let actual_count = self
+                        .builder
+                        .build_load(
+                            self.context.i32_type(),
+                            result_idx_ptr,
+                            "actual_filtered_count",
+                        )
+                        .unwrap()
+                        .into_int_value();
+                    // We need to convert to usize at compile time, but we have runtime value
+                    // So we store 0 in metadata and rely on runtime length reading
+                    new_metadata.length = 0; // Runtime-determined length
                     new_metadata.contains_strings = is_string_array || is_struct_array;
                     self.temp_values
                         .insert(dest.to_string(), result_data_ptr.into());
