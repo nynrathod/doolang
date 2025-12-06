@@ -2,6 +2,7 @@
 members = [
     ".",
     "ffi_libs/libdoo_file",
+    "xtask",
 ]
 resolver = "2"
 
