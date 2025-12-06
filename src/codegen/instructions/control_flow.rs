@@ -1123,7 +1123,18 @@ impl<'ctx> CodeGen<'ctx> {
                                 || self.enum_variants.contains_key(field_type)
                             {
                                 // Enum field - print variant name (e.g., Status::Active)
-                                let tag_val = field_value.into_int_value();
+                                // Enum can be either IntValue (simple enum) or StructValue (enum with payload)
+                                let tag_val = if field_value.is_struct_value() {
+                                    // Enum with payload: extract tag from struct {i32 tag, ptr payload}
+                                    let struct_val = field_value.into_struct_value();
+                                    self.builder
+                                        .build_extract_value(struct_val, 0, "enum_tag")
+                                        .unwrap()
+                                        .into_int_value()
+                                } else {
+                                    // Simple enum: just the tag
+                                    field_value.into_int_value()
+                                };
 
                                 // Look up enum variants to get the variant name
                                 if let Some(variants) = self.enum_table.get(field_type) {
