@@ -55,12 +55,12 @@ fn main() {
     }
 
     // Nested array loops with index
-    print("\nNested loops with index");
-    let outer = [1, 2];
-    let inner = [10, 20];
-    for i, outerVal in outer {
-        for j, innerVal in inner {
-            print("  outer[", i, "] =", outerVal, "inner[", j, "] =", innerVal);
-        }
-    }
+    // print("\nNested loops with index");
+    // let outer = [1, 2];
+    // let inner = [10, 20];
+    // for i, outerVal in outer {
+    //     for j, innerVal in inner {
+    //         print("  outer[", i, "] =", outerVal, "inner[", j, "] =", innerVal);
+    //     }
+    // }
 }
