@@ -3,11 +3,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{exit, Command};
 
-#[cfg(not(target_os = "windows"))]
-#[cfg(not(target_os = "windows"))]
-use std::io::Write;
-
-#[cfg(not(target_os = "windows"))]
 fn get_workspace_root() -> PathBuf {
     let mut current = env::current_dir().expect("Failed to get current directory");
 
@@ -49,6 +44,24 @@ fn main() {
     }
 }
 
+/// Check if running in Git Bash on Windows (creates corrupt DLLs)
+#[cfg(target_os = "windows")]
+fn check_git_bash_on_windows() {
+    // Git Bash sets MSYSTEM environment variable
+    if env::var("MSYSTEM").is_ok() || env::var("MINGW_PREFIX").is_ok() {
+        eprintln!("❌ Cannot build from Git Bash on Windows!");
+        eprintln!(
+            "   Git Bash creates corrupt DLL files (ar archives instead of PE executables).\n"
+        );
+        eprintln!("🔧 SOLUTION - Use PowerShell or CMD:\n");
+        eprintln!("1. Open PowerShell or CMD");
+        eprintln!("2. cd X:\\Projects\\doo");
+        eprintln!("3. cargo xtask release\n");
+        eprintln!("The DLLs will then be proper Windows PE executables.");
+        exit(1);
+    }
+}
+
 /// Check if running in WSL on Windows filesystem (/mnt)
 #[cfg(target_os = "linux")]
 fn check_wsl_on_windows_fs() {
@@ -82,6 +95,10 @@ fn build(release: bool) {
     // Check for WSL on Windows filesystem and exit with instructions
     #[cfg(target_os = "linux")]
     check_wsl_on_windows_fs();
+
+    // Check for Git Bash on Windows (creates corrupt DLLs)
+    #[cfg(target_os = "windows")]
+    check_git_bash_on_windows();
 
     let mode = if release { "release" } else { "debug" };
     println!("🔨 Building doo compiler ({})...", mode);
