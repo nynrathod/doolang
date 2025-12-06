@@ -436,10 +436,10 @@ fn link_object_file(
         .filter_map(|f| f.ffi_lib.clone())
         .collect();
 
-    // Always include doo_runtime - it contains essential runtime functions:
-    // - hash_string (used by maps with string keys)
-    // - json_parse, json_stringify, json_get_* (JSON operations)
-    ffi_libs.insert("doo_runtime".to_string());
+    // Runtime functions (hash_string, json_*, file_*, panic_runtime) are now
+    // compiled into libdoo.dylib (the main compiler library).
+    // Always include it so compiled programs can access these runtime functions.
+    ffi_libs.insert("doo".to_string());
 
     // Common: Build search paths for libraries (works on all platforms)
     let exe_dir = env::current_exe()
