@@ -53,7 +53,7 @@ fn build(release: bool) {
     let lib_patterns = vec!["doo.dll", "doo_file.dll"];
 
     #[cfg(target_os = "linux")]
-    let lib_patterns = vec!["libdoo.rlib", "libdoo_file.rlib"];
+    let lib_patterns = vec!["libdoo.so", "libdoo_file.so"];
 
     #[cfg(target_os = "macos")]
     let lib_patterns = vec!["libdoo.dylib", "libdoo_file.dylib"];
@@ -66,14 +66,9 @@ fn build(release: bool) {
                 let filename_str = filename.to_string_lossy();
                 for lib_pattern in &lib_patterns {
                     if filename_str.contains(lib_pattern) && !filename_str.ends_with(".d") {
-                        // Check if file has actual size (not empty placeholder)
-                        if let Ok(metadata) = fs::metadata(&path) {
-                            if metadata.len() > 0 {
-                                let dest = target_dir.join(filename);
-                                if let Err(e) = fs::copy(&path, &dest) {
-                                    eprintln!("Warning: Failed to copy {}: {}", filename_str, e);
-                                }
-                            }
+                        let dest = target_dir.join(filename);
+                        if let Err(e) = fs::copy(&path, &dest) {
+                            eprintln!("Warning: Failed to copy {}: {}", filename_str, e);
                         }
                         break;
                     }
@@ -88,15 +83,13 @@ fn build(release: bool) {
     // Platform-specific installation
     #[cfg(target_os = "windows")]
     {
-        println!("📦 Windows Setup:");
-        println!("Add target/release to PATH:");
-        println!("  $env:Path = \"{};$env:Path\"", target_dir.display());
+        install_windows(&target_dir);
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         if release {
-            install_unix(&target_dir, &workspace_root);
+            install_unix(target_dir, &workspace_root);
         } else {
             println!("Add to PATH:");
             println!("  export PATH=\"{}:$PATH\"", target_dir.display());
@@ -104,8 +97,22 @@ fn build(release: bool) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn install_windows(target_dir: &std::path::PathBuf) {
+    println!("\n📦 Setting up Windows PATH...");
+    println!("Add this to your PATH:");
+    println!("  {}", target_dir.display());
+    println!("\nPowerShell command (current session):");
+    println!("  $env:PATH = \"{};${{env:PATH}}\"", target_dir.display());
+    println!("\nPermanent PATH (run as Administrator):");
+    println!(
+        "  [Environment]::SetEnvironmentVariable('PATH', \"{};${{env:PATH}}\", 'User')",
+        target_dir.display()
+    );
+}
+
 #[cfg(not(target_os = "windows"))]
-fn install_unix(target_dir: &PathBuf, workspace_root: &PathBuf) {
+fn install_unix(target_dir: PathBuf, workspace_root: &PathBuf) {
     println!("\n📦 Installing to ~/.local/bin/doo/...");
 
     let home = env::var("HOME").expect("HOME environment variable not set");
@@ -150,7 +157,7 @@ fn install_unix(target_dir: &PathBuf, workspace_root: &PathBuf) {
 
     // Copy FFI libraries
     #[cfg(target_os = "linux")]
-    let lib_names = vec!["libdoo.rlib", "libdoo_file.rlib"];
+    let lib_names = vec!["libdoo.so", "libdoo_file.so"];
 
     #[cfg(target_os = "macos")]
     let lib_names = vec!["libdoo.dylib", "libdoo_file.dylib"];
@@ -160,18 +167,6 @@ fn install_unix(target_dir: &PathBuf, workspace_root: &PathBuf) {
         let dest_lib = doo_dir.join(lib_name);
 
         if lib_file.exists() {
-            // Check file has actual size before copying
-            if let Ok(metadata) = fs::metadata(&lib_file) {
-                if metadata.len() == 0 {
-                    eprintln!(
-                        "❌ {} is empty (0 bytes). Build may have failed on Windows filesystem.",
-                        lib_name
-                    );
-                    eprintln!("💡 Try building inside WSL native filesystem instead of /mnt");
-                    exit(1);
-                }
-            }
-
             match fs::copy(&lib_file, &dest_lib) {
                 Ok(_) => println!("  ✓ Installed {}", lib_name),
                 Err(e) => {
