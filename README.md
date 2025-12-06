@@ -27,81 +27,34 @@ Then, follow the steps below for your operating system:
 
 ### Windows
 
-1. **Move the downloaded `doo.exe` to a folder of your choice** (e.g., `D:\doo\`).
+```powershell
+# Move doo.exe to a folder (e.g., D:\doo\) and add to PATH
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";D:\doo", [EnvironmentVariableTarget]::User)
+```
 
-2. **Add that folder to your PATH** so you can run `doo` from any terminal:
+### Linux / macOS
 
-   Open **PowerShell** and run:
+```sh
+# Install clang (required for linking)
+# Linux: sudo apt install clang
+# macOS: xcode-select --install
 
-   ```powershell
-   [Environment]::SetEnvironmentVariable("Path", $env:Path + ";D:\doo", [EnvironmentVariableTarget]::User)
-   ```
+chmod +x ~/Downloads/doo
+mv ~/Downloads/doo ~/.local/bin/
+echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.bashrc && source ~/.bashrc
+```
 
-   _(Restart your terminal after running this to use the new PATH.)_
+```
+Note: `~/.bashrc` for Linux bash, `~/.bash_profile` for macOS bash
+```
 
-3. **Verify installation:**
-   ```cmd
-   doo --help
-   ```
+- **For zsh (Linux or macOS):**
+  `sh
+echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.zshrc
+source ~/.zshrc
+`
 
----
-
-### Linux & macOS
-
-1. **Install Clang** (required for linking):
-   - **Linux:**
-     ```sh
-     sudo apt update
-     sudo apt install clang
-     ```
-   - **macOS:**
-     ```sh
-     xcode-select --install
-     ```
-
-2. **Make the binary executable, move it to your user bin, and add to your PATH (if needed):**
-
-   ```sh
-   chmod +x ~/Downloads/doo
-   mkdir -p ~/.local/bin
-   mv ~/Downloads/doo ~/.local/bin/doo
-   ```
-
-   - Add to your PATH if not already:
-     - **For Linux bash:**
-       ```sh
-       echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.bashrc
-       source ~/.bashrc
-       ```
-     - **For macOS bash:**
-       ```sh
-       echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.bash_profile
-       source ~/.bash_profile
-       ```
-     - **For zsh (Linux or macOS):**
-       ```sh
-       echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.zshrc
-       source ~/.zshrc
-       ```
-       _(Choose the config file that matches your shell and OS: `~/.bashrc` for Linux bash, `~/.bash_profile` for macOS bash, `~/.zshrc` for zsh.)_
-
-3. **Verify installation:**
-   ```sh
-   doo --help
-   ```
-
----
-
-## 🚀 Usage
-
-- **Navigate to your project root (where `main.doo` is located):**
-  ```sh
-  cd /path/to/your/project
-  ```
-- **Compile and run your project:**
-  ```sh
-  doo run
-  ```
+**Verify:** `doo --help`
 
 ---
 
