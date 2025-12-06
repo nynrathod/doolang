@@ -1,8 +1,5 @@
-enum Color {
-    Red,
-    Green,
-    Blue,
-}
+// Inline enum
+enum Color: Red | Green | Blue;
 
 enum Result {
     Success(Int),

@@ -8,12 +8,6 @@ fn main() {
     // operations that normally succeed in `manual.doo`. It uses clearly
     // invalid names (and a root-fallback) to provoke OS-level errors
     // (e.g., invalid filename characters on Windows, permission errors on Unix).
-    //
-    // Usage:
-    //   - Set environment variable TRIGGER_DOO_ERROR_ALL to any non-empty value
-    //     (for example '1') to actually run these error-checks.
-    //   - If the environment variable is not set, the test will print instructions
-    //     and exit without attempting operations.
 
 
 
@@ -336,8 +330,4 @@ fn main() {
 
     print("=== Manual Environment Error Test Complete ===");
     print("");
-    print("Notes:");
-    print("  - If many 'Unexpected: ... succeeded' messages appear, please double-check that you are not running as a privileged user or inside an environment where these file-path conventions are allowed.");
-    print("  - On Unix-like systems, characters such as '<' are valid in filenames; the fallback attempts under /root/ should then provoke permission errors for non-root users.");
-    print("  - If you want to try different patterns, set TRIGGER_DOO_ERROR_ALL and edit the invalid names above.");
 }

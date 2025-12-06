@@ -14,9 +14,9 @@ fn main() {
     // File::IsDir("test_dir")?;
     // print("IsDir check passed.");
 
-    // print("TEST 5: File::Read on non-existent file");
-    // File::Read("nonexistent_file_xyz.txt")?;
-    // print("ERROR: Should not reach here!");
+    print("TEST 5: File::Read on non-existent file");
+    File::Read("nonexistent_file_xyz.txt")?;
+    print("ERROR: Should not reach here!");
 
     // print("TEST 6: File::Delete on non-existent file");
     // File::Delete("nonexistent_file_xyz.txt")?;
