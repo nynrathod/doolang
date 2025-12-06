@@ -5,6 +5,33 @@ use std::process::{exit, Command};
 #[cfg(not(target_os = "windows"))]
 use std::path::PathBuf;
 
+#[cfg(not(target_os = "windows"))]
+use std::io::Write;
+
+#[cfg(not(target_os = "windows"))]
+fn get_workspace_root() -> PathBuf {
+    let mut current = env::current_dir().expect("Failed to get current directory");
+
+    loop {
+        if current.join("Cargo.toml").exists() {
+            let cargo_toml = fs::read_to_string(current.join("Cargo.toml")).unwrap_or_default();
+            // Check if this is a workspace or package Cargo.toml (and not xtask subfolder)
+            let is_xtask = current
+                .file_name()
+                .map(|n| n.to_string_lossy() == "xtask")
+                .unwrap_or(false);
+            if (cargo_toml.contains("[workspace]") || cargo_toml.contains("[package]")) && !is_xtask
+            {
+                return current;
+            }
+        }
+
+        if !current.pop() {
+            return env::current_dir().expect("Failed to get current directory");
+        }
+    }
+}
+
 fn main() {
     let task = env::args().nth(1);
     match task.as_deref() {
@@ -44,7 +71,7 @@ fn build(release: bool) {
     // Copy FFI libraries from deps to target root for easier runtime discovery
     println!("📦 Copying FFI libraries...");
 
-    let workspace_root = env::current_dir().expect("Failed to get current directory");
+    let workspace_root = get_workspace_root();
     let target_dir = workspace_root.join("target").join(mode);
     let deps_dir = target_dir.join("deps");
 
@@ -200,25 +227,101 @@ fn install_unix(target_dir: PathBuf, workspace_root: &PathBuf) {
         }
     }
 
+    // Automatically update shell configuration
+    println!("\n📝 Updating shell configuration...");
+    let shell_configs = vec![
+        PathBuf::from(&home).join(".bashrc"),
+        PathBuf::from(&home).join(".zshrc"),
+    ];
+
+    for config_file in shell_configs {
+        if config_file.exists() {
+            let content = fs::read_to_string(&config_file).unwrap_or_default();
+            if !content.contains(".local/bin/doo") {
+                match fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&config_file)
+                {
+                    Ok(mut file) => {
+                        // Add newline before export if file doesn't end with one
+                        if !content.is_empty() && !content.ends_with('\n') {
+                            let _ = writeln!(file);
+                        }
+                        if let Err(e) = writeln!(
+                            file,
+                            "# Added by doo installer\nexport PATH=\"$HOME/.local/bin/doo:$PATH\""
+                        ) {
+                            eprintln!("⚠️  Failed to update {}: {}", config_file.display(), e);
+                        } else {
+                            println!(
+                                "  ✓ Updated {}",
+                                config_file
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️  Failed to open {}: {}", config_file.display(), e);
+                    }
+                }
+            } else {
+                println!(
+                    "  ✓ {} already has doo in PATH",
+                    config_file
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                );
+            }
+        }
+    }
+
     println!("\n✅ Installation complete!");
     println!("📁 Installed to: {}", doo_dir.display());
 
-    // Check and guide PATH setup
-    let path_var = env::var("PATH").unwrap_or_default();
-    let doo_dir_str = doo_dir.to_string_lossy();
+    println!("\n🔍 Verifying installation...");
 
-    if !path_var.contains(doo_dir_str.as_ref()) {
-        println!("\n⚠️  Add doo to your PATH:");
-        println!("  echo 'export PATH=\"$HOME/.local/bin/doo:$PATH\"' >> ~/.bashrc");
-        println!("  echo 'export PATH=\"$HOME/.local/bin/doo:$PATH\"' >> ~/.zshrc");
-        println!("\nOr for current session:");
-        println!("  export PATH=\"$HOME/.local/bin/doo:$PATH\"");
-    } else {
-        println!("\n✓ doo is already in your PATH");
+    // Try to verify doo works with updated PATH
+    let verify_script = format!(
+        "source \"{}/.zshrc\" 2>/dev/null || source \"{}/.bashrc\" 2>/dev/null; \"{}/.local/bin/doo/doo\" --version 2>/dev/null",
+        home, home, home
+    );
+
+    let mut verified = false;
+    match Command::new("sh").arg("-c").arg(&verify_script).output() {
+        Ok(output) => {
+            if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                println!("  ✓ {} installed and verified!", version);
+                verified = true;
+            }
+        }
+        Err(_) => {}
     }
 
-    println!("\n💡 Verify installation:");
-    println!("  doo --version");
+    if verified {
+        println!("\n✨ Installation complete! You can now use `doo` in any new terminal.");
+        println!("   For this terminal session, run one of these:");
+        println!("   • zsh users: source ~/.zshrc");
+        println!("   • bash users: source ~/.bashrc");
+    } else {
+        println!("  ⚠️  Installation completed");
+        println!("\n✨ To use doo now:");
+        println!("   • Open a new terminal, OR");
+        println!("   • Run in current terminal:");
+
+        let shell = env::var("SHELL").unwrap_or_default();
+        if shell.contains("zsh") {
+            println!("     source ~/.zshrc && doo --version");
+        } else if shell.contains("bash") {
+            println!("     source ~/.bashrc && doo --version");
+        } else {
+            println!("     source ~/.zshrc && doo --version");
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
