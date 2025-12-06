@@ -53,7 +53,7 @@ fn build(release: bool) {
     let lib_patterns = vec!["doo.dll", "doo_file.dll"];
 
     #[cfg(target_os = "linux")]
-    let lib_patterns = vec!["libdoo.so", "libdoo_file.so"];
+    let lib_patterns = vec!["libdoo.rlib", "libdoo_file.rlib"];
 
     #[cfg(target_os = "macos")]
     let lib_patterns = vec!["libdoo.dylib", "libdoo_file.dylib"];
@@ -66,9 +66,14 @@ fn build(release: bool) {
                 let filename_str = filename.to_string_lossy();
                 for lib_pattern in &lib_patterns {
                     if filename_str.contains(lib_pattern) && !filename_str.ends_with(".d") {
-                        let dest = target_dir.join(filename);
-                        if let Err(e) = fs::copy(&path, &dest) {
-                            eprintln!("Warning: Failed to copy {}: {}", filename_str, e);
+                        // Check if file has actual size (not empty placeholder)
+                        if let Ok(metadata) = fs::metadata(&path) {
+                            if metadata.len() > 0 {
+                                let dest = target_dir.join(filename);
+                                if let Err(e) = fs::copy(&path, &dest) {
+                                    eprintln!("Warning: Failed to copy {}: {}", filename_str, e);
+                                }
+                            }
                         }
                         break;
                     }
@@ -80,24 +85,19 @@ fn build(release: bool) {
     println!("✅ Build complete! Files in target/{}/", mode);
     println!("");
 
-    // Install to system path on Linux/macOS
-    #[cfg(not(target_os = "windows"))]
-    {
-        if release {
-            install_to_system(target_dir.clone(), &workspace_root);
-        }
-    }
-
-    // Show PATH instructions
+    // Platform-specific installation
     #[cfg(target_os = "windows")]
     {
-        println!("Add to PATH:");
+        println!("📦 Windows Setup:");
+        println!("Add target/release to PATH:");
         println!("  $env:Path = \"{};$env:Path\"", target_dir.display());
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        if !release {
+        if release {
+            install_unix(&target_dir, &workspace_root);
+        } else {
             println!("Add to PATH:");
             println!("  export PATH=\"{}:$PATH\"", target_dir.display());
         }
@@ -105,96 +105,125 @@ fn build(release: bool) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn install_to_system(target_dir: PathBuf, workspace_root: &PathBuf) {
-    println!("\n📦 Installing to ~/.local/bin...");
+fn install_unix(target_dir: &PathBuf, workspace_root: &PathBuf) {
+    println!("\n📦 Installing to ~/.local/bin/doo/...");
 
     let home = env::var("HOME").expect("HOME environment variable not set");
     let local_bin = PathBuf::from(&home).join(".local").join("bin");
+    let doo_dir = local_bin.join("doo");
 
-    // Create directory
-    if let Err(e) = fs::create_dir_all(&local_bin) {
-        eprintln!("Warning: Failed to create {}: {}", local_bin.display(), e);
-        return;
+    // Create doo directory
+    if let Err(e) = fs::create_dir_all(&doo_dir) {
+        eprintln!("❌ Failed to create {}: {}", doo_dir.display(), e);
+        exit(1);
     }
 
     // Copy doo binary
     let doo_binary = target_dir.join("doo");
-    let dest_binary = local_bin.join("doo");
+    let dest_binary = doo_dir.join("doo");
 
-    if doo_binary.exists() {
-        match fs::copy(&doo_binary, &dest_binary) {
-            Ok(_) => {
-                println!("  ✓ Installed doo binary to {}", dest_binary.display());
+    if !doo_binary.exists() {
+        eprintln!("❌ doo binary not found at {}", doo_binary.display());
+        exit(1);
+    }
 
-                // Make executable
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(metadata) = fs::metadata(&dest_binary) {
-                        let mut perms = metadata.permissions();
-                        perms.set_mode(0o755);
-                        let _ = fs::set_permissions(&dest_binary, perms);
-                    }
+    match fs::copy(&doo_binary, &dest_binary) {
+        Ok(_) => {
+            println!("  ✓ Installed doo binary");
+
+            // Make executable
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = fs::metadata(&dest_binary) {
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o755);
+                    let _ = fs::set_permissions(&dest_binary, perms);
                 }
             }
-            Err(e) => eprintln!("Warning: Failed to copy doo binary: {}", e),
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to copy doo binary: {}", e);
+            exit(1);
         }
     }
 
-    // Copy FFI libraries (both libdoo and libdoo_file)
+    // Copy FFI libraries
     #[cfg(target_os = "linux")]
-    let lib_names = vec!["libdoo.so", "libdoo_file.so"];
+    let lib_names = vec!["libdoo.rlib", "libdoo_file.rlib"];
 
     #[cfg(target_os = "macos")]
     let lib_names = vec!["libdoo.dylib", "libdoo_file.dylib"];
 
     for lib_name in lib_names {
         let lib_file = target_dir.join(lib_name);
-        let dest_lib = local_bin.join(lib_name);
+        let dest_lib = doo_dir.join(lib_name);
 
         if lib_file.exists() {
+            // Check file has actual size before copying
+            if let Ok(metadata) = fs::metadata(&lib_file) {
+                if metadata.len() == 0 {
+                    eprintln!(
+                        "❌ {} is empty (0 bytes). Build may have failed on Windows filesystem.",
+                        lib_name
+                    );
+                    eprintln!("💡 Try building inside WSL native filesystem instead of /mnt");
+                    exit(1);
+                }
+            }
+
             match fs::copy(&lib_file, &dest_lib) {
-                Ok(_) => println!("  ✓ Installed {} to {}", lib_name, dest_lib.display()),
-                Err(e) => eprintln!("Warning: Failed to copy {}: {}", lib_name, e),
+                Ok(_) => println!("  ✓ Installed {}", lib_name),
+                Err(e) => {
+                    eprintln!("❌ Failed to copy {}: {}", lib_name, e);
+                    exit(1);
+                }
             }
         } else {
-            eprintln!("Warning: {} not found in target directory", lib_name);
+            eprintln!("❌ {} not found in target directory", lib_name);
+            exit(1);
         }
     }
 
     // Copy std directory
     let std_dir = workspace_root.join("std");
-    let dest_std = local_bin.join("std");
+    let dest_std = doo_dir.join("std");
 
-    if std_dir.exists() {
-        // Remove old std directory if exists
-        let _ = fs::remove_dir_all(&dest_std);
+    if !std_dir.exists() {
+        eprintln!("❌ std directory not found at {}", std_dir.display());
+        exit(1);
+    }
 
-        match copy_dir_recursive(&std_dir, &dest_std) {
-            Ok(_) => println!("  ✓ Installed std library to {}", dest_std.display()),
-            Err(e) => eprintln!("Warning: Failed to copy std directory: {}", e),
+    // Remove old std directory if exists
+    let _ = fs::remove_dir_all(&dest_std);
+
+    match copy_dir_recursive(&std_dir, &dest_std) {
+        Ok(_) => println!("  ✓ Installed std library"),
+        Err(e) => {
+            eprintln!("❌ Failed to copy std directory: {}", e);
+            exit(1);
         }
     }
 
-    // Check if ~/.local/bin is in PATH
-    let path_var = env::var("PATH").unwrap_or_default();
-    let local_bin_str = local_bin.to_string_lossy();
+    println!("\n✅ Installation complete!");
+    println!("📁 Installed to: {}", doo_dir.display());
 
-    if !path_var.contains(local_bin_str.as_ref()) {
-        println!("\n⚠️  Add ~/.local/bin to your PATH:");
-        println!("  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc");
-        println!("  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.zshrc");
+    // Check and guide PATH setup
+    let path_var = env::var("PATH").unwrap_or_default();
+    let doo_dir_str = doo_dir.to_string_lossy();
+
+    if !path_var.contains(doo_dir_str.as_ref()) {
+        println!("\n⚠️  Add doo to your PATH:");
+        println!("  echo 'export PATH=\"$HOME/.local/bin/doo:$PATH\"' >> ~/.bashrc");
+        println!("  echo 'export PATH=\"$HOME/.local/bin/doo:$PATH\"' >> ~/.zshrc");
         println!("\nOr for current session:");
-        println!("  export PATH=\"$HOME/.local/bin:$PATH\"");
+        println!("  export PATH=\"$HOME/.local/bin/doo:$PATH\"");
+    } else {
+        println!("\n✓ doo is already in your PATH");
     }
 
-    // Set DOO_STD_PATH environment variable hint
-    println!("\n💡 The compiler will look for std library at:");
-    println!("  1. $DOO_STD_PATH (if set)");
-    println!("  2. ~/.local/bin/std (installed location)");
-    println!("  3. ./std (relative to binary)");
-
-    println!("\n✅ Installation complete!");
+    println!("\n💡 Verify installation:");
+    println!("  doo --version");
 }
 
 #[cfg(not(target_os = "windows"))]
