@@ -3,7 +3,7 @@ use crate::limits::MIR_MAX_DEPTH;
 use crate::mir::builder::MirBuilder;
 use crate::mir::expresssions::build_expression;
 use crate::mir::{MirBlock, MirInstr};
-use crate::parser::ast::{AstNode, Pattern};
+use crate::parser::ast::{AstNode, Pattern, TypeNode};
 
 /// Helper function to check if an expression is a function call that returns an error type
 fn check_if_error_returning(builder: &MirBuilder, expr: &AstNode) -> bool {
@@ -315,6 +315,15 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 }
                 // Tuple destructuring: let (a, b) = expr;
                 Pattern::Tuple(patterns) => {
+                    // Get the tuple type from value_tmp to extract element types
+                    let tuple_element_types = if let Some(TypeNode::Tuple(types)) =
+                        builder.mir_symbol_table.get(&value_tmp)
+                    {
+                        types.clone()
+                    } else {
+                        vec![]
+                    };
+
                     for (i, pattern) in patterns.iter().enumerate() {
                         if let Pattern::Identifier(name) = pattern {
                             // Extract each tuple element into a temporary variable.
@@ -324,11 +333,26 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                 source: value_tmp.clone(),
                                 index: i,
                             });
+
+                            // Track the element type in mir_symbol_table
+                            if let Some(elem_type) = tuple_element_types.get(i) {
+                                builder
+                                    .mir_symbol_table
+                                    .insert(extract_tmp.clone(), elem_type.clone());
+                            }
+
                             block.instrs.push(MirInstr::Assign {
                                 name: name.clone(),
-                                value: extract_tmp,
+                                value: extract_tmp.clone(),
                                 mutable: *mutable,
                             });
+
+                            // Track variable type for the assigned name too
+                            if let Some(elem_type) = tuple_element_types.get(i) {
+                                builder
+                                    .mir_symbol_table
+                                    .insert(name.clone(), elem_type.clone());
+                            }
 
                             // Reference counting for tuple elements if needed.
                             if needs_rc {
