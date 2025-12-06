@@ -86,13 +86,6 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Check if we got a valid pointer
         if !map_resolved.is_pointer_value() {
-            eprintln!("ERROR: Map '{}' did not resolve to a pointer value", map);
-            eprintln!("Resolved value type: {:?}", map_resolved.get_type());
-            eprintln!(
-                "Available in temp_values: {}",
-                self.temp_values.contains_key(map)
-            );
-            eprintln!("Available in symbols: {}", self.symbols.contains_key(map));
             // Return None to avoid crash
             return None;
         }

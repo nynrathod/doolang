@@ -115,11 +115,6 @@ impl<'ctx> CodeGen<'ctx> {
                     && type_str != "Bool"
                     && type_str != "Str"
                 {
-                    eprintln!(
-                        "ERROR: Method '{}::{}' not found in module",
-                        type_str, method
-                    );
-                    eprintln!("Available functions:");
                     for func in self.module.get_functions() {
                         eprintln!("  - {}", func.get_name().to_str().unwrap());
                     }

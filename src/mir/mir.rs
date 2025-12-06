@@ -60,17 +60,6 @@ impl MirFunction {
                 // Check used values are defined
                 for used in instr.get_used_values() {
                     if used.starts_with('%') && !defined.contains(&used) {
-                        eprintln!("MIR validation error in function '{}':", self.name);
-                        eprintln!("Block '{}': Undefined temporary '{}'", block.label, used);
-                        eprintln!("Instruction: {:?}", instr);
-                        eprintln!("\nDefined temporaries so far: {:?}", defined);
-                        eprintln!("\nAll blocks:");
-                        for b in &self.blocks {
-                            eprintln!("  Block '{}': {} instrs", b.label, b.instrs.len());
-                            for (i, inst) in b.instrs.iter().enumerate() {
-                                eprintln!("    [{}] {:?}", i, inst);
-                            }
-                        }
                         return Err(format!(
                             "Undefined temporary '{}' in block '{}'",
                             used, block.label

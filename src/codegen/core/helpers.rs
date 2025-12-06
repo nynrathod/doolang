@@ -187,38 +187,14 @@ impl<'ctx> CodeGen<'ctx> {
                 .into();
         }
 
-        eprintln!("ERROR: Unknown variable or literal: {}", name);
-        eprintln!(
-            "Available in temp_values: {:?}",
-            self.temp_values.keys().collect::<Vec<_>>()
-        );
-        eprintln!(
-            "Available in symbols: {:?}",
-            self.symbols.keys().collect::<Vec<_>>()
-        );
-        eprintln!(
-            "Available in variable_types: {:?}",
-            self.variable_types.keys().collect::<Vec<_>>()
-        );
-        eprintln!(
-            "Available in struct_instance_types: {:?}",
-            self.struct_instance_types.keys().collect::<Vec<_>>()
-        );
-        if let Some(block) = self.builder.get_insert_block() {
-            eprintln!("Current block: {:?}", block.get_name());
-        }
-
         // Instead of panicking, create a fallback value for the unknown variable
         // This allows compilation to continue and reveals more errors
         // For temps starting with %, allocate them on-the-fly
         if name.starts_with('%') {
-            eprintln!("WARNING: Auto-allocating missing temp {} as i32", name);
             // Return a zero value as fallback - this is a workaround, not a fix
             return self.context.i32_type().const_int(0, false).into();
         }
 
-        eprintln!("BACKTRACE:");
-        eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
         panic!(
             "Unknown variable or literal: {} - check your MIR generation",
             name

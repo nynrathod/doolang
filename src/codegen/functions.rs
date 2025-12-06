@@ -539,10 +539,6 @@ impl<'ctx> CodeGen<'ctx> {
                 .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
                 .into()
         } else {
-            eprintln!(
-                "DEBUG type_string_to_llvm_type: unknown type {}, defaulting to i32",
-                type_str
-            );
             // Default fallback
             self.context.i32_type().into()
         }

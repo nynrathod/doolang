@@ -697,10 +697,6 @@ impl<'ctx> CodeGen<'ctx> {
         body_ast: &Option<Box<AstNode>>,
         struct_type_name: &str,
     ) -> Option<BasicValueEnum<'ctx>> {
-        eprintln!(
-            "DEBUG generate_struct_filter_closure: name={}, params={:?}, struct_type={}",
-            name, params, struct_type_name
-        );
         // Generate a unique function name for this struct filter closure
         let closure_fn_name = format!("struct_filter_closure_{}", name);
 
@@ -750,15 +746,6 @@ impl<'ctx> CodeGen<'ctx> {
                     .insert(param_name.clone(), struct_type_name.to_string());
                 self.variable_types
                     .insert(param_name.clone(), struct_type_name.to_string());
-                eprintln!(
-                    "DEBUG: inserted param '{}' into struct_instance_types with type '{}'",
-                    param_name, struct_type_name
-                );
-                eprintln!(
-                    "DEBUG: struct_instance_types now contains '{}': {}",
-                    param_name,
-                    self.struct_instance_types.contains_key(param_name)
-                );
             }
         }
 
@@ -867,15 +854,8 @@ impl<'ctx> CodeGen<'ctx> {
         closure_name: &str,
         arg: BasicValueEnum<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
-        eprintln!(
-            "DEBUG call_struct_filter_closure: looking for closure '{}'",
-            closure_name
-        );
         let fn_name = format!("struct_filter_closure_{}", closure_name);
-        eprintln!(
-            "DEBUG call_struct_filter_closure: full fn name = '{}'",
-            fn_name
-        );
+
         if let Some(closure_fn) = self.get_struct_filter_closure_function(closure_name) {
             let arg_ptr = if arg.is_pointer_value() {
                 arg.into_pointer_value()
@@ -1769,25 +1749,6 @@ impl<'ctx> CodeGen<'ctx> {
                 // Handle method calls on struct instances inside closures
                 // First get the object value (should be a pointer to struct)
                 let obj_name = Self::extract_identifier(object)?;
-                eprintln!(
-                    "DEBUG eval_ast_expr MethodCall: obj_name={}, method={}",
-                    obj_name, method
-                );
-                eprintln!(
-                    "DEBUG: temp_values contains '{}': {}",
-                    obj_name,
-                    self.temp_values.contains_key(obj_name)
-                );
-                eprintln!(
-                    "DEBUG: struct_instance_types contains '{}': {}",
-                    obj_name,
-                    self.struct_instance_types.contains_key(obj_name)
-                );
-                eprintln!(
-                    "DEBUG: variable_types contains '{}': {}",
-                    obj_name,
-                    self.variable_types.contains_key(obj_name)
-                );
                 let obj_val = self.temp_values.get(obj_name)?.clone();
 
                 // Check if this is a struct type by looking up in struct_instance_types
@@ -1795,10 +1756,6 @@ impl<'ctx> CodeGen<'ctx> {
                     // This is a struct method call
                     // The method should be generated as StructName::method
                     let mangled_method_name = format!("{}::{}", struct_type_name, method);
-                    eprintln!(
-                        "DEBUG: looking for method function: {}",
-                        mangled_method_name
-                    );
 
                     if let Some(method_fn) = self.module.get_function(&mangled_method_name) {
                         // Build arguments - first arg is self (the struct pointer)

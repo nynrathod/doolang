@@ -1622,15 +1622,6 @@ impl<'ctx> CodeGen<'ctx> {
                                                         if (*index as u32)
                                                             >= struct_type.count_fields()
                                                         {
-                                                            eprintln!("ERROR: TupleExtract index {} out of bounds for struct with {} fields", index, struct_type.count_fields());
-                                                            eprintln!(
-                                                                "  Source: {}, Tuple type: {}",
-                                                                source, tuple_type_str
-                                                            );
-                                                            eprintln!(
-                                                                "  Struct fields: {}",
-                                                                struct_type.count_fields()
-                                                            );
                                                             // Return a dummy value instead of panicking
                                                             let dummy = self
                                                                 .context
@@ -1653,12 +1644,6 @@ impl<'ctx> CodeGen<'ctx> {
                                                         let field_ptr = match field_ptr_result {
                                                             Ok(ptr) => ptr,
                                                             Err(e) => {
-                                                                eprintln!("ERROR: Failed to build_struct_gep: {:?}", e);
-                                                                eprintln!("  Source: {}, Index: {}, Tuple type: {}", source, index, tuple_type_str);
-                                                                eprintln!(
-                                                                    "  Struct type fields: {}",
-                                                                    struct_type.count_fields()
-                                                                );
                                                                 // Return a dummy value
                                                                 let dummy = self
                                                                     .context
@@ -2353,8 +2338,6 @@ impl<'ctx> CodeGen<'ctx> {
                         self.temp_values.insert(name.clone(), field_val);
                         return Some(field_val);
                     } else {
-                        eprintln!("ERROR: TupleExtract trying to extract field {} from struct with only {} fields", index, num_fields);
-                        eprintln!("  source={}, name={}", source, name);
                         panic!(
                             "ExtractOutOfRange: field {} out of {} fields",
                             index, num_fields
@@ -6206,11 +6189,6 @@ impl<'ctx> CodeGen<'ctx> {
                             .get(result_tmp)
                             .map(|(_, e)| e.clone())
                             .unwrap_or_else(|| "Str".to_string());
-                        // eprintln!("  err_from_ok_path type: {:?}", err_from_ok_path.get_type());
-                        // eprintln!(
-                        //     "  err_from_err_path type: {:?}",
-                        //     err_from_err_path.get_type()
-                        // );
 
                         // CRITICAL: Check for struct/complex types FIRST before checking primitive types
                         // This prevents false matches like "IntError" matching "Int"
@@ -6222,35 +6200,24 @@ impl<'ctx> CodeGen<'ctx> {
 
                         // Determine the LLVM type for the phi node based on error type
                         let phi_type: inkwell::types::BasicTypeEnum = if is_struct_error {
-                            // Struct errors are pointers
-                            // eprintln!("  Phi type: pointer (struct error)");
                             self.context
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into()
                         } else if err_type.starts_with("Array") || err_type.starts_with("Map") {
-                            // Array and Map errors are pointers
-                            // eprintln!("  Phi type: pointer (array/map error)");
                             self.context
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into()
                         } else if err_type == "Str" || err_type == "String" {
-                            // String errors are pointers
-                            // eprintln!("  Phi type: pointer (string error)");
                             self.context
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into()
                         } else if err_type == "Int" {
-                            // eprintln!("  Phi type: i32 (int error)");
                             self.context.i32_type().into()
                         } else if err_type == "Float" {
-                            // eprintln!("  Phi type: f64 (float error)");
                             self.context.f64_type().into()
                         } else if err_type == "Bool" {
-                            // eprintln!("  Phi type: bool (bool error)");
                             self.context.bool_type().into()
                         } else {
-                            // Default: pointer
-                            // eprintln!("  Phi type: pointer (default/unknown)");
                             self.context
                                 .ptr_type(inkwell::AddressSpace::default())
                                 .into()
@@ -6262,8 +6229,6 @@ impl<'ctx> CodeGen<'ctx> {
                             (&err_from_err_path, err_block),
                         ]);
                         let phi_val = phi.as_basic_value();
-                        // eprintln!("  Final phi_val type: {:?}", phi_val.get_type());
-                        // eprintln!("  Is pointer: {}", phi_val.is_pointer_value());
 
                         self.temp_values.insert(error_name.clone(), phi_val);
 
@@ -6652,10 +6617,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let struct_ptr = self.resolve_value(struct_instance);
 
                 if !struct_ptr.is_pointer_value() {
-                    eprintln!(
-                        "DEBUG StructGet: struct_ptr is not a pointer value! Type: {:?}",
-                        struct_ptr.get_type()
-                    );
                     return None;
                 }
 
@@ -6911,7 +6872,6 @@ impl<'ctx> CodeGen<'ctx> {
                             .insert(struct_name.to_string(), reconstructed);
                         reconstructed
                     } else {
-                        // eprintln!("ERROR: StructGet - no metadata found for struct '{}'! Using fallback struct type", struct_name);
                         // Last resort fallback: create a simple struct type
                         self.context
                             .struct_type(&[self.context.i32_type().into()], false)
@@ -6919,7 +6879,6 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // Safety check for field index
                 if (field_index as u32) >= struct_type.count_fields() {
-                    // eprintln!("ERROR: StructGet - field index {} out of bounds for struct '{}' with {} fields", field_index, struct_name, struct_type.count_fields());
                     // Return a dummy value
                     let dummy = self.context.i32_type().const_int(0, false).into();
                     self.temp_values.insert(name.clone(), dummy);
@@ -6942,11 +6901,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let field_ptr = match field_ptr_result {
                     Ok(ptr) => ptr,
                     Err(e) => {
-                        // eprintln!("ERROR: StructGet - failed to build_struct_gep: {:?}", e);
-                        // eprintln!(
-                        //     "  struct_name='{}', field='{}', index={}",
-                        //     struct_name, field, field_index
-                        // );
                         // Return a dummy value
                         let dummy = self.context.i32_type().const_int(0, false).into();
                         self.temp_values.insert(name.clone(), dummy);

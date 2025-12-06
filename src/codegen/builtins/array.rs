@@ -1363,12 +1363,6 @@ impl<'ctx> CodeGen<'ctx> {
                         && metadata.element_type != "Int"
                         && metadata.element_type != "Bool"
                         && self.struct_metadata.contains_key(&metadata.element_type);
-                    eprintln!(
-                        "DEBUG filter: element_type={}, is_struct_array={}, struct_metadata.contains_key={}",
-                        metadata.element_type,
-                        is_struct_array,
-                        self.struct_metadata.contains_key(&metadata.element_type)
-                    );
 
                     // Check if the argument is a closure
                     if !self.is_closure(&args[0]) {
@@ -1376,11 +1370,6 @@ impl<'ctx> CodeGen<'ctx> {
                     }
 
                     // Generate appropriate closure on-demand
-                    eprintln!(
-                        "DEBUG filter: checking closure_bodies for '{}': {}",
-                        args[0],
-                        self.closure_bodies.contains_key(&args[0])
-                    );
                     if is_string_array {
                         if let Some((params, body_ast)) = self.closure_bodies.get(&args[0]).cloned()
                         {
@@ -1409,10 +1398,6 @@ impl<'ctx> CodeGen<'ctx> {
                         {
                             let has_fn =
                                 self.get_struct_filter_closure_function(&args[0]).is_some();
-                            eprintln!(
-                                "DEBUG filter: struct_filter_closure function exists: {}",
-                                has_fn
-                            );
                             if !has_fn {
                                 let struct_type_name = metadata.element_type.clone();
                                 self.generate_struct_filter_closure(

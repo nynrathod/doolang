@@ -1111,31 +1111,15 @@ impl SemanticAnalyzer {
                 // Pass the current import_stack so recursive imports are detected correctly
                 imported_analyzer.is_main_module = false;
 
-                // DEBUG: Print what module we're analyzing
-                eprintln!("[DEBUG] Analyzing imported module: {:?}", file_path);
-
                 if let Err(e) =
                     imported_analyzer.analyze_program_with_stack(&mut nodes, import_stack)
                 {
-                    eprintln!("[DEBUG] Import analysis error for {:?}: {:?}", file_path, e);
-                    eprintln!(
-                        "[DEBUG] Collected errors: {:?}",
-                        imported_analyzer.collected_errors
-                    );
-                    eprintln!(
-                        "[DEBUG] struct_table keys: {:?}",
-                        imported_analyzer.struct_table.keys().collect::<Vec<_>>()
-                    );
                     return Err(e);
                 }
 
                 import_stack.pop();
                 (nodes, imported_analyzer)
             } else {
-                println!(
-                    "[WARNING] [import_module] Parsed AST from {:?} is not a Program variant",
-                    file_path
-                );
                 import_stack.pop();
                 return Ok(());
             }

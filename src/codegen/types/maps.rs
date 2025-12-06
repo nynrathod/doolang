@@ -284,14 +284,6 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
 
-            eprintln!(
-                "Warning: No map metadata found for '{}' in get_map_length",
-                map_name
-            );
-            eprintln!(
-                "Available map metadata: {:?}",
-                self.map_metadata.keys().collect::<Vec<_>>()
-            );
             self.context.i32_type().const_int(0, false)
         }
     }
@@ -316,10 +308,6 @@ impl<'ctx> CodeGen<'ctx> {
                     if self.struct_metadata.contains_key(&metadata.key_type) {
                         self.context.ptr_type(AddressSpace::default()).into()
                     } else {
-                        eprintln!(
-                            "WARNING: Unknown key type '{}' for map '{}', defaulting to i32",
-                            metadata.key_type, map_name
-                        );
                         self.context.i32_type().into()
                     }
                 }
@@ -336,10 +324,6 @@ impl<'ctx> CodeGen<'ctx> {
                     if self.struct_metadata.contains_key(&metadata.value_type) {
                         self.context.ptr_type(AddressSpace::default()).into()
                     } else {
-                        eprintln!(
-                            "WARNING: Unknown value type '{}' for map '{}', defaulting to i32",
-                            metadata.value_type, map_name
-                        );
                         self.context.i32_type().into()
                     }
                 }
@@ -347,30 +331,6 @@ impl<'ctx> CodeGen<'ctx> {
 
             (key_type, val_type)
         } else {
-            eprintln!("\n╔════════════════════════════════════════════════════════════════════╗");
-            eprintln!("║ ERROR: No metadata found for map '{}'", map_name);
-            eprintln!("╚════════════════════════════════════════════════════════════════════╝");
-            eprintln!("\n📊 Available map metadata:");
-            if self.map_metadata.is_empty() {
-                eprintln!("  (none)");
-            } else {
-                for (key, meta) in &self.map_metadata {
-                    eprintln!(
-                        "  • '{}' → {{{}:{}}}, length={}",
-                        key, meta.key_type, meta.value_type, meta.length
-                    );
-                }
-            }
-            eprintln!("\n⚠️  Cannot determine map types without metadata - IR will be incorrect!");
-            eprintln!("═══════════════════════════════════════════════════════════════════\n");
-
-            // Return dummy types, but this will produce incorrect IR
-            debug_assert!(
-                false,
-                "FATAL: Cannot proceed without map metadata for '{}'",
-                map_name
-            );
-
             // Return fallback types for release builds
             (
                 self.context.i32_type().into(),

@@ -395,10 +395,6 @@ impl<'ctx> CodeGen<'ctx> {
                                 len_ptr_cast,
                                 &format!("{}_runtime_len", array_name),
                             ) {
-                                eprintln!(
-                                    "[SUCCESS] Extracted runtime length for '{}'",
-                                    array_name
-                                );
                                 return runtime_len.into_int_value();
                             }
                         }
@@ -436,10 +432,6 @@ impl<'ctx> CodeGen<'ctx> {
                             len_ptr_cast,
                             &format!("{}_runtime_len", array_name),
                         ) {
-                            eprintln!(
-                                "[SUCCESS] Extracted runtime length for '{}' from temp_values",
-                                array_name
-                            );
                             return runtime_len.into_int_value();
                         }
                     }
