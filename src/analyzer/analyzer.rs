@@ -945,9 +945,16 @@ impl SemanticAnalyzer {
         // Otherwise, try project-relative path
         let mut buf = self.project_root.clone();
 
-        // For imports like http::Client::Fetchuser, we want http/Client.doo
-        // The path will be ["http", "Client"]
-        for part in path {
+        // For imports like CircularA::FunctionA, we want CircularA.doo
+        // The last element is the symbol being imported, not part of the file path
+        // So we exclude it when building the file path
+        let file_path_parts = if path.len() > 1 {
+            &path[..path.len() - 1]
+        } else {
+            path
+        };
+
+        for part in file_path_parts {
             buf.push(part);
         }
 
