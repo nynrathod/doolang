@@ -945,27 +945,39 @@ impl SemanticAnalyzer {
         // Otherwise, try project-relative path
         let mut buf = self.project_root.clone();
 
-        // For imports like CircularA::FunctionA, we want CircularA.doo
-        // The last element is the symbol being imported, not part of the file path
-        // So we exclude it when building the file path
-        let file_path_parts = if path.len() > 1 {
-            &path[..path.len() - 1]
-        } else {
-            path
-        };
+        // For imports, we need to determine if the path includes a symbol or not:
+        // 1. Wildcard import: core::evaluator::* -> path=["core", "evaluator"], items=[Wildcard]
+        //    Should resolve to core/evaluator.doo (use all parts)
+        // 2. Specific symbol import: CircularA::FunctionA -> path=["CircularA", "FunctionA"], items=[]
+        //    Should resolve to CircularA.doo (use all but last part)
+        // 3. Namespace import: core::evaluator -> path=["core", "evaluator"], items=[]
+        //    Should resolve to core/evaluator.doo (use all parts)
 
-        for part in file_path_parts {
-            buf.push(part);
+        // First, try using all path parts (for wildcard and namespace imports)
+        let mut full_path_buf = self.project_root.clone();
+        for part in path {
+            full_path_buf.push(part);
+        }
+        full_path_buf.set_extension("doo");
+
+        if full_path_buf.exists() {
+            return Some(full_path_buf);
         }
 
-        // Add .doo extension
-        buf.set_extension("doo");
+        // If that didn't work, try excluding the last part (for specific symbol imports)
+        if path.len() > 1 {
+            let mut partial_path_buf = self.project_root.clone();
+            for part in &path[..path.len() - 1] {
+                partial_path_buf.push(part);
+            }
+            partial_path_buf.set_extension("doo");
 
-        if buf.exists() {
-            Some(buf)
-        } else {
-            None
+            if partial_path_buf.exists() {
+                return Some(partial_path_buf);
+            }
         }
+
+        None
     }
 
     fn import_module(
