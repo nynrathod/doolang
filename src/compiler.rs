@@ -464,9 +464,13 @@ fn link_object_file(
     search_paths.push(PathBuf::from("/usr/local/lib"));
     search_paths.push(PathBuf::from("/usr/lib"));
 
-    // 4. User home lib directory
+    // 4. User home lib directory and doo installation directory
     if let Ok(home) = env::var("HOME") {
-        search_paths.push(PathBuf::from(home).join(".local").join("lib"));
+        let home_path = PathBuf::from(&home);
+        // Primary: ~/.local/bin/doo (where xtask installs on Linux/macOS)
+        search_paths.push(home_path.join(".local").join("bin").join("doo"));
+        // Fallback: ~/.local/lib
+        search_paths.push(home_path.join(".local").join("lib"));
     }
     if let Ok(home) = env::var("USERPROFILE") {
         search_paths.push(PathBuf::from(home).join(".local").join("lib"));
