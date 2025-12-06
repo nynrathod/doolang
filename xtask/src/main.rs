@@ -22,156 +22,40 @@ fn main() {
 }
 
 /// Check if running in WSL on Windows filesystem (/mnt)
-fn is_wsl_on_windows_fs() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        let cwd = env::current_dir().unwrap_or_default();
-        let cwd_str = cwd.to_string_lossy();
-        if cwd_str.starts_with("/mnt/") {
-            // Double check it's WSL by looking for WSL-specific files
-            return PathBuf::from("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
-                || PathBuf::from("/run/WSL").exists()
-                || env::var("WSL_DISTRO_NAME").is_ok();
-        }
-    }
-    false
-}
-
-/// Build in WSL native filesystem to avoid empty .so files
 #[cfg(target_os = "linux")]
-fn build_in_wsl_native(release: bool) -> bool {
-    let mode = if release { "release" } else { "debug" };
-    let workspace_root = env::current_dir().expect("Failed to get current directory");
-    let home = env::var("HOME").expect("HOME not set");
-    let native_build_dir = PathBuf::from(&home).join(".doo-build");
+fn check_wsl_on_windows_fs() {
+    let cwd = env::current_dir().unwrap_or_default();
+    let cwd_str = cwd.to_string_lossy();
 
-    println!("📋 WSL detected on Windows filesystem (/mnt)");
-    println!("   Building in native filesystem for proper .so generation...\n");
+    if cwd_str.starts_with("/mnt/") {
+        // Double check it's WSL by looking for WSL-specific files
+        let is_wsl = PathBuf::from("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
+            || PathBuf::from("/run/WSL").exists()
+            || env::var("WSL_DISTRO_NAME").is_ok();
 
-    // Clean previous build dir
-    let _ = fs::remove_dir_all(&native_build_dir);
-
-    // Create build directory
-    if let Err(e) = fs::create_dir_all(&native_build_dir) {
-        eprintln!("❌ Failed to create build directory: {}", e);
-        return false;
-    }
-
-    // Use rsync to copy source files (excluding target directory)
-    println!(
-        "📦 Copying source files to {}...",
-        native_build_dir.display()
-    );
-    let rsync_status = Command::new("rsync")
-        .args([
-            "-a",
-            "--exclude=target",
-            "--exclude=.git",
-            &format!("{}/", workspace_root.display()),
-            &format!("{}/", native_build_dir.display()),
-        ])
-        .status();
-
-    match rsync_status {
-        Ok(status) if status.success() => {}
-        Ok(_) | Err(_) => {
-            // Fallback to cp if rsync not available
-            println!("   rsync not found, using cp...");
-            let cp_status = Command::new("bash")
-                .arg("-c")
-                .arg(format!(
-                    "cp -r {}/* {} 2>/dev/null; rm -rf {}/target",
-                    workspace_root.display(),
-                    native_build_dir.display(),
-                    native_build_dir.display()
-                ))
-                .status();
-
-            if cp_status.is_err() || !cp_status.unwrap().success() {
-                eprintln!("❌ Failed to copy source files");
-                return false;
-            }
+        if is_wsl {
+            eprintln!("❌ Cannot build on Windows filesystem (/mnt) in WSL!");
+            eprintln!("   This creates empty/corrupt .so files.\n");
+            eprintln!("🔧 SOLUTION - Build on actual Linux or use Windows build:\n");
+            eprintln!("Option 1 - Use Windows build (RECOMMENDED FOR DEVELOPMENT):");
+            eprintln!("   Open PowerShell in Windows and run:");
+            eprintln!("   cargo xtask release\n");
+            eprintln!("Option 2 - Build in WSL native filesystem:");
+            eprintln!("   cp -r /mnt/x/Projects/doo ~/doo");
+            eprintln!("   cd ~/doo");
+            eprintln!("   cargo xtask release\n");
+            eprintln!("Option 3 - Build on actual Linux machine (for production)");
+            exit(1);
         }
     }
-
-    // Build in native filesystem
-    println!("🔨 Building in native filesystem...\n");
-    let mut build_cmd = Command::new("cargo");
-    build_cmd
-        .current_dir(&native_build_dir)
-        .arg("build")
-        .arg("--workspace");
-
-    if release {
-        build_cmd.arg("--release");
-    }
-
-    let build_status = build_cmd.status();
-    if build_status.is_err() || !build_status.unwrap().success() {
-        eprintln!("❌ Build failed in native filesystem");
-        return false;
-    }
-
-    // Copy built artifacts back to original target directory
-    println!("\n📦 Copying build artifacts back...");
-    let native_target = native_build_dir.join("target").join(mode);
-    let original_target = workspace_root.join("target").join(mode);
-
-    // Create original target directory
-    let _ = fs::create_dir_all(&original_target);
-
-    // Copy the doo binary
-    let doo_binary = native_target.join("doo");
-    if doo_binary.exists() {
-        if let Err(e) = fs::copy(&doo_binary, original_target.join("doo")) {
-            eprintln!("Warning: Failed to copy doo binary: {}", e);
-        }
-    }
-
-    // Copy .so files
-    for lib_name in &["libdoo.so", "libdoo_file.so"] {
-        let lib_src = native_target.join(lib_name);
-        if lib_src.exists() {
-            let size = fs::metadata(&lib_src).map(|m| m.len()).unwrap_or(0);
-            if size > 0 {
-                if let Err(e) = fs::copy(&lib_src, original_target.join(lib_name)) {
-                    eprintln!("Warning: Failed to copy {}: {}", lib_name, e);
-                } else {
-                    println!("  ✓ Copied {} ({} bytes)", lib_name, size);
-                }
-            }
-        }
-    }
-
-    // Now proceed with installation using the native build directory's target
-    println!("\n📦 Installing from native build...");
-    install_unix_from_path(&native_target, &native_build_dir);
-
-    // Cleanup
-    println!("\n🧹 Cleaning up temporary build directory...");
-    let _ = fs::remove_dir_all(&native_build_dir);
-
-    true
 }
 
 fn build(release: bool) {
-    let mode = if release { "release" } else { "debug" };
-
-    // Handle WSL on Windows filesystem specially
+    // Check for WSL on Windows filesystem and exit with instructions
     #[cfg(target_os = "linux")]
-    {
-        if is_wsl_on_windows_fs() {
-            if build_in_wsl_native(release) {
-                return;
-            } else {
-                eprintln!("\n❌ WSL native build failed. Please try:");
-                eprintln!("   1. Copy project to WSL: cp -r /mnt/x/Projects/doo ~/doo");
-                eprintln!("   2. Build there: cd ~/doo && cargo xtask release");
-                exit(1);
-            }
-        }
-    }
+    check_wsl_on_windows_fs();
 
+    let mode = if release { "release" } else { "debug" };
     println!("🔨 Building doo compiler ({})...", mode);
 
     // Build the entire workspace
@@ -522,18 +406,6 @@ fn clean() {
     if !status.success() {
         eprintln!("❌ Clean failed!");
         exit(1);
-    }
-
-    // Also clean WSL build directory if it exists
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(home) = env::var("HOME") {
-            let native_build_dir = PathBuf::from(&home).join(".doo-build");
-            if native_build_dir.exists() {
-                println!("🧹 Cleaning WSL build cache...");
-                let _ = fs::remove_dir_all(&native_build_dir);
-            }
-        }
     }
 
     println!("✅ Clean complete!");
