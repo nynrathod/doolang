@@ -32,7 +32,7 @@ bumpalo = "3.19.0"
 [lib]
 name = "doo"
 path = "src/lib.rs"
-crate-type = ["lib", "cdylib"]
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "doo"
