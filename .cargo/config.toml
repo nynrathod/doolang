@@ -1,5 +1,0 @@
-# Cargo configuration for doo compiler
-
-[alias]
-# Cross-platform build commands (works on Windows, Linux, macOS)
-xtask = "run --package xtask --"
