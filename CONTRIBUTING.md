@@ -26,6 +26,7 @@ If you are developing on **Windows**, you must place the `lld-link.exe` linker i
     - Example: `C:\Program Files\LLVM\bin\lld-link.exe`
 
 **After downloading, copy `lld-link.exe` to the `linkers` directory at the root of this project:**
+
 ```
 doo/
 ├── linkers/
@@ -44,7 +45,7 @@ git clone https://github.com/nynrathod/doolang/
 cd doo
 
 # Build in release mode (optimized)
-cargo build --release --bin doo
+cargo build --release --workspace
 
 # Run the development compiler
 cargo run
@@ -82,14 +83,12 @@ Semantic Analysis (Type Checker)
    Native Linking (via lld(in Windows) and clang(In Linus and macOS) - Single executable)
 ```
 
-
 ### Compiler Options
 
 The development tool supports various compilation modes:
 
 - **Debug Mode**: `cargo run` - Includes debug information and prints AST/MIR
 - **Release Mode**: `cargo build --release --bin doo` - Optimizes for performance
-
 
 ## 🛠️ Development Workflow
 
@@ -101,6 +100,7 @@ The development tool supports various compilation modes:
 ### 2. Create a Feature Branch
 
 Always create a feature branch for your work:
+
 ```bash
 git checkout -b feature/amazing-feature
 # or
@@ -119,8 +119,8 @@ git checkout -b fix/bug-description
 For detailed testing instructions, see [TEST.md](./TEST.md).
 
 ### 5. Commit and Push
-### 6. Create a Pull Request
 
+### 6. Create a Pull Request
 
 ## 🐛 Reporting Issues
 
