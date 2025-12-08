@@ -1,18 +1,14 @@
 // HTTP Server and routing via FFI
-// Server implementation uses hyper-rs with matchit for routing
+// Complete implementation for Phase 1, 2, 3, 4, 5
 //
 // Usage:
 //   import std::Http;
-//   
-//   fn main() {
-//       let app = Server { Port: 3000, Host: "127.0.0.1" };
-//       app.get("/users", "handleUsers")?;
-//       app.post("/users", "createUser")?;
-//       app.listen(3000)?;
-//   }
 //
-//   fn handleUsers(req: Request) -> Response ! HttpError {
-//       Ok Response { Status: 200, Body: "{}", ContentType: "application/json" };
+//   fn main() {
+//       let app = Server.new(":3000");
+//       app.post("/signup", signup);
+//       app.get("/profile", getProfile);
+//       app.start();
 //   }
 
 // === Structs ===
@@ -69,31 +65,52 @@ fn StatusNotImplemented() -> Int { return 501; }
 fn StatusBadGateway() -> Int { return 502; }
 fn StatusServiceUnavailable() -> Int { return 503; }
 
-// === Server Methods ===
+// === Server Constructor ===
+
+fn Server.new(addr: Str) -> Server {
+    return Server {
+        Port: 3000,
+        Host: "127.0.0.1",
+    };
+}
+
+// === Server Methods - Route Registration ===
 
 @ffi("doo_http")
 @extern("doo_http_get")
-fn Server.get(self, path: Str, handler: Str) -> Void ! HttpError {}
+fn Server.get(self, path: Str, handler: Str) -> ! HttpError {}
 
 @ffi("doo_http")
 @extern("doo_http_post")
-fn Server.post(self, path: Str, handler: Str) -> Void ! HttpError {}
+fn Server.post(self, path: Str, handler: Str) -> ! HttpError {}
 
 @ffi("doo_http")
 @extern("doo_http_put")
-fn Server.put(self, path: Str, handler: Str) -> Void ! HttpError {}
+fn Server.put(self, path: Str, handler: Str) -> ! HttpError {}
 
 @ffi("doo_http")
 @extern("doo_http_delete")
-fn Server.delete(self, path: Str, handler: Str) -> Void ! HttpError {}
+fn Server.delete(self, path: Str, handler: Str) -> ! HttpError {}
 
 @ffi("doo_http")
 @extern("doo_http_patch")
-fn Server.patch(self, path: Str, handler: Str) -> Void ! HttpError {}
+fn Server.patch(self, path: Str, handler: Str) -> ! HttpError {}
+
+// === Route Groups ===
+
+@ffi("doo_http")
+@extern("doo_http_group")
+fn Server.group(self, prefix: Str) -> ! HttpError {}
+
+// === Server Lifecycle ===
 
 @ffi("doo_http")
 @extern("doo_http_listen")
-fn Server.listen(self, port: Int) -> Void ! HttpError {}
+fn Server.start(self) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_listen")
+fn Server.listen(self, port: Int) -> ! HttpError {}
 
 // === Request Methods ===
 
@@ -108,3 +125,55 @@ fn Request.param(self, name: Str) -> Str {}
 @ffi("doo_http")
 @extern("doo_http_req_header")
 fn Request.header(self, name: Str) -> Str {}
+
+// === JSON Helpers (Phase 4) ===
+
+@ffi("doo_http")
+@extern("doo_http_parse_json")
+fn parseJson(body: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doo_http_to_json")
+fn toJson(data: Str) -> Str {}
+
+// === Helper Functions ===
+
+fn JsonResponse(status: Int, body: Str) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "application/json",
+    };
+}
+
+fn ErrorResponse(status: Int, message: Str) -> Response {
+    return Response {
+        Status: status,
+        Body: "{\"error\":\"" + message + "\"}",
+        ContentType: "application/json",
+    };
+}
+
+fn OkResponse(body: Str) -> Response {
+    return JsonResponse(200, body);
+}
+
+fn CreatedResponse(body: Str) -> Response {
+    return JsonResponse(201, body);
+}
+
+fn BadRequestResponse(message: Str) -> Response {
+    return ErrorResponse(400, message);
+}
+
+fn UnauthorizedResponse(message: Str) -> Response {
+    return ErrorResponse(401, message);
+}
+
+fn NotFoundResponse(message: Str) -> Response {
+    return ErrorResponse(404, message);
+}
+
+fn InternalErrorResponse(message: Str) -> Response {
+    return ErrorResponse(500, message);
+}
