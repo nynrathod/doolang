@@ -425,44 +425,72 @@ impl<'ctx> CodeGen<'ctx> {
                     .left()
             } else if original_handler.count_params() == 1 {
                 // Handler takes 1 parameter: fn(data: SomeStruct) -> ReturnType
-                // TODO: Parse JSON from request.body into the struct parameter
-                // For now, allocate an empty struct and pass it
+                // Parse JSON from request.body into the struct parameter
                 let param_type = original_handler.get_type().get_param_types()[0];
 
                 // Allocate space for the parameter struct
                 let malloc_fn = self.module.get_function("malloc").unwrap();
-                let struct_size = i64_type.const_int(128, false); // Allocate 128 bytes (enough for most structs)
+                let struct_size = i64_type.const_int(128, false);
                 let struct_ptr = self
                     .builder
                     .build_call(malloc_fn, &[struct_size.into()], "param_struct_ptr")
                     .unwrap()
                     .try_as_basic_value()
                     .left()
-                    .unwrap();
+                    .unwrap()
+                    .into_pointer_value();
 
-                // Zero out the memory using memset
-                if let Some(memset_fn) = self.module.get_function("memset") {
-                    let zero = self.context.i32_type().const_int(0, false);
-                    self.builder
-                        .build_call(
-                            memset_fn,
-                            &[struct_ptr.into(), zero.into(), struct_size.into()],
-                            "",
-                        )
-                        .unwrap();
+                // Zero out the memory
+                let memset_fn = if let Some(f) = self.module.get_function("memset") {
+                    f
                 } else {
-                    // Declare memset if not present
                     let memset_type = ptr_type
                         .fn_type(&[ptr_type.into(), i32_type.into(), i64_type.into()], false);
-                    let memset_fn = self.module.add_function("memset", memset_type, None);
-                    let zero = self.context.i32_type().const_int(0, false);
+                    self.module.add_function("memset", memset_type, None)
+                };
+                let zero = i32_type.const_int(0, false);
+                self.builder
+                    .build_call(
+                        memset_fn,
+                        &[struct_ptr.into(), zero.into(), struct_size.into()],
+                        "",
+                    )
+                    .unwrap();
+
+                // Get the request body field from DooRequest
+                // DooRequest layout: { method, path, body, content_type, params, query, headers }
+                // body is at offset 16 (8 bytes for method ptr + 8 bytes for path ptr)
+                let body_field_ptr = unsafe {
                     self.builder
-                        .build_call(
-                            memset_fn,
-                            &[struct_ptr.into(), zero.into(), struct_size.into()],
-                            "",
+                        .build_gep(
+                            self.context.i8_type(),
+                            request_param,
+                            &[i32_type.const_int(16, false)],
+                            "body_field_ptr",
                         )
-                        .unwrap();
+                        .unwrap()
+                };
+                let body_field_ptr_typed = self
+                    .builder
+                    .build_pointer_cast(
+                        body_field_ptr,
+                        ptr_type.ptr_type(AddressSpace::default()),
+                        "body_field_typed",
+                    )
+                    .unwrap();
+                let body_str_ptr = self
+                    .builder
+                    .build_load(ptr_type, body_field_ptr_typed, "body_str")
+                    .unwrap()
+                    .into_pointer_value();
+
+                // Get the parameter type name from MIR
+                if let Some(param_types) = self.function_param_types.get(handler_name) {
+                    if !param_types.is_empty() {
+                        let param_type_str = param_types[0].clone();
+                        // Parse JSON body into struct
+                        self.parse_json_into_struct(body_str_ptr, struct_ptr, &param_type_str);
+                    }
                 }
 
                 self.builder
@@ -1138,6 +1166,213 @@ impl<'ctx> CodeGen<'ctx> {
                     "",
                 )
                 .unwrap();
+        }
+    }
+
+    /// Parse JSON string into a struct
+    fn parse_json_into_struct(
+        &mut self,
+        json_str_ptr: inkwell::values::PointerValue<'ctx>,
+        struct_ptr: inkwell::values::PointerValue<'ctx>,
+        struct_type: &str,
+    ) {
+        // Get struct metadata
+        if let Some(metadata) = self.struct_metadata.get(struct_type).cloned() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let i32_type = self.context.i32_type();
+
+            // Declare JSON parsing helper functions
+            let strstr_fn = if let Some(f) = self.module.get_function("strstr") {
+                f
+            } else {
+                let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                self.module.add_function("strstr", fn_type, None)
+            };
+            let strchr_fn = if let Some(f) = self.module.get_function("strchr") {
+                f
+            } else {
+                let fn_type = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+                self.module.add_function("strchr", fn_type, None)
+            };
+            let atoi_fn = if let Some(f) = self.module.get_function("atoi") {
+                f
+            } else {
+                let fn_type = i32_type.fn_type(&[ptr_type.into()], false);
+                self.module.add_function("atoi", fn_type, None)
+            };
+
+            // For each field in the struct, try to extract it from JSON
+            for (field_idx, field_name) in metadata.field_names.iter().enumerate() {
+                let field_type = &metadata.field_types[field_idx];
+
+                // Create search pattern: "fieldName":"
+                let search_pattern = format!("\"{}\":\"", field_name);
+                let pattern_str = self
+                    .builder
+                    .build_global_string_ptr(&search_pattern, &format!("pattern_{}", field_name))
+                    .unwrap()
+                    .as_pointer_value();
+
+                // Find the field in JSON: strstr(json, "fieldName":")
+                let field_start = self
+                    .builder
+                    .build_call(
+                        strstr_fn,
+                        &[json_str_ptr.into(), pattern_str.into()],
+                        "field_start",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_pointer_value();
+
+                // Check if field was found (not null)
+                let field_found = self
+                    .builder
+                    .build_is_not_null(field_start, "field_found")
+                    .unwrap();
+
+                let then_block = self.context.append_basic_block(
+                    self.builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap(),
+                    &format!("parse_field_{}", field_name),
+                );
+                let continue_block = self.context.append_basic_block(
+                    self.builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap(),
+                    &format!("continue_{}", field_name),
+                );
+
+                self.builder
+                    .build_conditional_branch(field_found, then_block, continue_block)
+                    .unwrap();
+
+                self.builder.position_at_end(then_block);
+
+                // Skip past the pattern to get the value start
+                let pattern_len = search_pattern.len() as u64;
+                let value_start = unsafe {
+                    self.builder
+                        .build_gep(
+                            self.context.i8_type(),
+                            field_start,
+                            &[i32_type.const_int(pattern_len, false)],
+                            "value_start",
+                        )
+                        .unwrap()
+                };
+
+                // Get field pointer in struct
+                let struct_llvm_type = *self.canonical_struct_types.get(struct_type).unwrap();
+                let field_ptr = unsafe {
+                    self.builder
+                        .build_struct_gep(
+                            struct_llvm_type,
+                            struct_ptr,
+                            field_idx as u32,
+                            &format!("field_{}_ptr", field_name),
+                        )
+                        .unwrap()
+                };
+
+                // Parse based on field type
+                if field_type == "Str" || field_type.contains("String") {
+                    // Find closing quote: strchr(value_start, '"')
+                    let quote_char = i32_type.const_int('"' as u64, false);
+                    let value_end = self
+                        .builder
+                        .build_call(
+                            strchr_fn,
+                            &[value_start.into(), quote_char.into()],
+                            "value_end",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Calculate length
+                    let value_end_int = self
+                        .builder
+                        .build_ptr_to_int(value_end, self.context.i64_type(), "end_int")
+                        .unwrap();
+                    let value_start_int = self
+                        .builder
+                        .build_ptr_to_int(value_start, self.context.i64_type(), "start_int")
+                        .unwrap();
+                    let str_len = self
+                        .builder
+                        .build_int_sub(value_end_int, value_start_int, "str_len")
+                        .unwrap();
+
+                    // Allocate and copy string
+                    let malloc_fn = self.module.get_function("malloc").unwrap();
+                    let str_len_plus_one = self
+                        .builder
+                        .build_int_add(
+                            str_len,
+                            self.context.i64_type().const_int(1, false),
+                            "len_plus_one",
+                        )
+                        .unwrap();
+                    let str_buffer = self
+                        .builder
+                        .build_call(malloc_fn, &[str_len_plus_one.into()], "str_buffer")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Copy string using memcpy
+                    let memcpy_fn = self.module.get_function("memcpy").unwrap();
+                    self.builder
+                        .build_call(
+                            memcpy_fn,
+                            &[str_buffer.into(), value_start.into(), str_len.into()],
+                            "",
+                        )
+                        .unwrap();
+
+                    // Null terminate
+                    let null_pos = unsafe {
+                        self.builder
+                            .build_gep(self.context.i8_type(), str_buffer, &[str_len], "null_pos")
+                            .unwrap()
+                    };
+                    self.builder
+                        .build_store(null_pos, self.context.i8_type().const_int(0, false))
+                        .unwrap();
+
+                    // Store in struct
+                    self.builder.build_store(field_ptr, str_buffer).unwrap();
+                } else if field_type == "Int" || field_type == "I32" {
+                    // Parse integer using atoi
+                    let int_value = self
+                        .builder
+                        .build_call(atoi_fn, &[value_start.into()], "int_value")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_int_value();
+
+                    self.builder.build_store(field_ptr, int_value).unwrap();
+                }
+
+                self.builder
+                    .build_unconditional_branch(continue_block)
+                    .unwrap();
+                self.builder.position_at_end(continue_block);
+            }
         }
     }
 
