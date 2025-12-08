@@ -1503,6 +1503,7 @@ impl SemanticAnalyzer {
                 params,
                 body,
                 return_type,
+                error_type: _, // Lambda error type not checked here
             } => {
                 // If explicit return type is provided, use it
                 if let Some(ret_type) = return_type {
@@ -1595,6 +1596,7 @@ impl SemanticAnalyzer {
                 params,
                 body,
                 return_type,
+                error_type: _, // Lambda error type not checked here
             } => {
                 // If explicit return type is provided, use it
                 if let Some(ret_type) = return_type {

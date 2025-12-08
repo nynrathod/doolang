@@ -694,6 +694,7 @@ impl<'a> Parser<'a> {
             params,
             body,
             return_type,
+            error_type: None,
         })
     }
 

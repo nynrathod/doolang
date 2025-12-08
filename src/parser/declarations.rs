@@ -358,11 +358,26 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse a decorator like @email or @min(8) or @hash
+    /// Parse a decorator like @email or @min(8) or @hash or @enum
     pub fn parse_decorator(&mut self) -> ParseResult<crate::parser::ast::Decorator> {
         use crate::parser::ast::Decorator;
 
-        let decorator_name = self.expect_ident()?;
+        // Allow keywords as decorator names (e.g., @enum)
+        let decorator_name = match self.advance() {
+            Some(tok) => match tok.kind {
+                TokenType::Identifier => tok.value.to_string(),
+                TokenType::Enum => "enum".to_string(),
+                // Add other keywords if needed in the future
+                _ => {
+                    return Err(ParseError::UnexpectedTokenAt {
+                        msg: format!("Expected Identifier, got {:?} ({:?})", tok.kind, tok.value),
+                        line: tok.line,
+                        col: tok.col,
+                    })
+                }
+            },
+            None => return Err(ParseError::EndOfInput),
+        };
 
         // Check for arguments
         let args = if self.peek_is(TokenType::OpenParen) {

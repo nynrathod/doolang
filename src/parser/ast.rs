@@ -293,11 +293,12 @@ pub enum AstNode {
         target_type: TypeNode,
     },
 
-    // Closure: () => {}
+    // Closure: () => {} or (x: T) -> R ! E { }
     Closure {
         params: Vec<(String, Option<TypeNode>)>,
         body: Box<AstNode>,
         return_type: Option<TypeNode>,
+        error_type: Option<TypeNode>, // Error type after ! for Result-returning closures
     },
 
     // Error handling constructs

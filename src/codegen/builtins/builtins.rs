@@ -106,6 +106,19 @@ impl<'ctx> CodeGen<'ctx> {
                 let dest_vec = vec![dest.to_string()];
                 return self.generate_call(&dest_vec, &mangled_method_name, all_args.as_slice());
             } else {
+                // Check if this is an FFI method with an alias
+                if let Some(ffi_symbol) = self.function_aliases.get(&mangled_method_name) {
+                    // This is an FFI method - the actual function is registered under the FFI symbol name
+                    let mut all_args = vec![object.to_string()];
+                    all_args.extend_from_slice(args);
+                    let dest_vec = vec![dest.to_string()];
+                    return self.generate_call(
+                        &dest_vec,
+                        &mangled_method_name,
+                        all_args.as_slice(),
+                    );
+                }
+
                 // Method was expected but not found - this is likely a struct method
                 // Check if it's a struct type and provide helpful error
                 if !type_str.starts_with("Array")
