@@ -995,8 +995,44 @@ impl SemanticAnalyzer {
             AstNode::StructLiteral { name, fields } => {
                 // Check if struct type exists
                 if let Some(struct_fields) = self.struct_table.get(name) {
-                    // Check if this is an imported struct - if so, check field visibility
+                    // IMPORTANT: Check if struct is accessible
+                    // For imported structs, they must be in symbol_table or outer scopes to be instantiated
+                    // This enforces proper import semantics (namespace imports don't expose structs directly)
+                    // Local structs (declared in current module) are always accessible via struct_table
                     let is_imported = self.imported_struct_names.contains(name);
+
+                    if is_imported {
+                        // Check if struct is accessible in current scope or any outer scope
+                        let mut is_accessible = self.symbol_table.contains_key(name);
+
+                        // Check outer_symbol_table (for nested function scopes)
+                        if !is_accessible {
+                            if let Some(outer) = &self.outer_symbol_table {
+                                is_accessible = outer.contains_key(name);
+                            }
+                        }
+
+                        // Check scope_stack (for nested block scopes)
+                        if !is_accessible {
+                            for scope in self.scope_stack.iter().rev() {
+                                if scope.contains_key(name) {
+                                    is_accessible = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if !is_accessible {
+                            return Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: format!(
+                                    "Struct '{}' is not accessible. Did you import it? (Use 'import module::{}' to import directly)",
+                                    name, name
+                                ),
+                            }));
+                        }
+                    }
+
+                    // Check field visibility for imported structs
 
                     // Verify all required fields are provided
                     for (field_name, _field_type) in struct_fields {
@@ -1294,10 +1330,40 @@ impl SemanticAnalyzer {
                             Ok(ret_ty.clone())
                         }
                     } else {
-                        // Neither enum nor function found
-                        Err(SemanticError::UndeclaredVariable(NamedError {
-                            name: format!("Undefined enum type or function '{}'", qualified_name),
-                        }))
+                        // Check if it's a static method call
+                        // Methods are stored as Type::method in function_table
+                        // But also check Type.method for compatibility
+                        let method_name_colon = format!("{}::{}", enum_name, variant);
+                        let method_name_dot = format!("{}.{}", enum_name, variant);
+
+                        if let Some((_param_types, ret_ty, err_ty)) = self
+                            .function_table
+                            .get(&method_name_colon)
+                            .or_else(|| self.function_table.get(&method_name_dot))
+                        {
+                            // It's a static method - type check all arguments
+                            for arg in payload {
+                                self.infer_type(arg)?;
+                            }
+
+                            // If the function has an error type, wrap the return type in Result
+                            if let Some(error_type) = err_ty {
+                                Ok(TypeNode::Result(
+                                    Box::new(ret_ty.clone()),
+                                    Box::new(error_type.clone()),
+                                ))
+                            } else {
+                                Ok(ret_ty.clone())
+                            }
+                        } else {
+                            // Neither enum, function, nor static method found
+                            Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: format!(
+                                    "Undefined enum type or function '{}'",
+                                    qualified_name
+                                ),
+                            }))
+                        }
                     }
                 }
             }

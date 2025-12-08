@@ -405,7 +405,14 @@ impl<'a> Parser<'a> {
                     Ok(AstNode::NilLiteral)
                 }
                 TokenType::OpenBracket => self.parse_array_literal(),
-                TokenType::OpenBrace => self.parse_map_literal(),
+                TokenType::OpenBrace => {
+                    // Disambiguate between map literal and block expression
+                    if self.is_map_literal() {
+                        self.parse_map_literal()
+                    } else {
+                        self.parse_block_expr()
+                    }
+                }
                 TokenType::If => {
                     // Inline if-else expression: if condition { stmts; expr } else { stmts; expr }
                     // Also supports else-if chains: if cond { expr } else if cond { expr } else { expr }
@@ -604,7 +611,89 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Check if current position is an arrow function: () => or (x) => or (x, y) =>
+    /// Check if current position is a map literal vs block expression
+    /// Map: { key: value, ... } or { "string": value }
+    /// Block: { stmt; stmt } or { expr, expr } or { expr }
+    fn is_map_literal(&mut self) -> bool {
+        let saved_pos = self.current;
+
+        // Must start with {
+        if !self.peek_is(TokenType::OpenBrace) {
+            self.current = saved_pos;
+            return false;
+        }
+        self.advance(); // consume {
+
+        // Empty braces - treat as empty map
+        if self.peek_is(TokenType::CloseBrace) {
+            self.current = saved_pos;
+            return true;
+        }
+
+        // Check for spread operator (only in maps)
+        if self.peek_is(TokenType::Spread) {
+            self.current = saved_pos;
+            return true;
+        }
+
+        // Look for string literal key (only in maps)
+        if self.peek_is(TokenType::String) {
+            self.current = saved_pos;
+            return true;
+        }
+
+        // Skip first expression/identifier
+        let mut depth = 0;
+        let mut found_colon = false;
+        let mut found_semicolon = false;
+        let mut paren_depth = 0;
+
+        while self.current < self.tokens.len() {
+            let tok = self.peek();
+            if tok.is_none() {
+                break;
+            }
+            let tok_type = tok.unwrap().kind;
+
+            match tok_type {
+                TokenType::OpenBrace => depth += 1,
+                TokenType::CloseBrace => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                TokenType::OpenParen => paren_depth += 1,
+                TokenType::CloseParen => paren_depth -= 1,
+                TokenType::Colon if depth == 0 && paren_depth == 0 => {
+                    found_colon = true;
+                    break;
+                }
+                TokenType::Semi if depth == 0 && paren_depth == 0 => {
+                    found_semicolon = true;
+                    break;
+                }
+                TokenType::Comma if depth == 0 && paren_depth == 0 => {
+                    // Found comma without colon before it - likely block expression
+                    break;
+                }
+                _ => {}
+            }
+            self.advance();
+        }
+
+        self.current = saved_pos;
+
+        // If we found semicolon, it's definitely a block
+        if found_semicolon {
+            return false;
+        }
+
+        // If we found colon before comma/close, it's a map
+        found_colon
+    }
+
+    /// Check if current position is an arrow function: () => or (x) => or (x, y) => or (x) -> Type
     fn is_arrow_function(&mut self) -> bool {
         let saved_pos = self.current;
 
@@ -635,8 +724,8 @@ impl<'a> Parser<'a> {
 
         self.advance(); // consume )
 
-        // Check for =>
-        let result = self.peek_is(TokenType::FatArrow);
+        // Check for => or ->
+        let result = self.peek_is(TokenType::FatArrow) || self.peek_is(TokenType::Arrow);
         self.current = saved_pos;
         result
     }
@@ -672,20 +761,41 @@ impl<'a> Parser<'a> {
         }
 
         self.expect(TokenType::CloseParen)?;
-        self.expect(TokenType::FatArrow)?;
 
-        // Parse optional return type annotation
-        let return_type = if self.peek_is(TokenType::Arrow) {
+        // Support both => and -> for closure syntax
+        // => expr or -> ReturnType { ... }
+        let mut return_type = None;
+        let mut error_type = None;
+
+        if self.peek_is(TokenType::FatArrow) {
+            // Traditional closure: () => expr
+            self.advance(); // consume '=>'
+
+            // Optional return type after =>
+            if self.peek_is(TokenType::Arrow) {
+                self.advance(); // consume '->'
+                return_type = Some(self.parse_type_annotation()?);
+            }
+        } else if self.peek_is(TokenType::Arrow) {
+            // New syntax: (req: Cart) -> CartData { ... }
             self.advance(); // consume '->'
-            Some(self.parse_type_annotation()?)
-        } else {
-            None
-        };
+            return_type = Some(self.parse_type_annotation()?);
 
-        // Parse body - either a single expression or a block
+            // Check for error type: -> CartData ! CartError
+            if self.peek_is(TokenType::Bang) {
+                self.advance(); // consume '!'
+                error_type = Some(self.parse_type_annotation()?);
+            }
+        } else {
+            return Err(ParseError::UnexpectedToken(
+                "Expected '=>' or '->' after closure parameters".to_string(),
+            ));
+        }
+
+        // Parse body - either a single expression or a block expression
         let body = if self.peek_is(TokenType::OpenBrace) {
-            let statements = self.parse_braced_block()?;
-            Box::new(AstNode::Block(statements))
+            // Use parse_block_expr to allow expression-only bodies without semicolons
+            Box::new(self.parse_block_expr()?)
         } else {
             Box::new(self.parse_expression()?)
         };
@@ -694,7 +804,7 @@ impl<'a> Parser<'a> {
             params,
             body,
             return_type,
-            error_type: None,
+            error_type,
         })
     }
 
@@ -825,6 +935,7 @@ impl<'a> Parser<'a> {
 
     /// Parse a block expression: { statements; final_expr }
     /// Supports multiple statements (with semicolons) followed by a final expression (no semicolon).
+    /// Also supports comma-separated expressions for DSL syntax: { expr1, expr2, expr3 }
     /// Returns either a BlockExpr (if there are statements) or just the expression (if no statements).
     fn parse_block_expr(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::OpenBrace)?;
@@ -853,12 +964,17 @@ impl<'a> Parser<'a> {
             // Try to parse a statement or expression
             let item = self.parse_block_item()?;
 
-            // Check if followed by semicolon
+            // Check if followed by semicolon, comma, or closing brace
             if self.peek_is(TokenType::Semi) {
                 self.advance(); // consume ';'
                 statements.push(item);
+            } else if self.peek_is(TokenType::Comma) {
+                // DSL syntax: comma-separated expressions
+                self.advance(); // consume ','
+                statements.push(item);
+                // Continue parsing more expressions
             } else if self.peek_is(TokenType::CloseBrace) {
-                // No semicolon and closing brace follows - this is the result expression
+                // No semicolon/comma and closing brace follows - this is the result expression
                 self.advance(); // consume '}'
                 if statements.is_empty() {
                     // Just a single expression
@@ -871,7 +987,7 @@ impl<'a> Parser<'a> {
                     });
                 }
             } else {
-                // No semicolon and not closing brace - error or multi-line expression
+                // No semicolon/comma and not closing brace - error or multi-line expression
                 // For now, treat as a statement and continue
                 statements.push(item);
             }

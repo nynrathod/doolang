@@ -137,19 +137,36 @@ impl<'a> Parser<'a> {
         // Parse function parameters until ')' is found
         // Track if we've seen the first parameter (for methods)
         let mut is_first_param = true;
+        let mut is_static_method = false;
+
         let params = self.parse_comma_separated_strict(
             |p| {
                 let param_name = p.expect_ident()?;
 
-                // Special case: first parameter in methods doesn't need type annotation (receiver)
+                // Special case: first parameter in methods
                 if is_first_param && receiver_type.is_some() {
                     is_first_param = false;
-                    // Receiver parameter - no type annotation needed, type is inferred from receiver
-                    return Ok((param_name, None));
+
+                    // Check if this is 'self' (instance method) or a typed parameter (static method)
+                    if let Some(tok) = p.peek() {
+                        if tok.kind == TokenType::Colon {
+                            // This is a static method - first param has type annotation
+                            is_static_method = true;
+                            p.advance(); // consume ':'
+                            let param_type = Some(p.parse_type_annotation()?);
+                            return Ok((param_name, param_type));
+                        } else {
+                            // This is 'self' - instance method, no type annotation needed
+                            return Ok((param_name, None));
+                        }
+                    } else {
+                        // No colon, assume it's 'self'
+                        return Ok((param_name, None));
+                    }
                 }
                 is_first_param = false;
 
-                // Enforce mandatory type annotation for each parameter (except receiver)
+                // Enforce mandatory type annotation for each parameter (except receiver 'self')
                 let tok = p.peek().ok_or(ParseError::EndOfInput)?;
                 if tok.kind != TokenType::Colon {
                     return Err(ParseError::UnexpectedTokenAt {

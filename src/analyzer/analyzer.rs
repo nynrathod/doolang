@@ -149,6 +149,10 @@ impl SemanticAnalyzer {
         nodes: &mut Vec<AstNode>,
         import_stack: &mut Vec<String>,
     ) -> Result<(), SemanticError> {
+        // PREPROCESSING: Transform route group DSL syntax before analysis
+        // This expands app.group("/api", { get(...), post(...) }) into individual route calls
+        crate::analyzer::route_transform::transform_route_groups(nodes);
+
         // FIRST PASS: Process imports, register all function signatures, structs, and enums
         // Collect errors but don't stop at first module error
 
@@ -242,14 +246,28 @@ impl SemanticAnalyzer {
                     receiver_type,
                     ..
                 } => {
-                    // Collect parameter types (excluding first param which is receiver for methods)
+                    // Collect parameter types
+                    // For instance methods (first param is 'self' with no type), skip first parameter
+                    // For static methods (first param has type), include all parameters
                     let param_types: Vec<TypeNode> = if receiver_type.is_some() {
-                        // Method: skip first parameter (receiver)
-                        params
-                            .iter()
-                            .skip(1)
-                            .map(|(_, t)| t.clone().unwrap_or(TypeNode::Int))
-                            .collect()
+                        // Check if this is a static method (first param has type annotation)
+                        let is_static_method =
+                            params.first().map(|(_, t)| t.is_some()).unwrap_or(false);
+
+                        if is_static_method {
+                            // Static method: include all parameters
+                            params
+                                .iter()
+                                .map(|(_, t)| t.clone().unwrap_or(TypeNode::Int))
+                                .collect()
+                        } else {
+                            // Instance method: skip first parameter (receiver 'self')
+                            params
+                                .iter()
+                                .skip(1)
+                                .map(|(_, t)| t.clone().unwrap_or(TypeNode::Int))
+                                .collect()
+                        }
                     } else {
                         // Regular function: include all parameters
                         params
@@ -937,11 +955,28 @@ impl SemanticAnalyzer {
             // Use PathResolver to find std
             if let Ok(resolver) = PathResolver::new() {
                 // Build the module path from stdlib root
-                // For "std::Math::Abs", we want std/Math.doo
+                // For "std::Math::Abs" or "std::http::Server", we want std/Math.doo or std/Http.doo
                 if path.len() >= 2 {
                     let mut stdlib_file = resolver.stdlib_path().to_path_buf();
                     // Use the second element as the file name (Math, String, Array, etc.)
-                    stdlib_file.push(&path[1]);
+                    // Try the exact case first
+                    let module_name = &path[1];
+                    stdlib_file.push(module_name);
+                    stdlib_file.set_extension("doo");
+
+                    if stdlib_file.exists() {
+                        return Some(stdlib_file);
+                    }
+
+                    // If not found, try PascalCase version (capitalize first letter)
+                    // This handles std::http::Server -> std/Http.doo
+                    stdlib_file = resolver.stdlib_path().to_path_buf();
+                    let mut pascal_case = module_name.clone();
+                    if let Some(first_char) = pascal_case.chars().next() {
+                        pascal_case =
+                            first_char.to_uppercase().collect::<String>() + &pascal_case[1..];
+                    }
+                    stdlib_file.push(&pascal_case);
                     stdlib_file.set_extension("doo");
 
                     if stdlib_file.exists() {
@@ -1018,17 +1053,14 @@ impl SemanticAnalyzer {
 
         // For non-wildcard imports, check if symbols are already imported
         if !has_wildcard && !items.is_empty() {
-            // Check if all specific symbols are already imported (functions, structs, or enums)
+            // Check if all specific symbols are already imported AND accessible
+            // For structs/enums, they must be in symbol_table to be accessible (not just struct_table)
             let all_imported = items.iter().all(|item| match item {
                 crate::parser::ast::ImportItem::Symbol(name) => {
-                    self.function_table.contains_key(name)
-                        || self.struct_table.contains_key(name)
-                        || self.enum_table.contains_key(name)
+                    self.function_table.contains_key(name) || self.symbol_table.contains_key(name)
                 }
                 crate::parser::ast::ImportItem::SymbolWithAlias(name, _) => {
-                    self.function_table.contains_key(name)
-                        || self.struct_table.contains_key(name)
-                        || self.enum_table.contains_key(name)
+                    self.function_table.contains_key(name) || self.symbol_table.contains_key(name)
                 }
                 crate::parser::ast::ImportItem::Wildcard => false,
             });
@@ -1238,22 +1270,61 @@ impl SemanticAnalyzer {
 
         for node in nodes {
             match &node {
-                // Import functions
-                AstNode::FunctionDecl { name, .. } => {
+                // Import functions and methods
+                AstNode::FunctionDecl {
+                    name,
+                    receiver_type,
+                    ..
+                } => {
+                    // For methods, construct the full name (Type::method)
+                    let full_name = if let Some(type_name) = receiver_type {
+                        format!("{}::{}", type_name, name)
+                    } else {
+                        name.clone()
+                    };
+
                     // Check if this is a public function (uppercase) OR explicitly imported private function
                     let is_public = name.chars().next().unwrap_or('a').is_uppercase();
+
+                    // For methods, also check if the struct they belong to is being imported
+                    let struct_is_imported = if let Some(type_name) = receiver_type {
+                        specific_imports.iter().any(|item| match item {
+                            crate::parser::ast::ImportItem::Symbol(sym) => sym == type_name,
+                            crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
+                                sym == type_name
+                            }
+                            crate::parser::ast::ImportItem::Wildcard => false,
+                        })
+                    } else {
+                        false
+                    };
+
                     let is_explicitly_imported = specific_imports.iter().any(|item| match item {
-                        crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
-                        crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => sym == name,
+                        crate::parser::ast::ImportItem::Symbol(sym) => {
+                            sym == name || sym == &full_name
+                        }
+                        crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
+                            sym == name || sym == &full_name
+                        }
                         crate::parser::ast::ImportItem::Wildcard => false,
-                    });
+                    }) || struct_is_imported;
 
                     // ALWAYS add ALL functions to imported_functions for MIR generation
                     // This is critical because imported functions may call private helpers from their module
                     // The visibility check only affects what's exposed in function_table (callable by importer)
                     if !self.imported_functions.iter().any(|n| {
-                        if let AstNode::FunctionDecl { name: fn_name, .. } = n {
-                            fn_name == name
+                        if let AstNode::FunctionDecl {
+                            name: fn_name,
+                            receiver_type: rcv,
+                            ..
+                        } = n
+                        {
+                            let n_full = if let Some(t) = rcv {
+                                format!("{}::{}", t, fn_name)
+                            } else {
+                                fn_name.clone()
+                            };
+                            n_full == full_name
                         } else {
                             false
                         }
@@ -1274,14 +1345,16 @@ impl SemanticAnalyzer {
                             false
                         } else {
                             // Check if this function is in the specific imports list
-                            specific_imports.iter().any(|item| match item {
-                                crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
-                                crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
-                                    // Only match if it's not a namespace alias
-                                    sym == name && namespace_alias.is_none()
-                                }
-                                crate::parser::ast::ImportItem::Wildcard => false,
-                            })
+                            // OR if this is a method of an imported struct
+                            struct_is_imported
+                                || specific_imports.iter().any(|item| match item {
+                                    crate::parser::ast::ImportItem::Symbol(sym) => sym == name,
+                                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
+                                        // Only match if it's not a namespace alias
+                                        sym == name && namespace_alias.is_none()
+                                    }
+                                    crate::parser::ast::ImportItem::Wildcard => false,
+                                })
                         };
 
                         // Only expose to function_table if explicitly requested
@@ -1298,8 +1371,9 @@ impl SemanticAnalyzer {
                                 });
 
                             // Copy function signature to current function table
+                            // Use full_name to get method signatures (Type::method)
                             if let Some((params, ret, err)) =
-                                imported_analyzer.function_table.get(name)
+                                imported_analyzer.function_table.get(&full_name)
                             {
                                 // Determine the key to register in function table
                                 let fn_table_key = if let Some(alias) = &namespace_alias {
@@ -1310,7 +1384,8 @@ impl SemanticAnalyzer {
                                     format!("{}::{}", ns, name)
                                 } else {
                                     // Regular import: use alias or original name
-                                    registered_name.clone().unwrap_or_else(|| name.clone())
+                                    // For methods, preserve the Type::method format
+                                    registered_name.clone().unwrap_or_else(|| full_name.clone())
                                 };
 
                                 self.function_table.insert(
@@ -1320,15 +1395,17 @@ impl SemanticAnalyzer {
 
                                 // If we have an alias, store the mapping
                                 if let Some(alias) = registered_name {
-                                    self.function_aliases.insert(alias, name.clone());
+                                    self.function_aliases.insert(alias, full_name.clone());
                                 }
                                 // For namespace alias, store the mapping from qualified name to original
                                 else if namespace_alias.is_some() {
-                                    self.function_aliases.insert(fn_table_key, name.clone());
+                                    self.function_aliases
+                                        .insert(fn_table_key, full_name.clone());
                                 }
                                 // For namespace imports, store the mapping from qualified name to original
                                 else if namespace_prefix.is_some() {
-                                    self.function_aliases.insert(fn_table_key, name.clone());
+                                    self.function_aliases
+                                        .insert(fn_table_key, full_name.clone());
                                 }
                             }
                         }
@@ -1411,16 +1488,23 @@ impl SemanticAnalyzer {
                                 self.imported_structs.push(node.clone());
                             }
 
-                            // Also add to symbol_table for type resolution
-                            self.symbol_table.insert(
-                                name.clone(),
-                                SymbolInfo {
-                                    ty: TypeNode::Struct(name.clone(), field_types.clone()),
-                                    mutable: false,
-                                    is_ref_counted: true,
-                                    is_parameter: false,
-                                },
-                            );
+                            // IMPORTANT: Only add to symbol_table for direct imports, NOT namespace imports
+                            // Namespace imports (import std::Http;) should NOT make structs directly accessible
+                            // Only specific imports (import std::http::Server;) or wildcard imports should
+                            let should_add_to_symbol_table = should_import_wildcard
+                                || (!is_namespace_import_or_alias && !specific_imports.is_empty());
+
+                            if should_add_to_symbol_table {
+                                self.symbol_table.insert(
+                                    name.clone(),
+                                    SymbolInfo {
+                                        ty: TypeNode::Struct(name.clone(), field_types.clone()),
+                                        mutable: false,
+                                        is_ref_counted: true,
+                                        is_parameter: false,
+                                    },
+                                );
+                            }
                         }
                     }
                 }
@@ -1460,16 +1544,25 @@ impl SemanticAnalyzer {
                                     self.enum_variant_order
                                         .insert(name.clone(), variant_order.clone());
                                 }
-                                // Also add to symbol_table for type resolution
-                                self.symbol_table.insert(
-                                    name.clone(),
-                                    SymbolInfo {
-                                        ty: TypeNode::Enum(name.clone(), variants.clone()),
-                                        mutable: false,
-                                        is_ref_counted: true,
-                                        is_parameter: false,
-                                    },
-                                );
+
+                                // IMPORTANT: Only add to symbol_table for direct imports, NOT namespace imports
+                                // Namespace imports (import std::Http;) should NOT make enums directly accessible
+                                // Only specific imports (import std::http::SomeEnum;) or wildcard imports should
+                                let should_add_to_symbol_table = should_import_wildcard
+                                    || (!is_namespace_import_or_alias
+                                        && !specific_imports.is_empty());
+
+                                if should_add_to_symbol_table {
+                                    self.symbol_table.insert(
+                                        name.clone(),
+                                        SymbolInfo {
+                                            ty: TypeNode::Enum(name.clone(), variants.clone()),
+                                            mutable: false,
+                                            is_ref_counted: true,
+                                            is_parameter: false,
+                                        },
+                                    );
+                                }
                             }
                         }
                     }

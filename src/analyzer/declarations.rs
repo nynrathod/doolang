@@ -759,7 +759,7 @@ impl SemanticAnalyzer {
                         field: field_name.clone(),
                     });
                 }
-                
+
                 // Validate decorators on this field
                 super::decorators::validate_field_decorators(
                     &field.decorators,
@@ -767,7 +767,7 @@ impl SemanticAnalyzer {
                     field_name,
                     name,
                 )?;
-                
+
                 field_map.insert(field_name.clone(), field_type.clone());
             }
 
@@ -898,18 +898,61 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    /// Enforces that functions declaring error types must have at least one Err expression
+    /// Enforces that functions declaring error types must have at least one Err expression OR Ok expression
+    /// Functions with error types can return only Ok values - the error type means they CAN return errors
     fn ensure_has_error_path(
         &self,
         body: &[AstNode],
         function_name: &str,
     ) -> Result<(), SemanticError> {
-        if !self.has_error_statement(body) {
+        // Check if function has any result expressions (Ok or Err)
+        if !self.has_result_expression(body) {
             return Err(SemanticError::MissingErrInFunctionWithErrorType {
                 function: function_name.to_string(),
             });
         }
         Ok(())
+    }
+
+    /// Check if function body contains any Result expressions (Ok or Err)
+    fn has_result_expression(&self, nodes: &[AstNode]) -> bool {
+        for node in nodes {
+            if self.node_has_result_expression(node) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if a node contains a Result expression (Ok or Err)
+    fn node_has_result_expression(&self, node: &AstNode) -> bool {
+        match node {
+            AstNode::OkExpr { .. } => true,
+            AstNode::ErrExpr { .. } => true,
+            AstNode::TryPropagate { .. } => true,
+            AstNode::LetDecl { value, .. } => self.node_has_result_expression(value),
+            AstNode::Return { values } => values.iter().any(|v| self.node_has_result_expression(v)),
+            AstNode::ConditionalStmt {
+                then_block,
+                else_branch,
+                ..
+            } => {
+                if self.has_result_expression(then_block) {
+                    return true;
+                }
+                if let Some(else_block) = else_branch {
+                    if self.node_has_result_expression(else_block) {
+                        return true;
+                    }
+                }
+                false
+            }
+            AstNode::Block(stmts) => self.has_result_expression(stmts),
+            AstNode::MatchExpr { arms, .. } => arms
+                .iter()
+                .any(|arm| self.node_has_result_expression(&arm.body)),
+            _ => false,
+        }
     }
 
     /// Recursively checks if a function body contains at least one Err expression or TryPropagate (?)

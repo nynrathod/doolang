@@ -2,7 +2,7 @@
 members = [
     ".",
     "ffi_libs/libdoo_file",
-    "xtask",
+    "ffi_libs/libdoo_http",
 ]
 resolver = "2"
 
