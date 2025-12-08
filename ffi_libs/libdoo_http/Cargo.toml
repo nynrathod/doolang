@@ -1,0 +1,17 @@
+[package]
+name = "libdoo_http"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "doo_http"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
+http-body-util = "0.1"
+matchit = "0.8"
+serde_json = "1"
