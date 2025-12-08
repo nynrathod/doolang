@@ -177,3 +177,32 @@ fn NotFoundResponse(message: Str) -> Response {
 fn InternalErrorResponse(message: Str) -> Response {
     return ErrorResponse(500, message);
 }
+
+// === Response Static Methods ===
+
+// Response.json() - Create JSON response with custom status code
+fn Response.json(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "application/json",
+    };
+}
+
+// Response.text() - Create plain text response with custom status code
+fn Response.text(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "text/plain",
+    };
+}
+
+// Response.html() - Create HTML response with custom status code
+fn Response.html(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "text/html",
+    };
+}
