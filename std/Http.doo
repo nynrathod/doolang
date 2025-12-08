@@ -1,0 +1,110 @@
+// HTTP Server and routing via FFI
+// Server implementation uses hyper-rs with matchit for routing
+//
+// Usage:
+//   import std::Http;
+//   
+//   fn main() {
+//       let app = Server { Port: 3000, Host: "127.0.0.1" };
+//       app.get("/users", "handleUsers")?;
+//       app.post("/users", "createUser")?;
+//       app.listen(3000)?;
+//   }
+//
+//   fn handleUsers(req: Request) -> Response ! HttpError {
+//       Ok Response { Status: 200, Body: "{}", ContentType: "application/json" };
+//   }
+
+// === Structs ===
+
+// HTTP Error struct for error handling
+struct HttpError {
+    Status: Int,
+    Message: Str,
+}
+
+// HTTP Request struct - populated by the server for each request
+struct Request {
+    Method: Str,         // GET, POST, PUT, DELETE, PATCH
+    Path: Str,           // /users/123
+    Body: Str,           // Raw request body
+    ContentType: Str,    // Content-Type header value
+}
+
+// HTTP Response struct - return this from handlers
+struct Response {
+    Status: Int,         // HTTP status code
+    Body: Str,           // Response body
+    ContentType: Str,    // Content-Type header
+}
+
+// HTTP Server struct
+struct Server {
+    Port: Int,
+    Host: Str,
+}
+
+// === HTTP Status Codes ===
+
+fn StatusOk() -> Int { return 200; }
+fn StatusCreated() -> Int { return 201; }
+fn StatusAccepted() -> Int { return 202; }
+fn StatusNoContent() -> Int { return 204; }
+
+fn StatusMovedPermanently() -> Int { return 301; }
+fn StatusFound() -> Int { return 302; }
+fn StatusNotModified() -> Int { return 304; }
+
+fn StatusBadRequest() -> Int { return 400; }
+fn StatusUnauthorized() -> Int { return 401; }
+fn StatusForbidden() -> Int { return 403; }
+fn StatusNotFound() -> Int { return 404; }
+fn StatusMethodNotAllowed() -> Int { return 405; }
+fn StatusConflict() -> Int { return 409; }
+fn StatusUnprocessableEntity() -> Int { return 422; }
+fn StatusTooManyRequests() -> Int { return 429; }
+
+fn StatusInternalServerError() -> Int { return 500; }
+fn StatusNotImplemented() -> Int { return 501; }
+fn StatusBadGateway() -> Int { return 502; }
+fn StatusServiceUnavailable() -> Int { return 503; }
+
+// === Server Methods ===
+
+@ffi("doo_http")
+@extern("doo_http_get")
+fn Server.get(self, path: Str, handler: Str) -> Void ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_post")
+fn Server.post(self, path: Str, handler: Str) -> Void ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_put")
+fn Server.put(self, path: Str, handler: Str) -> Void ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_delete")
+fn Server.delete(self, path: Str, handler: Str) -> Void ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_patch")
+fn Server.patch(self, path: Str, handler: Str) -> Void ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_listen")
+fn Server.listen(self, port: Int) -> Void ! HttpError {}
+
+// === Request Methods ===
+
+@ffi("doo_http")
+@extern("doo_http_req_query")
+fn Request.query(self, name: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doo_http_req_param")
+fn Request.param(self, name: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doo_http_req_header")
+fn Request.header(self, name: Str) -> Str {}
