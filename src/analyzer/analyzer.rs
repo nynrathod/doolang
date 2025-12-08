@@ -174,9 +174,18 @@ impl SemanticAnalyzer {
                             }));
                         continue;
                     }
-                    // Build field map
+                    // Build field map and validate decorators
                     let mut field_map = HashMap::new();
                     for field in fields {
+                        // Validate decorators on this field
+                        if let Err(e) = super::decorators::validate_field_decorators(
+                            &field.decorators,
+                            &field.field_type,
+                            &field.name,
+                            name,
+                        ) {
+                            self.collected_errors.push(e);
+                        }
                         field_map.insert(field.name.clone(), field.field_type.clone());
                     }
                     self.struct_table.insert(name.clone(), field_map.clone());

@@ -759,6 +759,15 @@ impl SemanticAnalyzer {
                         field: field_name.clone(),
                     });
                 }
+                
+                // Validate decorators on this field
+                super::decorators::validate_field_decorators(
+                    &field.decorators,
+                    field_type,
+                    field_name,
+                    name,
+                )?;
+                
                 field_map.insert(field_name.clone(), field_type.clone());
             }
 
