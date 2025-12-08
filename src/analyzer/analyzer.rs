@@ -248,6 +248,7 @@ impl SemanticAnalyzer {
                     return_type,
                     error_type,
                     receiver_type,
+                    associated_type,
                     ..
                 } => {
                     // Collect parameter types
@@ -280,7 +281,8 @@ impl SemanticAnalyzer {
                             .collect()
                     };
 
-                    if let Some(type_name) = receiver_type {
+                    // Use associated_type for both static and instance methods
+                    if let Some(type_name) = associated_type {
                         // This is a method declaration (fn Type.method)
                         // Register in method_table
                         let methods = self
@@ -465,6 +467,7 @@ impl SemanticAnalyzer {
                 body,
                 decorators,
                 receiver_type,
+                associated_type,
                 is_expression,
             } => self.analyze_functional_decl(
                 name,
@@ -1001,27 +1004,90 @@ impl SemanticAnalyzer {
         // 3. Namespace import: core::evaluator -> path=["core", "evaluator"], items=[]
         //    Should resolve to core/evaluator.doo (use all parts)
 
-        // First, try using all path parts (for wildcard and namespace imports)
-        let mut full_path_buf = self.project_root.clone();
-        for part in path {
-            full_path_buf.push(part);
-        }
-        full_path_buf.set_extension("doo");
+        // Helper function to build path with case-insensitive directory matching
+        let build_path_case_insensitive =
+            |base: &std::path::PathBuf, parts: &[String]| -> Option<std::path::PathBuf> {
+                let mut current = base.clone();
 
-        if full_path_buf.exists() {
-            return Some(full_path_buf);
+                // For each path component, try to find it case-insensitively in the current directory
+                for (idx, part) in parts.iter().enumerate() {
+                    let is_last = idx == parts.len() - 1;
+
+                    if is_last {
+                        // Last component - look for .doo file
+                        let mut target = current.clone();
+                        target.push(part);
+                        target.set_extension("doo");
+
+                        if target.exists() {
+                            return Some(target);
+                        }
+
+                        // Try case-insensitive match
+                        if let Ok(entries) = std::fs::read_dir(&current) {
+                            let target_lower = part.to_lowercase();
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if let Some(name) = path.file_stem() {
+                                    if name.to_string_lossy().to_lowercase() == target_lower {
+                                        if path.extension().map(|e| e == "doo").unwrap_or(false) {
+                                            return Some(path);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return None;
+                    } else {
+                        // Directory component
+                        let mut next = current.clone();
+                        next.push(part);
+
+                        if next.exists() && next.is_dir() {
+                            current = next;
+                            continue;
+                        }
+
+                        // Try case-insensitive directory match
+                        if let Ok(entries) = std::fs::read_dir(&current) {
+                            let target_lower = part.to_lowercase();
+                            let mut found = false;
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.is_dir() {
+                                    if let Some(name) = path.file_name() {
+                                        if name.to_string_lossy().to_lowercase() == target_lower {
+                                            current = path;
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if !found {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                }
+
+                None
+            };
+
+        // First, try using all path parts (for wildcard and namespace imports)
+        if let Some(found) = build_path_case_insensitive(&self.project_root, path) {
+            return Some(found);
         }
 
         // If that didn't work, try excluding the last part (for specific symbol imports)
+        // This handles cases like std::http::Server where we want std/Http.doo
         if path.len() > 1 {
-            let mut partial_path_buf = self.project_root.clone();
-            for part in &path[..path.len() - 1] {
-                partial_path_buf.push(part);
-            }
-            partial_path_buf.set_extension("doo");
-
-            if partial_path_buf.exists() {
-                return Some(partial_path_buf);
+            if let Some(found) =
+                build_path_case_insensitive(&self.project_root, &path[..path.len() - 1])
+            {
+                return Some(found);
             }
         }
 
@@ -1478,6 +1544,18 @@ impl SemanticAnalyzer {
                             // CRITICAL: Import methods for this struct from the imported module's method_table
                             if let Some(methods) = imported_analyzer.method_table.get(name) {
                                 self.method_table.insert(name.clone(), methods.clone());
+
+                                // Also register methods in function_table with mangled names (Type::method)
+                                // This allows static method calls like Server::new() to resolve
+                                for (method_name, (params, ret_ty, err_ty)) in methods {
+                                    let mangled_name = format!("{}::{}", name, method_name);
+                                    if !self.function_table.contains_key(&mangled_name) {
+                                        self.function_table.insert(
+                                            mangled_name,
+                                            (params.clone(), ret_ty.clone(), err_ty.clone()),
+                                        );
+                                    }
+                                }
                             }
 
                             // CRITICAL: Add to imported_structs for MIR generation
@@ -1647,6 +1725,18 @@ impl SemanticAnalyzer {
                         if let Some(methods) = imported_analyzer.method_table.get(struct_name) {
                             self.method_table
                                 .insert(struct_name.clone(), methods.clone());
+
+                            // Also register methods in function_table with mangled names
+                            // This allows static method calls like Server::new() to work
+                            for (method_name, (params, ret_ty, err_ty)) in methods {
+                                let mangled_name = format!("{}::{}", struct_name, method_name);
+                                if !self.function_table.contains_key(&mangled_name) {
+                                    self.function_table.insert(
+                                        mangled_name,
+                                        (params.clone(), ret_ty.clone(), err_ty.clone()),
+                                    );
+                                }
+                            }
                         }
 
                         // Add to symbol_table for type resolution

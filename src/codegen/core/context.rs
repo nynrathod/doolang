@@ -75,7 +75,7 @@ pub struct LoopContext {
 pub struct CodeGen<'ctx> {
     pub context: &'ctx Context,
     pub module: Module<'ctx>, // The container for all generated code (globals, functions, types)
-    pub builder: Builder<'ctx>, // The tool used to insert instructions into blocks
+    pub builder: Builder<'ctx>, // The tool used to insert instructions into block
     pub fpm: PassManager<FunctionValue<'ctx>>, // Function Pass Manager for optimization (e.g., dead code elimination)
     pub symbols: HashMap<String, Symbol<'ctx>>, // Symbol table for local variables (maps names to stack pointers)
     pub temp_values: HashMap<String, BasicValueEnum<'ctx>>, // Stores temporary constant values (used for building complex constants)
@@ -135,6 +135,7 @@ pub struct CodeGen<'ctx> {
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
 
     // HTTP handler registration
+    pub uses_http: bool, // Flag to enable HTTP-specific code generation (wrappers, handlers, etc.)
     pub http_handlers_to_register: Vec<String>, // List of handler function names to register with HTTP FFI
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
 
@@ -218,6 +219,7 @@ impl<'ctx> CodeGen<'ctx> {
             enum_variants: HashMap::new(),
             enum_table: HashMap::new(),
             enum_variant_order: HashMap::new(),
+            uses_http: false,
             http_handlers_to_register: Vec::new(),
             struct_table: HashMap::new(),
             current_function_name: None,

@@ -292,6 +292,7 @@ fn extract_and_transform_closures(node: &mut AstNode, generated_functions: &mut 
                         body: body_vec,
                         decorators: vec![],
                         receiver_type: None,
+                        associated_type: None,
                         is_expression: false,
                     };
 
@@ -431,10 +432,18 @@ fn transform_route_group_in_node(node: &mut AstNode) {
             args,
         } => {
             // For route registration methods, convert handler identifiers to strings
+            // Convert to app.METHOD(path, handler) calls
             if is_route_registration_method(method) && args.len() == 2 {
                 transform_route_group_in_node(object);
-                transform_route_group_in_node(&mut args[0]); // path
-                                                             // Convert handler (second arg) from identifier to string
+
+                // Transform path: convert :param to {param} syntax
+                if let AstNode::StringLiteral(path_str) = &args[0] {
+                    let converted_path = convert_path_params(path_str);
+                    args[0] = AstNode::StringLiteral(converted_path);
+                }
+                transform_route_group_in_node(&mut args[0]);
+
+                // Convert handler (second arg) from identifier to string
                 args[1] = convert_handler_to_string(args[1].clone());
             } else {
                 transform_route_group_in_node(object);
@@ -562,4 +571,39 @@ fn transform_route_group_in_node(node: &mut AstNode) {
         | AstNode::OkExpr { .. }
         | AstNode::ManualErrorExtract { .. } => {}
     }
+}
+
+/// Convert path parameter syntax from :param to {param} for matchit router compatibility
+///
+/// Matchit router (v0.8+) uses {param} syntax instead of :param
+///
+/// Examples:
+/// - "/user/:id" -> "/user/{id}"
+/// - "/user/:userId/post/:postId" -> "/user/{userId}/post/{postId}"
+/// - "/api/items/:id/details" -> "/api/items/{id}/details"
+fn convert_path_params(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+    let mut chars = path.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == ':' {
+            // Found a parameter, convert :param to {param}
+            result.push('{');
+
+            // Collect parameter name (alphanumeric and underscore)
+            while let Some(&next_ch) = chars.peek() {
+                if next_ch.is_alphanumeric() || next_ch == '_' {
+                    result.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+
+            result.push('}');
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
 }

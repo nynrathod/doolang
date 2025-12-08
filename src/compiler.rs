@@ -324,6 +324,13 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let context = inkwell::context::Context::create();
     let mut codegen = CodeGen::new("main_module", &context);
     codegen.function_aliases = analyzer.function_aliases.clone();
+
+    // Detect if HTTP module is imported to enable HTTP-specific code generation
+    codegen.uses_http = analyzer
+        .imported_modules
+        .keys()
+        .any(|k| k.contains("std/Http") || k.contains("std\\Http") || k.contains("Http.doo"));
+
     codegen.generate_program(&mir_builder.program);
 
     if opts.dev_mode {

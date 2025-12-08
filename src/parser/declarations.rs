@@ -269,7 +269,12 @@ impl<'a> Parser<'a> {
                 error_type,
                 body: body_block,
                 decorators,
-                receiver_type,
+                receiver_type: if is_static_method {
+                    None
+                } else {
+                    receiver_type.clone()
+                },
+                associated_type: receiver_type,
                 is_expression: true,
             });
         }
@@ -285,7 +290,12 @@ impl<'a> Parser<'a> {
             error_type,
             body: body_block,
             decorators,
-            receiver_type,
+            receiver_type: if is_static_method {
+                None
+            } else {
+                receiver_type.clone()
+            },
+            associated_type: receiver_type,
             is_expression: false,
         })
     }

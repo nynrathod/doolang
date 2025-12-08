@@ -294,14 +294,26 @@ impl<'ctx> CodeGen<'ctx> {
             self.generate_global(g);
         }
 
-        // --- HTTP HANDLER REGISTRATION ---
-        // Register all HTTP handler functions before generating main
-        self.register_http_handlers(&program.functions);
+        // --- HTTP HANDLER DETECTION AND WRAPPERS ---
+        // Check if Server struct is used (indicates HTTP application)
+        let uses_http = program.struct_table.contains_key("Server")
+            || program.functions.iter().any(|f| {
+                f.blocks.iter().any(|b| {
+                    b.instrs.iter().any(|i| {
+                        if let crate::mir::mir::MirInstr::MethodCall { method, .. } = i {
+                            ["post", "get", "put", "delete", "patch", "start", "group"]
+                                .contains(&method.as_str())
+                        } else {
+                            false
+                        }
+                    })
+                })
+            });
 
-        // --- HTTP HANDLER WRAPPERS ---
-        // Generate wrapper functions for HTTP handlers that convert user handlers
-        // to FFI-compatible signature: fn(*mut DooRequest) -> *mut DooResult
-        self.generate_http_handler_wrappers(&program.functions);
+        if uses_http {
+            // Generate wrappers for all potential HTTP handlers
+            self.generate_http_handler_wrappers(&program.functions);
+        }
 
         // --- FUNCTION GENERATION ---
         // Generate LLVM IR for all user-defined functions and apply optimizations.
@@ -316,42 +328,6 @@ impl<'ctx> CodeGen<'ctx> {
         if !program.is_main_entry && self.module.get_function("main").is_none() {
             self.generate_default_main();
         }
-    }
-
-    /// Register HTTP handler functions with the FFI runtime
-    /// This stores handler function info to be used during main() generation
-    fn register_http_handlers(&mut self, functions: &[MirFunction]) {
-        // Store list of handler functions to register
-        // We'll generate the registration calls at the start of main()
-        self.http_handlers_to_register = functions
-            .iter()
-            .filter(|f| {
-                // Skip FFI functions and main
-                if f.ffi_lib.is_some() || f.name == "main" {
-                    return false;
-                }
-                // Include functions that could be HTTP handlers (have return type)
-                if f.return_type.is_none() {
-                    return false;
-                }
-                // Only handlers with 0 or 1 parameters
-                let param_count = f.params.len();
-                if param_count > 1 {
-                    return false;
-                }
-                // Skip HTTP helper functions by name pattern
-                let name = &f.name;
-                if name.ends_with("Response")
-                    || name.starts_with("Status")
-                    || name == "parseJson"
-                    || name == "toJson"
-                {
-                    return false;
-                }
-                true
-            })
-            .map(|f| f.name.clone())
-            .collect();
     }
 
     /// Generate HTTP handler wrapper functions
@@ -370,25 +346,26 @@ impl<'ctx> CodeGen<'ctx> {
                 continue;
             }
 
-            // Only wrap functions that are actual HTTP handlers
-            // HTTP handlers either:
-            // 1. Take 0 parameters: fn() -> ReturnType
-            // 2. Take 1 parameter (request body): fn(SomeStruct) -> ReturnType
-            // Skip helper functions like JsonResponse(status: Int, body: Str) that take multiple params
+            // Only wrap functions that match HTTP handler signature patterns
+            // HTTP handlers: 0-1 parameters, have return type
             let param_count = func.params.len();
             if param_count > 1 {
                 continue;
             }
 
-            // Skip HTTP helper functions by name pattern
+            // Skip HTTP helper/utility functions by name pattern
             let handler_name = &func.name;
             if handler_name.ends_with("Response")
                 || handler_name.starts_with("Status")
+                || handler_name.contains("::")  // Skip methods (Type::method)
                 || handler_name == "parseJson"
                 || handler_name == "toJson"
             {
                 continue;
             }
+
+            // Track this handler for registration
+            self.http_handlers_to_register.push(handler_name.clone());
 
             let wrapper_name = format!("{}_http_wrapper", handler_name);
 
@@ -565,12 +542,18 @@ impl<'ctx> CodeGen<'ctx> {
         let i32_type = self.context.i32_type();
         let i64_type = self.context.i64_type();
 
+        // Check if return type is Response struct - handle it directly (manual Response handling)
+        if return_type == "Response" {
+            // Response struct: { Status: Int, Body: Str, ContentType: Str }
+            // Extract fields and create DooResponse
+            let response_struct_ptr = result.into_pointer_value();
+            return self.extract_response_struct_to_doo_response(response_struct_ptr);
+        }
+
         // Check if this is a Result type (has error_type)
         if error_type.is_some() {
             // Result type: struct { i32 tag, ptr value }
             // tag = 0 means Ok, tag = 1 means Err
-            // For now, we'll extract the Ok value and serialize it
-            // TODO: Handle Err case properly (return error response)
 
             let result_struct = result.into_struct_value();
 
@@ -614,18 +597,22 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_conditional_branch(is_ok, ok_block, err_block)
                 .unwrap();
 
-            // OK case: serialize the value pointer directly
+            // OK case: serialize the value with 200 status
             self.builder.position_at_end(ok_block);
-            // Convert pointer to BasicValueEnum for serialization
             let ok_value: inkwell::values::BasicValueEnum = value_ptr.into();
-            let ok_response = self.wrap_value_in_response(ok_value, return_type);
+            let ok_response = self.wrap_value_in_response_with_status(ok_value, return_type, 200);
             self.builder
                 .build_unconditional_branch(merge_block)
                 .unwrap();
 
-            // ERR case: return error response (500 status)
+            // ERR case: determine error status code based on error enum type
             self.builder.position_at_end(err_block);
-            let err_response = self.create_error_response();
+            let error_status = self.determine_error_status_code(error_type.unwrap(), value_ptr);
+            let err_response = self.create_error_response_with_status(
+                error_status,
+                value_ptr,
+                error_type.unwrap(),
+            );
             self.builder
                 .build_unconditional_branch(merge_block)
                 .unwrap();
@@ -638,15 +625,276 @@ impl<'ctx> CodeGen<'ctx> {
             return phi.as_basic_value().into_pointer_value();
         }
 
-        // Non-Result type: wrap directly
-        self.wrap_value_in_response(result, return_type)
+        // Non-Result type: wrap directly with 200 status
+        self.wrap_value_in_response_with_status(result, return_type, 200)
     }
 
-    /// Wrap a plain value in DooResponse struct (for non-Result types)
-    fn wrap_value_in_response(
+    /// Extract Response struct and convert to DooResponse
+    fn extract_response_struct_to_doo_response(
+        &mut self,
+        response_ptr: inkwell::values::PointerValue<'ctx>,
+    ) -> inkwell::values::PointerValue<'ctx> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let i64_type = self.context.i64_type();
+        let malloc_fn = self.module.get_function("malloc").unwrap();
+
+        // Allocate DooResponse struct
+        let response_size = i64_type.const_int(24, false);
+        let doo_response_ptr = self
+            .builder
+            .build_call(malloc_fn, &[response_size.into()], "doo_response_ptr")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Get Response struct type
+        let response_struct_type = *self.canonical_struct_types.get("Response").unwrap();
+
+        // Extract Status field (Int - field 0)
+        let status_field_ptr = unsafe {
+            self.builder
+                .build_struct_gep(response_struct_type, response_ptr, 0, "status_ptr")
+                .unwrap()
+        };
+        let status_value = self
+            .builder
+            .build_load(i32_type, status_field_ptr, "status")
+            .unwrap()
+            .into_int_value();
+
+        // Extract Body field (Str - field 1)
+        let body_field_ptr = unsafe {
+            self.builder
+                .build_struct_gep(response_struct_type, response_ptr, 1, "body_ptr")
+                .unwrap()
+        };
+        let body_value = self
+            .builder
+            .build_load(ptr_type, body_field_ptr, "body")
+            .unwrap()
+            .into_pointer_value();
+
+        // Extract ContentType field (Str - field 2)
+        let content_type_field_ptr = unsafe {
+            self.builder
+                .build_struct_gep(response_struct_type, response_ptr, 2, "content_type_ptr")
+                .unwrap()
+        };
+        let content_type_value = self
+            .builder
+            .build_load(ptr_type, content_type_field_ptr, "content_type")
+            .unwrap()
+            .into_pointer_value();
+
+        // Store into DooResponse
+        // Status field
+        let doo_status_ptr = self
+            .builder
+            .build_pointer_cast(
+                doo_response_ptr,
+                i32_type.ptr_type(AddressSpace::default()),
+                "doo_status_ptr",
+            )
+            .unwrap();
+        self.builder
+            .build_store(doo_status_ptr, status_value)
+            .unwrap();
+
+        // Body field (offset 8)
+        let doo_body_field_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    doo_response_ptr,
+                    &[i32_type.const_int(8, false)],
+                    "doo_body_ptr",
+                )
+                .unwrap()
+        };
+        let doo_body_ptr_typed = self
+            .builder
+            .build_pointer_cast(
+                doo_body_field_ptr,
+                ptr_type.ptr_type(AddressSpace::default()),
+                "doo_body_typed",
+            )
+            .unwrap();
+        self.builder
+            .build_store(doo_body_ptr_typed, body_value)
+            .unwrap();
+
+        // ContentType field (offset 16)
+        let doo_content_type_field_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    doo_response_ptr,
+                    &[i32_type.const_int(16, false)],
+                    "doo_content_type_ptr",
+                )
+                .unwrap()
+        };
+        let doo_content_type_ptr_typed = self
+            .builder
+            .build_pointer_cast(
+                doo_content_type_field_ptr,
+                ptr_type.ptr_type(AddressSpace::default()),
+                "doo_content_type_typed",
+            )
+            .unwrap();
+        self.builder
+            .build_store(doo_content_type_ptr_typed, content_type_value)
+            .unwrap();
+
+        doo_response_ptr
+    }
+
+    /// Determine error status code based on error enum variant
+    fn determine_error_status_code(
+        &mut self,
+        error_type: &str,
+        _error_value_ptr: inkwell::values::PointerValue<'ctx>,
+    ) -> u32 {
+        // Map common error enum variants to HTTP status codes
+        // For now, use a simple mapping based on error type name
+        // TODO: Extract actual enum variant and map it dynamically
+
+        // Common patterns:
+        // *Error, *Err -> 400 (Bad Request)
+        // NotFound -> 404
+        // Unauthorized -> 401
+        // Forbidden -> 403
+        // Conflict -> 409
+        // Default -> 400
+
+        let error_lower = error_type.to_lowercase();
+        if error_lower.contains("notfound") || error_lower.contains("not_found") {
+            404
+        } else if error_lower.contains("unauthorized") || error_lower.contains("unauthenticated") {
+            401
+        } else if error_lower.contains("forbidden") {
+            403
+        } else if error_lower.contains("conflict") {
+            409
+        } else if error_lower.contains("invalid") || error_lower.contains("validation") {
+            400
+        } else if error_lower.contains("internal") || error_lower.contains("server") {
+            500
+        } else {
+            // Default error status
+            400
+        }
+    }
+
+    /// Create error response with specific status code
+    fn create_error_response_with_status(
+        &mut self,
+        status_code: u32,
+        error_ptr: inkwell::values::PointerValue<'ctx>,
+        error_type: &str,
+    ) -> inkwell::values::PointerValue<'ctx> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let i64_type = self.context.i64_type();
+
+        let response_size = i64_type.const_int(24, false);
+        let malloc_fn = self.module.get_function("malloc").unwrap();
+        let response_ptr = self
+            .builder
+            .build_call(malloc_fn, &[response_size.into()], "error_response_ptr")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Set status code
+        let status_field_ptr = self
+            .builder
+            .build_pointer_cast(
+                response_ptr,
+                i32_type.ptr_type(AddressSpace::default()),
+                "status_ptr",
+            )
+            .unwrap();
+        self.builder
+            .build_store(
+                status_field_ptr,
+                i32_type.const_int(status_code as u64, false),
+            )
+            .unwrap();
+
+        // Create error body with error type name
+        let error_msg = format!("{{\\\"error\\\":\\\"{}\\\"}}", error_type);
+        let error_body = self
+            .builder
+            .build_global_string_ptr(&error_msg, "error_body")
+            .unwrap()
+            .as_pointer_value();
+
+        // Body field (offset 8)
+        let body_field_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    response_ptr,
+                    &[i32_type.const_int(8, false)],
+                    "body_field_ptr",
+                )
+                .unwrap()
+        };
+        let body_field_ptr_typed = self
+            .builder
+            .build_pointer_cast(
+                body_field_ptr,
+                ptr_type.ptr_type(AddressSpace::default()),
+                "body_field_ptr_typed",
+            )
+            .unwrap();
+        self.builder
+            .build_store(body_field_ptr_typed, error_body)
+            .unwrap();
+
+        // Content-Type field (offset 16)
+        let content_type_str = self
+            .builder
+            .build_global_string_ptr("application/json", "content_type_json_err")
+            .unwrap()
+            .as_pointer_value();
+        let content_type_field_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    response_ptr,
+                    &[i32_type.const_int(16, false)],
+                    "content_type_field_ptr",
+                )
+                .unwrap()
+        };
+        let content_type_field_ptr_typed = self
+            .builder
+            .build_pointer_cast(
+                content_type_field_ptr,
+                ptr_type.ptr_type(AddressSpace::default()),
+                "content_type_field_ptr_typed",
+            )
+            .unwrap();
+        self.builder
+            .build_store(content_type_field_ptr_typed, content_type_str)
+            .unwrap();
+
+        response_ptr
+    }
+
+    /// Wrap a plain value in DooResponse struct with specific status code
+    fn wrap_value_in_response_with_status(
         &mut self,
         result: inkwell::values::BasicValueEnum<'ctx>,
         return_type: &str,
+        status_code: u32,
     ) -> inkwell::values::PointerValue<'ctx> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let i32_type = self.context.i32_type();
@@ -674,8 +922,8 @@ impl<'ctx> CodeGen<'ctx> {
             )
             .unwrap();
 
-        // Set status to 200 OK
-        let status_value = i32_type.const_int(200, false);
+        // Set status to provided status code
+        let status_value = i32_type.const_int(status_code as u64, false);
         self.builder
             .build_store(status_field_ptr, status_value)
             .unwrap();
@@ -710,95 +958,6 @@ impl<'ctx> CodeGen<'ctx> {
         let content_type_str = self
             .builder
             .build_global_string_ptr("application/json", "content_type_json")
-            .unwrap()
-            .as_pointer_value();
-        let content_type_field_ptr = unsafe {
-            self.builder
-                .build_gep(
-                    self.context.i8_type(),
-                    response_ptr,
-                    &[i32_type.const_int(16, false)],
-                    "content_type_field_ptr",
-                )
-                .unwrap()
-        };
-        let content_type_field_ptr_typed = self
-            .builder
-            .build_pointer_cast(
-                content_type_field_ptr,
-                ptr_type.ptr_type(AddressSpace::default()),
-                "content_type_field_ptr_typed",
-            )
-            .unwrap();
-        self.builder
-            .build_store(content_type_field_ptr_typed, content_type_str)
-            .unwrap();
-
-        response_ptr
-    }
-
-    /// Create an error DooResponse (for Err case in Result types)
-    fn create_error_response(&mut self) -> inkwell::values::PointerValue<'ctx> {
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let i32_type = self.context.i32_type();
-        let i64_type = self.context.i64_type();
-
-        let response_size = i64_type.const_int(24, false);
-        let malloc_fn = self.module.get_function("malloc").unwrap();
-        let response_ptr = self
-            .builder
-            .build_call(malloc_fn, &[response_size.into()], "error_response_ptr")
-            .unwrap()
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-
-        // Status 500 Internal Server Error
-        let status_field_ptr = self
-            .builder
-            .build_pointer_cast(
-                response_ptr,
-                i32_type.ptr_type(AddressSpace::default()),
-                "status_ptr",
-            )
-            .unwrap();
-        self.builder
-            .build_store(status_field_ptr, i32_type.const_int(500, false))
-            .unwrap();
-
-        // Body: error message
-        let error_body = self
-            .builder
-            .build_global_string_ptr("{\"error\":\"Internal Server Error\"}", "error_body")
-            .unwrap()
-            .as_pointer_value();
-        let body_field_ptr = unsafe {
-            self.builder
-                .build_gep(
-                    self.context.i8_type(),
-                    response_ptr,
-                    &[i32_type.const_int(8, false)],
-                    "body_field_ptr",
-                )
-                .unwrap()
-        };
-        let body_field_ptr_typed = self
-            .builder
-            .build_pointer_cast(
-                body_field_ptr,
-                ptr_type.ptr_type(AddressSpace::default()),
-                "body_field_ptr_typed",
-            )
-            .unwrap();
-        self.builder
-            .build_store(body_field_ptr_typed, error_body)
-            .unwrap();
-
-        // Content-Type: application/json
-        let content_type_str = self
-            .builder
-            .build_global_string_ptr("application/json", "content_type_json_err")
             .unwrap()
             .as_pointer_value();
         let content_type_field_ptr = unsafe {

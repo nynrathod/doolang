@@ -708,7 +708,7 @@ impl SemanticAnalyzer {
                         },
                     });
                 }
-                let value_type = self.infer_type(&actual_values[0])?;
+                let value_type = self.infer_type_with_expected(&actual_values[0], expected)?;
                 if !super::analyzer::types_compatible(
                     &value_type,
                     expected,
