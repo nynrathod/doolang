@@ -508,6 +508,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.wrap_handler_result_in_response(
                     result_value,
                     func.return_type.as_ref().unwrap(),
+                    func.error_type.as_deref(),
                 )
             } else {
                 // Void return - create empty response
@@ -555,6 +556,94 @@ impl<'ctx> CodeGen<'ctx> {
 
     /// Wrap handler result in DooResponse struct
     fn wrap_handler_result_in_response(
+        &mut self,
+        result: inkwell::values::BasicValueEnum<'ctx>,
+        return_type: &str,
+        error_type: Option<&str>,
+    ) -> inkwell::values::PointerValue<'ctx> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let i64_type = self.context.i64_type();
+
+        // Check if this is a Result type (has error_type)
+        if error_type.is_some() {
+            // Result type: struct { i32 tag, ptr value }
+            // tag = 0 means Ok, tag = 1 means Err
+            // For now, we'll extract the Ok value and serialize it
+            // TODO: Handle Err case properly (return error response)
+
+            let result_struct = result.into_struct_value();
+
+            // Extract tag (first field)
+            let tag = self
+                .builder
+                .build_extract_value(result_struct, 0, "result_tag")
+                .unwrap()
+                .into_int_value();
+
+            // Extract value pointer (second field)
+            let value_ptr = self
+                .builder
+                .build_extract_value(result_struct, 1, "result_value_ptr")
+                .unwrap()
+                .into_pointer_value();
+
+            // Check if Ok (tag == 0) or Err (tag == 1)
+            let is_ok = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    tag,
+                    i32_type.const_int(0, false),
+                    "is_ok",
+                )
+                .unwrap();
+
+            // Create two blocks: one for Ok, one for Err
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+            let ok_block = self.context.append_basic_block(current_fn, "result_ok");
+            let err_block = self.context.append_basic_block(current_fn, "result_err");
+            let merge_block = self.context.append_basic_block(current_fn, "result_merge");
+
+            self.builder
+                .build_conditional_branch(is_ok, ok_block, err_block)
+                .unwrap();
+
+            // OK case: serialize the value pointer directly
+            self.builder.position_at_end(ok_block);
+            // Convert pointer to BasicValueEnum for serialization
+            let ok_value: inkwell::values::BasicValueEnum = value_ptr.into();
+            let ok_response = self.wrap_value_in_response(ok_value, return_type);
+            self.builder
+                .build_unconditional_branch(merge_block)
+                .unwrap();
+
+            // ERR case: return error response (500 status)
+            self.builder.position_at_end(err_block);
+            let err_response = self.create_error_response();
+            self.builder
+                .build_unconditional_branch(merge_block)
+                .unwrap();
+
+            // Merge: phi node to select the correct response
+            self.builder.position_at_end(merge_block);
+            let phi = self.builder.build_phi(ptr_type, "response_ptr").unwrap();
+            phi.add_incoming(&[(&ok_response, ok_block), (&err_response, err_block)]);
+
+            return phi.as_basic_value().into_pointer_value();
+        }
+
+        // Non-Result type: wrap directly
+        self.wrap_value_in_response(result, return_type)
+    }
+
+    /// Wrap a plain value in DooResponse struct (for non-Result types)
+    fn wrap_value_in_response(
         &mut self,
         result: inkwell::values::BasicValueEnum<'ctx>,
         return_type: &str,
@@ -621,6 +710,95 @@ impl<'ctx> CodeGen<'ctx> {
         let content_type_str = self
             .builder
             .build_global_string_ptr("application/json", "content_type_json")
+            .unwrap()
+            .as_pointer_value();
+        let content_type_field_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    response_ptr,
+                    &[i32_type.const_int(16, false)],
+                    "content_type_field_ptr",
+                )
+                .unwrap()
+        };
+        let content_type_field_ptr_typed = self
+            .builder
+            .build_pointer_cast(
+                content_type_field_ptr,
+                ptr_type.ptr_type(AddressSpace::default()),
+                "content_type_field_ptr_typed",
+            )
+            .unwrap();
+        self.builder
+            .build_store(content_type_field_ptr_typed, content_type_str)
+            .unwrap();
+
+        response_ptr
+    }
+
+    /// Create an error DooResponse (for Err case in Result types)
+    fn create_error_response(&mut self) -> inkwell::values::PointerValue<'ctx> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let i64_type = self.context.i64_type();
+
+        let response_size = i64_type.const_int(24, false);
+        let malloc_fn = self.module.get_function("malloc").unwrap();
+        let response_ptr = self
+            .builder
+            .build_call(malloc_fn, &[response_size.into()], "error_response_ptr")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Status 500 Internal Server Error
+        let status_field_ptr = self
+            .builder
+            .build_pointer_cast(
+                response_ptr,
+                i32_type.ptr_type(AddressSpace::default()),
+                "status_ptr",
+            )
+            .unwrap();
+        self.builder
+            .build_store(status_field_ptr, i32_type.const_int(500, false))
+            .unwrap();
+
+        // Body: error message
+        let error_body = self
+            .builder
+            .build_global_string_ptr("{\"error\":\"Internal Server Error\"}", "error_body")
+            .unwrap()
+            .as_pointer_value();
+        let body_field_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    response_ptr,
+                    &[i32_type.const_int(8, false)],
+                    "body_field_ptr",
+                )
+                .unwrap()
+        };
+        let body_field_ptr_typed = self
+            .builder
+            .build_pointer_cast(
+                body_field_ptr,
+                ptr_type.ptr_type(AddressSpace::default()),
+                "body_field_ptr_typed",
+            )
+            .unwrap();
+        self.builder
+            .build_store(body_field_ptr_typed, error_body)
+            .unwrap();
+
+        // Content-Type: application/json
+        let content_type_str = self
+            .builder
+            .build_global_string_ptr("application/json", "content_type_json_err")
             .unwrap()
             .as_pointer_value();
         let content_type_field_ptr = unsafe {
@@ -1205,8 +1383,8 @@ impl<'ctx> CodeGen<'ctx> {
             for (field_idx, field_name) in metadata.field_names.iter().enumerate() {
                 let field_type = &metadata.field_types[field_idx];
 
-                // Create search pattern: "fieldName":"
-                let search_pattern = format!("\"{}\":\"", field_name);
+                // Create search pattern: "fieldName": (without trailing quote for flexibility)
+                let search_pattern = format!("\"{}\":", field_name);
                 let pattern_str = self
                     .builder
                     .build_global_string_ptr(&search_pattern, &format!("pattern_{}", field_name))
@@ -1256,18 +1434,93 @@ impl<'ctx> CodeGen<'ctx> {
 
                 self.builder.position_at_end(then_block);
 
-                // Skip past the pattern to get the value start
+                // Skip past the pattern to get to the value
                 let pattern_len = search_pattern.len() as u64;
-                let value_start = unsafe {
+                let after_colon = unsafe {
                     self.builder
                         .build_gep(
                             self.context.i8_type(),
                             field_start,
                             &[i32_type.const_int(pattern_len, false)],
-                            "value_start",
+                            "after_colon",
                         )
                         .unwrap()
                 };
+
+                // Skip whitespace after colon
+                // For now, just skip one space if present
+                let first_char = self
+                    .builder
+                    .build_load(self.context.i8_type(), after_colon, "first_char")
+                    .unwrap()
+                    .into_int_value();
+                let is_space = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        first_char,
+                        self.context.i8_type().const_int(' ' as u64, false),
+                        "is_space",
+                    )
+                    .unwrap();
+                let skip_amount = self
+                    .builder
+                    .build_select(
+                        is_space,
+                        i32_type.const_int(1, false),
+                        i32_type.const_int(0, false),
+                        "skip_amount",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                let value_start_raw = unsafe {
+                    self.builder
+                        .build_gep(
+                            self.context.i8_type(),
+                            after_colon,
+                            &[skip_amount],
+                            "value_start_raw",
+                        )
+                        .unwrap()
+                };
+
+                // Check if value starts with quote (string) or not (number/bool)
+                let first_value_char = self
+                    .builder
+                    .build_load(self.context.i8_type(), value_start_raw, "first_value_char")
+                    .unwrap()
+                    .into_int_value();
+                let is_quoted = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        first_value_char,
+                        self.context.i8_type().const_int('"' as u64, false),
+                        "is_quoted",
+                    )
+                    .unwrap();
+
+                // If quoted, skip the opening quote
+                let value_start_adjusted = self
+                    .builder
+                    .build_select(
+                        is_quoted,
+                        unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    value_start_raw,
+                                    &[i32_type.const_int(1, false)],
+                                    "skip_quote",
+                                )
+                                .unwrap()
+                        },
+                        value_start_raw,
+                        "value_start",
+                    )
+                    .unwrap()
+                    .into_pointer_value();
+                let value_start = value_start_adjusted;
 
                 // Get field pointer in struct
                 let struct_llvm_type = *self.canonical_struct_types.get(struct_type).unwrap();
@@ -1284,18 +1537,104 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // Parse based on field type
                 if field_type == "Str" || field_type.contains("String") {
-                    // Find closing quote: strchr(value_start, '"')
+                    // For strings, find closing quote or comma/brace
+                    // Try to find closing quote first
                     let quote_char = i32_type.const_int('"' as u64, false);
-                    let value_end = self
+                    let value_end_quote = self
                         .builder
                         .build_call(
                             strchr_fn,
                             &[value_start.into(), quote_char.into()],
-                            "value_end",
+                            "value_end_quote",
                         )
                         .unwrap()
                         .try_as_basic_value()
                         .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Also try comma (for non-last fields) and closing brace (for last field)
+                    let comma_char = i32_type.const_int(',' as u64, false);
+                    let value_end_comma = self
+                        .builder
+                        .build_call(
+                            strchr_fn,
+                            &[value_start.into(), comma_char.into()],
+                            "value_end_comma",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    let brace_char = i32_type.const_int('}' as u64, false);
+                    let value_end_brace = self
+                        .builder
+                        .build_call(
+                            strchr_fn,
+                            &[value_start.into(), brace_char.into()],
+                            "value_end_brace",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Use quote if found and valid, otherwise use the earlier of comma/brace
+                    let quote_is_null = self
+                        .builder
+                        .build_is_null(value_end_quote, "quote_is_null")
+                        .unwrap();
+
+                    // Choose between comma and brace (whichever comes first)
+                    let comma_int = self
+                        .builder
+                        .build_ptr_to_int(value_end_comma, self.context.i64_type(), "comma_int")
+                        .unwrap();
+                    let brace_int = self
+                        .builder
+                        .build_ptr_to_int(value_end_brace, self.context.i64_type(), "brace_int")
+                        .unwrap();
+                    let comma_is_null = self
+                        .builder
+                        .build_is_null(value_end_comma, "comma_is_null")
+                        .unwrap();
+                    let use_brace = self
+                        .builder
+                        .build_or(
+                            comma_is_null,
+                            self.builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::ULT,
+                                    brace_int,
+                                    comma_int,
+                                    "brace_before_comma",
+                                )
+                                .unwrap(),
+                            "use_brace",
+                        )
+                        .unwrap();
+                    let value_end_fallback = self
+                        .builder
+                        .build_select(
+                            use_brace,
+                            value_end_brace,
+                            value_end_comma,
+                            "value_end_fallback",
+                        )
+                        .unwrap()
+                        .into_pointer_value();
+
+                    let value_end = self
+                        .builder
+                        .build_select(
+                            quote_is_null,
+                            value_end_fallback,
+                            value_end_quote,
+                            "value_end",
+                        )
                         .unwrap()
                         .into_pointer_value();
 

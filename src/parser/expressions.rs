@@ -792,10 +792,37 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        // Parse body - either a single expression or a block expression
+        // Parse body - either a single expression or a block with statements
         let body = if self.peek_is(TokenType::OpenBrace) {
-            // Use parse_block_expr to allow expression-only bodies without semicolons
-            Box::new(self.parse_block_expr()?)
+            // Parse block with statements (allows return, if, etc.)
+            self.advance(); // consume '{'
+            let mut statements = Vec::new();
+
+            while !self.peek_is(TokenType::CloseBrace) && self.current < self.tokens.len() {
+                // Special handling for return statement - allow missing semicolon in closure blocks
+                if self.peek_is(TokenType::Return) {
+                    self.advance(); // consume 'return'
+                    let mut values = Vec::new();
+                    loop {
+                        let expr = self.parse_expression()?;
+                        values.push(expr);
+                        if self.peek_is(TokenType::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    // Semicolon is optional in closure blocks
+                    self.consume_if(TokenType::Semi);
+                    statements.push(AstNode::Return { values });
+                } else {
+                    let stmt = self.parse_statement()?;
+                    statements.push(stmt);
+                }
+            }
+
+            self.expect(TokenType::CloseBrace)?;
+            Box::new(AstNode::Block(statements))
         } else {
             Box::new(self.parse_expression()?)
         };

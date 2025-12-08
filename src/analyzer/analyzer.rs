@@ -149,7 +149,11 @@ impl SemanticAnalyzer {
         nodes: &mut Vec<AstNode>,
         import_stack: &mut Vec<String>,
     ) -> Result<(), SemanticError> {
-        // PREPROCESSING: Transform route group DSL syntax before analysis
+        // PREPROCESSING 1: Transform inline closures in route handlers into named functions
+        // This converts app.post("/path", (req) -> Res { ... }) into a named function
+        crate::analyzer::route_transform::transform_inline_closures(nodes);
+
+        // PREPROCESSING 2: Transform route group DSL syntax before analysis
         // This expands app.group("/api", { get(...), post(...) }) into individual route calls
         crate::analyzer::route_transform::transform_route_groups(nodes);
 
