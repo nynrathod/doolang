@@ -398,6 +398,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "matchit",
+ "regex",
  "serde_json",
  "tokio",
  "urlencoding",

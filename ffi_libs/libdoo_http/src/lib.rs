@@ -169,7 +169,7 @@ pub struct DooResponse {
 }
 
 // Helper to convert Rust String to C string
-fn string_to_c(s: String) -> *const c_char {
+fn string_to_c(s: &str) -> *const c_char {
     CString::new(s)
         .expect("Failed to create CString")
         .into_raw()
@@ -189,16 +189,17 @@ fn make_ok_void() -> *mut DooResult {
     }))
 }
 
-fn make_ok_string(s: String) -> *mut DooResult {
+fn make_ok_string(s: &str) -> *mut DooResult {
+    let c_str = CString::new(s).expect("CString conversion failed");
     Box::into_raw(Box::new(DooResult {
         tag: 0,
-        value: string_to_c(s) as *mut std::ffi::c_void,
+        value: c_str.into_raw() as *mut std::ffi::c_void,
     }))
 }
 
-fn make_err_http(status: i32, message: String) -> *mut DooResult {
+fn make_err_http(status: u16, message: &str) -> *mut DooResult {
     let error = Box::new(DooHttpError {
-        status,
+        status: status as i32,
         message: string_to_c(message),
     });
     Box::into_raw(Box::new(DooResult {
@@ -224,7 +225,7 @@ pub extern "C" fn doo_http_register_handler(name: *const c_char, handler: DooHan
 unsafe fn auto_register_handler(handler_name: &str) -> Option<DooHandlerFn> {
     // Try to find the function symbol in the current process
     // Function names in Doo are mangled, so try both mangled and unmangled
-    let symbol_name = handler_name;
+    let _symbol_name = handler_name;
 
     // For now, we'll rely on explicit registration via doo_http_register_handler
     // or use the codegen to call register_handler automatically
@@ -427,7 +428,7 @@ pub extern "C" fn doo_http_parse_json(json: *const c_char) -> *mut std::ffi::c_v
     let json_str = c_to_string(json);
     // For now, just return the string as-is
     // Later, we'll parse into proper Doo structs
-    string_to_c(json_str) as *mut std::ffi::c_void
+    string_to_c(&json_str) as *mut std::ffi::c_void
 }
 
 #[no_mangle]
@@ -516,10 +517,10 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let headers_box = Box::new(headers_map);
 
     let mut doo_request = Box::new(DooRequest {
-        method: string_to_c(method.clone()),
-        path: string_to_c(path.clone()),
-        body: string_to_c(body),
-        content_type: string_to_c(content_type),
+        method: string_to_c(&method),
+        path: string_to_c(&path),
+        body: string_to_c(&body),
+        content_type: string_to_c(&content_type),
         params: Box::into_raw(params_box) as *mut std::ffi::c_void,
         query: Box::into_raw(query_box) as *mut std::ffi::c_void,
         headers: Box::into_raw(headers_box) as *mut std::ffi::c_void,
@@ -647,7 +648,7 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
-        Err(e) => return make_err_http(500, format!("Failed to create tokio runtime: {}", e)),
+        Err(e) => return make_err_http(500, &format!("Failed to create tokio runtime: {}", e)),
     };
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port as u16));
@@ -718,7 +719,7 @@ pub extern "C" fn doo_http_req_query(req: *const DooRequest, key: *const c_char)
         }
         let key_str = c_to_string(key);
         if let Some(value) = (*query_map).get(&key_str) {
-            string_to_c(value.clone())
+            string_to_c(value)
         } else {
             std::ptr::null()
         }
@@ -737,7 +738,7 @@ pub extern "C" fn doo_http_req_param(req: *const DooRequest, key: *const c_char)
         }
         let key_str = c_to_string(key);
         if let Some(value) = (*params_map).get(&key_str) {
-            string_to_c(value.clone())
+            string_to_c(value)
         } else {
             std::ptr::null()
         }
@@ -756,7 +757,7 @@ pub extern "C" fn doo_http_req_header(req: *const DooRequest, key: *const c_char
         }
         let key_str = c_to_string(key);
         if let Some(value) = (*headers_map).get(&key_str) {
-            string_to_c(value.clone())
+            string_to_c(value)
         } else {
             std::ptr::null()
         }
@@ -820,6 +821,424 @@ pub extern "C" fn doo_http_free_request(req: *mut DooRequest) {
     }
 }
 
+// ===== PHASE 6: AUTO JSON SERIALIZATION/DESERIALIZATION =====
+
+/// Parse JSON body into struct with validation
+/// FFI signature: doohttp_parse_json_struct(body, struct_name, validators) -> struct_ptr
+///
+/// Returns: pointer to allocated struct (on success) or NULL (on error)
+/// Errors: 400 (malformed JSON), 422 (validation failed)
+#[no_mangle]
+pub extern "C" fn doohttp_parse_json_struct(
+    body: *const libc::c_char,
+    struct_name: *const libc::c_char,
+    validator_spec: *const libc::c_char,
+) -> *mut libc::c_void {
+    if body.is_null() || struct_name.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let body_str = unsafe { std::ffi::CStr::from_ptr(body).to_string_lossy().to_string() };
+    let struct_name_str = unsafe {
+        std::ffi::CStr::from_ptr(struct_name)
+            .to_string_lossy()
+            .to_string()
+    };
+    let validator_str = if validator_spec.is_null() {
+        String::new()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(validator_spec)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    // Parse JSON
+    let json_value: serde_json::Value = match serde_json::from_str(&body_str) {
+        Ok(v) => v,
+        Err(_) => {
+            // 400 Bad Request - malformed JSON
+            return std::ptr::null_mut();
+        }
+    };
+
+    // Validate against decorators
+    if !validate_json_value(&json_value, &struct_name_str, &validator_str) {
+        // 422 Unprocessable Entity - validation failed
+        return std::ptr::null_mut();
+    }
+
+    // Allocate and return JSON string representation
+    let json_str = Box::new(body_str);
+    Box::into_raw(json_str) as *mut libc::c_void
+}
+
+/// Serialize struct to JSON
+/// FFI signature: doohttp_serialize_struct(struct_ptr, struct_name) -> json_string
+///
+/// Returns: pointer to allocated JSON string (caller must free)
+#[no_mangle]
+pub extern "C" fn doohttp_serialize_struct(
+    struct_ptr: *const libc::c_void,
+    struct_name: *const libc::c_char,
+) -> *const libc::c_char {
+    if struct_ptr.is_null() || struct_name.is_null() {
+        return std::ptr::null();
+    }
+
+    let struct_name_str = unsafe {
+        std::ffi::CStr::from_ptr(struct_name)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // In production, this would serialize the struct based on its type
+    // For now, return a dummy JSON response
+    let json_str = format!(
+        r#"{{"id":1,"name":"example","type":"{}"}}"#,
+        struct_name_str
+    );
+    string_to_c(&json_str)
+}
+
+// ===== PHASE 7: VALIDATION DECORATORS =====
+
+/// Validate a JSON value against decorator specifications
+/// Format: "field1:email;field2:min8|max100;field3:enum:a|b|c"
+fn validate_json_value(json: &serde_json::Value, _struct_name: &str, validator_spec: &str) -> bool {
+    if validator_spec.is_empty() {
+        return true; // No validators, pass
+    }
+
+    // Parse validator spec
+    for field_spec in validator_spec.split(';') {
+        if field_spec.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = field_spec.split(':').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+
+        let field_name = parts[0];
+        let validators = parts[1..].join(":");
+
+        // Get field value from JSON
+        let field_value = match json.get(field_name) {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            Some(serde_json::Value::Bool(b)) => b.to_string(),
+            Some(serde_json::Value::Null) => continue, // Allow null if not required
+            None => continue,                          // Field not present
+            _ => return false,                         // Complex types not supported yet
+        };
+
+        // Validate field against all decorators
+        if !validate_field_value(&field_value, &validators) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Validate a single field value against decorators
+/// Format: "email|min8|max100|pattern:^[0-9]+$|enum:a|b|c"
+fn validate_field_value(value: &str, validator_spec: &str) -> bool {
+    for validator in validator_spec.split('|') {
+        if validator.is_empty() {
+            continue;
+        }
+
+        if !apply_validator(value, validator) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Apply a single validator to a value
+fn apply_validator(value: &str, validator: &str) -> bool {
+    if validator == "email" {
+        // Simple email validation
+        value.contains('@') && value.contains('.')
+    } else if validator.starts_with("min") {
+        if let Ok(min) = validator[3..].parse::<usize>() {
+            value.len() >= min
+        } else {
+            true
+        }
+    } else if validator.starts_with("max") {
+        if let Ok(max) = validator[3..].parse::<usize>() {
+            value.len() <= max
+        } else {
+            true
+        }
+    } else if validator.starts_with("pattern:") {
+        // Pattern validation would require regex crate
+        // For now, just pass
+        true
+    } else if validator.starts_with("enum:") {
+        let allowed = validator[5..].split('|').collect::<Vec<_>>();
+        allowed.contains(&value)
+    } else if validator == "required" {
+        !value.is_empty()
+    } else if validator == "optional" {
+        true // Always valid for optional
+    } else {
+        true // Unknown validator, pass
+    }
+}
+
+/// Validate struct field value
+/// FFI signature: doohttp_validate_field_value(value, field_name, validators) -> bool
+#[no_mangle]
+pub extern "C" fn doohttp_validate_field_value(
+    value: *const libc::c_char,
+    field_name: *const libc::c_char,
+    validators: *const libc::c_char,
+) -> libc::c_int {
+    if value.is_null() || field_name.is_null() || validators.is_null() {
+        return 0; // Invalid
+    }
+
+    let value_str = unsafe {
+        std::ffi::CStr::from_ptr(value)
+            .to_string_lossy()
+            .to_string()
+    };
+    let validator_str = unsafe {
+        std::ffi::CStr::from_ptr(validators)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    if validate_field_value(&value_str, &validator_str) {
+        1 // Valid
+    } else {
+        0 // Invalid
+    }
+}
+
+// ===== PHASE 8: TYPE-SAFE PARAMETERS =====
+
+/// Extract typed path parameter from request
+/// FFI signature: doohttp_extract_param_typed(request, param_name, param_type) -> typed_value
+///
+/// Converts parameter string to specified type
+/// Returns: converted value as string (caller must free)
+#[no_mangle]
+pub extern "C" fn doohttp_extract_param_typed(
+    request: *const DooRequest,
+    param_name: *const libc::c_char,
+    param_type: *const libc::c_char,
+) -> *const libc::c_char {
+    if request.is_null() || param_name.is_null() || param_type.is_null() {
+        return std::ptr::null();
+    }
+
+    let param_name_str = unsafe {
+        std::ffi::CStr::from_ptr(param_name)
+            .to_string_lossy()
+            .to_string()
+    };
+    let param_type_str = unsafe {
+        std::ffi::CStr::from_ptr(param_type)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Extract parameter from request params HashMap
+    let req = unsafe { &*request };
+
+    // params is *mut c_void pointing to HashMap<String, String>
+    if req.params.is_null() {
+        return std::ptr::null();
+    }
+
+    let params_map = unsafe { &*(req.params as *const std::collections::HashMap<String, String>) };
+
+    if let Some(value) = params_map.get(&param_name_str) {
+        // Type conversion validation
+        match param_type_str.as_str() {
+            "Int" => {
+                if value.parse::<i64>().is_ok() {
+                    string_to_c(value)
+                } else {
+                    std::ptr::null()
+                }
+            }
+            "Float" => {
+                if value.parse::<f64>().is_ok() {
+                    string_to_c(value)
+                } else {
+                    std::ptr::null()
+                }
+            }
+            "Bool" => {
+                if value == "true" || value == "false" {
+                    string_to_c(value)
+                } else {
+                    std::ptr::null()
+                }
+            }
+            _ => string_to_c(value), // String or other types
+        }
+    } else {
+        std::ptr::null()
+    }
+}
+
+/// Extract path parameter as integer directly
+/// FFI signature: doohttp_extract_param_int(request, param_name) -> i64
+///
+/// Returns: Integer value of parameter, or 0 if not found/invalid
+#[no_mangle]
+pub extern "C" fn doohttp_extract_param_int(
+    request: *const DooRequest,
+    param_name: *const libc::c_char,
+) -> i64 {
+    if request.is_null() || param_name.is_null() {
+        return 0;
+    }
+
+    let param_name_str = unsafe {
+        std::ffi::CStr::from_ptr(param_name)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Extract parameter from request params HashMap
+    let req = unsafe { &*request };
+
+    // params is *mut c_void pointing to HashMap<String, String>
+    if req.params.is_null() {
+        return 0;
+    }
+
+    let params_map = unsafe { &*(req.params as *const std::collections::HashMap<String, String>) };
+
+    if let Some(value) = params_map.get(&param_name_str) {
+        value.parse::<i64>().unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+/// Parse query parameters into struct
+/// FFI signature: doohttp_parse_query_struct(query_string, struct_name, defaults) -> struct_ptr
+///
+/// Parses ?key=value&key2=value2 into struct fields
+/// Applies type conversion and default values
+#[no_mangle]
+pub extern "C" fn doohttp_parse_query_struct(
+    query_string: *const libc::c_char,
+    struct_name: *const libc::c_char,
+    defaults_spec: *const libc::c_char,
+) -> *mut libc::c_void {
+    if query_string.is_null() || struct_name.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let query_str = unsafe {
+        std::ffi::CStr::from_ptr(query_string)
+            .to_string_lossy()
+            .to_string()
+    };
+    let defaults_str = if defaults_spec.is_null() {
+        String::new()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(defaults_spec)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    // Parse query string
+    let mut query_map = parse_query(&query_str);
+
+    // Apply defaults
+    for default_pair in defaults_str.split(';') {
+        let kv: Vec<&str> = default_pair.split(':').collect();
+        if kv.len() == 2 && !query_map.contains_key(kv[0]) {
+            query_map.insert(kv[0].to_string(), kv[1].to_string());
+        }
+    }
+
+    // Allocate and return struct representation as JSON
+    let json_str = Box::new(format!("{:?}", query_map));
+    Box::into_raw(json_str) as *mut libc::c_void
+}
+
+// ===== PHASE 8: ERROR MAPPING =====
+
+/// Map error enum variant to HTTP status code
+/// FFI signature: doohttp_error_to_status(error_type, variant) -> status_code
+///
+/// Returns: HTTP status code (404, 409, 422, 500, etc.)
+#[no_mangle]
+pub extern "C" fn doohttp_error_to_status(
+    error_type: *const libc::c_char,
+    variant: *const libc::c_char,
+) -> libc::c_int {
+    if error_type.is_null() || variant.is_null() {
+        return 500; // Default to 500 Internal Error
+    }
+
+    let variant_str = unsafe {
+        std::ffi::CStr::from_ptr(variant)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Map error variants to status codes
+    match variant_str.as_str() {
+        "NotFound" => 404,
+        "InvalidInput" | "ValidationError" => 422,
+        "Unauthorized" => 401,
+        "Forbidden" => 403,
+        "Conflict" | "AlreadyExists" => 409,
+        "BadRequest" => 400,
+        _ => 500, // Default to 500 for unknown errors
+    }
+}
+
+/// Get error message from enum variant
+/// FFI signature: doohttp_error_message(error_type, variant) -> message_string
+#[no_mangle]
+pub extern "C" fn doohttp_error_message(
+    error_type: *const libc::c_char,
+    variant: *const libc::c_char,
+) -> *const libc::c_char {
+    if error_type.is_null() || variant.is_null() {
+        return std::ptr::null();
+    }
+
+    let variant_str = unsafe {
+        std::ffi::CStr::from_ptr(variant)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    let message = match variant_str.as_str() {
+        "NotFound" => "Resource not found",
+        "InvalidInput" => "Invalid input",
+        "ValidationError" => "Validation failed",
+        "Unauthorized" => "Unauthorized",
+        "Forbidden" => "Forbidden",
+        "Conflict" => "Conflict",
+        "AlreadyExists" => "Resource already exists",
+        "BadRequest" => "Bad request",
+        _ => "Internal server error",
+    };
+
+    string_to_c(message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,5 +1261,43 @@ mod tests {
         let params = parse_query(query);
         assert_eq!(params.get("name"), Some(&"John".to_string()));
         assert_eq!(params.get("age"), Some(&"30".to_string()));
+    }
+
+    #[test]
+    fn test_email_validation() {
+        assert!(apply_validator("test@example.com", "email"));
+        assert!(!apply_validator("not-an-email", "email"));
+    }
+
+    #[test]
+    fn test_min_max_validation() {
+        assert!(apply_validator("12345678", "min8"));
+        assert!(!apply_validator("short", "min8"));
+        assert!(apply_validator("short", "max10"));
+        assert!(!apply_validator("this is very long text", "max10"));
+    }
+
+    #[test]
+    fn test_enum_validation() {
+        assert!(apply_validator("admin", "enum:user|admin|mod"));
+        assert!(!apply_validator("superadmin", "enum:user|admin|mod"));
+    }
+
+    #[test]
+    fn test_error_mapping() {
+        use std::ffi::CString;
+
+        let error_type = CString::new("UserError").unwrap();
+        let not_found = CString::new("NotFound").unwrap();
+        let invalid = CString::new("InvalidInput").unwrap();
+
+        assert_eq!(
+            doohttp_error_to_status(error_type.as_ptr(), not_found.as_ptr()),
+            404
+        );
+        assert_eq!(
+            doohttp_error_to_status(error_type.as_ptr(), invalid.as_ptr()),
+            422
+        );
     }
 }

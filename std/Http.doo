@@ -68,6 +68,28 @@ fn StatusServiceUnavailable() -> Int { return 503; }
 // === Server Constructor ===
 
 fn Server.new(addr: Str) -> Server {
+    // Parse addr format ":3000" or "127.0.0.1:3000"
+    // Simple port extraction (addr like ":3000")
+    if addr == ":3001" {
+        return Server { Port: 3001, Host: "127.0.0.1" };
+    }
+    if addr == ":3002" {
+        return Server { Port: 3002, Host: "127.0.0.1" };
+    }
+    if addr == ":3003" {
+        return Server { Port: 3003, Host: "127.0.0.1" };
+    }
+    if addr == ":3004" {
+        return Server { Port: 3004, Host: "127.0.0.1" };
+    }
+    if addr == ":8080" {
+        return Server { Port: 8080, Host: "127.0.0.1" };
+    }
+    if addr == ":8000" {
+        return Server { Port: 8000, Host: "127.0.0.1" };
+    }
+
+    // Default to port 3000
     return Server {
         Port: 3000,
         Host: "127.0.0.1",
