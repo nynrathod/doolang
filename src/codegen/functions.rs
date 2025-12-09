@@ -346,8 +346,9 @@ impl<'ctx> CodeGen<'ctx> {
                 continue;
             }
 
-            // Only wrap functions that match HTTP handler signature patterns
+            // Only wrap functions that match HTTP handler/middleware signature patterns
             // HTTP handlers: 0-2 parameters, have return type
+            // Middleware: 2 parameters (Request, Next)
             let param_count = func.params.len();
             if param_count > 2 {
                 continue;
@@ -361,6 +362,131 @@ impl<'ctx> CodeGen<'ctx> {
                 || handler_name == "parseJson"
                 || handler_name == "toJson"
             {
+                continue;
+            }
+
+            // Check if this is a middleware function (takes Request and Next)
+            let is_middleware = if param_count == 2 {
+                if let Some(param_types) = self.function_param_types.get(handler_name) {
+                    param_types.len() == 2
+                        && param_types[0] == "Request"
+                        && param_types[1] == "Next"
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if is_middleware {
+                // Middleware functions need wrappers to convert to pointer
+                self.http_middleware_to_register.push(handler_name.clone());
+
+                let wrapper_name = format!("{}_http_wrapper", handler_name);
+
+                // Check if wrapper already exists
+                if self.module.get_function(&wrapper_name).is_some() {
+                    continue;
+                }
+
+                // Get the original middleware function
+                let original_middleware = match self.module.get_function(handler_name) {
+                    Some(f) => f,
+                    None => continue,
+                };
+
+                // Create wrapper function with FFI signature: fn(*mut Request, *mut Next) -> *mut DooResult
+                let wrapper_fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                let wrapper_fn = self
+                    .module
+                    .add_function(&wrapper_name, wrapper_fn_type, None);
+
+                let entry_block = self.context.append_basic_block(wrapper_fn, "entry");
+                self.builder.position_at_end(entry_block);
+
+                // Get the request and next parameters
+                let request_param = wrapper_fn.get_nth_param(0).unwrap().into_pointer_value();
+                let next_param = wrapper_fn.get_nth_param(1).unwrap().into_pointer_value();
+
+                // Call the original middleware
+                let middleware_result = self
+                    .builder
+                    .build_call(
+                        original_middleware,
+                        &[request_param.into(), next_param.into()],
+                        "middleware_result",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap();
+
+                // Check if middleware has error type (returns Result) or not (returns Response)
+                let has_error_type = func.error_type.is_some();
+
+                let malloc_fn = self.module.get_function("malloc").unwrap();
+
+                if has_error_type {
+                    // Middleware returns Result struct { i32 tag, ptr value } by value
+                    // Allocate space for Result struct on heap and copy it there
+                    let result_size = self.context.i64_type().const_int(16, false); // sizeof(Result) = 16 bytes
+                    let result_ptr = self
+                        .builder
+                        .build_call(malloc_fn, &[result_size.into()], "result_malloc")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Store the Result struct to the allocated memory
+                    self.builder
+                        .build_store(result_ptr, middleware_result)
+                        .unwrap();
+
+                    // Return the pointer
+                    self.builder.build_return(Some(&result_ptr)).unwrap();
+                } else {
+                    // Middleware returns Response pointer (no error type)
+                    // middleware_result is already a pointer to Response
+                    // Just wrap it in Ok Result: { tag: 0, value: response_ptr }
+                    let response_ptr = middleware_result.into_pointer_value();
+
+                    // Create Result struct: { tag: 0, value: response_ptr }
+                    let result_struct_type = self
+                        .context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                    let result_size = self.context.i64_type().const_int(16, false);
+                    let result_ptr = self
+                        .builder
+                        .build_call(malloc_fn, &[result_size.into()], "result_malloc")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Set tag = 0 (Ok)
+                    let tag_ptr = self
+                        .builder
+                        .build_struct_gep(result_struct_type, result_ptr, 0, "tag_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(tag_ptr, self.context.i32_type().const_int(0, false))
+                        .unwrap();
+
+                    // Set value = response_ptr (already a pointer, not a struct)
+                    let value_ptr = self
+                        .builder
+                        .build_struct_gep(result_struct_type, result_ptr, 1, "value_ptr")
+                        .unwrap();
+                    self.builder.build_store(value_ptr, response_ptr).unwrap();
+
+                    // Return the Result pointer
+                    self.builder.build_return(Some(&result_ptr)).unwrap();
+                }
+
                 continue;
             }
 
@@ -794,7 +920,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    /// Declare HTTP FFI helper functions (malloc, sprintf, etc.)
     fn declare_http_ffi_helpers(&mut self) {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let i32_type = self.context.i32_type();
@@ -824,6 +949,24 @@ impl<'ctx> CodeGen<'ctx> {
             let memset_type =
                 ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), i64_type.into()], false);
             self.module.add_function("memset", memset_type, None);
+        }
+
+        // Declare doohttp_error_to_status: (error_type: *const i8, variant: *const i8) -> i32
+        if self
+            .module
+            .get_function("doohttp_error_to_status")
+            .is_none()
+        {
+            let error_to_status_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module
+                .add_function("doohttp_error_to_status", error_to_status_type, None);
+        }
+
+        // Declare doohttp_error_message: (error_type: *const i8, variant: *const i8) -> *const i8
+        if self.module.get_function("doohttp_error_message").is_none() {
+            let error_message_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module
+                .add_function("doohttp_error_message", error_message_type, None);
         }
     }
 
@@ -2590,13 +2733,33 @@ impl<'ctx> CodeGen<'ctx> {
                     .add_function("doo_http_register_handler", fn_type, None)
             });
 
+        // Declare doo_http_register_middleware if not already declared
+        let register_middleware_fn = self
+            .module
+            .get_function("doo_http_register_middleware")
+            .unwrap_or_else(|| {
+                // Signature: void doo_http_register_middleware(const char* name, DooMiddlewareFn middleware)
+                // DooMiddlewareFn = fn(*mut DooRequest, *mut DooNext) -> *mut DooResult
+                let request_ptr_type = ptr_type;
+                let next_ptr_type = ptr_type;
+                let result_ptr_type = ptr_type;
+                let middleware_fn_type = result_ptr_type
+                    .fn_type(&[request_ptr_type.into(), next_ptr_type.into()], false);
+                let middleware_ptr_type = middleware_fn_type.ptr_type(AddressSpace::default());
+
+                let fn_type =
+                    void_type.fn_type(&[ptr_type.into(), middleware_ptr_type.into()], false);
+                self.module
+                    .add_function("doo_http_register_middleware", fn_type, None)
+            });
+
         // Generate registration call for each handler
         for handler_name in &self.http_handlers_to_register.clone() {
-            // Use the wrapper function instead of the original handler
-            let wrapper_name = format!("{}_http_wrapper", handler_name);
+            let handler_wrapper_name = format!("{}_http_wrapper", handler_name);
 
-            if let Some(wrapper_func) = self.module.get_function(&wrapper_name) {
-                // Create C string for the function name (use original name for lookup)
+            // Check if this has a handler wrapper (regular handlers)
+            if let Some(wrapper_func) = self.module.get_function(&handler_wrapper_name) {
+                // Register as regular handler
                 let name_str = format!("{}\0", handler_name);
                 let name_global = self
                     .builder
@@ -2604,12 +2767,41 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap();
                 let name_ptr = name_global.as_pointer_value();
 
-                // Register the wrapper function pointer
                 let wrapper_ptr = wrapper_func.as_global_value().as_pointer_value();
 
                 // Call doo_http_register_handler(name, wrapper)
                 self.builder
                     .build_call(register_fn, &[name_ptr.into(), wrapper_ptr.into()], "")
+                    .unwrap();
+            }
+        }
+
+        // Generate registration call for each middleware
+        for middleware_name in &self.http_middleware_to_register.clone() {
+            let middleware_wrapper_name = format!("{}_http_wrapper", middleware_name);
+
+            // Get the middleware wrapper
+            if let Some(wrapper_func) = self.module.get_function(&middleware_wrapper_name) {
+                // Register as middleware
+                let name_str = format!("{}\0", middleware_name);
+                let name_global = self
+                    .builder
+                    .build_global_string_ptr(
+                        &name_str,
+                        &format!("middleware_name_{}", middleware_name),
+                    )
+                    .unwrap();
+                let name_ptr = name_global.as_pointer_value();
+
+                let wrapper_ptr = wrapper_func.as_global_value().as_pointer_value();
+
+                // Call doo_http_register_middleware(name, wrapper)
+                self.builder
+                    .build_call(
+                        register_middleware_fn,
+                        &[name_ptr.into(), wrapper_ptr.into()],
+                        "",
+                    )
                     .unwrap();
             }
         }

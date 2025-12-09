@@ -34,6 +34,11 @@ struct Response {
     ContentType: Str,    // Content-Type header
 }
 
+// Next type for middleware chaining - wraps the next handler in the chain
+struct Next {
+    HandlerPtr: Int,     // Pointer to next handler function
+}
+
 // HTTP Server struct
 struct Server {
     Port: Int,
@@ -82,6 +87,33 @@ fn Server.new(addr: Str) -> Server {
     if addr == ":3004" {
         return Server { Port: 3004, Host: "127.0.0.1" };
     }
+    if addr == ":3005" {
+        return Server { Port: 3005, Host: "127.0.0.1" };
+    }
+    if addr == ":3006" {
+        return Server { Port: 3006, Host: "127.0.0.1" };
+    }
+    if addr == ":3007" {
+        return Server { Port: 3007, Host: "127.0.0.1" };
+    }
+    if addr == ":3008" {
+        return Server { Port: 3008, Host: "127.0.0.1" };
+    }
+    if addr == ":8080" {
+        return Server { Port: 8080, Host: "127.0.0.1" };
+    }
+    if addr == ":3009" {
+        return Server { Port: 3009, Host: "127.0.0.1" };
+    }
+    if addr == ":3010" {
+        return Server { Port: 3010, Host: "127.0.0.1" };
+    }
+    if addr == ":8000" {
+        return Server { Port: 8000, Host: "127.0.0.1" };
+    }
+    if addr == ":3015" {
+        return Server { Port: 3015, Host: "127.0.0.1" };
+    }
     if addr == ":8080" {
         return Server { Port: 8080, Host: "127.0.0.1" };
     }
@@ -118,6 +150,40 @@ fn Server.delete(self, path: Str, handler: Str) -> ! HttpError {}
 @extern("doo_http_patch")
 fn Server.patch(self, path: Str, handler: Str) -> ! HttpError {}
 
+// === Route Registration with Middleware ===
+
+@ffi("doo_http")
+@extern("doo_http_get_with_middleware")
+fn Server.getWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_post_with_middleware")
+fn Server.postWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_put_with_middleware")
+fn Server.putWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_delete_with_middleware")
+fn Server.deleteWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_patch_with_middleware")
+fn Server.patchWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+// === Middleware Registration ===
+// Usage:
+//   app.use(LogMiddleware);              // Single middleware
+//   app.use(AuthMiddleware);             // Chain multiple via separate calls
+// Or method chaining:
+//   let app = Server::new(":3000")
+//       .use(LogMiddleware);
+
+@ffi("doo_http")
+@extern("doo_http_use")
+fn Server.use(self, middleware: Str) -> Server {}
+
 // === Route Groups ===
 
 @ffi("doo_http")
@@ -147,6 +213,12 @@ fn Request.param(self, name: Str) -> Str {}
 @ffi("doo_http")
 @extern("doo_http_req_header")
 fn Request.header(self, name: Str) -> Str {}
+
+// === Next Methods ===
+
+@ffi("doo_http")
+@extern("doo_http_next_call")
+fn Next.call(self) -> Response {}
 
 // === JSON Helpers (Phase 4) ===
 

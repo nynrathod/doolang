@@ -4772,7 +4772,13 @@ impl<'ctx> CodeGen<'ctx> {
             MirInstr::ResultErr { name, error } => {
                 // Create a Result struct with tag=1 (Err) and the error value
                 // NEW APPROACH: Keep error as pointer (usually string pointer)
+                // eprintln!("[CODEGEN DEBUG] ResultErr: name={}, error={}", name, error);
                 let error_val = self.resolve_value(error);
+                // eprintln!(
+                //     "[CODEGEN DEBUG] ResultErr: error_val type={:?}, is_struct={}",
+                //     error_val.get_type(),
+                //     error_val.is_struct_value()
+                // );
                 self.variable_types
                     .insert(name.clone(), "Result".to_string());
 
@@ -4781,6 +4787,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .get(error)
                     .cloned()
                     .unwrap_or_else(|| "Str".to_string());
+                // eprintln!("[CODEGEN DEBUG] ResultErr: error_type={}", error_type);
 
                 self.result_types
                     .insert(name.clone(), ("Unknown".to_string(), error_type.clone()));
@@ -4808,60 +4815,232 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_store(tag_ptr, self.context.i32_type().const_int(1, false))
                     .unwrap();
 
-                // Set error value (convert to pointer representation)
-                let error_ptr_val = if error_val.is_pointer_value() {
-                    // Already a pointer (string, array, map, struct)
-                    error_val.into_pointer_value()
-                } else if error_val.is_int_value() {
-                    // Cast integer to pointer using inttoptr
-                    let int_val = error_val.into_int_value();
-                    let int_64 = if int_val.get_type().get_bit_width() == 64 {
-                        int_val
+                // SPECIAL HANDLING: For HTTP middleware/handlers that return Result with enum errors,
+                // convert the enum to a DooHttpError struct { i32 status, *const i8 message }
+                // Check if:
+                // 1. Error type is an enum (starts with "Enum(" or is in enum_table)
+                // 2. Current function returns Response (is an HTTP handler/middleware)
+                let is_enum_error =
+                    error_type.starts_with("Enum(") || self.enum_table.contains_key(&error_type);
+                // eprintln!("[CODEGEN DEBUG] ResultErr: is_enum_error={}", is_enum_error);
+                let is_http_function = if let Some(func_name) = &self.current_function_name {
+                    // Check if function has parameters (Request, Next) - middleware signature
+                    if let Some(param_types) = self.function_param_types.get(func_name) {
+                        let is_http = param_types.len() == 2
+                            && param_types[0] == "Request"
+                            && param_types[1] == "Next";
+                        // eprintln!(
+                        //     "[CODEGEN DEBUG] ResultErr: func={}, param_types={:?}, is_http={}",
+                        //     func_name, param_types, is_http
+                        // );
+                        is_http
                     } else {
-                        self.builder
-                            .build_int_z_extend(int_val, self.context.i64_type(), "ext")
-                            .unwrap()
-                    };
-                    self.builder
-                        .build_int_to_ptr(
-                            int_64,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
-                            "int_as_ptr",
-                        )
-                        .unwrap()
-                } else if error_val.is_float_value() {
-                    // Bitcast float to i64 then to pointer
-                    let float_val = error_val.into_float_value();
-                    let alloca = self
-                        .builder
-                        .build_alloca(self.context.f64_type(), "f_tmp")
-                        .unwrap();
-                    self.builder.build_store(alloca, float_val).unwrap();
-                    let i64_ptr = self
-                        .builder
-                        .build_pointer_cast(
-                            alloca,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
-                            "i64_ptr",
-                        )
-                        .unwrap();
-                    let i64_val = self
-                        .builder
-                        .build_load(self.context.i64_type(), i64_ptr, "f_as_i64")
-                        .unwrap()
-                        .into_int_value();
-                    self.builder
-                        .build_int_to_ptr(
-                            i64_val,
-                            self.context.ptr_type(inkwell::AddressSpace::default()),
-                            "float_as_ptr",
-                        )
-                        .unwrap()
+                        // eprintln!(
+                        //     "[CODEGEN DEBUG] ResultErr: func={}, no param_types found",
+                        //     func_name
+                        // );
+                        false
+                    }
                 } else {
-                    // Fallback: use null pointer
-                    self.context
-                        .ptr_type(inkwell::AddressSpace::default())
-                        .const_null()
+                    // eprintln!("[CODEGEN DEBUG] ResultErr: no current_function_name");
+                    false
+                };
+                // eprintln!(
+                //     "[CODEGEN DEBUG] ResultErr: is_http_function={}",
+                //     is_http_function
+                // );
+
+                let error_ptr_val = if is_enum_error && is_http_function {
+                    // eprintln!("[CODEGEN DEBUG] ResultErr: Converting enum error to DooHttpError");
+                    // Convert enum error to DooHttpError
+                    // The error_val is an enum struct { i32 tag, ptr payload }
+                    if error_val.is_struct_value() {
+                        // eprintln!("[CODEGEN DEBUG] ResultErr: error_val is a struct, proceeding with conversion");
+                        let enum_struct = error_val.into_struct_value();
+
+                        // Extract tag (variant index)
+                        let variant_tag = self
+                            .builder
+                            .build_extract_value(enum_struct, 0, "variant_tag")
+                            .unwrap()
+                            .into_int_value();
+
+                        // Get enum type name
+                        let enum_name =
+                            if error_type.starts_with("Enum(") && error_type.ends_with(")") {
+                                &error_type[5..error_type.len() - 1]
+                            } else {
+                                &error_type
+                            };
+
+                        // Get variant name from the error value's tracked name
+                        // (stored when EnumInit was generated)
+                        let variant_name = self
+                            .enum_variant_names
+                            .get(error)
+                            .cloned()
+                            .unwrap_or_else(|| "Unknown".to_string());
+
+                        // Create string constants for enum_name and variant_name
+                        let enum_name_global = self
+                            .builder
+                            .build_global_string_ptr(enum_name, "error_enum_name")
+                            .unwrap();
+                        let variant_name_global = self
+                            .builder
+                            .build_global_string_ptr(&variant_name, "error_variant_name")
+                            .unwrap();
+
+                        // Call doohttp_error_to_status(enum_name, variant_name) -> i32
+                        let error_to_status_fn = self
+                            .module
+                            .get_function("doohttp_error_to_status")
+                            .expect("doohttp_error_to_status FFI function not found");
+                        let status_code = self
+                            .builder
+                            .build_call(
+                                error_to_status_fn,
+                                &[
+                                    enum_name_global.as_pointer_value().into(),
+                                    variant_name_global.as_pointer_value().into(),
+                                ],
+                                "error_status",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_int_value();
+
+                        // Call doohttp_error_message(enum_name, variant_name) -> *const i8
+                        let error_message_fn = self
+                            .module
+                            .get_function("doohttp_error_message")
+                            .expect("doohttp_error_message FFI function not found");
+                        let error_message = self
+                            .builder
+                            .build_call(
+                                error_message_fn,
+                                &[
+                                    enum_name_global.as_pointer_value().into(),
+                                    variant_name_global.as_pointer_value().into(),
+                                ],
+                                "error_message",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Create DooHttpError struct { i32 status, *const i8 message }
+                        // Must heap-allocate this so it persists after the function returns
+                        let http_error_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                        // Allocate on heap using malloc
+                        let malloc_fn = self
+                            .module
+                            .get_function("malloc")
+                            .expect("malloc not declared");
+                        let error_size = self.context.i64_type().const_int(16, false); // sizeof(i32 + ptr) = 16 bytes
+                        let http_error_ptr = self
+                            .builder
+                            .build_call(malloc_fn, &[error_size.into()], "http_error_malloc")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Store status
+                        let status_ptr = self
+                            .builder
+                            .build_struct_gep(http_error_type, http_error_ptr, 0, "status_ptr")
+                            .unwrap();
+                        self.builder.build_store(status_ptr, status_code).unwrap();
+
+                        // Store message
+                        let message_ptr = self
+                            .builder
+                            .build_struct_gep(http_error_type, http_error_ptr, 1, "message_ptr")
+                            .unwrap();
+                        self.builder
+                            .build_store(message_ptr, error_message)
+                            .unwrap();
+
+                        // Return pointer to DooHttpError
+                        // eprintln!(
+                        //     "[CODEGEN DEBUG] ResultErr: Created DooHttpError, returning pointer"
+                        // );
+                        http_error_ptr
+                    } else {
+                        // eprintln!("[CODEGEN DEBUG] ResultErr: error_val is NOT a struct, falling back to default");
+                        // Not a struct value - fall back to default handling
+                        if error_val.is_pointer_value() {
+                            error_val.into_pointer_value()
+                        } else {
+                            ptr_type.const_null()
+                        }
+                    }
+                } else {
+                    // eprintln!("[CODEGEN DEBUG] ResultErr: Using default error handling (not enum or not HTTP)");
+                    // Default handling for non-HTTP or non-enum errors
+                    if error_val.is_pointer_value() {
+                        // Already a pointer (string, array, map, struct)
+                        error_val.into_pointer_value()
+                    } else if error_val.is_int_value() {
+                        // Cast integer to pointer using inttoptr
+                        let int_val = error_val.into_int_value();
+                        let int_64 = if int_val.get_type().get_bit_width() == 64 {
+                            int_val
+                        } else {
+                            self.builder
+                                .build_int_z_extend(int_val, self.context.i64_type(), "ext")
+                                .unwrap()
+                        };
+                        self.builder
+                            .build_int_to_ptr(
+                                int_64,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "int_as_ptr",
+                            )
+                            .unwrap()
+                    } else if error_val.is_float_value() {
+                        // Bitcast float to i64 then to pointer
+                        let float_val = error_val.into_float_value();
+                        let alloca = self
+                            .builder
+                            .build_alloca(self.context.f64_type(), "f_tmp")
+                            .unwrap();
+                        self.builder.build_store(alloca, float_val).unwrap();
+                        let i64_ptr = self
+                            .builder
+                            .build_pointer_cast(
+                                alloca,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "i64_ptr",
+                            )
+                            .unwrap();
+                        let i64_val = self
+                            .builder
+                            .build_load(self.context.i64_type(), i64_ptr, "f_as_i64")
+                            .unwrap()
+                            .into_int_value();
+                        self.builder
+                            .build_int_to_ptr(
+                                i64_val,
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "float_as_ptr",
+                            )
+                            .unwrap()
+                    } else {
+                        // Fallback: use null pointer
+                        self.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .const_null()
+                    }
                 };
 
                 let error_ptr = self
@@ -7129,7 +7308,7 @@ impl<'ctx> CodeGen<'ctx> {
             MirInstr::EnumInit {
                 name,
                 enum_name,
-                variant: _,
+                variant,
                 variant_index,
                 value,
             } => {
@@ -7201,6 +7380,10 @@ impl<'ctx> CodeGen<'ctx> {
                 self.temp_values.insert(name.clone(), enum_val);
                 self.variable_types
                     .insert(name.clone(), format!("Enum({})", enum_name));
+
+                // Track the variant name for this enum value (for error mapping)
+                self.enum_variant_names
+                    .insert(name.clone(), variant.clone());
 
                 Some(enum_val)
             }

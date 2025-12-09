@@ -133,10 +133,12 @@ pub struct CodeGen<'ctx> {
     pub enum_variants: HashMap<String, Vec<(String, u32)>>, // Maps enum_name to vec of (variant_name, tag_value)
     pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
+    pub enum_variant_names: HashMap<String, String>, // Maps temp variable name to enum variant name (for error mapping)
 
     // HTTP handler registration
     pub uses_http: bool, // Flag to enable HTTP-specific code generation (wrappers, handlers, etc.)
     pub http_handlers_to_register: Vec<String>, // List of handler function names to register with HTTP FFI
+    pub http_middleware_to_register: Vec<String>, // List of middleware function names to register with HTTP FFI
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
 
     // Current function context
@@ -219,8 +221,10 @@ impl<'ctx> CodeGen<'ctx> {
             enum_variants: HashMap::new(),
             enum_table: HashMap::new(),
             enum_variant_order: HashMap::new(),
+            enum_variant_names: HashMap::new(),
             uses_http: false,
             http_handlers_to_register: Vec::new(),
+            http_middleware_to_register: Vec::new(),
             struct_table: HashMap::new(),
             current_function_name: None,
             current_error_type: None,

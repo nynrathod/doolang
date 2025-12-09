@@ -23,8 +23,9 @@ static ROUTES: OnceLock<Arc<Mutex<RouteRegistry>>> = OnceLock::new();
 /// Takes Request pointer, returns Response pointer (or error)
 type DooHandlerFn = extern "C" fn(*mut DooRequest) -> *mut DooResult;
 
-/// Middleware function pointer - can modify request/response
-type DooMiddlewareFn = extern "C" fn(*mut DooRequest) -> bool; // returns true to continue
+/// Middleware function pointer - takes Request and Next, returns Result
+/// New signature supports chaining and error handling
+type DooMiddlewareFn = extern "C" fn(*mut DooRequest, *mut DooNext) -> *mut DooResult;
 
 /// Route with handler and middleware chain
 struct Route {
@@ -37,6 +38,7 @@ struct RouteRegistry {
     routes: HashMap<String, Router<Route>>,  // method -> router
     handlers: HashMap<String, DooHandlerFn>, // handler_name -> function pointer
     middleware: Vec<DooMiddlewareFn>,        // global middleware
+    middleware_handlers: HashMap<String, DooMiddlewareFn>, // middleware_name -> function pointer
     groups: HashMap<String, Vec<DooMiddlewareFn>>, // prefix -> middleware for groups
 }
 
@@ -46,6 +48,7 @@ impl RouteRegistry {
             routes: HashMap::new(),
             handlers: HashMap::new(),
             middleware: Vec::new(),
+            middleware_handlers: HashMap::new(),
             groups: HashMap::new(),
         }
     }
@@ -99,13 +102,24 @@ impl RouteRegistry {
     }
 
     fn register_by_name(&mut self, method: &str, path: &str, handler_name: &str) {
-        if let Some(&handler_fn) = self.handlers.get(handler_name) {
+        if let Some(handler_fn) = self.handlers.get(handler_name).copied() {
             self.register(method, path, handler_fn);
         } else {
-            eprintln!(
-                "Handler '{}' not found for route {} {}",
-                handler_name, method, path
-            );
+            eprintln!("Warning: Handler {} not found in registry", handler_name);
+        }
+    }
+
+    fn register_by_name_with_middleware(
+        &mut self,
+        method: &str,
+        path: &str,
+        handler_name: &str,
+        middleware: Vec<DooMiddlewareFn>,
+    ) {
+        if let Some(handler_fn) = self.handlers.get(handler_name).copied() {
+            self.register_with_middleware(method, path, handler_fn, middleware);
+        } else {
+            eprintln!("Warning: Handler {} not found in registry", handler_name);
         }
     }
 
@@ -141,6 +155,15 @@ pub struct DooResult {
     value: *mut std::ffi::c_void,
 }
 
+/// Next type - represents the next middleware/handler in the chain
+#[repr(C)]
+pub struct DooNext {
+    request: *mut DooRequest,
+    remaining_middleware: *mut std::ffi::c_void, // Vec<DooMiddlewareFn>
+    handler: DooHandlerFn,
+    current_index: usize,
+}
+
 // Error struct
 #[repr(C)]
 pub struct DooHttpError {
@@ -166,6 +189,102 @@ pub struct DooResponse {
     status: i32,
     body: *const c_char,
     content_type: *const c_char,
+}
+
+// ============================================================================
+// Next.call() FFI function
+// ============================================================================
+
+/// Call the next middleware or handler in the chain
+/// Returns a Response struct (not DooResult) for middleware to use
+#[no_mangle]
+pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
+    if next.is_null() {
+        eprintln!("Error: next.call() called with null Next pointer");
+        // Return error response
+        return Box::into_raw(Box::new(DooResponse {
+            status: 500,
+            body: string_to_c("Internal error: null Next"),
+            content_type: string_to_c("text/plain"),
+        }));
+    }
+
+    unsafe {
+        let next_ref = &mut *next;
+        let request = next_ref.request;
+
+        // Get the remaining middleware chain
+        let middleware_vec_ptr = next_ref.remaining_middleware as *mut Vec<DooMiddlewareFn>;
+
+        let result: *mut DooResult = if middleware_vec_ptr.is_null() {
+            // No more middleware, call the handler
+            (next_ref.handler)(request)
+        } else {
+            let middleware_vec = &*middleware_vec_ptr;
+            let idx = next_ref.current_index;
+
+            if idx >= middleware_vec.len() {
+                // No more middleware, call the handler
+                (next_ref.handler)(request)
+            } else {
+                // Create a new Next for the next middleware in chain
+                let new_middleware_vec = middleware_vec.clone();
+                let new_next = Box::new(DooNext {
+                    request,
+                    remaining_middleware: Box::into_raw(Box::new(new_middleware_vec))
+                        as *mut std::ffi::c_void,
+                    handler: next_ref.handler,
+                    current_index: idx + 1,
+                });
+
+                // Call the current middleware
+                let current_middleware = middleware_vec[idx];
+                current_middleware(request, Box::into_raw(new_next))
+            }
+        };
+
+        // Convert DooResult to DooResponse for middleware to use
+        if result.is_null() {
+            return Box::into_raw(Box::new(DooResponse {
+                status: 500,
+                body: string_to_c("Handler returned null"),
+                content_type: string_to_c("text/plain"),
+            }));
+        }
+
+        let result_box = Box::from_raw(result);
+
+        if result_box.tag == 0 {
+            // Success - extract DooResponse
+            if result_box.value.is_null() {
+                Box::into_raw(Box::new(DooResponse {
+                    status: 200,
+                    body: string_to_c(""),
+                    content_type: string_to_c("text/plain"),
+                }))
+            } else {
+                let response_ptr = result_box.value as *mut DooResponse;
+                response_ptr // Return the response pointer directly
+            }
+        } else {
+            // Error - convert to error response
+            let error_ptr = result_box.value as *mut DooHttpError;
+            if error_ptr.is_null() {
+                Box::into_raw(Box::new(DooResponse {
+                    status: 500,
+                    body: string_to_c("Unknown error"),
+                    content_type: string_to_c("application/json"),
+                }))
+            } else {
+                let error = Box::from_raw(error_ptr);
+                Box::into_raw(Box::new(DooResponse {
+                    status: error.status,
+                    body: error.message,
+                    content_type: string_to_c("application/json"),
+                }))
+            }
+        }
+    }
 }
 
 // Helper to convert Rust String to C string
@@ -219,6 +338,194 @@ pub extern "C" fn doo_http_register_handler(name: *const c_char, handler: DooHan
     let mut registry = routes.lock().unwrap();
     registry.handlers.insert(handler_name.clone(), handler);
     println!("✓ Registered handler function: {}", handler_name);
+}
+
+/// Register a middleware function by name
+#[no_mangle]
+pub extern "C" fn doo_http_register_middleware(name: *const c_char, middleware: DooMiddlewareFn) {
+    let middleware_name = c_to_string(name);
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+    registry
+        .middleware_handlers
+        .insert(middleware_name.clone(), middleware);
+    println!("✓ Registered middleware function: {}", middleware_name);
+}
+
+/// Register route with middleware array
+/// middleware_names is a comma-separated string: "Auth,Admin,Logger"
+#[no_mangle]
+pub extern "C" fn doo_http_get_with_middleware(
+    _server: *const std::ffi::c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
+    let path_str = c_to_string(path);
+    let middleware_str = c_to_string(middleware_names);
+    let handler_str = c_to_string(handler_name);
+
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    // Parse middleware names
+    let middleware_list: Vec<String> = if middleware_str.is_empty() {
+        vec![]
+    } else {
+        middleware_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
+    };
+
+    // Lookup middleware functions
+    let mut middleware_fns = Vec::new();
+    for mw_name in middleware_list {
+        if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
+            middleware_fns.push(mw_fn);
+        } else {
+            eprintln!("Warning: Middleware {} not found", mw_name);
+        }
+    }
+
+    registry.register_by_name_with_middleware("GET", &path_str, &handler_str, middleware_fns);
+    make_ok_void()
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_post_with_middleware(
+    _server: *const std::ffi::c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
+    let path_str = c_to_string(path);
+    let middleware_str = c_to_string(middleware_names);
+    let handler_str = c_to_string(handler_name);
+
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    let middleware_list: Vec<String> = if middleware_str.is_empty() {
+        vec![]
+    } else {
+        middleware_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
+    };
+
+    let mut middleware_fns = Vec::new();
+    for mw_name in middleware_list {
+        if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
+            middleware_fns.push(mw_fn);
+        }
+    }
+
+    registry.register_by_name_with_middleware("POST", &path_str, &handler_str, middleware_fns);
+    make_ok_void()
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_put_with_middleware(
+    _server: *const std::ffi::c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
+    let path_str = c_to_string(path);
+    let middleware_str = c_to_string(middleware_names);
+    let handler_str = c_to_string(handler_name);
+
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    let middleware_list: Vec<String> = if middleware_str.is_empty() {
+        vec![]
+    } else {
+        middleware_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
+    };
+
+    let mut middleware_fns = Vec::new();
+    for mw_name in middleware_list {
+        if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
+            middleware_fns.push(mw_fn);
+        }
+    }
+
+    registry.register_by_name_with_middleware("PUT", &path_str, &handler_str, middleware_fns);
+    make_ok_void()
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_delete_with_middleware(
+    _server: *const std::ffi::c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
+    let path_str = c_to_string(path);
+    let middleware_str = c_to_string(middleware_names);
+    let handler_str = c_to_string(handler_name);
+
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    let middleware_list: Vec<String> = if middleware_str.is_empty() {
+        vec![]
+    } else {
+        middleware_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
+    };
+
+    let mut middleware_fns = Vec::new();
+    for mw_name in middleware_list {
+        if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
+            middleware_fns.push(mw_fn);
+        }
+    }
+
+    registry.register_by_name_with_middleware("DELETE", &path_str, &handler_str, middleware_fns);
+    make_ok_void()
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_patch_with_middleware(
+    _server: *const std::ffi::c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
+    let path_str = c_to_string(path);
+    let middleware_str = c_to_string(middleware_names);
+    let handler_str = c_to_string(handler_name);
+
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    let middleware_list: Vec<String> = if middleware_str.is_empty() {
+        vec![]
+    } else {
+        middleware_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
+    };
+
+    let mut middleware_fns = Vec::new();
+    for mw_name in middleware_list {
+        if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
+            middleware_fns.push(mw_fn);
+        }
+    }
+
+    registry.register_by_name_with_middleware("PATCH", &path_str, &handler_str, middleware_fns);
+    make_ok_void()
 }
 
 /// This is called automatically for each handler name passed to route registration
@@ -398,11 +705,20 @@ pub extern "C" fn doo_http_patch_fn(
 #[no_mangle]
 pub extern "C" fn doo_http_use(
     _server: *const std::ffi::c_void,
-    middleware: DooMiddlewareFn,
+    middleware_name: *const c_char,
 ) -> *mut DooResult {
+    let middleware_str = c_to_string(middleware_name);
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
-    registry.add_middleware(middleware);
+
+    // Look up middleware function pointer by name
+    if let Some(mw_fn) = registry.middleware_handlers.get(&middleware_str).copied() {
+        registry.add_middleware(mw_fn);
+        println!("✓ Registered global middleware: {}", middleware_str);
+    } else {
+        eprintln!("Warning: Middleware {} not found", middleware_str);
+    }
+
     make_ok_void()
 }
 
@@ -526,33 +842,43 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         headers: Box::into_raw(headers_box) as *mut std::ffi::c_void,
     });
 
-    // Run global middleware
-    for mw in global_middleware.iter() {
-        let req_ptr = &mut *doo_request as *mut DooRequest;
-        if !mw(req_ptr) {
-            // Middleware rejected request
-            println!("← 403 Forbidden (middleware)");
-            return Ok(Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body(Full::new(Bytes::from("Middleware rejected request")))
-                .unwrap());
-        }
-    }
+    // Combine global and route-specific middleware
+    let mut all_middleware = global_middleware.clone();
+    all_middleware.extend(middleware.iter().cloned());
 
-    // Run route-specific middleware
-    for mw in middleware.iter() {
-        let req_ptr = &mut *doo_request as *mut DooRequest;
-        if !mw(req_ptr) {
-            println!("← 403 Forbidden (middleware)");
-            return Ok(Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body(Full::new(Bytes::from("Middleware rejected request")))
-                .unwrap());
-        }
-    }
+    let req_ptr = Box::into_raw(doo_request);
 
-    // Call Doo handler
-    let result = handler(Box::into_raw(doo_request));
+    // If there's middleware, create Next chain and call first middleware
+    let result = if !all_middleware.is_empty() {
+        // Create Next object that represents the chain
+        let middleware_box = Box::new(all_middleware);
+        let next = Box::new(DooNext {
+            request: req_ptr,
+            remaining_middleware: Box::into_raw(middleware_box) as *mut std::ffi::c_void,
+            handler,
+            current_index: 0,
+        });
+
+        // Call the first middleware
+        let first_middleware = unsafe {
+            let mw_vec_ptr = next.remaining_middleware as *mut Vec<DooMiddlewareFn>;
+            let mw_vec = &*mw_vec_ptr;
+            mw_vec[0]
+        };
+
+        // Create Next for second middleware onward
+        let next_for_first = Box::new(DooNext {
+            request: req_ptr,
+            remaining_middleware: next.remaining_middleware,
+            handler,
+            current_index: 1,
+        });
+
+        first_middleware(req_ptr, Box::into_raw(next_for_first))
+    } else {
+        // No middleware, call handler directly
+        handler(req_ptr)
+    };
 
     // Process result
     let response = unsafe {
@@ -756,10 +1082,12 @@ pub extern "C" fn doo_http_req_header(req: *const DooRequest, key: *const c_char
             return std::ptr::null();
         }
         let key_str = c_to_string(key);
-        if let Some(value) = (*headers_map).get(&key_str) {
+        // HTTP headers are case-insensitive, convert to lowercase for lookup
+        let key_lower = key_str.to_lowercase();
+        if let Some(value) = (*headers_map).get(&key_lower) {
             string_to_c(value)
         } else {
-            std::ptr::null()
+            string_to_c("")
         }
     }
 }

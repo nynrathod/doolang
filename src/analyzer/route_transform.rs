@@ -15,6 +15,20 @@
 //! app.get("/api/profile", getProfile);
 //! app.post("/api/posts", createPost);
 //! ```
+//!
+//! With middleware support:
+//! ```doo
+//! app.group("/api", AuthMiddleware, LogMiddleware, {
+//!     get("/profile", getProfile),
+//!     post("/posts", createPost)
+//! })
+//! ```
+//!
+//! Becomes:
+//! ```doo
+//! app.get("/api/profile", AuthMiddleware, LogMiddleware, getProfile);
+//! app.post("/api/posts", AuthMiddleware, LogMiddleware, createPost);
+//! ```
 
 use crate::parser::ast::AstNode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -46,6 +60,12 @@ pub fn transform_route_groups(nodes: &mut Vec<AstNode>) {
 ///
 /// Returns Some(vec![expanded_calls]) if this is a group() call that can be expanded,
 /// None otherwise.
+///
+/// Supports the following signatures:
+/// - app.group("/prefix", { routes })
+/// - app.group("/prefix", Middleware1, { routes })
+/// - app.group("/prefix", Middleware1, Middleware2, { routes })
+/// - etc.
 fn try_expand_route_group(node: &AstNode) -> Option<Vec<AstNode>> {
     // Check if this is a method call to "group"
     if let AstNode::MethodCall {
@@ -59,16 +79,21 @@ fn try_expand_route_group(node: &AstNode) -> Option<Vec<AstNode>> {
             return None;
         }
 
-        // Must have exactly 2 arguments: prefix and block
-        if args.len() != 2 {
+        // Must have at least 2 arguments: prefix and block
+        if args.len() < 2 {
             return None;
         }
 
         // Extract the prefix (first argument)
         let prefix_expr = &args[0];
 
-        // Extract the block (second argument)
-        let block = &args[1];
+        // Extract middleware (all args between prefix and block)
+        // The last argument is the block, everything in between is middleware
+        let last_idx = args.len() - 1;
+        let middleware_args = &args[1..last_idx];
+
+        // Extract the block (last argument)
+        let block = &args[last_idx];
 
         // Extract route definitions from the block
         let route_calls = match block {
@@ -102,11 +127,22 @@ fn try_expand_route_group(node: &AstNode) -> Option<Vec<AstNode>> {
                 // Convert handler identifier to string literal
                 let handler_str = convert_handler_to_string(handler_expr);
 
-                // Create the method call: object.method(full_path, handler)
+                // Create the method call with middleware:
+                // object.method(full_path, middleware1, middleware2, ..., handler)
+                let mut method_args = vec![full_path];
+
+                // Add all group middleware
+                for middleware in middleware_args {
+                    method_args.push(middleware.clone());
+                }
+
+                // Add the handler as the last argument
+                method_args.push(handler_str);
+
                 AstNode::MethodCall {
                     object: Box::new(object.as_ref().clone()),
                     method: http_method,
-                    args: vec![full_path, handler_str],
+                    args: method_args,
                 }
             })
             .collect();
@@ -166,7 +202,10 @@ fn is_http_method(name: &str) -> bool {
 
 /// Check if a method name is a route registration method
 fn is_route_registration_method(name: &str) -> bool {
-    matches!(name, "get" | "post" | "put" | "delete" | "patch" | "group")
+    matches!(
+        name,
+        "get" | "post" | "put" | "delete" | "patch" | "group" | "use"
+    )
 }
 
 /// Create a path concatenation expression: prefix + path
@@ -206,6 +245,18 @@ fn convert_handler_to_string(handler: AstNode) -> AstNode {
             handler
         }
         other => other,
+    }
+}
+
+/// Extract identifier name as String (for middleware/handler names)
+fn extract_identifier_name(node: &AstNode) -> String {
+    match node {
+        AstNode::Identifier(name) => name.clone(),
+        AstNode::StringLiteral(s) => s.clone(),
+        _ => {
+            eprintln!("Warning: Expected identifier or string, got other node type");
+            "unknown".to_string()
+        }
     }
 }
 
@@ -433,18 +484,62 @@ fn transform_route_group_in_node(node: &mut AstNode) {
         } => {
             // For route registration methods, convert handler identifiers to strings
             // Convert to app.METHOD(path, handler) calls
-            if is_route_registration_method(method) && args.len() == 2 {
+            if is_route_registration_method(method) {
                 transform_route_group_in_node(object);
 
-                // Transform path: convert :param to {param} syntax
-                if let AstNode::StringLiteral(path_str) = &args[0] {
-                    let converted_path = convert_path_params(path_str);
-                    args[0] = AstNode::StringLiteral(converted_path);
-                }
-                transform_route_group_in_node(&mut args[0]);
+                if args.len() == 2 {
+                    // Route methods: app.get(path, handler)
+                    // Transform path: convert :param to {param} syntax
+                    if let AstNode::StringLiteral(path_str) = &args[0] {
+                        let converted_path = convert_path_params(path_str);
+                        args[0] = AstNode::StringLiteral(converted_path);
+                    }
+                    transform_route_group_in_node(&mut args[0]);
 
-                // Convert handler (second arg) from identifier to string
-                args[1] = convert_handler_to_string(args[1].clone());
+                    // Convert handler (second arg) from identifier to string
+                    args[1] = convert_handler_to_string(args[1].clone());
+                } else if args.len() > 2 && method != "use" {
+                    // Route with middleware: app.get(path, middleware1, middleware2, ..., handler)
+                    // Transform to: app.get_with_middleware(path, "middleware1,middleware2", handler)
+
+                    // Transform path
+                    if let AstNode::StringLiteral(path_str) = &args[0] {
+                        let converted_path = convert_path_params(path_str);
+                        args[0] = AstNode::StringLiteral(converted_path);
+                    }
+                    transform_route_group_in_node(&mut args[0]);
+
+                    // Extract middleware names (all args except first and last)
+                    let middleware_count = args.len() - 2;
+                    let mut middleware_names = Vec::new();
+                    for i in 1..=middleware_count {
+                        let mw_name = extract_identifier_name(&args[i]);
+                        middleware_names.push(mw_name);
+                    }
+                    let middleware_str = middleware_names.join(",");
+
+                    // Last arg is the handler
+                    let handler_name = extract_identifier_name(&args[args.len() - 1]);
+
+                    // Replace method name with WithMiddleware variant (camelCase)
+                    *method = format!("{}WithMiddleware", method);
+
+                    // Replace args: [path, "middleware1,middleware2", "handler"]
+                    *args = vec![
+                        args[0].clone(),
+                        AstNode::StringLiteral(middleware_str),
+                        AstNode::StringLiteral(handler_name),
+                    ];
+                } else if args.len() == 1 && method == "use" {
+                    // Middleware: app.use(middleware)
+                    // Convert middleware identifier to string
+                    args[0] = convert_handler_to_string(args[0].clone());
+                } else {
+                    // Other cases - just recurse
+                    for arg in args {
+                        transform_route_group_in_node(arg);
+                    }
+                }
             } else {
                 transform_route_group_in_node(object);
                 for arg in args {
