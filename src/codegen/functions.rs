@@ -416,6 +416,9 @@ impl<'ctx> CodeGen<'ctx> {
                         String::new()
                     };
 
+                // Check if this is Request type (inject Request object)
+                let is_request = param_type_str == "Request";
+
                 // Check if this is a primitive type (path parameter) or struct (body parameter)
                 let is_primitive = param_type_str == "Int"
                     || param_type_str == "I32"
@@ -426,7 +429,19 @@ impl<'ctx> CodeGen<'ctx> {
                     || param_type_str == "Bool"
                     || param_type_str == "Str";
 
-                if is_primitive {
+                if is_request {
+                    // Request injection - pass DooRequest pointer directly as-is
+                    // The Request struct layout matches the first 4 fields of DooRequest:
+                    // DooRequest: { method, path, body, content_type, params, query, headers }
+                    // Request:    { Method, Path, Body, ContentType }
+                    // Field access works because the memory layout is compatible
+                    // Method calls (query/param/header) are FFI that receive the pointer
+                    self.builder
+                        .build_call(original_handler, &[request_param.into()], "handler_result")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                } else if is_primitive {
                     // Path/query parameter - extract from request params
                     // For now, we'll extract the first path parameter (common pattern: /users/:id)
 
