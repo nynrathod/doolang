@@ -3,8 +3,8 @@
 //! Validates decorators like @email, @min, @max, @required, @enum, @unique, @primary, @autoIncrement
 //! Ensures proper type compatibility and argument validation.
 
-use crate::parser::ast::{AstNode, Decorator, TypeNode};
 use super::types::SemanticError;
+use crate::parser::ast::{AstNode, Decorator, TypeNode};
 
 /// Known decorator names and their validation rules
 #[derive(Debug, Clone, PartialEq)]
@@ -13,10 +13,13 @@ pub enum DecoratorKind {
     Required,      // @required - any type
     Min,           // @min(n) - Str (length), Int/Float (value)
     Max,           // @max(n) - Str (length), Int/Float (value)
-    Enum,          // @enum("a", "b", "c") - only on Str
+    Enum,          // @enum("a", "b") - only on Str
     Unique,        // @unique - any type (for DB)
     Primary,       // @primary - any type (for DB)
     AutoIncrement, // @autoIncrement - only on Int
+    Optional,      // @optional - any type (HTTP)
+    Default,       // @default(value) - any type (HTTP)
+    Pattern,       // @pattern(regex) - only on Str (HTTP)
     Unknown(String),
 }
 
@@ -31,6 +34,9 @@ impl DecoratorKind {
             "unique" => DecoratorKind::Unique,
             "primary" => DecoratorKind::Primary,
             "autoIncrement" => DecoratorKind::AutoIncrement,
+            "optional" => DecoratorKind::Optional,
+            "default" => DecoratorKind::Default,
+            "pattern" => DecoratorKind::Pattern,
             other => DecoratorKind::Unknown(other.to_string()),
         }
     }
@@ -58,7 +64,9 @@ fn is_int_type(ty: &TypeNode) -> bool {
 fn is_string_or_numeric_type(ty: &TypeNode) -> bool {
     match ty {
         TypeNode::String | TypeNode::Int | TypeNode::Float => true,
-        TypeNode::Optional(inner) => matches!(**inner, TypeNode::String | TypeNode::Int | TypeNode::Float),
+        TypeNode::Optional(inner) => {
+            matches!(**inner, TypeNode::String | TypeNode::Int | TypeNode::Float)
+        }
         _ => false,
     }
 }
@@ -71,7 +79,7 @@ pub fn validate_decorator(
     struct_name: &str,
 ) -> Result<(), SemanticError> {
     let kind = DecoratorKind::from_name(&decorator.name);
-    
+
     match kind {
         DecoratorKind::Email => {
             // @email only valid on Str
@@ -93,7 +101,7 @@ pub fn validate_decorator(
                 });
             }
         }
-        
+
         DecoratorKind::Required => {
             // @required valid on any type, takes no arguments
             if !decorator.args.is_empty() {
@@ -104,7 +112,7 @@ pub fn validate_decorator(
                 });
             }
         }
-        
+
         DecoratorKind::Min => {
             // @min(n) valid on Str (length), Int, Float
             if !is_string_or_numeric_type(field_type) {
@@ -136,7 +144,7 @@ pub fn validate_decorator(
                 }
             }
         }
-        
+
         DecoratorKind::Max => {
             // @max(n) valid on Str (length), Int, Float
             if !is_string_or_numeric_type(field_type) {
@@ -167,7 +175,7 @@ pub fn validate_decorator(
                 }
             }
         }
-        
+
         DecoratorKind::Enum => {
             // @enum("a", "b") only valid on Str
             if !is_string_type(field_type) {
@@ -198,7 +206,7 @@ pub fn validate_decorator(
                 }
             }
         }
-        
+
         DecoratorKind::Unique => {
             // @unique valid on any type, takes no arguments
             if !decorator.args.is_empty() {
@@ -209,7 +217,7 @@ pub fn validate_decorator(
                 });
             }
         }
-        
+
         DecoratorKind::Primary => {
             // @primary valid on any type, takes no arguments
             if !decorator.args.is_empty() {
@@ -220,7 +228,7 @@ pub fn validate_decorator(
                 });
             }
         }
-        
+
         DecoratorKind::AutoIncrement => {
             // @autoIncrement only valid on Int
             if !is_int_type(field_type) {
@@ -240,7 +248,74 @@ pub fn validate_decorator(
                 });
             }
         }
-        
+
+        DecoratorKind::Optional => {
+            // @optional valid on any type, takes no arguments
+            if !decorator.args.is_empty() {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "optional".to_string(),
+                    field: field_name.to_string(),
+                    message: "optional decorator takes no arguments".to_string(),
+                });
+            }
+        }
+
+        DecoratorKind::Default => {
+            // @default(value) valid on any type, requires 1 argument
+            if decorator.args.len() != 1 {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "default".to_string(),
+                    field: field_name.to_string(),
+                    message: "default decorator requires exactly 1 argument".to_string(),
+                });
+            }
+            // Argument can be any literal type
+            match &decorator.args[0] {
+                AstNode::StringLiteral(_)
+                | AstNode::NumberLiteral(_)
+                | AstNode::FloatLiteral(_)
+                | AstNode::BoolLiteral(_) => {}
+                _ => {
+                    return Err(SemanticError::InvalidDecoratorArgs {
+                        decorator: "default".to_string(),
+                        field: field_name.to_string(),
+                        message: "default decorator argument must be a literal value".to_string(),
+                    });
+                }
+            }
+        }
+
+        DecoratorKind::Pattern => {
+            // @pattern(regex) only valid on Str
+            if !is_string_type(field_type) {
+                return Err(SemanticError::InvalidDecoratorType {
+                    decorator: "pattern".to_string(),
+                    field: field_name.to_string(),
+                    struct_name: struct_name.to_string(),
+                    expected_type: "Str".to_string(),
+                    found_type: field_type.to_string(),
+                });
+            }
+            // Must have exactly 1 string argument
+            if decorator.args.len() != 1 {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "pattern".to_string(),
+                    field: field_name.to_string(),
+                    message: "pattern decorator requires exactly 1 string argument".to_string(),
+                });
+            }
+            match &decorator.args[0] {
+                AstNode::StringLiteral(_) => {}
+                _ => {
+                    return Err(SemanticError::InvalidDecoratorArgs {
+                        decorator: "pattern".to_string(),
+                        field: field_name.to_string(),
+                        message: "pattern decorator argument must be a string literal".to_string(),
+                    });
+                }
+            }
+        }
+
         DecoratorKind::Unknown(name) => {
             return Err(SemanticError::UnknownDecorator {
                 decorator: name,
@@ -249,7 +324,7 @@ pub fn validate_decorator(
             });
         }
     }
-    
+
     Ok(())
 }
 

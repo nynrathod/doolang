@@ -347,9 +347,9 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             // Only wrap functions that match HTTP handler signature patterns
-            // HTTP handlers: 0-1 parameters, have return type
+            // HTTP handlers: 0-2 parameters, have return type
             let param_count = func.params.len();
-            if param_count > 1 {
+            if param_count > 2 {
                 continue;
             }
 
@@ -401,23 +401,307 @@ impl<'ctx> CodeGen<'ctx> {
                     .try_as_basic_value()
                     .left()
             } else if original_handler.count_params() == 1 {
-                // Handler takes 1 parameter: fn(data: SomeStruct) -> ReturnType
-                // Parse JSON from request.body into the struct parameter
-                let param_type = original_handler.get_type().get_param_types()[0];
+                // Handler takes 1 parameter - could be path parameter (Int/Float/Bool) or body parameter (struct)
+                let llvm_param_type = original_handler.get_type().get_param_types()[0];
 
-                // Allocate space for the parameter struct
+                // Get the parameter type name from MIR
+                let param_type_str =
+                    if let Some(param_types) = self.function_param_types.get(handler_name) {
+                        if !param_types.is_empty() {
+                            param_types[0].clone()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                // Check if this is a primitive type (path parameter) or struct (body parameter)
+                let is_primitive = param_type_str == "Int"
+                    || param_type_str == "I32"
+                    || param_type_str == "I64"
+                    || param_type_str == "Float"
+                    || param_type_str == "F32"
+                    || param_type_str == "F64"
+                    || param_type_str == "Bool"
+                    || param_type_str == "Str";
+
+                if is_primitive {
+                    // Path/query parameter - extract from request params
+                    // For now, we'll extract the first path parameter (common pattern: /users/:id)
+
+                    // Declare doohttp_extract_param_int if not already declared
+                    let extract_fn = if let Some(f) =
+                        self.module.get_function("doohttp_extract_param_int")
+                    {
+                        f
+                    } else {
+                        // fn doohttp_extract_param_int(request: *const DooRequest, param_name: *const c_char) -> i64
+                        let extract_fn_type =
+                            i64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                        self.module
+                            .add_function("doohttp_extract_param_int", extract_fn_type, None)
+                    };
+
+                    // For path parameters, we use a convention: if handler has 1 param with name "id", extract ":id"
+                    // Otherwise extract the first parameter name
+                    let param_name_str = if let Some(param_name) = func.params.first() {
+                        param_name.clone()
+                    } else {
+                        "id".to_string()
+                    };
+
+                    let param_name_ptr = self
+                        .builder
+                        .build_global_string_ptr(&param_name_str, "param_name")
+                        .unwrap()
+                        .as_pointer_value();
+
+                    // Extract parameter as i64 (covers Int, can be cast for other types)
+                    let param_value_i64 = self
+                        .builder
+                        .build_call(
+                            extract_fn,
+                            &[request_param.into(), param_name_ptr.into()],
+                            "param_value",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_int_value();
+
+                    // Convert to the expected type
+                    let param_value: inkwell::values::BasicValueEnum =
+                        if param_type_str == "Int" || param_type_str == "I32" {
+                            // Truncate i64 to i32
+                            self.builder
+                                .build_int_truncate(param_value_i64, i32_type, "param_i32")
+                                .unwrap()
+                                .into()
+                        } else if param_type_str == "I64" {
+                            param_value_i64.into()
+                        } else if param_type_str == "Float" || param_type_str == "F32" {
+                            // Convert i64 to f32
+                            self.builder
+                                .build_signed_int_to_float(
+                                    param_value_i64,
+                                    self.context.f32_type(),
+                                    "param_f32",
+                                )
+                                .unwrap()
+                                .into()
+                        } else if param_type_str == "F64" {
+                            // Convert i64 to f64
+                            self.builder
+                                .build_signed_int_to_float(
+                                    param_value_i64,
+                                    self.context.f64_type(),
+                                    "param_f64",
+                                )
+                                .unwrap()
+                                .into()
+                        } else if param_type_str == "Bool" {
+                            // Convert i64 to i1 (bool)
+                            let bool_val = self
+                                .builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::NE,
+                                    param_value_i64,
+                                    i64_type.const_int(0, false),
+                                    "param_bool",
+                                )
+                                .unwrap();
+                            // Convert i1 to i32 for Doo's bool representation
+                            self.builder
+                                .build_int_z_extend(bool_val, i32_type, "bool_i32")
+                                .unwrap()
+                                .into()
+                        } else {
+                            // Default: use as-is
+                            param_value_i64.into()
+                        };
+
+                    self.builder
+                        .build_call(original_handler, &[param_value.into()], "handler_result")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                } else {
+                    // Struct parameter - could be query params or body params
+                    // Convention: if struct name contains "Params" or "Query", treat as query params
+                    // Otherwise, parse from request body
+                    let is_query_param = param_type_str.contains("Params")
+                        || param_type_str.contains("Query")
+                        || param_type_str.contains("Search");
+
+                    let malloc_fn = self.module.get_function("malloc").unwrap();
+                    let struct_size = i64_type.const_int(128, false);
+                    let struct_ptr = self
+                        .builder
+                        .build_call(malloc_fn, &[struct_size.into()], "param_struct_ptr")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Zero out the memory
+                    let memset_fn = if let Some(f) = self.module.get_function("memset") {
+                        f
+                    } else {
+                        let memset_type = ptr_type
+                            .fn_type(&[ptr_type.into(), i32_type.into(), i64_type.into()], false);
+                        self.module.add_function("memset", memset_type, None)
+                    };
+                    let zero = i32_type.const_int(0, false);
+                    self.builder
+                        .build_call(
+                            memset_fn,
+                            &[struct_ptr.into(), zero.into(), struct_size.into()],
+                            "",
+                        )
+                        .unwrap();
+
+                    if is_query_param {
+                        // Parse query parameters from URL into struct
+                        // Pass the entire request pointer to parse_query_into_struct
+                        if !param_type_str.is_empty() {
+                            self.parse_query_into_struct(
+                                request_param,
+                                struct_ptr,
+                                &param_type_str,
+                            );
+                        }
+                    } else {
+                        // Parse JSON body into struct
+                        // Get the request body field from DooRequest
+                        // DooRequest layout: { method, path, body, content_type, params, query, headers }
+                        // body is at offset 16 (8 bytes for method ptr + 8 bytes for path ptr)
+                        let body_field_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    request_param,
+                                    &[i32_type.const_int(16, false)],
+                                    "body_field_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let body_field_ptr_typed = self
+                            .builder
+                            .build_pointer_cast(
+                                body_field_ptr,
+                                ptr_type.ptr_type(AddressSpace::default()),
+                                "body_field_typed",
+                            )
+                            .unwrap();
+                        let body_str_ptr = self
+                            .builder
+                            .build_load(ptr_type, body_field_ptr_typed, "body_str")
+                            .unwrap()
+                            .into_pointer_value();
+
+                        if !param_type_str.is_empty() {
+                            // Parse JSON body into struct
+                            self.parse_json_into_struct(body_str_ptr, struct_ptr, &param_type_str);
+                        }
+                    }
+
+                    self.builder
+                        .build_call(original_handler, &[struct_ptr.into()], "handler_result")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                }
+            } else if original_handler.count_params() == 2 {
+                // Handler takes 2 parameters: fn(id: Int, data: SomeStruct) -> ReturnType
+                // First parameter is path parameter, second is body parameter
+                let llvm_param1_type = original_handler.get_type().get_param_types()[0];
+                let llvm_param2_type = original_handler.get_type().get_param_types()[1];
+
+                // Get parameter type names from MIR
+                let param1_type_str =
+                    if let Some(param_types) = self.function_param_types.get(handler_name) {
+                        if !param_types.is_empty() {
+                            param_types[0].clone()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                let param2_type_str =
+                    if let Some(param_types) = self.function_param_types.get(handler_name) {
+                        if param_types.len() > 1 {
+                            param_types[1].clone()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                // First parameter - extract path parameter as integer
+                let extract_fn =
+                    if let Some(f) = self.module.get_function("doohttp_extract_param_int") {
+                        f
+                    } else {
+                        let extract_fn_type =
+                            i64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                        self.module
+                            .add_function("doohttp_extract_param_int", extract_fn_type, None)
+                    };
+
+                let param1_name_str = if let Some(param_name) = func.params.first() {
+                    param_name.clone()
+                } else {
+                    "id".to_string()
+                };
+
+                let param1_name_ptr = self
+                    .builder
+                    .build_global_string_ptr(&param1_name_str, "param1_name")
+                    .unwrap()
+                    .as_pointer_value();
+
+                let param1_value_i64 = self
+                    .builder
+                    .build_call(
+                        extract_fn,
+                        &[request_param.into(), param1_name_ptr.into()],
+                        "param1_value",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+
+                // Convert to i32 if needed
+                let param1_value: inkwell::values::BasicValueEnum =
+                    if param1_type_str == "Int" || param1_type_str == "I32" {
+                        self.builder
+                            .build_int_truncate(param1_value_i64, i32_type, "param1_i32")
+                            .unwrap()
+                            .into()
+                    } else {
+                        param1_value_i64.into()
+                    };
+
+                // Second parameter - parse JSON body into struct
                 let malloc_fn = self.module.get_function("malloc").unwrap();
                 let struct_size = i64_type.const_int(128, false);
                 let struct_ptr = self
                     .builder
-                    .build_call(malloc_fn, &[struct_size.into()], "param_struct_ptr")
+                    .build_call(malloc_fn, &[struct_size.into()], "param2_struct_ptr")
                     .unwrap()
                     .try_as_basic_value()
                     .left()
                     .unwrap()
                     .into_pointer_value();
 
-                // Zero out the memory
                 let memset_fn = if let Some(f) = self.module.get_function("memset") {
                     f
                 } else {
@@ -434,9 +718,7 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .unwrap();
 
-                // Get the request body field from DooRequest
-                // DooRequest layout: { method, path, body, content_type, params, query, headers }
-                // body is at offset 16 (8 bytes for method ptr + 8 bytes for path ptr)
+                // Get request body
                 let body_field_ptr = unsafe {
                     self.builder
                         .build_gep(
@@ -461,17 +743,16 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap()
                     .into_pointer_value();
 
-                // Get the parameter type name from MIR
-                if let Some(param_types) = self.function_param_types.get(handler_name) {
-                    if !param_types.is_empty() {
-                        let param_type_str = param_types[0].clone();
-                        // Parse JSON body into struct
-                        self.parse_json_into_struct(body_str_ptr, struct_ptr, &param_type_str);
-                    }
+                if !param2_type_str.is_empty() {
+                    self.parse_json_into_struct(body_str_ptr, struct_ptr, &param2_type_str);
                 }
 
                 self.builder
-                    .build_call(original_handler, &[struct_ptr.into()], "handler_result")
+                    .build_call(
+                        original_handler,
+                        &[param1_value.into(), struct_ptr.into()],
+                        "handler_result",
+                    )
                     .unwrap()
                     .try_as_basic_value()
                     .left()
@@ -605,14 +886,15 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_unconditional_branch(merge_block)
                 .unwrap();
 
-            // ERR case: determine error status code based on error enum type
+            // ERR case: determine error status code and message based on error enum type
             self.builder.position_at_end(err_block);
-            let error_status = self.determine_error_status_code(error_type.unwrap(), value_ptr);
-            let err_response = self.create_error_response_with_status(
-                error_status,
-                value_ptr,
-                error_type.unwrap(),
-            );
+            let (error_status, error_msg) =
+                self.determine_error_status_and_message(error_type.unwrap(), value_ptr);
+            let err_response = self.create_error_response_with_status(error_status, error_msg);
+
+            // Get the actual block we ended up in after error handling
+            let err_exit_block = self.builder.get_insert_block().unwrap();
+
             self.builder
                 .build_unconditional_branch(merge_block)
                 .unwrap();
@@ -620,7 +902,7 @@ impl<'ctx> CodeGen<'ctx> {
             // Merge: phi node to select the correct response
             self.builder.position_at_end(merge_block);
             let phi = self.builder.build_phi(ptr_type, "response_ptr").unwrap();
-            phi.add_incoming(&[(&ok_response, ok_block), (&err_response, err_block)]);
+            phi.add_incoming(&[(&ok_response, ok_block), (&err_response, err_exit_block)]);
 
             return phi.as_basic_value().into_pointer_value();
         }
@@ -753,48 +1035,205 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Determine error status code based on error enum variant
-    fn determine_error_status_code(
+    /// Returns (status_code, error_message_ptr) to avoid creating branches inside
+    fn determine_error_status_and_message(
         &mut self,
         error_type: &str,
-        _error_value_ptr: inkwell::values::PointerValue<'ctx>,
-    ) -> u32 {
-        // Map common error enum variants to HTTP status codes
-        // For now, use a simple mapping based on error type name
-        // TODO: Extract actual enum variant and map it dynamically
+        error_value_ptr: inkwell::values::PointerValue<'ctx>,
+    ) -> (
+        inkwell::values::IntValue<'ctx>,
+        inkwell::values::PointerValue<'ctx>,
+    ) {
+        let i32_type = self.context.i32_type();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
 
-        // Common patterns:
-        // *Error, *Err -> 400 (Bad Request)
-        // NotFound -> 404
-        // Unauthorized -> 401
-        // Forbidden -> 403
-        // Conflict -> 409
-        // Default -> 400
+        // Debug: Print error type being processed
+        eprintln!("[CODEGEN DEBUG] Processing error type: {}", error_type);
 
-        let error_lower = error_type.to_lowercase();
-        if error_lower.contains("notfound") || error_lower.contains("not_found") {
-            404
-        } else if error_lower.contains("unauthorized") || error_lower.contains("unauthenticated") {
-            401
-        } else if error_lower.contains("forbidden") {
-            403
-        } else if error_lower.contains("conflict") {
-            409
-        } else if error_lower.contains("invalid") || error_lower.contains("validation") {
-            400
-        } else if error_lower.contains("internal") || error_lower.contains("server") {
-            500
-        } else {
-            // Default error status
-            400
+        // Extract the enum variant tag (first field of the enum struct)
+        let tag = self
+            .builder
+            .build_load(i32_type, error_value_ptr, "error_tag")
+            .unwrap()
+            .into_int_value();
+
+        // Look up the variant name from enum metadata
+        if let Some(enum_variants) = self.enum_variant_order.get(error_type) {
+            eprintln!(
+                "[CODEGEN DEBUG] Found {} variants for {}",
+                enum_variants.len(),
+                error_type
+            );
+            for (idx, (name, _)) in enum_variants.iter().enumerate() {
+                eprintln!("[CODEGEN DEBUG]   Variant {}: {}", idx, name);
+            }
+
+            // Declare FFI functions
+            let doohttp_error_to_status_fn =
+                if let Some(f) = self.module.get_function("doohttp_error_to_status") {
+                    f
+                } else {
+                    let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                    self.module
+                        .add_function("doohttp_error_to_status", fn_type, None)
+                };
+            let doohttp_error_message_fn =
+                if let Some(f) = self.module.get_function("doohttp_error_message") {
+                    f
+                } else {
+                    let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                    self.module
+                        .add_function("doohttp_error_message", fn_type, None)
+                };
+
+            let error_type_str = self
+                .builder
+                .build_global_string_ptr(error_type, "error_type_str")
+                .unwrap()
+                .as_pointer_value();
+
+            // Create blocks for switch
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+            let default_block = self.context.append_basic_block(current_fn, "err_default");
+            let merge_block = self.context.append_basic_block(current_fn, "err_merge");
+
+            // Create case blocks and collect them
+            let mut switch_cases = vec![];
+            let mut case_info = vec![];
+
+            for (idx, (variant_name, _)) in enum_variants.iter().enumerate() {
+                let case_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("err_case_{}", variant_name));
+                switch_cases.push((i32_type.const_int(idx as u64, false), case_block));
+                case_info.push((case_block, variant_name.as_str()));
+            }
+
+            eprintln!(
+                "[CODEGEN DEBUG] Building switch with {} cases",
+                switch_cases.len()
+            );
+
+            // Build switch
+            self.builder
+                .build_switch(tag, default_block, &switch_cases)
+                .unwrap();
+
+            // Build case blocks
+            let mut phi_status_vals = vec![];
+            let mut phi_msg_vals = vec![];
+
+            for (case_block, variant_name) in case_info {
+                eprintln!(
+                    "[CODEGEN DEBUG] Building case for variant: {}",
+                    variant_name
+                );
+                self.builder.position_at_end(case_block);
+
+                let variant_str = self
+                    .builder
+                    .build_global_string_ptr(variant_name, &format!("var_{}", variant_name))
+                    .unwrap()
+                    .as_pointer_value();
+
+                // Call FFI to get status code
+                let status = self
+                    .builder
+                    .build_call(
+                        doohttp_error_to_status_fn,
+                        &[error_type_str.into(), variant_str.into()],
+                        "err_status",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+
+                // Call FFI to get message
+                let message = self
+                    .builder
+                    .build_call(
+                        doohttp_error_message_fn,
+                        &[error_type_str.into(), variant_str.into()],
+                        "err_msg",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_pointer_value();
+
+                phi_status_vals.push((status, case_block));
+                phi_msg_vals.push((message, case_block));
+
+                self.builder
+                    .build_unconditional_branch(merge_block)
+                    .unwrap();
+            }
+
+            // Default block
+            eprintln!("[CODEGEN DEBUG] Building default error block");
+            self.builder.position_at_end(default_block);
+            let def_status = i32_type.const_int(500, false);
+            let def_msg = self
+                .builder
+                .build_global_string_ptr("Internal server error", "def_msg")
+                .unwrap()
+                .as_pointer_value();
+            phi_status_vals.push((def_status, default_block));
+            phi_msg_vals.push((def_msg, default_block));
+            self.builder
+                .build_unconditional_branch(merge_block)
+                .unwrap();
+
+            // Merge block with phi nodes
+            eprintln!(
+                "[CODEGEN DEBUG] Building merge block with {} phi entries",
+                phi_status_vals.len()
+            );
+            self.builder.position_at_end(merge_block);
+            let status_phi = self.builder.build_phi(i32_type, "status_phi").unwrap();
+            let msg_phi = self.builder.build_phi(ptr_type, "msg_phi").unwrap();
+
+            for (val, block) in phi_status_vals {
+                status_phi.add_incoming(&[(&val, block)]);
+            }
+            for (val, block) in phi_msg_vals {
+                msg_phi.add_incoming(&[(&val, block)]);
+            }
+
+            eprintln!("[CODEGEN DEBUG] Error handling complete, returning phi values");
+            return (
+                status_phi.as_basic_value().into_int_value(),
+                msg_phi.as_basic_value().into_pointer_value(),
+            );
         }
+
+        // Fallback: no metadata
+        eprintln!(
+            "[CODEGEN DEBUG] No enum metadata found for {}, using fallback",
+            error_type
+        );
+        let status = i32_type.const_int(500, false);
+        let msg = self
+            .builder
+            .build_global_string_ptr("Internal server error", "fallback_msg")
+            .unwrap()
+            .as_pointer_value();
+        (status, msg)
     }
 
-    /// Create error response with specific status code
+    /// Create error response with specific status code and message (no internal branches)
     fn create_error_response_with_status(
         &mut self,
-        status_code: u32,
-        error_ptr: inkwell::values::PointerValue<'ctx>,
-        error_type: &str,
+        status_code: inkwell::values::IntValue<'ctx>,
+        error_msg_ptr: inkwell::values::PointerValue<'ctx>,
     ) -> inkwell::values::PointerValue<'ctx> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let i32_type = self.context.i32_type();
@@ -821,19 +1260,95 @@ impl<'ctx> CodeGen<'ctx> {
             )
             .unwrap();
         self.builder
-            .build_store(
-                status_field_ptr,
-                i32_type.const_int(status_code as u64, false),
-            )
+            .build_store(status_field_ptr, status_code)
             .unwrap();
 
-        // Create error body with error type name
-        let error_msg = format!("{{\\\"error\\\":\\\"{}\\\"}}", error_type);
-        let error_body = self
+        // Build JSON error response: {"error": "message"}
+        // Build it manually using strlen, strcpy, strcat
+
+        // Declare string functions
+        let strlen_fn = if let Some(f) = self.module.get_function("strlen") {
+            f
+        } else {
+            let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
+            self.module.add_function("strlen", fn_type, None)
+        };
+        let strcpy_fn = if let Some(f) = self.module.get_function("strcpy") {
+            f
+        } else {
+            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module.add_function("strcpy", fn_type, None)
+        };
+        let strcat_fn = if let Some(f) = self.module.get_function("strcat") {
+            f
+        } else {
+            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module.add_function("strcat", fn_type, None)
+        };
+
+        // Get message length
+        let msg_len = self
             .builder
-            .build_global_string_ptr(&error_msg, "error_body")
+            .build_call(strlen_fn, &[error_msg_ptr.into()], "msg_len")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_int_value();
+
+        // Calculate buffer size: "{\"error\":\"" (11) + message + "\"}" (2) + null (1) = 14 + msg_len
+        let overhead = i64_type.const_int(14, false);
+        let buffer_size = self
+            .builder
+            .build_int_add(msg_len, overhead, "buffer_size")
+            .unwrap();
+
+        // Allocate buffer
+        let buffer = self
+            .builder
+            .build_call(malloc_fn, &[buffer_size.into()], "json_buffer")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Build JSON manually: strcpy + strcat
+        let json_prefix = self
+            .builder
+            .build_global_string_ptr("{\"error\":\"", "json_prefix")
             .unwrap()
             .as_pointer_value();
+        let json_suffix = self
+            .builder
+            .build_global_string_ptr("\"}", "json_suffix")
+            .unwrap()
+            .as_pointer_value();
+
+        // strcpy(buffer, "{\"error\":\"")
+        self.builder
+            .build_call(
+                strcpy_fn,
+                &[buffer.into(), json_prefix.into()],
+                "strcpy_prefix",
+            )
+            .unwrap();
+        // strcat(buffer, error_msg_ptr)
+        self.builder
+            .build_call(
+                strcat_fn,
+                &[buffer.into(), error_msg_ptr.into()],
+                "strcat_msg",
+            )
+            .unwrap();
+        // strcat(buffer, "\"}")
+        self.builder
+            .build_call(
+                strcat_fn,
+                &[buffer.into(), json_suffix.into()],
+                "strcat_suffix",
+            )
+            .unwrap();
 
         // Body field (offset 8)
         let body_field_ptr = unsafe {
@@ -855,7 +1370,7 @@ impl<'ctx> CodeGen<'ctx> {
             )
             .unwrap();
         self.builder
-            .build_store(body_field_ptr_typed, error_body)
+            .build_store(body_field_ptr_typed, buffer)
             .unwrap();
 
         // Content-Type field (offset 16)
@@ -1157,8 +1672,15 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap()
             .into_pointer_value();
 
-        // Handle different types
-        if type_str == "Int" || type_str == "I32" || type_str == "I64" {
+        // Check if value is a struct pointer first (most common case for HTTP handlers)
+        if value.is_pointer_value() && self.struct_metadata.contains_key(type_str) {
+            // Struct: serialize to JSON object
+            self.serialize_struct_to_json(value.into_pointer_value(), type_str, json_buffer);
+            return json_buffer;
+        }
+
+        // Handle different types based on value type and type_str
+        if value.is_int_value() && (type_str == "Int" || type_str == "I32" || type_str == "I64") {
             // Integer: format as "%d"
             let format_str = self
                 .builder
@@ -1173,7 +1695,9 @@ impl<'ctx> CodeGen<'ctx> {
                     "",
                 )
                 .unwrap();
-        } else if type_str == "Float" || type_str == "F32" || type_str == "F64" {
+        } else if value.is_float_value()
+            && (type_str == "Float" || type_str == "F32" || type_str == "F64")
+        {
             // Float: format as "%f"
             let format_str = self
                 .builder
@@ -1188,7 +1712,7 @@ impl<'ctx> CodeGen<'ctx> {
                     "",
                 )
                 .unwrap();
-        } else if type_str == "Bool" {
+        } else if value.is_int_value() && type_str == "Bool" {
             // Boolean: "true" or "false"
             let bool_val = value.into_int_value();
             let true_str = self
@@ -1226,7 +1750,7 @@ impl<'ctx> CodeGen<'ctx> {
                     "",
                 )
                 .unwrap();
-        } else if type_str == "Str" || type_str.contains("String") {
+        } else if value.is_pointer_value() && (type_str == "Str" || type_str.contains("String")) {
             // String: wrap in quotes "\"value\""
             let format_str = self
                 .builder
@@ -1241,8 +1765,8 @@ impl<'ctx> CodeGen<'ctx> {
                     "",
                 )
                 .unwrap();
-        } else if self.struct_metadata.contains_key(type_str) {
-            // Struct: serialize to JSON object
+        } else if value.is_pointer_value() {
+            // Pointer value but not a known struct - try to serialize as struct anyway
             self.serialize_struct_to_json(value.into_pointer_value(), type_str, json_buffer);
         } else {
             // Unknown type: return "null"
@@ -1870,6 +2394,159 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_unconditional_branch(continue_block)
                     .unwrap();
                 self.builder.position_at_end(continue_block);
+            }
+        }
+    }
+
+    /// Parse query parameters from request into a struct
+    fn parse_query_into_struct(
+        &mut self,
+        request_ptr: inkwell::values::PointerValue<'ctx>,
+        struct_ptr: inkwell::values::PointerValue<'ctx>,
+        struct_type: &str,
+    ) {
+        // Get struct metadata
+        if let Some(metadata) = self.struct_metadata.get(struct_type).cloned() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let i32_type = self.context.i32_type();
+
+            // Declare query helper function to get values from request
+            let doo_http_req_query_fn =
+                if let Some(f) = self.module.get_function("doo_http_req_query") {
+                    f
+                } else {
+                    // fn doo_http_req_query(request: *const DooRequest, key: *const c_char) -> *const c_char
+                    let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                    self.module
+                        .add_function("doo_http_req_query", fn_type, None)
+                };
+
+            let atoi_fn = if let Some(f) = self.module.get_function("atoi") {
+                f
+            } else {
+                let fn_type = i32_type.fn_type(&[ptr_type.into()], false);
+                self.module.add_function("atoi", fn_type, None)
+            };
+
+            // For each field in the struct, extract it from query params
+            for (field_idx, field_name) in metadata.field_names.iter().enumerate() {
+                let field_type = &metadata.field_types[field_idx];
+
+                // Get the field name as a C string
+                let field_name_ptr = self
+                    .builder
+                    .build_global_string_ptr(field_name, &format!("query_key_{}", field_name))
+                    .unwrap()
+                    .as_pointer_value();
+
+                // Call doo_http_req_query to get the value from request
+                let value_str_ptr = self
+                    .builder
+                    .build_call(
+                        doo_http_req_query_fn,
+                        &[request_ptr.into(), field_name_ptr.into()],
+                        &format!("query_val_{}", field_name),
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_pointer_value();
+
+                // Get field pointer in struct
+                let struct_llvm_type = *self.canonical_struct_types.get(struct_type).unwrap();
+                let field_ptr = unsafe {
+                    self.builder
+                        .build_struct_gep(
+                            struct_llvm_type,
+                            struct_ptr,
+                            field_idx as u32,
+                            &format!("field_{}_ptr", field_name),
+                        )
+                        .unwrap()
+                };
+
+                // Check if value is null (not provided)
+                let is_null = self
+                    .builder
+                    .build_is_null(value_str_ptr, "is_null")
+                    .unwrap();
+
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let set_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("set_{}", field_name));
+                let skip_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("skip_{}", field_name));
+
+                self.builder
+                    .build_conditional_branch(is_null, skip_block, set_block)
+                    .unwrap();
+
+                // Set block: convert and store the value
+                self.builder.position_at_end(set_block);
+
+                // Parse based on field type
+                if field_type == "Int" || field_type == "I32" {
+                    let int_val = self
+                        .builder
+                        .build_call(atoi_fn, &[value_str_ptr.into()], "int_val")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_int_value();
+                    self.builder.build_store(field_ptr, int_val).unwrap();
+                } else if field_type == "Str" || field_type.contains("String") {
+                    // Store the string pointer directly
+                    self.builder.build_store(field_ptr, value_str_ptr).unwrap();
+                } else if field_type == "Bool" {
+                    // Check if string is "true" or "1"
+                    let true_str = self
+                        .builder
+                        .build_global_string_ptr("true", "true_str")
+                        .unwrap()
+                        .as_pointer_value();
+                    let strcmp_fn = if let Some(f) = self.module.get_function("strcmp") {
+                        f
+                    } else {
+                        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                        self.module.add_function("strcmp", fn_type, None)
+                    };
+                    let cmp_result = self
+                        .builder
+                        .build_call(strcmp_fn, &[value_str_ptr.into(), true_str.into()], "cmp")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_int_value();
+                    let is_true = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            cmp_result,
+                            i32_type.const_int(0, false),
+                            "is_true",
+                        )
+                        .unwrap();
+                    let bool_val = self
+                        .builder
+                        .build_int_z_extend(is_true, i32_type, "bool_val")
+                        .unwrap();
+                    self.builder.build_store(field_ptr, bool_val).unwrap();
+                }
+
+                self.builder.build_unconditional_branch(skip_block).unwrap();
+
+                // Skip block: continue to next field
+                self.builder.position_at_end(skip_block);
             }
         }
     }
