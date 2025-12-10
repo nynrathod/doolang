@@ -120,6 +120,18 @@ fn Server.new(addr: Str) -> Server {
     if addr == ":8000" {
         return Server { Port: 8000, Host: "127.0.0.1" };
     }
+    if addr == ":3016" {
+        return Server { Port: 3016, Host: "127.0.0.1" };
+    }
+    if addr == ":3017" {
+        return Server { Port: 3017, Host: "127.0.0.1" };
+    }
+    if addr == ":3018" {
+        return Server { Port: 3018, Host: "127.0.0.1" };
+    }
+    if addr == ":3019" {
+        return Server { Port: 3019, Host: "127.0.0.1" };
+    }
 
     // Default to port 3000
     return Server {
@@ -270,6 +282,108 @@ fn NotFoundResponse(message: Str) -> Response {
 
 fn InternalErrorResponse(message: Str) -> Response {
     return ErrorResponse(500, message);
+}
+
+// === RFC 7807 Error Response Helpers ===
+// These functions create RFC 7807 compliant error responses
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807")
+fn ErrorRfc7807(status: Int, detail: Str, instance: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_with_method")
+fn ErrorRfc7807WithMethod(status: Int, detail: Str, instance: Str, method: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_validation")
+fn ErrorRfc7807Validation(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_method_not_allowed")
+fn ErrorRfc7807MethodNotAllowed(detail: Str, instance: Str, allowedMethods: Str) -> Str {}
+
+// Convenience functions for RFC 7807 error responses
+fn BadRequestRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(400, detail, instance);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn UnauthorizedRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(401, detail, instance);
+    return Response {
+        Status: 401,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ForbiddenRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(403, detail, instance);
+    return Response {
+        Status: 403,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn NotFoundRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(404, detail, instance);
+    return Response {
+        Status: 404,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn MethodNotAllowedRfc7807(detail: Str, instance: Str, allowedMethods: Str) -> Response {
+    let json = ErrorRfc7807MethodNotAllowed(detail, instance, allowedMethods);
+    return Response {
+        Status: 405,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ConflictRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(409, detail, instance);
+    return Response {
+        Status: 409,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ValidationErrorRfc7807(detail: Str, instance: Str, fieldsJson: Str) -> Response {
+    let json = ErrorRfc7807Validation(detail, instance, fieldsJson);
+    return Response {
+        Status: 422,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn TooManyRequestsRfc7807(detail: Str, instance: Str, retryAfter: Int) -> Response {
+    // Note: retry_after not yet supported in FFI, using basic error
+    let json = ErrorRfc7807(429, detail, instance);
+    return Response {
+        Status: 429,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn InternalErrorRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(500, detail, instance);
+    return Response {
+        Status: 500,
+        Body: json,
+        ContentType: "application/json",
+    };
 }
 
 // === Response Static Methods ===

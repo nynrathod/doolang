@@ -1,6 +1,9 @@
 //! HTTP Server FFI for Doo language
 //! Phase 3, 4, 5: Complete implementation with closures, JSON, groups, middleware
 
+mod error;
+
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::net::SocketAddr;
@@ -15,6 +18,25 @@ use hyper::{body::Incoming, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use matchit::Router;
 use tokio::net::TcpListener;
+
+use error::{not_found, ErrorResponse};
+
+/// Thread-local storage for current request path (used for RFC 7807 error instance field)
+thread_local! {
+    static CURRENT_REQUEST_PATH: RefCell<String> = RefCell::new(String::from("/"));
+}
+
+/// Set the current request path for this thread
+fn set_current_request_path(path: &str) {
+    CURRENT_REQUEST_PATH.with(|p| {
+        *p.borrow_mut() = path.to_string();
+    });
+}
+
+/// Get the current request path for this thread
+fn get_current_request_path() -> String {
+    CURRENT_REQUEST_PATH.with(|p| p.borrow().clone())
+}
 
 /// Global route registry for storing registered handlers
 static ROUTES: OnceLock<Arc<Mutex<RouteRegistry>>> = OnceLock::new();
@@ -810,13 +832,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         None => {
             drop(registry);
             println!("← 404 Not Found");
+            let error_response = not_found(
+                "The requested route does not exist".to_string(),
+                path.clone(),
+            )
+            .with_method(method.clone());
+            let error_json = error_response.to_json_string();
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(format!(
-                    "{{\"error\":\"Not Found\",\"path\":\"{}\"}}",
-                    path
-                ))))
+                .body(Full::new(Bytes::from(error_json)))
                 .unwrap());
         }
     };
@@ -841,6 +866,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         query: Box::into_raw(query_box) as *mut std::ffi::c_void,
         headers: Box::into_raw(headers_box) as *mut std::ffi::c_void,
     });
+
+    // Store current request path in thread-local storage for RFC 7807 errors
+    set_current_request_path(&path);
 
     // Combine global and route-specific middleware
     let mut all_middleware = global_middleware.clone();
@@ -942,14 +970,25 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                     CStr::from_ptr(error.message).to_string_lossy().to_string()
                 };
 
-                println!("← {} {} (error)", status.as_u16(), message);
+                println!(
+                    "← {} {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("")
+                );
+
+                // Check if message is already RFC 7807 JSON (starts with {"type":)
+                let body_str = if message.starts_with("{\"type\":") {
+                    // Already RFC 7807 format, use as-is
+                    message
+                } else {
+                    // Legacy error, wrap in simple error object
+                    format!("{{\"error\":\"{}\"}}", message)
+                };
+
                 Response::builder()
                     .status(status)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(format!(
-                        "{{\"error\":\"{}\"}}",
-                        message
-                    ))))
+                    .body(Full::new(Bytes::from(body_str)))
                     .unwrap()
             }
         }
@@ -1565,6 +1604,254 @@ pub extern "C" fn doohttp_error_message(
     };
 
     string_to_c(message)
+}
+
+// ============================================================================
+// RFC 7807 Error Helpers
+// ============================================================================
+
+/// Helper function to create RFC 7807 error JSON
+// Removed: replaced with centralized ErrorResponse usage
+
+/// Create RFC 7807 error response
+/// FFI signature: doohttp_error_rfc7807(status, detail, instance) -> json_string
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807(
+    status: libc::c_int,
+    detail: *const libc::c_char,
+    instance: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // If instance is null, use thread-local request path
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(instance)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    // Use centralized error module
+    use error::*;
+    let error_response = match status {
+        400 => bad_request(detail_str, instance_str),
+        401 => unauthorized(detail_str, instance_str),
+        403 => forbidden(detail_str, instance_str),
+        404 => not_found(detail_str, instance_str),
+        405 => method_not_allowed(detail_str, instance_str, vec![]),
+        409 => conflict(detail_str, instance_str),
+        422 => ErrorResponse::new(ErrorType::UnprocessableEntity, detail_str, instance_str),
+        429 => ErrorResponse::new(ErrorType::TooManyRequests, detail_str, instance_str),
+        500 => internal_error(detail_str, instance_str),
+        501 => not_implemented(detail_str, instance_str),
+        502 => bad_gateway(detail_str, instance_str),
+        503 => service_unavailable(detail_str, instance_str),
+        _ => internal_error(detail_str, instance_str),
+    };
+
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
+}
+
+/// Create RFC 7807 error response with HTTP method
+/// FFI signature: doohttp_error_rfc7807_with_method(status, detail, instance, method) -> json_string
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_with_method(
+    status: libc::c_int,
+    detail: *const libc::c_char,
+    instance: *const libc::c_char,
+    method: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() || method.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // If instance is null, use thread-local request path
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(instance)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    let method_str = unsafe {
+        std::ffi::CStr::from_ptr(method)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Use centralized error module
+    use error::*;
+    let error_response = match status {
+        400 => bad_request(detail_str, instance_str),
+        401 => unauthorized(detail_str, instance_str),
+        403 => forbidden(detail_str, instance_str),
+        404 => not_found(detail_str, instance_str),
+        405 => method_not_allowed(detail_str, instance_str, vec![]),
+        409 => conflict(detail_str, instance_str),
+        422 => ErrorResponse::new(ErrorType::UnprocessableEntity, detail_str, instance_str),
+        500 => internal_error(detail_str, instance_str),
+        _ => internal_error(detail_str, instance_str),
+    };
+
+    let error_json = error_response.with_method(method_str).to_json_string();
+    string_to_c(&error_json)
+}
+
+/// Create RFC 7807 validation error with fields
+/// FFI signature: doohttp_error_rfc7807_validation(detail, instance, fields_json) -> json_string
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_validation(
+    detail: *const libc::c_char,
+    instance: *const libc::c_char,
+    fields_json: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() || fields_json.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // If instance is null, use thread-local request path
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(instance)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    let fields_str = unsafe {
+        std::ffi::CStr::from_ptr(fields_json)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Parse the fields JSON string into HashMap<String, FieldError>
+    use error::*;
+    use std::collections::HashMap;
+
+    let fields: HashMap<String, FieldError> = match serde_json::from_str(&fields_str) {
+        Ok(parsed) => {
+            // Convert from generic JSON to FieldError structure
+            let json_obj: serde_json::Map<String, serde_json::Value> = parsed;
+            json_obj
+                .into_iter()
+                .map(|(key, val)| {
+                    let field_err = if let Some(obj) = val.as_object() {
+                        let rule = obj
+                            .get("rule")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let message = obj
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let value = obj
+                            .get("value")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
+                        let mut fe = FieldError::new(message);
+                        if !rule.is_empty() {
+                            fe = fe.with_rule(rule);
+                        }
+                        if let Some(v) = value {
+                            fe = fe.with_value(v);
+                        }
+                        fe
+                    } else {
+                        FieldError::new("Validation failed".to_string())
+                    };
+                    (key, field_err)
+                })
+                .collect()
+        }
+        Err(_) => {
+            // If parsing fails, create a simple error response
+            HashMap::new()
+        }
+    };
+
+    let error_response = validation_error(detail_str, instance_str, fields);
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
+}
+
+/// Create RFC 7807 method not allowed error with allowed methods
+/// FFI signature: doohttp_error_rfc7807_method_not_allowed(detail, instance, allowed_methods) -> json_string
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_method_not_allowed(
+    detail: *const libc::c_char,
+    instance: *const libc::c_char,
+    allowed_methods: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() || allowed_methods.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // If instance is null, use thread-local request path
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(instance)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    let allowed_str = unsafe {
+        std::ffi::CStr::from_ptr(allowed_methods)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Parse comma-separated methods into Vec<String>
+    let methods: Vec<String> = allowed_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+
+    // Use centralized error module
+    use error::*;
+    let error_response = method_not_allowed(detail_str, instance_str, methods);
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
 }
 
 #[cfg(test)]

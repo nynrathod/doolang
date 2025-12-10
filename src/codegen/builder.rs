@@ -4912,12 +4912,12 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap()
                             .into_int_value();
 
-                        // Call doohttp_error_message(enum_name, variant_name) -> *const i8
+                        // Call doohttp_error_message(enum_name, variant_name) -> *const i8 to get detail
                         let error_message_fn = self
                             .module
                             .get_function("doohttp_error_message")
                             .expect("doohttp_error_message FFI function not found");
-                        let error_message = self
+                        let error_detail = self
                             .builder
                             .build_call(
                                 error_message_fn,
@@ -4925,7 +4925,33 @@ impl<'ctx> CodeGen<'ctx> {
                                     enum_name_global.as_pointer_value().into(),
                                     variant_name_global.as_pointer_value().into(),
                                 ],
-                                "error_message",
+                                "error_detail",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Pass NULL for instance path to trigger thread-local lookup in FFI
+                        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let instance_path = ptr_type.const_null();
+
+                        // Call doohttp_error_rfc7807(status, detail, instance) -> *const i8 (RFC 7807 JSON)
+                        let error_rfc7807_fn = self
+                            .module
+                            .get_function("doohttp_error_rfc7807")
+                            .expect("doohttp_error_rfc7807 FFI function not found");
+                        let error_message = self
+                            .builder
+                            .build_call(
+                                error_rfc7807_fn,
+                                &[
+                                    status_code.into(),
+                                    error_detail.into(),
+                                    instance_path.into(),
+                                ],
+                                "error_message_rfc7807",
                             )
                             .unwrap()
                             .try_as_basic_value()
@@ -4990,6 +5016,29 @@ impl<'ctx> CodeGen<'ctx> {
                     if error_val.is_pointer_value() {
                         // Already a pointer (string, array, map, struct)
                         error_val.into_pointer_value()
+                    } else if error_val.is_struct_value() {
+                        // Struct value (e.g., enum) - allocate on heap and return pointer
+                        let struct_val = error_val.into_struct_value();
+                        let struct_type = struct_val.get_type();
+
+                        // Allocate on heap using malloc
+                        let malloc_fn = self
+                            .module
+                            .get_function("malloc")
+                            .expect("malloc not declared");
+                        let struct_size = struct_type.size_of().unwrap();
+                        let heap_ptr = self
+                            .builder
+                            .build_call(malloc_fn, &[struct_size.into()], "enum_heap")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Store the struct value to heap
+                        self.builder.build_store(heap_ptr, struct_val).unwrap();
+                        heap_ptr
                     } else if error_val.is_int_value() {
                         // Cast integer to pointer using inttoptr
                         let int_val = error_val.into_int_value();

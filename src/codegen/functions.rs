@@ -361,6 +361,9 @@ impl<'ctx> CodeGen<'ctx> {
                 || handler_name.contains("::")  // Skip methods (Type::method)
                 || handler_name == "parseJson"
                 || handler_name == "toJson"
+                || handler_name.ends_with("Rfc7807")  // Skip RFC 7807 helper functions
+                || handler_name.starts_with("ErrorRfc7807")
+            // Skip RFC 7807 error builders
             {
                 continue;
             }
@@ -968,6 +971,66 @@ impl<'ctx> CodeGen<'ctx> {
             self.module
                 .add_function("doohttp_error_message", error_message_type, None);
         }
+
+        // Declare doohttp_error_rfc7807: (status: i32, detail: *const i8, instance: *const i8) -> *const i8
+        if self.module.get_function("doohttp_error_rfc7807").is_none() {
+            let rfc7807_type =
+                ptr_type.fn_type(&[i32_type.into(), ptr_type.into(), ptr_type.into()], false);
+            self.module
+                .add_function("doohttp_error_rfc7807", rfc7807_type, None);
+        }
+
+        // Declare doohttp_error_rfc7807_with_method: (status: i32, detail: *const i8, instance: *const i8, method: *const i8) -> *const i8
+        if self
+            .module
+            .get_function("doohttp_error_rfc7807_with_method")
+            .is_none()
+        {
+            let rfc7807_method_type = ptr_type.fn_type(
+                &[
+                    i32_type.into(),
+                    ptr_type.into(),
+                    ptr_type.into(),
+                    ptr_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function(
+                "doohttp_error_rfc7807_with_method",
+                rfc7807_method_type,
+                None,
+            );
+        }
+
+        // Declare doohttp_error_rfc7807_validation: (detail: *const i8, instance: *const i8, fields_json: *const i8) -> *const i8
+        if self
+            .module
+            .get_function("doohttp_error_rfc7807_validation")
+            .is_none()
+        {
+            let rfc7807_validation_type =
+                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+            self.module.add_function(
+                "doohttp_error_rfc7807_validation",
+                rfc7807_validation_type,
+                None,
+            );
+        }
+
+        // Declare doohttp_error_rfc7807_method_not_allowed: (detail: *const i8, instance: *const i8, allowed_methods: *const i8) -> *const i8
+        if self
+            .module
+            .get_function("doohttp_error_rfc7807_method_not_allowed")
+            .is_none()
+        {
+            let rfc7807_method_not_allowed_type =
+                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+            self.module.add_function(
+                "doohttp_error_rfc7807_method_not_allowed",
+                rfc7807_method_not_allowed_type,
+                None,
+            );
+        }
     }
 
     /// Wrap handler result in DooResponse struct
@@ -981,15 +1044,7 @@ impl<'ctx> CodeGen<'ctx> {
         let i32_type = self.context.i32_type();
         let i64_type = self.context.i64_type();
 
-        // Check if return type is Response struct - handle it directly (manual Response handling)
-        if return_type == "Response" {
-            // Response struct: { Status: Int, Body: Str, ContentType: Str }
-            // Extract fields and create DooResponse
-            let response_struct_ptr = result.into_pointer_value();
-            return self.extract_response_struct_to_doo_response(response_struct_ptr);
-        }
-
-        // Check if this is a Result type (has error_type)
+        // Check if this is a Result type (has error_type) - handle this FIRST
         if error_type.is_some() {
             // Result type: struct { i32 tag, ptr value }
             // tag = 0 means Ok, tag = 1 means Err
@@ -1036,10 +1091,16 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_conditional_branch(is_ok, ok_block, err_block)
                 .unwrap();
 
-            // OK case: serialize the value with 200 status
+            // OK case: handle based on return type
             self.builder.position_at_end(ok_block);
-            let ok_value: inkwell::values::BasicValueEnum = value_ptr.into();
-            let ok_response = self.wrap_value_in_response_with_status(ok_value, return_type, 200);
+            let ok_response = if return_type == "Response" {
+                // Response ! Error: value_ptr points to Response struct, extract it directly
+                self.extract_response_struct_to_doo_response(value_ptr)
+            } else {
+                // Other types: serialize the value with 200 status
+                let ok_value: inkwell::values::BasicValueEnum = value_ptr.into();
+                self.wrap_value_in_response_with_status(ok_value, return_type, 200)
+            };
             self.builder
                 .build_unconditional_branch(merge_block)
                 .unwrap();
@@ -1063,6 +1124,14 @@ impl<'ctx> CodeGen<'ctx> {
             phi.add_incoming(&[(&ok_response, ok_block), (&err_response, err_exit_block)]);
 
             return phi.as_basic_value().into_pointer_value();
+        }
+
+        // Check if return type is Response struct - handle it directly (manual Response handling)
+        if return_type == "Response" {
+            // Response struct: { Status: Int, Body: Str, ContentType: Str }
+            // Extract fields and create DooResponse
+            let response_struct_ptr = result.into_pointer_value();
+            return self.extract_response_struct_to_doo_response(response_struct_ptr);
         }
 
         // Non-Result type: wrap directly with 200 status
@@ -1388,6 +1457,7 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Create error response with specific status code and message (no internal branches)
+    /// Uses RFC 7807 format via FFI
     fn create_error_response_with_status(
         &mut self,
         status_code: inkwell::values::IntValue<'ctx>,
@@ -1421,92 +1491,42 @@ impl<'ctx> CodeGen<'ctx> {
             .build_store(status_field_ptr, status_code)
             .unwrap();
 
-        // Build JSON error response: {"error": "message"}
-        // Build it manually using strlen, strcpy, strcat
+        // Use RFC 7807 format via FFI
+        // Declare doohttp_error_rfc7807 function
+        let doohttp_error_rfc7807_fn =
+            if let Some(f) = self.module.get_function("doohttp_error_rfc7807") {
+                f
+            } else {
+                let fn_type =
+                    ptr_type.fn_type(&[i32_type.into(), ptr_type.into(), ptr_type.into()], false);
+                self.module
+                    .add_function("doohttp_error_rfc7807", fn_type, None)
+            };
 
-        // Declare string functions
-        let strlen_fn = if let Some(f) = self.module.get_function("strlen") {
-            f
-        } else {
-            let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
-            self.module.add_function("strlen", fn_type, None)
-        };
-        let strcpy_fn = if let Some(f) = self.module.get_function("strcpy") {
-            f
-        } else {
-            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-            self.module.add_function("strcpy", fn_type, None)
-        };
-        let strcat_fn = if let Some(f) = self.module.get_function("strcat") {
-            f
-        } else {
-            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-            self.module.add_function("strcat", fn_type, None)
-        };
-
-        // Get message length
-        let msg_len = self
+        // Create default instance path (empty string for now, should be request path in future)
+        let instance_str = self
             .builder
-            .build_call(strlen_fn, &[error_msg_ptr.into()], "msg_len")
+            .build_global_string_ptr("/", "error_instance")
             .unwrap()
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_int_value();
+            .as_pointer_value();
 
-        // Calculate buffer size: "{\"error\":\"" (11) + message + "\"}" (2) + null (1) = 14 + msg_len
-        let overhead = i64_type.const_int(14, false);
-        let buffer_size = self
+        // Call doohttp_error_rfc7807(status, detail, instance)
+        let rfc7807_json = self
             .builder
-            .build_int_add(msg_len, overhead, "buffer_size")
-            .unwrap();
-
-        // Allocate buffer
-        let buffer = self
-            .builder
-            .build_call(malloc_fn, &[buffer_size.into()], "json_buffer")
+            .build_call(
+                doohttp_error_rfc7807_fn,
+                &[
+                    status_code.into(),
+                    error_msg_ptr.into(),
+                    instance_str.into(),
+                ],
+                "rfc7807_json",
+            )
             .unwrap()
             .try_as_basic_value()
             .left()
             .unwrap()
             .into_pointer_value();
-
-        // Build JSON manually: strcpy + strcat
-        let json_prefix = self
-            .builder
-            .build_global_string_ptr("{\"error\":\"", "json_prefix")
-            .unwrap()
-            .as_pointer_value();
-        let json_suffix = self
-            .builder
-            .build_global_string_ptr("\"}", "json_suffix")
-            .unwrap()
-            .as_pointer_value();
-
-        // strcpy(buffer, "{\"error\":\"")
-        self.builder
-            .build_call(
-                strcpy_fn,
-                &[buffer.into(), json_prefix.into()],
-                "strcpy_prefix",
-            )
-            .unwrap();
-        // strcat(buffer, error_msg_ptr)
-        self.builder
-            .build_call(
-                strcat_fn,
-                &[buffer.into(), error_msg_ptr.into()],
-                "strcat_msg",
-            )
-            .unwrap();
-        // strcat(buffer, "\"}")
-        self.builder
-            .build_call(
-                strcat_fn,
-                &[buffer.into(), json_suffix.into()],
-                "strcat_suffix",
-            )
-            .unwrap();
 
         // Body field (offset 8)
         let body_field_ptr = unsafe {
@@ -1528,7 +1548,7 @@ impl<'ctx> CodeGen<'ctx> {
             )
             .unwrap();
         self.builder
-            .build_store(body_field_ptr_typed, buffer)
+            .build_store(body_field_ptr_typed, rfc7807_json)
             .unwrap();
 
         // Content-Type field (offset 16)
