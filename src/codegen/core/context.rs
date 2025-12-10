@@ -140,6 +140,7 @@ pub struct CodeGen<'ctx> {
     pub http_handlers_to_register: Vec<String>, // List of handler function names to register with HTTP FFI
     pub http_middleware_to_register: Vec<String>, // List of middleware function names to register with HTTP FFI
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
+    pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
 
     // Current function context
     pub current_function_name: Option<String>, // Track the name of the function being currently generated
@@ -198,6 +199,7 @@ impl<'ctx> CodeGen<'ctx> {
             cross_block_vars: std::collections::HashSet::new(),
             current_function_params: Vec::new(),
             function_return_types: HashMap::new(),
+            struct_field_decorators: HashMap::new(),
             function_param_types: HashMap::new(),
             functions_returning_heap: std::collections::HashSet::new(),
 

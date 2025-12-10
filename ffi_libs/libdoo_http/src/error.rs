@@ -478,6 +478,41 @@ pub fn service_unavailable(detail: String, instance: String) -> ErrorResponse {
     ErrorResponse::new(ErrorType::ServiceUnavailable, detail, instance)
 }
 
+/// Build a path/query parameter error (400 Bad Request) with parameter details
+pub fn parameter_error(
+    detail: String,
+    instance: String,
+    parameter: ParameterError,
+) -> ErrorResponse {
+    ErrorResponse::new(ErrorType::BadRequest, detail, instance).with_parameter(parameter)
+}
+
+/// Build a bad request for missing/invalid content type
+pub fn content_type_error(
+    detail: String,
+    instance: String,
+    expected: Option<String>,
+    received: Option<String>,
+) -> ErrorResponse {
+    let mut resp = ErrorResponse::new(ErrorType::BadRequest, detail, instance);
+    if let Some(exp) = expected {
+        resp = resp.with_expected(exp);
+    }
+    if let Some(rec) = received {
+        resp = resp.with_received(rec);
+    }
+    resp
+}
+
+/// Build a bad request for unknown fields during deserialization
+pub fn unknown_fields_error(
+    detail: String,
+    instance: String,
+    unknown_fields: Vec<String>,
+) -> ErrorResponse {
+    ErrorResponse::new(ErrorType::BadRequest, detail, instance).with_unknown_fields(unknown_fields)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

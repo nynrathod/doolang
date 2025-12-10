@@ -749,6 +749,8 @@ impl SemanticAnalyzer {
             }
 
             let mut field_map = HashMap::new();
+            let mut field_decorators_map = HashMap::new();
+
             for field in fields {
                 let field_name = &field.name;
                 let field_type = &field.field_type;
@@ -768,7 +770,35 @@ impl SemanticAnalyzer {
                     name,
                 )?;
 
+                // Store decorators for codegen
+                if !field.decorators.is_empty() {
+                    let decorator_info: Vec<(String, Vec<String>)> = field
+                        .decorators
+                        .iter()
+                        .map(|d| {
+                            let args: Vec<String> = d
+                                .args
+                                .iter()
+                                .map(|arg| match arg {
+                                    AstNode::StringLiteral(s) => s.clone(),
+                                    AstNode::NumberLiteral(n) => n.to_string(),
+                                    AstNode::FloatLiteral(f) => f.to_string(),
+                                    _ => String::new(),
+                                })
+                                .collect();
+                            (d.name.clone(), args)
+                        })
+                        .collect();
+                    field_decorators_map.insert(field_name.clone(), decorator_info);
+                }
+
                 field_map.insert(field_name.clone(), field_type.clone());
+            }
+
+            // Store decorators in struct_field_decorators for codegen
+            if !field_decorators_map.is_empty() {
+                self.struct_field_decorators
+                    .insert(name.clone(), field_decorators_map);
             }
 
             // Insert struct type into the struct registry

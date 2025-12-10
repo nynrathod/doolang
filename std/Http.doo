@@ -300,8 +300,32 @@ fn ErrorRfc7807WithMethod(status: Int, detail: Str, instance: Str, method: Str) 
 fn ErrorRfc7807Validation(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
 
 @ffi("doo_http")
+@extern("doohttp_error_rfc7807_bad_request_with_fields")
+fn ErrorRfc7807BadRequestWithFields(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
+
+@ffi("doo_http")
 @extern("doohttp_error_rfc7807_method_not_allowed")
 fn ErrorRfc7807MethodNotAllowed(detail: Str, instance: Str, allowedMethods: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_parameter")
+fn ErrorRfc7807Parameter(detail: Str, instance: Str, name: Str, expected: Str, received: Str, message: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_unknown_fields")
+fn ErrorRfc7807UnknownFields(detail: Str, instance: Str, unknownFieldsCsv: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_content_type")
+fn ErrorRfc7807ContentType(detail: Str, instance: Str, expected: Str, received: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_last_error_status")
+fn LastErrorStatus() -> Int {}
+
+@ffi("doo_http")
+@extern("doohttp_last_error_json")
+fn LastErrorJson() -> Str {}
 
 // Convenience functions for RFC 7807 error responses
 fn BadRequestRfc7807(detail: Str, instance: Str) -> Response {
@@ -367,6 +391,15 @@ fn ValidationErrorRfc7807(detail: Str, instance: Str, fieldsJson: Str) -> Respon
     };
 }
 
+fn BadRequestWithFieldsRfc7807(detail: Str, instance: Str, fieldsJson: Str) -> Response {
+    let json = ErrorRfc7807BadRequestWithFields(detail, instance, fieldsJson);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
 fn TooManyRequestsRfc7807(detail: Str, instance: Str, retryAfter: Int) -> Response {
     // Note: retry_after not yet supported in FFI, using basic error
     let json = ErrorRfc7807(429, detail, instance);
@@ -381,6 +414,33 @@ fn InternalErrorRfc7807(detail: Str, instance: Str) -> Response {
     let json = ErrorRfc7807(500, detail, instance);
     return Response {
         Status: 500,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn PathParamErrorRfc7807(detail: Str, instance: Str, name: Str, expected: Str, received: Str, message: Str) -> Response {
+    let json = ErrorRfc7807Parameter(detail, instance, name, expected, received, message);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn UnknownFieldsRfc7807(detail: Str, instance: Str, unknownFieldsCsv: Str) -> Response {
+    let json = ErrorRfc7807UnknownFields(detail, instance, unknownFieldsCsv);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ContentTypeRfc7807(detail: Str, instance: Str, expected: Str, received: Str) -> Response {
+    let json = ErrorRfc7807ContentType(detail, instance, expected, received);
+    return Response {
+        Status: 400,
         Body: json,
         ContentType: "application/json",
     };

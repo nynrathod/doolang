@@ -4881,12 +4881,29 @@ impl<'ctx> CodeGen<'ctx> {
                                 &error_type
                             };
 
-                        // Get variant name from the error value's tracked name
-                        // (stored when EnumInit was generated)
+                        // Resolve variant name. Prefer the tracked temp name, but fall back to
+                        // enum metadata + variant tag so we always map to the correct HTTP status.
                         let variant_name = self
                             .enum_variant_names
                             .get(error)
                             .cloned()
+                            .or_else(|| {
+                                // Use the tag index with enum_variant_order which preserves declaration order
+                                let tag_idx =
+                                    variant_tag.get_zero_extended_constant().unwrap_or(u64::MAX)
+                                        as usize;
+
+                                // enum_variant_order is keyed by bare enum name
+                                let enum_key = enum_name.to_string();
+                                let variants_opt = self
+                                    .enum_variant_order
+                                    .get(&enum_key)
+                                    .or_else(|| self.enum_variant_order.get(&error_type));
+
+                                variants_opt
+                                    .and_then(|variants| variants.get(tag_idx))
+                                    .map(|(name, _)| name.clone())
+                            })
                             .unwrap_or_else(|| "Unknown".to_string());
 
                         // Create string constants for enum_name and variant_name

@@ -19,9 +19,43 @@ use hyper_util::rt::TokioIo;
 use matchit::Router;
 use tokio::net::TcpListener;
 
-use error::{not_found, ErrorResponse};
+use error::not_found;
 
-/// Thread-local storage for current request path (used for RFC 7807 error instance field)
+// Thread-local RFC 7807 last error (status, json body) populated by parsing/param helpers
+thread_local! {
+    static LAST_RFC_ERROR: RefCell<Option<(i32, String)>> = RefCell::new(None);
+}
+
+fn set_last_error(status: i32, json: String) {
+    LAST_RFC_ERROR.with(|cell| {
+        *cell.borrow_mut() = Some((status, json));
+    });
+}
+
+fn clear_last_error() {
+    LAST_RFC_ERROR.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+fn take_last_error() -> Option<(i32, String)> {
+    LAST_RFC_ERROR.with(|cell| cell.borrow_mut().take())
+}
+
+#[no_mangle]
+pub extern "C" fn doohttp_last_error_status() -> libc::c_int {
+    LAST_RFC_ERROR.with(|cell| cell.borrow().as_ref().map(|e| e.0).unwrap_or(0))
+}
+
+#[no_mangle]
+pub extern "C" fn doohttp_last_error_json() -> *const libc::c_char {
+    if let Some((_, json)) = take_last_error() {
+        string_to_c(&json)
+    } else {
+        std::ptr::null()
+    }
+}
+
 thread_local! {
     static CURRENT_REQUEST_PATH: RefCell<String> = RefCell::new(String::from("/"));
 }
@@ -819,6 +853,30 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         .unwrap_or("text/plain")
         .to_string();
 
+    // Enforce content-type for body methods
+    let requires_body = method == "POST" || method == "PUT" || method == "PATCH";
+    if requires_body {
+        let is_json = content_type
+            .to_ascii_lowercase()
+            .starts_with("application/json");
+        if !is_json {
+            use error::*;
+            let err = content_type_error(
+                "Content-Type header required for POST/PUT/PATCH requests".to_string(),
+                path.clone(),
+                Some("application/json".to_string()),
+                Some(content_type.clone()),
+            );
+            let body_json = err.to_json_string();
+            set_last_error(err.status_code() as i32, body_json.clone());
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body_json)))
+                .unwrap());
+        }
+    }
+
     // Read body
     let body_bytes = req.collect().await?.to_bytes();
     let body = String::from_utf8_lossy(&body_bytes).to_string();
@@ -857,7 +915,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let query_box = Box::new(query_params);
     let headers_box = Box::new(headers_map);
 
-    let mut doo_request = Box::new(DooRequest {
+    let doo_request = Box::new(DooRequest {
         method: string_to_c(&method),
         path: string_to_c(&path),
         body: string_to_c(&body),
@@ -945,6 +1003,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                     let response_ptr = result_box.value as *mut DooResponse;
                     let response = Box::from_raw(response_ptr);
 
+                    println!("DEBUG RESPONSE: response.status = {}", response.status);
                     let status =
                         StatusCode::from_u16(response.status as u16).unwrap_or(StatusCode::OK);
                     let body_str = if response.body.is_null() {
@@ -1216,6 +1275,7 @@ pub extern "C" fn doohttp_parse_json_struct(
     struct_name: *const libc::c_char,
     validator_spec: *const libc::c_char,
 ) -> *mut libc::c_void {
+    clear_last_error();
     if body.is_null() || struct_name.is_null() {
         return std::ptr::null_mut();
     }
@@ -1241,13 +1301,28 @@ pub extern "C" fn doohttp_parse_json_struct(
         Ok(v) => v,
         Err(_) => {
             // 400 Bad Request - malformed JSON
+            use error::*;
+            let inst = get_current_request_path();
+            let err = bad_request(
+                "Invalid JSON: malformed or unexpected content".to_string(),
+                inst,
+            );
+            set_last_error(err.status_code() as i32, err.to_json_string());
             return std::ptr::null_mut();
         }
     };
 
     // Validate against decorators
-    if !validate_json_value(&json_value, &struct_name_str, &validator_str) {
-        // 422 Unprocessable Entity - validation failed
+    if let Err(fields) = validate_json_value(&json_value, &struct_name_str, &validator_str) {
+        // 422 Unprocessable Entity - validation failed with field map
+        use error::*;
+        let inst = get_current_request_path();
+        let err = validation_error(
+            "One or more fields failed validation".to_string(),
+            inst,
+            fields,
+        );
+        set_last_error(err.status_code() as i32, err.to_json_string());
         return std::ptr::null_mut();
     }
 
@@ -1288,9 +1363,15 @@ pub extern "C" fn doohttp_serialize_struct(
 
 /// Validate a JSON value against decorator specifications
 /// Format: "field1:email;field2:min8|max100;field3:enum:a|b|c"
-fn validate_json_value(json: &serde_json::Value, _struct_name: &str, validator_spec: &str) -> bool {
+fn validate_json_value(
+    json: &serde_json::Value,
+    _struct_name: &str,
+    validator_spec: &str,
+) -> Result<(), HashMap<String, error::FieldError>> {
+    let mut errors: HashMap<String, error::FieldError> = HashMap::new();
+
     if validator_spec.is_empty() {
-        return true; // No validators, pass
+        return Ok(());
     }
 
     // Parse validator spec
@@ -1312,67 +1393,99 @@ fn validate_json_value(json: &serde_json::Value, _struct_name: &str, validator_s
             Some(serde_json::Value::String(s)) => s.clone(),
             Some(serde_json::Value::Number(n)) => n.to_string(),
             Some(serde_json::Value::Bool(b)) => b.to_string(),
-            Some(serde_json::Value::Null) => continue, // Allow null if not required
-            None => continue,                          // Field not present
-            _ => return false,                         // Complex types not supported yet
+            Some(serde_json::Value::Null) => String::new(),
+            None => String::new(),
+            _ => {
+                let fe = error::FieldError::new("Type mismatch in request body".to_string())
+                    .with_expected("scalar".to_string());
+                errors.insert(field_name.to_string(), fe);
+                continue;
+            }
         };
 
-        // Validate field against all decorators
-        if !validate_field_value(&field_value, &validators) {
-            return false;
+        if let Some(fe) = validate_field_value(&field_value, &validators) {
+            errors.insert(field_name.to_string(), fe);
         }
     }
 
-    true
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// Validate a single field value against decorators
-/// Format: "email|min8|max100|pattern:^[0-9]+$|enum:a|b|c"
-fn validate_field_value(value: &str, validator_spec: &str) -> bool {
+/// Returns Some(FieldError) when validation fails
+fn validate_field_value(value: &str, validator_spec: &str) -> Option<error::FieldError> {
     for validator in validator_spec.split('|') {
         if validator.is_empty() {
             continue;
         }
 
-        if !apply_validator(value, validator) {
-            return false;
+        if let Some(fe) = apply_validator(value, validator) {
+            return Some(fe);
         }
     }
 
-    true
+    None
 }
 
-/// Apply a single validator to a value
-fn apply_validator(value: &str, validator: &str) -> bool {
+/// Apply a single validator to a value, returning FieldError on failure
+fn apply_validator(value: &str, validator: &str) -> Option<error::FieldError> {
     if validator == "email" {
-        // Simple email validation
-        value.contains('@') && value.contains('.')
+        let valid = value.contains('@') && value.contains('.');
+        if !valid {
+            return Some(
+                error::FieldError::new("Invalid email format".to_string())
+                    .with_rule("email".to_string())
+                    .with_value(value.to_string()),
+            );
+        }
     } else if validator.starts_with("min") {
         if let Ok(min) = validator[3..].parse::<usize>() {
-            value.len() >= min
-        } else {
-            true
+            if value.len() < min {
+                return Some(
+                    error::FieldError::new(format!("Must be at least {} characters", min))
+                        .with_rule(format!("min:{}", min))
+                        .with_value(value.to_string()),
+                );
+            }
         }
     } else if validator.starts_with("max") {
         if let Ok(max) = validator[3..].parse::<usize>() {
-            value.len() <= max
-        } else {
-            true
+            if value.len() > max {
+                return Some(
+                    error::FieldError::new(format!("Maximum {} characters allowed", max))
+                        .with_rule(format!("max:{}", max))
+                        .with_value(value.to_string()),
+                );
+            }
         }
     } else if validator.starts_with("pattern:") {
-        // Pattern validation would require regex crate
-        // For now, just pass
-        true
+        // Pattern validation would require regex crate; skip for now
     } else if validator.starts_with("enum:") {
         let allowed = validator[5..].split('|').collect::<Vec<_>>();
-        allowed.contains(&value)
+        if !allowed.contains(&value) {
+            let expected = format!("enum:{}", allowed.join("|"));
+            return Some(
+                error::FieldError::new(format!("Must be one of: {}", allowed.join(", ")))
+                    .with_rule(format!("enum:{}", allowed.join("|")))
+                    .with_value(value.to_string())
+                    .with_expected(expected),
+            );
+        }
     } else if validator == "required" {
-        !value.is_empty()
+        if value.is_empty() {
+            return Some(
+                error::FieldError::new("This field is required".to_string())
+                    .with_rule("required".to_string()),
+            );
+        }
     } else if validator == "optional" {
-        true // Always valid for optional
-    } else {
-        true // Unknown validator, pass
+        // Always ok
     }
+    None
 }
 
 /// Validate struct field value
@@ -1398,7 +1511,7 @@ pub extern "C" fn doohttp_validate_field_value(
             .to_string()
     };
 
-    if validate_field_value(&value_str, &validator_str) {
+    if validate_field_value(&value_str, &validator_str).is_none() {
         1 // Valid
     } else {
         0 // Invalid
@@ -1418,6 +1531,7 @@ pub extern "C" fn doohttp_extract_param_typed(
     param_name: *const libc::c_char,
     param_type: *const libc::c_char,
 ) -> *const libc::c_char {
+    clear_last_error();
     if request.is_null() || param_name.is_null() || param_type.is_null() {
         return std::ptr::null();
     }
@@ -1450,6 +1564,17 @@ pub extern "C" fn doohttp_extract_param_typed(
                 if value.parse::<i64>().is_ok() {
                     string_to_c(value)
                 } else {
+                    use error::*;
+                    let mut param = ParameterError::new(param_name_str.clone())
+                        .with_expected("Int".to_string())
+                        .with_received(value.clone());
+                    param = param.with_message("Invalid path parameter type".to_string());
+                    let err = parameter_error(
+                        "Invalid path parameter type".to_string(),
+                        get_current_request_path(),
+                        param,
+                    );
+                    set_last_error(err.status_code() as i32, err.to_json_string());
                     std::ptr::null()
                 }
             }
@@ -1457,6 +1582,17 @@ pub extern "C" fn doohttp_extract_param_typed(
                 if value.parse::<f64>().is_ok() {
                     string_to_c(value)
                 } else {
+                    use error::*;
+                    let mut param = ParameterError::new(param_name_str.clone())
+                        .with_expected("Float".to_string())
+                        .with_received(value.clone());
+                    param = param.with_message("Invalid path parameter type".to_string());
+                    let err = parameter_error(
+                        "Invalid path parameter type".to_string(),
+                        get_current_request_path(),
+                        param,
+                    );
+                    set_last_error(err.status_code() as i32, err.to_json_string());
                     std::ptr::null()
                 }
             }
@@ -1464,12 +1600,32 @@ pub extern "C" fn doohttp_extract_param_typed(
                 if value == "true" || value == "false" {
                     string_to_c(value)
                 } else {
+                    use error::*;
+                    let mut param = ParameterError::new(param_name_str.clone())
+                        .with_expected("Bool".to_string())
+                        .with_received(value.clone());
+                    param = param.with_message("Invalid path parameter type".to_string());
+                    let err = parameter_error(
+                        "Invalid path parameter type".to_string(),
+                        get_current_request_path(),
+                        param,
+                    );
+                    set_last_error(err.status_code() as i32, err.to_json_string());
                     std::ptr::null()
                 }
             }
             _ => string_to_c(value), // String or other types
         }
     } else {
+        use error::*;
+        let param = ParameterError::new(param_name_str.clone())
+            .with_message("Path parameter not found".to_string());
+        let err = parameter_error(
+            "Path parameter not found".to_string(),
+            get_current_request_path(),
+            param,
+        );
+        set_last_error(err.status_code() as i32, err.to_json_string());
         std::ptr::null()
     }
 }
@@ -1483,6 +1639,7 @@ pub extern "C" fn doohttp_extract_param_int(
     request: *const DooRequest,
     param_name: *const libc::c_char,
 ) -> i64 {
+    clear_last_error();
     if request.is_null() || param_name.is_null() {
         return 0;
     }
@@ -1504,8 +1661,33 @@ pub extern "C" fn doohttp_extract_param_int(
     let params_map = unsafe { &*(req.params as *const std::collections::HashMap<String, String>) };
 
     if let Some(value) = params_map.get(&param_name_str) {
-        value.parse::<i64>().unwrap_or(0)
+        match value.parse::<i64>() {
+            Ok(v) => v,
+            Err(_) => {
+                use error::*;
+                let mut param = ParameterError::new(param_name_str.clone())
+                    .with_expected("Int".to_string())
+                    .with_received(value.clone());
+                param = param.with_message("Invalid path parameter type".to_string());
+                let err = parameter_error(
+                    "Invalid path parameter type".to_string(),
+                    get_current_request_path(),
+                    param,
+                );
+                set_last_error(err.status_code() as i32, err.to_json_string());
+                0
+            }
+        }
     } else {
+        use error::*;
+        let param = ParameterError::new(param_name_str.clone())
+            .with_message("Path parameter not found".to_string());
+        let err = parameter_error(
+            "Path parameter not found".to_string(),
+            get_current_request_path(),
+            param,
+        );
+        set_last_error(err.status_code() as i32, err.to_json_string());
         0
     }
 }
@@ -1521,6 +1703,7 @@ pub extern "C" fn doohttp_parse_query_struct(
     struct_name: *const libc::c_char,
     defaults_spec: *const libc::c_char,
 ) -> *mut libc::c_void {
+    clear_last_error();
     if query_string.is_null() || struct_name.is_null() {
         return std::ptr::null_mut();
     }
@@ -1724,6 +1907,176 @@ pub extern "C" fn doohttp_error_rfc7807(
     string_to_c(&error_json)
 }
 
+/// Create RFC 7807 parameter error (path/query) with parameter details
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_parameter(
+    detail: *const libc::c_char,
+    instance: *const libc::c_char,
+    name: *const libc::c_char,
+    expected: *const libc::c_char,
+    received: *const libc::c_char,
+    message: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() || name.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(instance)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    let name_str = unsafe { std::ffi::CStr::from_ptr(name).to_string_lossy().to_string() };
+
+    let expected_str = if expected.is_null() {
+        None
+    } else {
+        Some(unsafe {
+            std::ffi::CStr::from_ptr(expected)
+                .to_string_lossy()
+                .to_string()
+        })
+    };
+    let received_str = if received.is_null() {
+        None
+    } else {
+        Some(unsafe {
+            std::ffi::CStr::from_ptr(received)
+                .to_string_lossy()
+                .to_string()
+        })
+    };
+    let message_str = if message.is_null() {
+        None
+    } else {
+        Some(unsafe {
+            std::ffi::CStr::from_ptr(message)
+                .to_string_lossy()
+                .to_string()
+        })
+    };
+
+    use error::*;
+    let mut param = ParameterError::new(name_str);
+    if let Some(e) = expected_str {
+        param = param.with_expected(e);
+    }
+    if let Some(r) = received_str {
+        param = param.with_received(r);
+    }
+    if let Some(m) = message_str {
+        param = param.with_message(m);
+    }
+
+    let error_response = parameter_error(detail_str, instance_str, param);
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
+}
+
+/// Create RFC 7807 bad_request for unknown fields in body
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_unknown_fields(
+    detail: *const libc::c_char,
+    instance: *const libc::c_char,
+    unknown_fields: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() || unknown_fields.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(instance)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+    let unknown_str = unsafe {
+        std::ffi::CStr::from_ptr(unknown_fields)
+            .to_string_lossy()
+            .to_string()
+    };
+    let unknown_vec: Vec<String> = unknown_str
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .collect();
+
+    use error::*;
+    let error_response = unknown_fields_error(detail_str, instance_str, unknown_vec);
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
+}
+
+/// Create RFC 7807 bad_request for content-type issues
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_content_type(
+    detail: *const libc::c_char,
+    instance: *const libc::c_char,
+    expected: *const libc::c_char,
+    received: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(instance)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+    let expected_str = if expected.is_null() {
+        None
+    } else {
+        Some(unsafe {
+            std::ffi::CStr::from_ptr(expected)
+                .to_string_lossy()
+                .to_string()
+        })
+    };
+    let received_str = if received.is_null() {
+        None
+    } else {
+        Some(unsafe {
+            std::ffi::CStr::from_ptr(received)
+                .to_string_lossy()
+                .to_string()
+        })
+    };
+
+    use error::*;
+    let error_response = content_type_error(detail_str, instance_str, expected_str, received_str);
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
+}
+
 /// Create RFC 7807 error response with HTTP method
 /// FFI signature: doohttp_error_rfc7807_with_method(status, detail, instance, method) -> json_string
 #[no_mangle]
@@ -1839,6 +2192,18 @@ pub extern "C" fn doohttp_error_rfc7807_validation(
                             .get("value")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
+                        let expected = obj
+                            .get("expected")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let received = obj
+                            .get("received")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let error = obj
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
 
                         let mut fe = FieldError::new(message);
                         if !rule.is_empty() {
@@ -1846,6 +2211,15 @@ pub extern "C" fn doohttp_error_rfc7807_validation(
                         }
                         if let Some(v) = value {
                             fe = fe.with_value(v);
+                        }
+                        if let Some(v) = expected {
+                            fe = fe.with_expected(v);
+                        }
+                        if let Some(v) = received {
+                            fe = fe.with_received(v);
+                        }
+                        if let Some(v) = error {
+                            fe = fe.with_error(v);
                         }
                         fe
                     } else {
@@ -1862,6 +2236,115 @@ pub extern "C" fn doohttp_error_rfc7807_validation(
     };
 
     let error_response = validation_error(detail_str, instance_str, fields);
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
+}
+
+/// Create RFC 7807 bad request with fields (for deserialization errors)
+/// FFI signature: doohttp_error_rfc7807_bad_request_with_fields(detail, instance, fields_json) -> json_string
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_bad_request_with_fields(
+    detail: *const libc::c_char,
+    instance: *const libc::c_char,
+    fields_json: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() || fields_json.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // If instance is null, use thread-local request path
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(instance)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    let fields_str = unsafe {
+        std::ffi::CStr::from_ptr(fields_json)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Parse the fields JSON string into HashMap<String, FieldError>
+    use error::*;
+    use std::collections::HashMap;
+
+    let fields: HashMap<String, FieldError> = match serde_json::from_str(&fields_str) {
+        Ok(parsed) => {
+            // Convert from generic JSON to FieldError structure
+            let json_obj: serde_json::Map<String, serde_json::Value> = parsed;
+            json_obj
+                .into_iter()
+                .map(|(key, val)| {
+                    let field_err = if let Some(obj) = val.as_object() {
+                        let rule = obj
+                            .get("rule")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let message = obj
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let value = obj
+                            .get("value")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let expected = obj
+                            .get("expected")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let received = obj
+                            .get("received")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let error = obj
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
+                        let mut fe = FieldError::new(message);
+                        if !rule.is_empty() {
+                            fe = fe.with_rule(rule);
+                        }
+                        if let Some(v) = value {
+                            fe = fe.with_value(v);
+                        }
+                        if let Some(v) = expected {
+                            fe = fe.with_expected(v);
+                        }
+                        if let Some(v) = received {
+                            fe = fe.with_received(v);
+                        }
+                        if let Some(v) = error {
+                            fe = fe.with_error(v);
+                        }
+                        fe
+                    } else {
+                        FieldError::new("Validation failed".to_string())
+                    };
+                    (key, field_err)
+                })
+                .collect()
+        }
+        Err(_) => {
+            // If parsing fails, create a simple error response
+            HashMap::new()
+        }
+    };
+
+    let error_response = bad_request(detail_str, instance_str).with_fields(fields);
     let error_json = error_response.to_json_string();
     string_to_c(&error_json)
 }
@@ -1988,22 +2471,22 @@ mod tests {
 
     #[test]
     fn test_email_validation() {
-        assert!(apply_validator("test@example.com", "email"));
-        assert!(!apply_validator("not-an-email", "email"));
+        assert!(apply_validator("test@example.com", "email").is_none());
+        assert!(apply_validator("not-an-email", "email").is_some());
     }
 
     #[test]
     fn test_min_max_validation() {
-        assert!(apply_validator("12345678", "min8"));
-        assert!(!apply_validator("short", "min8"));
-        assert!(apply_validator("short", "max10"));
-        assert!(!apply_validator("this is very long text", "max10"));
+        assert!(apply_validator("12345678", "min8").is_none());
+        assert!(apply_validator("short", "min8").is_some());
+        assert!(apply_validator("short", "max10").is_none());
+        assert!(apply_validator("this is very long text", "max10").is_some());
     }
 
     #[test]
     fn test_enum_validation() {
-        assert!(apply_validator("admin", "enum:user|admin|mod"));
-        assert!(!apply_validator("superadmin", "enum:user|admin|mod"));
+        assert!(apply_validator("admin", "enum:user|admin|mod").is_none());
+        assert!(apply_validator("superadmin", "enum:user|admin|mod").is_some());
     }
 
     #[test]

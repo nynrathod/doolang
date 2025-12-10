@@ -2282,18 +2282,250 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    /// Parse JSON string into a struct
+    /// Build validator spec string from struct field decorators
+    /// Format: "field1:email;field2:min8|max100;field3:enum:a|b|c"
+    fn build_validator_spec(&self, struct_type: &str) -> String {
+        let mut specs = Vec::new();
+
+        // Get struct metadata
+        if let Some(metadata) = self.struct_metadata.get(struct_type) {
+            // Check if we have decorator info stored
+            if let Some(field_decorators) = self.struct_field_decorators.get(struct_type) {
+                for field_name in metadata.field_names.iter() {
+                    if let Some(decorators) = field_decorators.get(field_name) {
+                        if !decorators.is_empty() {
+                            let decorator_strs: Vec<String> = decorators
+                                .iter()
+                                .map(|(name, args)| {
+                                    if args.is_empty() {
+                                        name.clone()
+                                    } else {
+                                        // Handle decorators with arguments
+                                        match name.as_str() {
+                                            "min" | "max" => {
+                                                format!("{}{}", name, args[0])
+                                            }
+                                            "enum" => {
+                                                format!("enum:{}", args.join("|"))
+                                            }
+                                            "pattern" => {
+                                                format!("pattern:{}", args[0])
+                                            }
+                                            _ => name.clone(),
+                                        }
+                                    }
+                                })
+                                .collect();
+
+                            let field_spec = format!("{}:{}", field_name, decorator_strs.join("|"));
+                            specs.push(field_spec);
+                        }
+                    }
+                }
+            }
+        }
+
+        specs.join(";")
+    }
+
     fn parse_json_into_struct(
         &mut self,
         json_str_ptr: inkwell::values::PointerValue<'ctx>,
         struct_ptr: inkwell::values::PointerValue<'ctx>,
         struct_type: &str,
     ) {
-        // Get struct metadata
-        if let Some(metadata) = self.struct_metadata.get(struct_type).cloned() {
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let i32_type = self.context.i32_type();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
 
+        // Build validator spec from struct field decorators
+        let validator_spec = self.build_validator_spec(struct_type);
+
+        // Declare doohttp_parse_json_struct FFI function
+        // fn doohttp_parse_json_struct(body: *const c_char, struct_name: *const c_char, validator_spec: *const c_char) -> *mut c_void
+        let parse_json_struct_fn =
+            if let Some(f) = self.module.get_function("doohttp_parse_json_struct") {
+                f
+            } else {
+                let fn_type =
+                    ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+                self.module
+                    .add_function("doohttp_parse_json_struct", fn_type, None)
+            };
+
+        // Create struct name string
+        let struct_name_ptr = self
+            .builder
+            .build_global_string_ptr(struct_type, "struct_name")
+            .unwrap()
+            .as_pointer_value();
+
+        // Create validator spec string
+        let validator_spec_ptr = self
+            .builder
+            .build_global_string_ptr(&validator_spec, "validator_spec")
+            .unwrap()
+            .as_pointer_value();
+
+        // Call doohttp_parse_json_struct
+        // This function:
+        // 1. Parses JSON and validates structure (400 if malformed, missing fields, wrong types, unknown fields)
+        // 2. Validates decorators (@email, @min, @max, etc.) (422 if validation fails)
+        // 3. Returns parsed JSON string ptr on success, NULL on error
+        // 4. Sets last error via set_last_error() for automatic RFC 7807 response
+        let parsed_result = self
+            .builder
+            .build_call(
+                parse_json_struct_fn,
+                &[
+                    json_str_ptr.into(),
+                    struct_name_ptr.into(),
+                    validator_spec_ptr.into(),
+                ],
+                "parsed_json",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Check if parsing succeeded (non-NULL result)
+        let parse_success = self
+            .builder
+            .build_is_not_null(parsed_result, "parse_success")
+            .unwrap();
+
+        let success_block = self.context.append_basic_block(
+            self.builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap(),
+            "parse_success",
+        );
+        let error_block = self.context.append_basic_block(
+            self.builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap(),
+            "parse_error",
+        );
+
+        self.builder
+            .build_conditional_branch(parse_success, success_block, error_block)
+            .unwrap();
+
+        // Error block: Return error response
+        self.builder.position_at_end(error_block);
+
+        // Get last error status and JSON from FFI
+        let last_error_status_fn =
+            if let Some(f) = self.module.get_function("doohttp_last_error_status") {
+                f
+            } else {
+                let fn_type = i32_type.fn_type(&[], false);
+                self.module
+                    .add_function("doohttp_last_error_status", fn_type, None)
+            };
+
+        let last_error_json_fn =
+            if let Some(f) = self.module.get_function("doohttp_last_error_json") {
+                f
+            } else {
+                let fn_type = ptr_type.fn_type(&[], false);
+                self.module
+                    .add_function("doohttp_last_error_json", fn_type, None)
+            };
+
+        let error_status = self
+            .builder
+            .build_call(last_error_status_fn, &[], "error_status")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_int_value();
+
+        let error_json = self
+            .builder
+            .build_call(last_error_json_fn, &[], "error_json")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Create DooResult error struct { i32 tag=1, ptr value=DooHttpError }
+        // DooHttpError: { i32 status, *const i8 message }
+        let http_error_type = self
+            .context
+            .struct_type(&[i32_type.into(), ptr_type.into()], false);
+
+        // Allocate DooHttpError on heap
+        let malloc_fn = self.module.get_function("malloc").unwrap();
+        let error_size = self.context.i64_type().const_int(16, false);
+        let http_error_ptr = self
+            .builder
+            .build_call(malloc_fn, &[error_size.into()], "http_error_malloc")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Store status
+        let status_ptr = self
+            .builder
+            .build_struct_gep(http_error_type, http_error_ptr, 0, "status_ptr")
+            .unwrap();
+        self.builder.build_store(status_ptr, error_status).unwrap();
+
+        // Store message
+        let message_ptr = self
+            .builder
+            .build_struct_gep(http_error_type, http_error_ptr, 1, "message_ptr")
+            .unwrap();
+        self.builder.build_store(message_ptr, error_json).unwrap();
+
+        // Create DooResult error: { i32 tag=1, ptr value=http_error_ptr }
+        let result_type = self
+            .context
+            .struct_type(&[i32_type.into(), ptr_type.into()], false);
+        let result_size = self.context.i64_type().const_int(16, false);
+        let result_ptr = self
+            .builder
+            .build_call(malloc_fn, &[result_size.into()], "result_malloc")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Set tag=1 (error)
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(result_type, result_ptr, 0, "tag_ptr")
+            .unwrap();
+        self.builder
+            .build_store(tag_ptr, i32_type.const_int(1, false))
+            .unwrap();
+
+        // Set value=http_error_ptr
+        let value_ptr = self
+            .builder
+            .build_struct_gep(result_type, result_ptr, 1, "value_ptr")
+            .unwrap();
+        self.builder.build_store(value_ptr, http_error_ptr).unwrap();
+
+        // Return the error result
+        self.builder.build_return(Some(&result_ptr)).unwrap();
+
+        // Success block: Continue with manual parsing (for now, until we have full struct deserialization)
+        self.builder.position_at_end(success_block);
+
+        // Get struct metadata for manual field parsing
+        if let Some(metadata) = self.struct_metadata.get(struct_type).cloned() {
             // Declare JSON parsing helper functions
             let strstr_fn = if let Some(f) = self.module.get_function("strstr") {
                 f

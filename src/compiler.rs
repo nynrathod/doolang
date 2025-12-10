@@ -324,6 +324,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let context = inkwell::context::Context::create();
     let mut codegen = CodeGen::new("main_module", &context);
     codegen.function_aliases = analyzer.function_aliases.clone();
+    codegen.struct_field_decorators = analyzer.struct_field_decorators.clone();
 
     // Detect if HTTP module is imported to enable HTTP-specific code generation
     codegen.uses_http = analyzer

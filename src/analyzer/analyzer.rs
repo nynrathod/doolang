@@ -30,6 +30,7 @@ pub struct SemanticAnalyzer {
         HashMap<String, HashMap<String, (Vec<TypeNode>, TypeNode, Option<TypeNode>)>>, // Methods per type: TypeName -> MethodName -> (params, return_type, error_type)
     pub(crate) struct_field_visibility: HashMap<String, HashMap<String, bool>>, // Track field visibility for imported structs: struct_name -> (field_name -> is_public)
     pub(crate) imported_struct_names: std::collections::HashSet<String>, // Track which structs are imported (for visibility checking)
+    pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
 
     pub(crate) outer_symbol_table: Option<HashMap<String, SymbolInfo>>, // For nested scopes
     pub(crate) project_root: PathBuf, // Root directory for module resolution
@@ -85,6 +86,7 @@ impl SemanticAnalyzer {
             method_table: HashMap::new(),
             struct_field_visibility: HashMap::new(),
             imported_struct_names: std::collections::HashSet::new(),
+            struct_field_decorators: HashMap::new(),
             outer_symbol_table: None,
             project_root,
             imported_modules: HashMap::new(),
@@ -184,6 +186,8 @@ impl SemanticAnalyzer {
                     }
                     // Build field map and validate decorators
                     let mut field_map = HashMap::new();
+                    let mut field_decorators_map = HashMap::new();
+
                     for field in fields {
                         // Validate decorators on this field
                         if let Err(e) = super::decorators::validate_field_decorators(
@@ -194,7 +198,36 @@ impl SemanticAnalyzer {
                         ) {
                             self.collected_errors.push(e);
                         }
+
+                        // Store decorators for codegen
+                        if !field.decorators.is_empty() {
+                            let decorator_info: Vec<(String, Vec<String>)> = field
+                                .decorators
+                                .iter()
+                                .map(|d| {
+                                    let args: Vec<String> = d
+                                        .args
+                                        .iter()
+                                        .map(|arg| match arg {
+                                            AstNode::StringLiteral(s) => s.clone(),
+                                            AstNode::NumberLiteral(n) => n.to_string(),
+                                            AstNode::FloatLiteral(f) => f.to_string(),
+                                            _ => String::new(),
+                                        })
+                                        .collect();
+                                    (d.name.clone(), args)
+                                })
+                                .collect();
+                            field_decorators_map.insert(field.name.clone(), decorator_info);
+                        }
+
                         field_map.insert(field.name.clone(), field.field_type.clone());
+                    }
+
+                    // Store decorators in struct_field_decorators for codegen
+                    if !field_decorators_map.is_empty() {
+                        self.struct_field_decorators
+                            .insert(name.clone(), field_decorators_map);
                     }
                     self.struct_table.insert(name.clone(), field_map.clone());
                     // Also add to symbol table
