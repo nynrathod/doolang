@@ -869,6 +869,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     // Store current request path in thread-local storage for RFC 7807 errors
     set_current_request_path(&path);
+    println!("DEBUG HANDLE_REQUEST: Set thread-local path to: {}", path);
+    println!(
+        "DEBUG HANDLE_REQUEST: Verify thread-local path: {}",
+        get_current_request_path()
+    );
 
     // Combine global and route-specific middleware
     let mut all_middleware = global_middleware.clone();
@@ -905,7 +910,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         first_middleware(req_ptr, Box::into_raw(next_for_first))
     } else {
         // No middleware, call handler directly
-        handler(req_ptr)
+        println!(
+            "DEBUG HANDLE_REQUEST: About to call handler, thread-local path is: {}",
+            get_current_request_path()
+        );
+        let result = handler(req_ptr);
+        println!(
+            "DEBUG HANDLE_REQUEST: Handler returned, thread-local path is: {}",
+            get_current_request_path()
+        );
+        result
     };
 
     // Process result
@@ -976,14 +990,15 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                     status.canonical_reason().unwrap_or("")
                 );
 
-                // Check if message is already RFC 7807 JSON (starts with {"type":)
-                let body_str = if message.starts_with("{\"type\":") {
-                    // Already RFC 7807 format, use as-is
-                    message
-                } else {
-                    // Legacy error, wrap in simple error object
-                    format!("{{\"error\":\"{}\"}}", message)
-                };
+                // Check if message is already RFC 7807 JSON (starts with {"type": or {"detail":)
+                let body_str =
+                    if message.starts_with("{\"type\":") || message.starts_with("{\"detail\":") {
+                        // Already RFC 7807 format, use as-is
+                        message
+                    } else {
+                        // Legacy error, wrap in simple error object
+                        format!("{{\"error\":\"{}\"}}", message.replace("\"", "\\\""))
+                    };
 
                 Response::builder()
                     .status(status)
@@ -1614,6 +1629,22 @@ pub extern "C" fn doohttp_error_message(
 // Removed: replaced with centralized ErrorResponse usage
 
 /// Create RFC 7807 error response
+/// FFI signature: doohttp_get_request_path(request) -> path_string
+/// Extracts the path field from DooRequest struct
+#[no_mangle]
+pub extern "C" fn doohttp_get_request_path(request: *const DooRequest) -> *const libc::c_char {
+    if request.is_null() {
+        // Return "/" as default if null
+        return string_to_c("/");
+    }
+
+    unsafe {
+        let req = &*request;
+        // The path field is already a *const c_char, just return it
+        req.path
+    }
+}
+
 /// FFI signature: doohttp_error_rfc7807(status, detail, instance) -> json_string
 #[no_mangle]
 pub extern "C" fn doohttp_error_rfc7807(
@@ -1631,16 +1662,45 @@ pub extern "C" fn doohttp_error_rfc7807(
             .to_string()
     };
 
-    // If instance is null, use thread-local request path
+    // If instance is null, empty string, or sentinel "$$THREAD_LOCAL$$", use thread-local request path
+    println!("DEBUG RFC7807: instance pointer address: {:?}", instance);
     let instance_str = if instance.is_null() {
-        get_current_request_path()
+        let path = get_current_request_path();
+        println!(
+            "DEBUG RFC7807: instance is NULL, using thread-local path: {}",
+            path
+        );
+        path
     } else {
-        unsafe {
+        let path = unsafe {
             std::ffi::CStr::from_ptr(instance)
                 .to_string_lossy()
                 .to_string()
+        };
+        println!(
+            "DEBUG RFC7807: path string: '{}', length: {}, bytes: {:?}",
+            path,
+            path.len(),
+            path.as_bytes()
+        );
+        // Check for sentinel string or empty string
+        if path.is_empty() || path == "__USE_THREAD_LOCAL_REQUEST_PATH_FROM_STORAGE_PLEASE__" {
+            let thread_path = get_current_request_path();
+            println!(
+                "DEBUG RFC7807: instance is EMPTY or SENTINEL, using thread-local path: {}",
+                thread_path
+            );
+            thread_path
+        } else {
+            println!("DEBUG RFC7807: instance is NOT NULL, provided: {}", path);
+            path
         }
     };
+
+    println!(
+        "DEBUG RFC7807: Creating error - status={}, detail={}, instance={}",
+        status, detail_str, instance_str
+    );
 
     // Use centralized error module
     use error::*;
@@ -1850,6 +1910,54 @@ pub extern "C" fn doohttp_error_rfc7807_method_not_allowed(
     // Use centralized error module
     use error::*;
     let error_response = method_not_allowed(detail_str, instance_str, methods);
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
+}
+
+/// Create RFC 7807 error response with automatic instance from thread-local
+/// This is used by generated code when enum errors are returned from handlers
+/// FFI signature: doohttp_error_rfc7807_auto_instance(status, detail) -> json_string
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_auto_instance(
+    status: libc::c_int,
+    detail: *const libc::c_char,
+) -> *const libc::c_char {
+    if detail.is_null() {
+        return std::ptr::null();
+    }
+
+    let detail_str = unsafe {
+        std::ffi::CStr::from_ptr(detail)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Always use thread-local request path
+    let instance_str = get_current_request_path();
+
+    println!(
+        "DEBUG RFC7807 AUTO: Creating error - status={}, detail={}, instance={}",
+        status, detail_str, instance_str
+    );
+
+    // Use centralized error module
+    use error::*;
+    let error_response = match status {
+        400 => bad_request(detail_str, instance_str),
+        401 => unauthorized(detail_str, instance_str),
+        403 => forbidden(detail_str, instance_str),
+        404 => not_found(detail_str, instance_str),
+        405 => method_not_allowed(detail_str, instance_str, vec![]),
+        409 => conflict(detail_str, instance_str),
+        422 => ErrorResponse::new(ErrorType::UnprocessableEntity, detail_str, instance_str),
+        429 => ErrorResponse::new(ErrorType::TooManyRequests, detail_str, instance_str),
+        500 => internal_error(detail_str, instance_str),
+        501 => not_implemented(detail_str, instance_str),
+        502 => bad_gateway(detail_str, instance_str),
+        503 => service_unavailable(detail_str, instance_str),
+        _ => internal_error(detail_str, instance_str),
+    };
+
     let error_json = error_response.to_json_string();
     string_to_c(&error_json)
 }

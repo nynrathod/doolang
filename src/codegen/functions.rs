@@ -1,6 +1,7 @@
 use crate::codegen::core::helpers::parse_tuple_types;
 use crate::codegen::core::CodeGen;
 use crate::mir::mir::{CodegenBlock, MirBlock, MirFunction, MirInstr, MirProgram, MirTerminator};
+use inkwell::module::Linkage;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
@@ -337,6 +338,22 @@ impl<'ctx> CodeGen<'ctx> {
         let i32_type = self.context.i32_type();
         let i64_type = self.context.i64_type();
 
+        // Declare global variable to store current DooRequest pointer for enum error handling
+        // This allows enum error handling code to extract the request path
+        if self
+            .module
+            .get_global("__doo_current_request_ptr")
+            .is_none()
+        {
+            let global_request_ptr = self.module.add_global(
+                ptr_type,
+                Some(AddressSpace::default()),
+                "__doo_current_request_ptr",
+            );
+            global_request_ptr.set_linkage(Linkage::Internal);
+            global_request_ptr.set_initializer(&ptr_type.const_null());
+        }
+
         // Declare FFI helper functions
         self.declare_http_ffi_helpers();
 
@@ -520,6 +537,12 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Get the request parameter
             let request_param = wrapper_fn.get_nth_param(0).unwrap().into_pointer_value();
+
+            // Store request pointer in global variable for enum error handling
+            let global_request_ptr = self.module.get_global("__doo_current_request_ptr").unwrap();
+            self.builder
+                .build_store(global_request_ptr.as_pointer_value(), request_param)
+                .unwrap();
 
             // Call the original handler based on its signature
             let handler_result = if original_handler.count_params() == 0 {
@@ -978,6 +1001,33 @@ impl<'ctx> CodeGen<'ctx> {
                 ptr_type.fn_type(&[i32_type.into(), ptr_type.into(), ptr_type.into()], false);
             self.module
                 .add_function("doohttp_error_rfc7807", rfc7807_type, None);
+        }
+
+        // Declare doohttp_get_request_path: (request: *const DooRequest) -> *const i8
+        // Extracts the path field from DooRequest struct
+        if self
+            .module
+            .get_function("doohttp_get_request_path")
+            .is_none()
+        {
+            let get_path_type = ptr_type.fn_type(&[ptr_type.into()], false);
+            self.module
+                .add_function("doohttp_get_request_path", get_path_type, None);
+        }
+
+        // Declare doohttp_error_rfc7807_auto_instance: (status: i32, detail: *const i8) -> *const i8
+        // This version automatically uses thread-local request path as instance
+        if self
+            .module
+            .get_function("doohttp_error_rfc7807_auto_instance")
+            .is_none()
+        {
+            let rfc7807_auto_type = ptr_type.fn_type(&[i32_type.into(), ptr_type.into()], false);
+            self.module.add_function(
+                "doohttp_error_rfc7807_auto_instance",
+                rfc7807_auto_type,
+                None,
+            );
         }
 
         // Declare doohttp_error_rfc7807_with_method: (status: i32, detail: *const i8, instance: *const i8, method: *const i8) -> *const i8
@@ -1503,12 +1553,36 @@ impl<'ctx> CodeGen<'ctx> {
                     .add_function("doohttp_error_rfc7807", fn_type, None)
             };
 
-        // Create default instance path (empty string for now, should be request path in future)
-        let instance_str = self
+        // Extract instance path from current request pointer stored in global
+        let global_request_ptr = self
+            .module
+            .get_global("__doo_current_request_ptr")
+            .expect("__doo_current_request_ptr global not found");
+
+        let request_ptr = self
             .builder
-            .build_global_string_ptr("/", "error_instance")
+            .build_load(
+                ptr_type,
+                global_request_ptr.as_pointer_value(),
+                "current_request_ptr",
+            )
             .unwrap()
-            .as_pointer_value();
+            .into_pointer_value();
+
+        // Call doohttp_get_request_path to extract path from DooRequest
+        let get_path_fn = self
+            .module
+            .get_function("doohttp_get_request_path")
+            .expect("doohttp_get_request_path FFI function not found");
+
+        let instance_path = self
+            .builder
+            .build_call(get_path_fn, &[request_ptr.into()], "request_path")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
 
         // Call doohttp_error_rfc7807(status, detail, instance)
         let rfc7807_json = self
@@ -1518,7 +1592,7 @@ impl<'ctx> CodeGen<'ctx> {
                 &[
                     status_code.into(),
                     error_msg_ptr.into(),
-                    instance_str.into(),
+                    instance_path.into(),
                 ],
                 "rfc7807_json",
             )

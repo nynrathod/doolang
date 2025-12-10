@@ -4824,25 +4824,33 @@ impl<'ctx> CodeGen<'ctx> {
                     error_type.starts_with("Enum(") || self.enum_table.contains_key(&error_type);
                 // eprintln!("[CODEGEN DEBUG] ResultErr: is_enum_error={}", is_enum_error);
                 let is_http_function = if let Some(func_name) = &self.current_function_name {
-                    // Check if function has parameters (Request, Next) - middleware signature
-                    if let Some(param_types) = self.function_param_types.get(func_name) {
-                        let is_http = param_types.len() == 2
-                            && param_types[0] == "Request"
-                            && param_types[1] == "Next";
-                        // eprintln!(
-                        //     "[CODEGEN DEBUG] ResultErr: func={}, param_types={:?}, is_http={}",
-                        //     func_name, param_types, is_http
-                        // );
-                        is_http
-                    } else {
-                        // eprintln!(
-                        //     "[CODEGEN DEBUG] ResultErr: func={}, no param_types found",
-                        //     func_name
-                        // );
-                        false
-                    }
+                    // Check if function is registered as an HTTP handler or middleware
+                    // 1. Check if it's in http_handlers_to_register (regular HTTP handlers)
+                    // 2. Check if it's in http_middleware_to_register (middleware)
+                    // 3. Check if function has parameters (Request, Next) - middleware signature
+                    let is_registered_handler = self.http_handlers_to_register.contains(func_name);
+                    let is_registered_middleware =
+                        self.http_middleware_to_register.contains(func_name);
+
+                    let is_middleware_signature =
+                        if let Some(param_types) = self.function_param_types.get(func_name) {
+                            param_types.len() == 2
+                                && param_types[0] == "Request"
+                                && param_types[1] == "Next"
+                        } else {
+                            false
+                        };
+
+                    let is_http = is_registered_handler
+                        || is_registered_middleware
+                        || is_middleware_signature;
+                    eprintln!(
+                        "[CODEGEN DEBUG] ResultErr: func={}, is_registered_handler={}, is_registered_middleware={}, is_middleware_signature={}, is_http={}",
+                        func_name, is_registered_handler, is_registered_middleware, is_middleware_signature, is_http
+                    );
+                    is_http
                 } else {
-                    // eprintln!("[CODEGEN DEBUG] ResultErr: no current_function_name");
+                    eprintln!("[CODEGEN DEBUG] ResultErr: no current_function_name");
                     false
                 };
                 // eprintln!(
@@ -4851,11 +4859,11 @@ impl<'ctx> CodeGen<'ctx> {
                 // );
 
                 let error_ptr_val = if is_enum_error && is_http_function {
-                    // eprintln!("[CODEGEN DEBUG] ResultErr: Converting enum error to DooHttpError");
+                    eprintln!("[CODEGEN DEBUG] ResultErr: Converting enum error to DooHttpError (is_enum_error={}, is_http_function={})", is_enum_error, is_http_function);
                     // Convert enum error to DooHttpError
                     // The error_val is an enum struct { i32 tag, ptr payload }
                     if error_val.is_struct_value() {
-                        // eprintln!("[CODEGEN DEBUG] ResultErr: error_val is a struct, proceeding with conversion");
+                        eprintln!("[CODEGEN DEBUG] ResultErr: error_val is a struct, proceeding with conversion");
                         let enum_struct = error_val.into_struct_value();
 
                         // Extract tag (variant index)
@@ -4933,11 +4941,39 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap()
                             .into_pointer_value();
 
-                        // Pass NULL for instance path to trigger thread-local lookup in FFI
+                        eprintln!("[CODEGEN DEBUG] ResultErr: Extracting path from global request pointer");
+                        // Get the current request pointer from global variable
                         let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
-                        let instance_path = ptr_type.const_null();
+                        let global_request_ptr = self
+                            .module
+                            .get_global("__doo_current_request_ptr")
+                            .expect("__doo_current_request_ptr global not found");
 
-                        // Call doohttp_error_rfc7807(status, detail, instance) -> *const i8 (RFC 7807 JSON)
+                        let request_ptr = self
+                            .builder
+                            .build_load(
+                                ptr_type,
+                                global_request_ptr.as_pointer_value(),
+                                "current_request_ptr",
+                            )
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Call doohttp_get_request_path to extract path from DooRequest
+                        let get_path_fn = self
+                            .module
+                            .get_function("doohttp_get_request_path")
+                            .expect("doohttp_get_request_path FFI function not found");
+
+                        let instance_path = self
+                            .builder
+                            .build_call(get_path_fn, &[request_ptr.into()], "request_path")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+
                         let error_rfc7807_fn = self
                             .module
                             .get_function("doohttp_error_rfc7807")
@@ -5011,7 +5047,7 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }
                 } else {
-                    // eprintln!("[CODEGEN DEBUG] ResultErr: Using default error handling (not enum or not HTTP)");
+                    eprintln!("[CODEGEN DEBUG] ResultErr: Using default error handling (is_enum_error={}, is_http_function={})", is_enum_error, is_http_function);
                     // Default handling for non-HTTP or non-enum errors
                     if error_val.is_pointer_value() {
                         // Already a pointer (string, array, map, struct)
