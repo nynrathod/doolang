@@ -1,6 +1,6 @@
 //! Decorator validation for struct fields
 //!
-//! Validates decorators like @email, @min, @max, @required, @enum, @unique, @primary, @autoIncrement
+//! Validates decorators like @email, @min, @max, @enum, @unique, @primary, @autoIncrement
 //! Ensures proper type compatibility and argument validation.
 
 use super::types::SemanticError;
@@ -10,7 +10,6 @@ use crate::parser::ast::{AstNode, Decorator, TypeNode};
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecoratorKind {
     Email,         // @email - only on Str
-    Required,      // @required - any type
     Min,           // @min(n) - Str (length), Int/Float (value)
     Max,           // @max(n) - Str (length), Int/Float (value)
     Enum,          // @enum("a", "b") - only on Str
@@ -27,7 +26,6 @@ impl DecoratorKind {
     pub fn from_name(name: &str) -> Self {
         match name {
             "email" => DecoratorKind::Email,
-            "required" => DecoratorKind::Required,
             "min" => DecoratorKind::Min,
             "max" => DecoratorKind::Max,
             "enum" => DecoratorKind::Enum,
@@ -98,17 +96,6 @@ pub fn validate_decorator(
                     decorator: "email".to_string(),
                     field: field_name.to_string(),
                     message: "email decorator takes no arguments".to_string(),
-                });
-            }
-        }
-
-        DecoratorKind::Required => {
-            // @required valid on any type, takes no arguments
-            if !decorator.args.is_empty() {
-                return Err(SemanticError::InvalidDecoratorArgs {
-                    decorator: "required".to_string(),
-                    field: field_name.to_string(),
-                    message: "required decorator takes no arguments".to_string(),
                 });
             }
         }

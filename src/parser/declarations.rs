@@ -409,10 +409,49 @@ impl<'a> Parser<'a> {
         // Check for arguments
         let args = if self.peek_is(TokenType::OpenParen) {
             self.advance(); // consume '('
-            let args =
-                self.parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
-            self.expect(TokenType::CloseParen)?;
-            args
+
+            // Special handling for @enum(value1|value2|value3) syntax
+            if decorator_name == "enum" {
+                // Parse pipe-separated identifiers as individual string arguments
+                let mut enum_values = Vec::new();
+
+                loop {
+                    // Expect identifier
+                    let value = self.expect_ident()?;
+                    enum_values.push(AstNode::StringLiteral(value));
+
+                    // Check for pipe or close paren
+                    if self.peek_is(TokenType::Or) {
+                        self.advance(); // consume '|'
+                        continue;
+                    } else if self.peek_is(TokenType::CloseParen) {
+                        break;
+                    } else {
+                        let line = if let Some(tok) = self.peek() {
+                            tok.line
+                        } else {
+                            0
+                        };
+                        return Err(ParseError::UnexpectedTokenAt {
+                            msg: format!(
+                                "Expected '|' or ')' in enum decorator, got {:?}",
+                                self.peek()
+                            ),
+                            line,
+                            col: 0,
+                        });
+                    }
+                }
+
+                self.expect(TokenType::CloseParen)?;
+                enum_values
+            } else {
+                // Standard comma-separated expressions for other decorators
+                let args =
+                    self.parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
+                self.expect(TokenType::CloseParen)?;
+                args
+            }
         } else {
             Vec::new()
         };

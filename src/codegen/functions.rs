@@ -611,6 +611,24 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .as_pointer_value();
 
+                    // Helpers to check last RFC7807 error set by FFI extraction
+                    let last_error_status_fn =
+                        if let Some(f) = self.module.get_function("doohttp_last_error_status") {
+                            f
+                        } else {
+                            let fn_type = i32_type.fn_type(&[], false);
+                            self.module
+                                .add_function("doohttp_last_error_status", fn_type, None)
+                        };
+                    let last_error_json_fn =
+                        if let Some(f) = self.module.get_function("doohttp_last_error_json") {
+                            f
+                        } else {
+                            let fn_type = ptr_type.fn_type(&[], false);
+                            self.module
+                                .add_function("doohttp_last_error_json", fn_type, None)
+                        };
+
                     // Extract parameter based on type
                     let param_value: inkwell::values::BasicValueEnum = if param_type_str == "Str" {
                         // For string parameters, use doo_http_req_param
@@ -626,7 +644,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 .add_function("doo_http_req_param", extract_fn_type, None)
                         };
 
-                        self.builder
+                        let param_value_basic = self
+                            .builder
                             .build_call(
                                 extract_str_fn,
                                 &[request_param.into(), param_name_ptr.into()],
@@ -635,7 +654,112 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap()
                             .try_as_basic_value()
                             .left()
+                            .unwrap();
+
+                        // Check for RFC7807 error from FFI
+                        let status_val = self
+                            .builder
+                            .build_call(last_error_status_fn, &[], "param_err_status")
                             .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_int_value();
+                        let has_error = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::NE,
+                                status_val,
+                                i32_type.const_int(0, false),
+                                "has_param_error",
+                            )
+                            .unwrap();
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let err_block = self
+                            .context
+                            .append_basic_block(current_fn, "param_error_block");
+                        let ok_block = self
+                            .context
+                            .append_basic_block(current_fn, "param_ok_block");
+                        self.builder
+                            .build_conditional_branch(has_error, err_block, ok_block)
+                            .unwrap();
+
+                        // Error block: return DooResult error
+                        self.builder.position_at_end(err_block);
+                        let err_json_ptr = self
+                            .builder
+                            .build_call(last_error_json_fn, &[], "param_error_json")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+                        let http_error_type = self
+                            .context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false);
+                        let malloc_fn = self.module.get_function("malloc").unwrap();
+                        let http_error_ptr = self
+                            .builder
+                            .build_call(
+                                malloc_fn,
+                                &[i64_type.const_int(16, false).into()],
+                                "param_http_error_malloc",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+                        let status_ptr = self
+                            .builder
+                            .build_struct_gep(http_error_type, http_error_ptr, 0, "status_ptr")
+                            .unwrap();
+                        self.builder.build_store(status_ptr, status_val).unwrap();
+                        let msg_ptr = self
+                            .builder
+                            .build_struct_gep(http_error_type, http_error_ptr, 1, "msg_ptr")
+                            .unwrap();
+                        self.builder.build_store(msg_ptr, err_json_ptr).unwrap();
+
+                        let result_type = self
+                            .context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false);
+                        let result_ptr = self
+                            .builder
+                            .build_call(
+                                malloc_fn,
+                                &[i64_type.const_int(16, false).into()],
+                                "param_result_malloc",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+                        let tag_ptr = self
+                            .builder
+                            .build_struct_gep(result_type, result_ptr, 0, "tag_ptr")
+                            .unwrap();
+                        self.builder
+                            .build_store(tag_ptr, i32_type.const_int(1, false))
+                            .unwrap();
+                        let val_ptr = self
+                            .builder
+                            .build_struct_gep(result_type, result_ptr, 1, "val_ptr")
+                            .unwrap();
+                        self.builder.build_store(val_ptr, http_error_ptr).unwrap();
+                        self.builder.build_return(Some(&result_ptr)).unwrap();
+
+                        // Continue OK block
+                        self.builder.position_at_end(ok_block);
+
+                        param_value_basic
                     } else {
                         // For numeric types, use doohttp_extract_param_int
                         let extract_fn = if let Some(f) =
@@ -666,6 +790,107 @@ impl<'ctx> CodeGen<'ctx> {
                             .left()
                             .unwrap()
                             .into_int_value();
+
+                        // Check FFI error flag
+                        let status_val = self
+                            .builder
+                            .build_call(last_error_status_fn, &[], "param_err_status_int")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_int_value();
+                        let has_error = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::NE,
+                                status_val,
+                                i32_type.const_int(0, false),
+                                "has_param_error_int",
+                            )
+                            .unwrap();
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let err_block = self
+                            .context
+                            .append_basic_block(current_fn, "param_error_block_int");
+                        let ok_block = self
+                            .context
+                            .append_basic_block(current_fn, "param_ok_block_int");
+                        self.builder
+                            .build_conditional_branch(has_error, err_block, ok_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(err_block);
+                        let err_json_ptr = self
+                            .builder
+                            .build_call(last_error_json_fn, &[], "param_error_json_int")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+                        let http_error_type = self
+                            .context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false);
+                        let malloc_fn = self.module.get_function("malloc").unwrap();
+                        let http_error_ptr = self
+                            .builder
+                            .build_call(
+                                malloc_fn,
+                                &[i64_type.const_int(16, false).into()],
+                                "param_http_error_malloc_int",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+                        let status_ptr = self
+                            .builder
+                            .build_struct_gep(http_error_type, http_error_ptr, 0, "status_ptr_int")
+                            .unwrap();
+                        self.builder.build_store(status_ptr, status_val).unwrap();
+                        let msg_ptr = self
+                            .builder
+                            .build_struct_gep(http_error_type, http_error_ptr, 1, "msg_ptr_int")
+                            .unwrap();
+                        self.builder.build_store(msg_ptr, err_json_ptr).unwrap();
+
+                        let result_type = self
+                            .context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false);
+                        let result_ptr = self
+                            .builder
+                            .build_call(
+                                malloc_fn,
+                                &[i64_type.const_int(16, false).into()],
+                                "param_result_malloc_int",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+                        let tag_ptr = self
+                            .builder
+                            .build_struct_gep(result_type, result_ptr, 0, "tag_ptr_int")
+                            .unwrap();
+                        self.builder
+                            .build_store(tag_ptr, i32_type.const_int(1, false))
+                            .unwrap();
+                        let val_ptr = self
+                            .builder
+                            .build_struct_gep(result_type, result_ptr, 1, "val_ptr_int")
+                            .unwrap();
+                        self.builder.build_store(val_ptr, http_error_ptr).unwrap();
+                        self.builder.build_return(Some(&result_ptr)).unwrap();
+
+                        self.builder.position_at_end(ok_block);
 
                         // Convert to the expected type
                         if param_type_str == "Int" || param_type_str == "I32" {
@@ -768,6 +993,134 @@ impl<'ctx> CodeGen<'ctx> {
                                 struct_ptr,
                                 &param_type_str,
                             );
+
+                            // After parsing query, check for RFC7807 error set by FFI
+                            let last_error_status_fn = if let Some(f) =
+                                self.module.get_function("doohttp_last_error_status")
+                            {
+                                f
+                            } else {
+                                let fn_type = i32_type.fn_type(&[], false);
+                                self.module
+                                    .add_function("doohttp_last_error_status", fn_type, None)
+                            };
+                            let last_error_json_fn = if let Some(f) =
+                                self.module.get_function("doohttp_last_error_json")
+                            {
+                                f
+                            } else {
+                                let fn_type = ptr_type.fn_type(&[], false);
+                                self.module
+                                    .add_function("doohttp_last_error_json", fn_type, None)
+                            };
+
+                            let status_val = self
+                                .builder
+                                .build_call(last_error_status_fn, &[], "query_err_status")
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_int_value();
+                            let has_error = self
+                                .builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::NE,
+                                    status_val,
+                                    i32_type.const_int(0, false),
+                                    "has_query_error",
+                                )
+                                .unwrap();
+
+                            let current_fn = self
+                                .builder
+                                .get_insert_block()
+                                .unwrap()
+                                .get_parent()
+                                .unwrap();
+                            let err_block = self
+                                .context
+                                .append_basic_block(current_fn, "query_parse_error");
+                            let cont_block = self
+                                .context
+                                .append_basic_block(current_fn, "query_parse_ok");
+                            self.builder
+                                .build_conditional_branch(has_error, err_block, cont_block)
+                                .unwrap();
+
+                            // Error block: build DooResult error from last_error_json
+                            self.builder.position_at_end(err_block);
+                            let error_json_ptr = self
+                                .builder
+                                .build_call(last_error_json_fn, &[], "query_error_json")
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_pointer_value();
+
+                            let http_error_type = self
+                                .context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false);
+                            let malloc_fn = self.module.get_function("malloc").unwrap();
+                            let http_error_ptr = self
+                                .builder
+                                .build_call(
+                                    malloc_fn,
+                                    &[i64_type.const_int(16, false).into()],
+                                    "query_http_error_malloc",
+                                )
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_pointer_value();
+
+                            let status_ptr = self
+                                .builder
+                                .build_struct_gep(http_error_type, http_error_ptr, 0, "status_ptr")
+                                .unwrap();
+                            self.builder.build_store(status_ptr, status_val).unwrap();
+
+                            let message_ptr = self
+                                .builder
+                                .build_struct_gep(http_error_type, http_error_ptr, 1, "msg_ptr")
+                                .unwrap();
+                            self.builder
+                                .build_store(message_ptr, error_json_ptr)
+                                .unwrap();
+
+                            let result_type = self
+                                .context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false);
+                            let result_ptr = self
+                                .builder
+                                .build_call(
+                                    malloc_fn,
+                                    &[i64_type.const_int(16, false).into()],
+                                    "query_result_malloc",
+                                )
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_pointer_value();
+                            let tag_ptr = self
+                                .builder
+                                .build_struct_gep(result_type, result_ptr, 0, "tag_ptr")
+                                .unwrap();
+                            self.builder
+                                .build_store(tag_ptr, i32_type.const_int(1, false))
+                                .unwrap();
+                            let val_ptr = self
+                                .builder
+                                .build_struct_gep(result_type, result_ptr, 1, "val_ptr")
+                                .unwrap();
+                            self.builder.build_store(val_ptr, http_error_ptr).unwrap();
+                            self.builder.build_return(Some(&result_ptr)).unwrap();
+
+                            // Continue block
+                            self.builder.position_at_end(cont_block);
                         }
                     } else {
                         // Parse JSON body into struct
@@ -811,8 +1164,9 @@ impl<'ctx> CodeGen<'ctx> {
                         .left()
                 }
             } else if original_handler.count_params() == 2 {
-                // Handler takes 2 parameters: fn(id: Int, data: SomeStruct) -> ReturnType
-                // First parameter is path parameter, second is body parameter
+                // Handler takes 2 parameters: could be:
+                // 1) fn(id: Int, data: SomeStruct) -> ReturnType (primitive path param + body struct)
+                // 2) fn(path: PathStruct, data: BodyStruct) -> ReturnType (path struct + body struct)
                 let llvm_param1_type = original_handler.get_type().get_param_types()[0];
                 let llvm_param2_type = original_handler.get_type().get_param_types()[1];
 
@@ -839,9 +1193,22 @@ impl<'ctx> CodeGen<'ctx> {
                         String::new()
                     };
 
-                // First parameter - extract path parameter as integer
-                let extract_fn =
-                    if let Some(f) = self.module.get_function("doohttp_extract_param_int") {
+                // Check if first parameter is primitive or struct
+                let param1_is_primitive = param1_type_str == "Int"
+                    || param1_type_str == "I32"
+                    || param1_type_str == "I64"
+                    || param1_type_str == "Float"
+                    || param1_type_str == "F32"
+                    || param1_type_str == "F64"
+                    || param1_type_str == "Bool"
+                    || param1_type_str == "Str";
+
+                // First parameter - extract path parameter
+                let param1_value: inkwell::values::BasicValueEnum = if param1_is_primitive {
+                    // Extract as primitive
+                    let extract_fn = if let Some(f) =
+                        self.module.get_function("doohttp_extract_param_int")
+                    {
                         f
                     } else {
                         let extract_fn_type =
@@ -850,33 +1217,32 @@ impl<'ctx> CodeGen<'ctx> {
                             .add_function("doohttp_extract_param_int", extract_fn_type, None)
                     };
 
-                let param1_name_str = if let Some(param_name) = func.params.first() {
-                    param_name.clone()
-                } else {
-                    "id".to_string()
-                };
+                    let param1_name_str = if let Some(param_name) = func.params.first() {
+                        param_name.clone()
+                    } else {
+                        "id".to_string()
+                    };
 
-                let param1_name_ptr = self
-                    .builder
-                    .build_global_string_ptr(&param1_name_str, "param1_name")
-                    .unwrap()
-                    .as_pointer_value();
+                    let param1_name_ptr = self
+                        .builder
+                        .build_global_string_ptr(&param1_name_str, "param1_name")
+                        .unwrap()
+                        .as_pointer_value();
 
-                let param1_value_i64 = self
-                    .builder
-                    .build_call(
-                        extract_fn,
-                        &[request_param.into(), param1_name_ptr.into()],
-                        "param1_value",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .left()
-                    .unwrap()
-                    .into_int_value();
+                    let param1_value_i64 = self
+                        .builder
+                        .build_call(
+                            extract_fn,
+                            &[request_param.into(), param1_name_ptr.into()],
+                            "param1_value",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_int_value();
 
-                // Convert to i32 if needed
-                let param1_value: inkwell::values::BasicValueEnum =
+                    // Convert to i32 if needed
                     if param1_type_str == "Int" || param1_type_str == "I32" {
                         self.builder
                             .build_int_truncate(param1_value_i64, i32_type, "param1_i32")
@@ -884,7 +1250,51 @@ impl<'ctx> CodeGen<'ctx> {
                             .into()
                     } else {
                         param1_value_i64.into()
+                    }
+                } else {
+                    // First parameter is a struct (path parameters)
+                    let malloc_fn = self.module.get_function("malloc").unwrap();
+                    let param1_struct_size = i64_type.const_int(128, false);
+                    let param1_struct_ptr = self
+                        .builder
+                        .build_call(malloc_fn, &[param1_struct_size.into()], "param1_struct_ptr")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    let memset_fn = if let Some(f) = self.module.get_function("memset") {
+                        f
+                    } else {
+                        let memset_type = ptr_type
+                            .fn_type(&[ptr_type.into(), i32_type.into(), i64_type.into()], false);
+                        self.module.add_function("memset", memset_type, None)
                     };
+                    let zero = i32_type.const_int(0, false);
+                    self.builder
+                        .build_call(
+                            memset_fn,
+                            &[
+                                param1_struct_ptr.into(),
+                                zero.into(),
+                                param1_struct_size.into(),
+                            ],
+                            "",
+                        )
+                        .unwrap();
+
+                    // Parse path parameters into struct
+                    if !param1_type_str.is_empty() {
+                        self.parse_path_params_into_struct(
+                            request_param,
+                            param1_struct_ptr,
+                            &param1_type_str,
+                        );
+                    }
+
+                    param1_struct_ptr.into()
+                };
 
                 // Second parameter - parse JSON body into struct
                 let malloc_fn = self.module.get_function("malloc").unwrap();
@@ -2311,8 +2721,12 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    /// Build validator spec string from struct field decorators
-    /// Format: "field1:email;field2:min8|max100;field3:enum:a|b|c"
+    /// Build validator spec string from struct field decorators and types
+    /// Format per field: "fieldName:Type:validator1|validator2"
+    /// Examples:
+    ///   Email:Str:email
+    ///   Age:Int:min18
+    ///   Note:Str:
     fn build_validator_spec(&self, struct_type: &str) -> String {
         let mut specs = Vec::new();
 
@@ -2320,7 +2734,8 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(metadata) = self.struct_metadata.get(struct_type) {
             // Check if we have decorator info stored
             if let Some(field_decorators) = self.struct_field_decorators.get(struct_type) {
-                for field_name in metadata.field_names.iter() {
+                for (idx, field_name) in metadata.field_names.iter().enumerate() {
+                    let field_type = metadata.field_types.get(idx).cloned().unwrap_or_default();
                     if let Some(decorators) = field_decorators.get(field_name) {
                         if !decorators.is_empty() {
                             let decorator_strs: Vec<String> = decorators
@@ -2346,9 +2761,20 @@ impl<'ctx> CodeGen<'ctx> {
                                 })
                                 .collect();
 
-                            let field_spec = format!("{}:{}", field_name, decorator_strs.join("|"));
+                            let field_spec = format!(
+                                "{}:{}:{}",
+                                field_name,
+                                field_type,
+                                decorator_strs.join("|")
+                            );
                             specs.push(field_spec);
+                        } else {
+                            // No decorators, still include type for required/missing checks
+                            specs.push(format!("{}:{}:", field_name, field_type));
                         }
+                    } else {
+                        // No decorator metadata, still include type
+                        specs.push(format!("{}:{}:", field_name, field_type));
                     }
                 }
             }
@@ -2922,16 +3348,18 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(metadata) = self.struct_metadata.get(struct_type).cloned() {
             let ptr_type = self.context.ptr_type(AddressSpace::default());
             let i32_type = self.context.i32_type();
+            let i64_type = self.context.i64_type();
 
             // Declare query helper function to get values from request
-            let doo_http_req_query_fn =
-                if let Some(f) = self.module.get_function("doo_http_req_query") {
+            let doohttp_extract_query_typed_fn =
+                if let Some(f) = self.module.get_function("doohttp_extract_query_typed") {
                     f
                 } else {
-                    // fn doo_http_req_query(request: *const DooRequest, key: *const c_char) -> *const c_char
-                    let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                    // fn doohttp_extract_query_typed(request: *const DooRequest, name: *const c_char, ty: *const c_char) -> *const c_char
+                    let fn_type = ptr_type
+                        .fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
                     self.module
-                        .add_function("doo_http_req_query", fn_type, None)
+                        .add_function("doohttp_extract_query_typed", fn_type, None)
                 };
 
             let atoi_fn = if let Some(f) = self.module.get_function("atoi") {
@@ -2940,6 +3368,36 @@ impl<'ctx> CodeGen<'ctx> {
                 let fn_type = i32_type.fn_type(&[ptr_type.into()], false);
                 self.module.add_function("atoi", fn_type, None)
             };
+            let atof_fn = if let Some(f) = self.module.get_function("atof") {
+                f
+            } else {
+                let fn_type = self.context.f64_type().fn_type(&[ptr_type.into()], false);
+                self.module.add_function("atof", fn_type, None)
+            };
+            let strcmp_fn = if let Some(f) = self.module.get_function("strcmp") {
+                f
+            } else {
+                let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                self.module.add_function("strcmp", fn_type, None)
+            };
+
+            // Helpers to read last RFC7807 error after each extraction
+            let last_error_status_fn =
+                if let Some(f) = self.module.get_function("doohttp_last_error_status") {
+                    f
+                } else {
+                    let fn_type = i32_type.fn_type(&[], false);
+                    self.module
+                        .add_function("doohttp_last_error_status", fn_type, None)
+                };
+            let last_error_json_fn =
+                if let Some(f) = self.module.get_function("doohttp_last_error_json") {
+                    f
+                } else {
+                    let fn_type = ptr_type.fn_type(&[], false);
+                    self.module
+                        .add_function("doohttp_last_error_json", fn_type, None)
+                };
 
             // For each field in the struct, extract it from query params
             for (field_idx, field_name) in metadata.field_names.iter().enumerate() {
@@ -2952,12 +3410,23 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap()
                     .as_pointer_value();
 
-                // Call doo_http_req_query to get the value from request
+                // Get the field type as a C string
+                let field_type_ptr = self
+                    .builder
+                    .build_global_string_ptr(field_type, &format!("query_type_{}", field_name))
+                    .unwrap()
+                    .as_pointer_value();
+
+                // Call typed extractor to get the value from request (sets RFC7807 on errors)
                 let value_str_ptr = self
                     .builder
                     .build_call(
-                        doo_http_req_query_fn,
-                        &[request_ptr.into(), field_name_ptr.into()],
+                        doohttp_extract_query_typed_fn,
+                        &[
+                            request_ptr.into(),
+                            field_name_ptr.into(),
+                            field_type_ptr.into(),
+                        ],
                         &format!("query_val_{}", field_name),
                     )
                     .unwrap()
@@ -2965,6 +3434,47 @@ impl<'ctx> CodeGen<'ctx> {
                     .left()
                     .unwrap()
                     .into_pointer_value();
+
+                // If extractor set an error, skip storing; wrapper will handle last_error_status
+                let status_val = self
+                    .builder
+                    .build_call(last_error_status_fn, &[], "query_field_err_status")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+                let has_error = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        status_val,
+                        i32_type.const_int(0, false),
+                        "query_field_has_error",
+                    )
+                    .unwrap();
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let err_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("query_field_err_{}", field_name));
+                let cont_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("query_field_cont_{}", field_name));
+                self.builder
+                    .build_conditional_branch(has_error, err_block, cont_block)
+                    .unwrap();
+
+                // Error: propagate error by returning Result Err in wrapper (handled after this function)
+                self.builder.position_at_end(err_block);
+                // Just branch to end, wrapper will see last_error_status
+                self.builder.build_unconditional_branch(cont_block).unwrap();
+
+                self.builder.position_at_end(cont_block);
 
                 // Get field pointer in struct
                 let struct_llvm_type = *self.canonical_struct_types.get(struct_type).unwrap();
@@ -3026,12 +3536,6 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_global_string_ptr("true", "true_str")
                         .unwrap()
                         .as_pointer_value();
-                    let strcmp_fn = if let Some(f) = self.module.get_function("strcmp") {
-                        f
-                    } else {
-                        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-                        self.module.add_function("strcmp", fn_type, None)
-                    };
                     let cmp_result = self
                         .builder
                         .build_call(strcmp_fn, &[value_str_ptr.into(), true_str.into()], "cmp")
@@ -3054,6 +3558,214 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_int_z_extend(is_true, i32_type, "bool_val")
                         .unwrap();
                     self.builder.build_store(field_ptr, bool_val).unwrap();
+                } else if field_type == "Float" || field_type == "F64" || field_type == "F32" {
+                    let float_val = self
+                        .builder
+                        .build_call(atof_fn, &[value_str_ptr.into()], "float_val")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_float_value();
+                    if field_type == "F32" {
+                        let f32_type = self.context.f32_type();
+                        let f32_val = self
+                            .builder
+                            .build_float_trunc(float_val, f32_type, "float32")
+                            .unwrap();
+                        self.builder.build_store(field_ptr, f32_val).unwrap();
+                    } else {
+                        let f64_type = self.context.f64_type();
+                        if let Err(_) = self.builder.build_store(field_ptr, float_val) {
+                            let casted = self
+                                .builder
+                                .build_float_ext(float_val, f64_type, "float64_ext")
+                                .unwrap();
+                            self.builder.build_store(field_ptr, casted).unwrap();
+                        }
+                    }
+                }
+
+                self.builder.build_unconditional_branch(skip_block).unwrap();
+
+                // Skip block: continue to next field
+                self.builder.position_at_end(skip_block);
+            }
+        }
+    }
+
+    /// Parse path parameters from request into a struct
+    fn parse_path_params_into_struct(
+        &mut self,
+        request_ptr: inkwell::values::PointerValue<'ctx>,
+        struct_ptr: inkwell::values::PointerValue<'ctx>,
+        struct_type: &str,
+    ) {
+        // Get struct metadata
+        if let Some(metadata) = self.struct_metadata.get(struct_type).cloned() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let i32_type = self.context.i32_type();
+            let i64_type = self.context.i64_type();
+
+            // Declare path param extractor
+            let doohttp_extract_param_typed_fn =
+                if let Some(f) = self.module.get_function("doohttp_extract_param_typed") {
+                    f
+                } else {
+                    // fn doohttp_extract_param_typed(request: *const DooRequest, name: *const c_char, ty: *const c_char) -> *const c_char
+                    let fn_type = ptr_type
+                        .fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+                    self.module
+                        .add_function("doohttp_extract_param_typed", fn_type, None)
+                };
+
+            let atoi_fn = if let Some(f) = self.module.get_function("atoi") {
+                f
+            } else {
+                let fn_type = i32_type.fn_type(&[ptr_type.into()], false);
+                self.module.add_function("atoi", fn_type, None)
+            };
+
+            // Helpers to check last RFC7807 error after each extraction
+            let last_error_status_fn =
+                if let Some(f) = self.module.get_function("doohttp_last_error_status") {
+                    f
+                } else {
+                    let fn_type = i32_type.fn_type(&[], false);
+                    self.module
+                        .add_function("doohttp_last_error_status", fn_type, None)
+                };
+
+            // For each field in the struct, extract it from path params
+            for (field_idx, field_name) in metadata.field_names.iter().enumerate() {
+                let field_type = &metadata.field_types[field_idx];
+
+                // Get the field name as a C string
+                let field_name_ptr = self
+                    .builder
+                    .build_global_string_ptr(field_name, &format!("path_key_{}", field_name))
+                    .unwrap()
+                    .as_pointer_value();
+
+                // Get the field type as a C string
+                let field_type_ptr = self
+                    .builder
+                    .build_global_string_ptr(field_type, &format!("path_type_{}", field_name))
+                    .unwrap()
+                    .as_pointer_value();
+
+                // Call typed extractor to get the value from request path params (sets RFC7807 on errors)
+                let value_str_ptr = self
+                    .builder
+                    .build_call(
+                        doohttp_extract_param_typed_fn,
+                        &[
+                            request_ptr.into(),
+                            field_name_ptr.into(),
+                            field_type_ptr.into(),
+                        ],
+                        &format!("path_val_{}", field_name),
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_pointer_value();
+
+                // If extractor set an error, skip storing; wrapper will handle last_error_status
+                let status_val = self
+                    .builder
+                    .build_call(last_error_status_fn, &[], "path_field_err_status")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+                let has_error = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        status_val,
+                        i32_type.const_int(0, false),
+                        "path_field_has_error",
+                    )
+                    .unwrap();
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let err_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("path_field_err_{}", field_name));
+                let cont_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("path_field_cont_{}", field_name));
+                self.builder
+                    .build_conditional_branch(has_error, err_block, cont_block)
+                    .unwrap();
+
+                // Error: propagate error by returning Result Err in wrapper (handled after this function)
+                self.builder.position_at_end(err_block);
+                // Just branch to end, wrapper will see last_error_status
+                self.builder.build_unconditional_branch(cont_block).unwrap();
+
+                self.builder.position_at_end(cont_block);
+
+                // Get field pointer in struct
+                let struct_llvm_type = *self.canonical_struct_types.get(struct_type).unwrap();
+                let field_ptr = unsafe {
+                    self.builder
+                        .build_struct_gep(
+                            struct_llvm_type,
+                            struct_ptr,
+                            field_idx as u32,
+                            &format!("field_{}_ptr", field_name),
+                        )
+                        .unwrap()
+                };
+
+                // Check if value is null (not provided)
+                let is_null = self
+                    .builder
+                    .build_is_null(value_str_ptr, "is_null")
+                    .unwrap();
+
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let set_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("set_path_{}", field_name));
+                let skip_block = self
+                    .context
+                    .append_basic_block(current_fn, &format!("skip_path_{}", field_name));
+
+                self.builder
+                    .build_conditional_branch(is_null, skip_block, set_block)
+                    .unwrap();
+
+                // Set block: convert and store the value
+                self.builder.position_at_end(set_block);
+
+                // Parse based on field type
+                if field_type == "Int" || field_type == "I32" {
+                    let int_val = self
+                        .builder
+                        .build_call(atoi_fn, &[value_str_ptr.into()], "path_int_val")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_int_value();
+                    self.builder.build_store(field_ptr, int_val).unwrap();
+                } else if field_type == "Str" || field_type.contains("String") {
+                    // Store the string pointer directly
+                    self.builder.build_store(field_ptr, value_str_ptr).unwrap();
                 }
 
                 self.builder.build_unconditional_branch(skip_block).unwrap();

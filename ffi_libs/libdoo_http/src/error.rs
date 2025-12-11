@@ -513,6 +513,179 @@ pub fn unknown_fields_error(
     ErrorResponse::new(ErrorType::BadRequest, detail, instance).with_unknown_fields(unknown_fields)
 }
 
+/// Build a bad request with field-level errors (used for JSON body parsing/type errors)
+pub fn body_field_error(
+    detail: String,
+    instance: String,
+    fields: HashMap<String, FieldError>,
+) -> ErrorResponse {
+    ErrorResponse::new(ErrorType::BadRequest, detail, instance).with_fields(fields)
+}
+
+/// Create a centralized error response for any error type with optional fields
+pub fn error_response(error_type: ErrorType, detail: String, instance: String) -> ErrorResponse {
+    ErrorResponse::new(error_type, detail, instance)
+}
+
+/// Create error response with status code (converts status to error type)
+pub fn error_from_status(status: u16, detail: String, instance: String) -> ErrorResponse {
+    let error_type = ErrorType::from_status_code(status);
+    ErrorResponse::new(error_type, detail, instance)
+}
+
+/// Type mismatch error for deserialization
+pub fn type_mismatch_error(instance: String, fields: HashMap<String, FieldError>) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::BadRequest,
+        "Type mismatch in request body".to_string(),
+        instance,
+    )
+    .with_fields(fields)
+}
+
+/// Missing required field error
+pub fn missing_field_error(instance: String, fields: HashMap<String, FieldError>) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::BadRequest,
+        "Required field missing in request body".to_string(),
+        instance,
+    )
+    .with_fields(fields)
+}
+
+/// Invalid JSON error
+pub fn invalid_json_error(instance: String) -> ErrorResponse {
+    ErrorResponse::new(ErrorType::BadRequest, "Invalid JSON".to_string(), instance)
+}
+
+/// Malformed JSON error
+pub fn malformed_json_error(instance: String) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::BadRequest,
+        "Malformed JSON syntax".to_string(),
+        instance,
+    )
+}
+
+/// Invalid path parameter type error
+pub fn invalid_path_param_type_error(instance: String, parameter: ParameterError) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::BadRequest,
+        "Invalid path parameter type".to_string(),
+        instance,
+    )
+    .with_parameter(parameter)
+}
+
+/// Missing path parameter error
+pub fn missing_path_param_error(instance: String, parameter: ParameterError) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::BadRequest,
+        "Path parameter not found".to_string(),
+        instance,
+    )
+    .with_parameter(parameter)
+}
+
+/// Invalid query parameter type error
+pub fn invalid_query_param_type_error(
+    instance: String,
+    parameter: ParameterError,
+) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::BadRequest,
+        "Invalid query parameter type".to_string(),
+        instance,
+    )
+    .with_parameter(parameter)
+}
+
+/// Missing required query parameter error
+pub fn missing_query_param_error(instance: String, parameter: ParameterError) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::BadRequest,
+        "Required query parameter missing".to_string(),
+        instance,
+    )
+    .with_parameter(parameter)
+}
+
+/// Not found error
+pub fn route_not_found_error(instance: String, method: String) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::NotFound,
+        "The requested route does not exist".to_string(),
+        instance,
+    )
+    .with_method(method)
+}
+
+/// Method not allowed error
+pub fn method_not_allowed_error(
+    instance: String,
+    method: String,
+    allowed_methods: Vec<String>,
+) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::MethodNotAllowed,
+        "The requested method is not allowed for this route".to_string(),
+        instance,
+    )
+    .with_method(method)
+    .with_allowed_methods(allowed_methods)
+}
+
+/// Validation failed error for decorator-based validation
+pub fn validation_failed_error(
+    instance: String,
+    fields: HashMap<String, FieldError>,
+) -> ErrorResponse {
+    let detail = if fields.len() == 1 {
+        "One or more fields failed validation".to_string()
+    } else {
+        format!("Multiple fields failed validation")
+    };
+    ErrorResponse::new(ErrorType::UnprocessableEntity, detail, instance).with_fields(fields)
+}
+
+/// Forbidden error with optional message
+pub fn forbidden_error(instance: String) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::Forbidden,
+        "You do not have permission to access this resource".to_string(),
+        instance,
+    )
+    .with_message("Admin privileges required".to_string())
+}
+
+/// Unauthorized error
+pub fn unauthorized_error(instance: String) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::Unauthorized,
+        "Authentication required".to_string(),
+        instance,
+    )
+}
+
+/// Internal server error
+pub fn internal_server_error(instance: String) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::InternalError,
+        "An unexpected error occurred".to_string(),
+        instance,
+    )
+}
+
+/// Internal server error with trace ID
+pub fn internal_server_error_with_trace(instance: String, trace_id: String) -> ErrorResponse {
+    ErrorResponse::new(
+        ErrorType::InternalError,
+        "An unexpected error occurred".to_string(),
+        instance,
+    )
+    .with_trace_id(trace_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
