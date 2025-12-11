@@ -21,6 +21,8 @@ use hyper_util::rt::TokioIo;
 use matchit::Router;
 use tokio::net::TcpListener;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // Thread-local RFC 7807 last error (status, json body) populated by parsing/param helpers
 thread_local! {
     static LAST_RFC_ERROR: RefCell<Option<(i32, String)>> = RefCell::new(None);
@@ -96,6 +98,7 @@ struct RouteRegistry {
     middleware: Vec<DooMiddlewareFn>,        // global middleware
     middleware_handlers: HashMap<String, DooMiddlewareFn>, // middleware_name -> function pointer
     groups: HashMap<String, Vec<DooMiddlewareFn>>, // prefix -> middleware for groups
+    route_count: usize,
 }
 
 impl RouteRegistry {
@@ -106,6 +109,7 @@ impl RouteRegistry {
             middleware: Vec::new(),
             middleware_handlers: HashMap::new(),
             groups: HashMap::new(),
+            route_count: 0,
         }
     }
 
@@ -124,6 +128,7 @@ impl RouteRegistry {
         if let Err(e) = router.insert(path, route) {
             eprintln!("Failed to register route {} {}: {}", method, path, e);
         } else {
+            self.route_count += 1;
             println!("✓ Registered: {} {}", method, path);
         }
     }
@@ -150,6 +155,7 @@ impl RouteRegistry {
         if let Err(e) = router.insert(path, route) {
             eprintln!("Failed to register route {} {}: {}", method, path, e);
         } else {
+            self.route_count += 1;
             println!(
                 "✓ Registered: {} {} (with {} middleware)",
                 method, path, middleware_len
@@ -778,9 +784,9 @@ pub extern "C" fn doo_http_patch_fn(
 // ============================================================================
 #[no_mangle]
 pub extern "C" fn doo_http_use(
-    _server: *const std::ffi::c_void,
+    server: *const std::ffi::c_void,
     middleware_name: *const c_char,
-) -> *mut DooResult {
+) -> *const std::ffi::c_void {
     let middleware_str = c_to_string(middleware_name);
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
@@ -793,7 +799,8 @@ pub extern "C" fn doo_http_use(
         eprintln!("Warning: Middleware {} not found", middleware_str);
     }
 
-    make_ok_void()
+    // Return the server pointer for method chaining
+    server
 }
 
 // ============================================================================
@@ -1137,6 +1144,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
 #[no_mangle]
 pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut DooResult {
+    let start = std::time::Instant::now();
+
     // Extract port from Server struct
     // Server struct layout: { Port: i32, Host: *const c_char }
     let port = if server_ptr.is_null() {
@@ -1156,19 +1165,29 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port as u16));
 
-    println!();
-    println!("🚀 Server starting on http://127.0.0.1:{}", port);
-    println!();
-
-    // Print all registered routes
     let routes = get_routes();
     let registry = routes.lock().unwrap();
-    println!("📋 Registered routes:");
-    for (method, _router) in registry.routes.iter() {
-        println!("  {} routes: registered", method);
-    }
-    println!();
+    let total_routes = registry.route_count;
     drop(registry);
+
+    // Measure boot time after all initialization is done
+    let boot_time_ms = start.elapsed().as_millis();
+
+    println!();
+    println!("   ___    ___   ____ ");
+    println!("  / _ \\  / _ \\ / __ \\");
+    println!(" / // / / // // /_/ /");
+    println!("/____/  \\___/ \\____/        Doo v{}", VERSION);
+    println!("--------------------------------------------------");
+
+    println!("Info Server Online");
+    println!("--------------------------------------------------");
+    println!("• Boot Time:            {} ms", boot_time_ms);
+    println!("• Address:              http://127.0.0.1:{}", port);
+    println!("• Handlers Loaded:      {}", total_routes);
+    println!("• Process ID:           {}", std::process::id());
+    println!("--------------------------------------------------");
+    println!("🚀 Ready. Happy coding!\n");
 
     runtime.block_on(async {
         let listener = match TcpListener::bind(addr).await {
@@ -1179,8 +1198,8 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
             }
         };
 
-        println!("✓ Listening on {}", addr);
-        println!();
+        // println!("✓ Listening on {}", addr);
+        // println!();
 
         loop {
             let (stream, _) = match listener.accept().await {
@@ -1204,6 +1223,15 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
     });
 
     make_ok_void()
+}
+
+#[no_mangle]
+pub extern "C" fn doo_str_to_int(s: *const c_char) -> i32 {
+    if s.is_null() {
+        return 0;
+    }
+    let str_val = c_to_string(s);
+    str_val.parse::<i32>().unwrap_or(0)
 }
 
 // ============================================================================
