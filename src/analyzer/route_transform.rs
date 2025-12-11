@@ -530,6 +530,21 @@ fn transform_route_group_in_node(node: &mut AstNode) {
                         AstNode::StringLiteral(middleware_str),
                         AstNode::StringLiteral(handler_name),
                     ];
+                } else if method == "use" && args.len() > 1 {
+                    // Middleware chaining: app.use(M1, M2, M3)
+                    // Lower into nested method calls so the expression still evaluates
+                    // to the Server returned by the final .use
+                    let mut current_expr = object.as_ref().clone();
+                    for middleware_arg in args.iter() {
+                        let converted = convert_handler_to_string(middleware_arg.clone());
+                        current_expr = AstNode::MethodCall {
+                            object: Box::new(current_expr),
+                            method: "use".to_string(),
+                            args: vec![converted],
+                        };
+                    }
+                    *node = current_expr;
+                    return;
                 } else if args.len() == 1 && method == "use" {
                     // Middleware: app.use(middleware)
                     // Convert middleware identifier to string
@@ -661,10 +676,12 @@ fn transform_route_group_in_node(node: &mut AstNode) {
         | AstNode::IncrementDecrement { .. }
         | AstNode::ErrExpr { .. }
         | AstNode::Program(_)
-        | AstNode::LetDecl { .. }
         | AstNode::TupleLiteral(_)
         | AstNode::OkExpr { .. }
         | AstNode::ManualErrorExtract { .. } => {}
+        AstNode::LetDecl { value, .. } => {
+            transform_route_group_in_node(value);
+        }
     }
 }
 
