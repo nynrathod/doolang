@@ -597,19 +597,6 @@ impl<'ctx> CodeGen<'ctx> {
                     // Path/query parameter - extract from request params
                     // For now, we'll extract the first path parameter (common pattern: /users/:id)
 
-                    // Declare doohttp_extract_param_int if not already declared
-                    let extract_fn = if let Some(f) =
-                        self.module.get_function("doohttp_extract_param_int")
-                    {
-                        f
-                    } else {
-                        // fn doohttp_extract_param_int(request: *const DooRequest, param_name: *const c_char) -> i64
-                        let extract_fn_type =
-                            i64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-                        self.module
-                            .add_function("doohttp_extract_param_int", extract_fn_type, None)
-                    };
-
                     // For path parameters, we use a convention: if handler has 1 param with name "id", extract ":id"
                     // Otherwise extract the first parameter name
                     let param_name_str = if let Some(param_name) = func.params.first() {
@@ -624,22 +611,63 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .as_pointer_value();
 
-                    // Extract parameter as i64 (covers Int, can be cast for other types)
-                    let param_value_i64 = self
-                        .builder
-                        .build_call(
-                            extract_fn,
-                            &[request_param.into(), param_name_ptr.into()],
-                            "param_value",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap()
-                        .into_int_value();
+                    // Extract parameter based on type
+                    let param_value: inkwell::values::BasicValueEnum = if param_type_str == "Str" {
+                        // For string parameters, use doo_http_req_param
+                        let extract_str_fn = if let Some(f) =
+                            self.module.get_function("doo_http_req_param")
+                        {
+                            f
+                        } else {
+                            // fn doo_http_req_param(request: *const DooRequest, key: *const c_char) -> *const c_char
+                            let extract_fn_type =
+                                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                            self.module
+                                .add_function("doo_http_req_param", extract_fn_type, None)
+                        };
 
-                    // Convert to the expected type
-                    let param_value: inkwell::values::BasicValueEnum =
+                        self.builder
+                            .build_call(
+                                extract_str_fn,
+                                &[request_param.into(), param_name_ptr.into()],
+                                "param_value",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                    } else {
+                        // For numeric types, use doohttp_extract_param_int
+                        let extract_fn = if let Some(f) =
+                            self.module.get_function("doohttp_extract_param_int")
+                        {
+                            f
+                        } else {
+                            // fn doohttp_extract_param_int(request: *const DooRequest, param_name: *const c_char) -> i64
+                            let extract_fn_type =
+                                i64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                            self.module.add_function(
+                                "doohttp_extract_param_int",
+                                extract_fn_type,
+                                None,
+                            )
+                        };
+
+                        // Extract parameter as i64 (covers Int, can be cast for other types)
+                        let param_value_i64 = self
+                            .builder
+                            .build_call(
+                                extract_fn,
+                                &[request_param.into(), param_name_ptr.into()],
+                                "param_value",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_int_value();
+
+                        // Convert to the expected type
                         if param_type_str == "Int" || param_type_str == "I32" {
                             // Truncate i64 to i32
                             self.builder
@@ -687,7 +715,8 @@ impl<'ctx> CodeGen<'ctx> {
                         } else {
                             // Default: use as-is
                             param_value_i64.into()
-                        };
+                        }
+                    };
 
                     self.builder
                         .build_call(original_handler, &[param_value.into()], "handler_result")
