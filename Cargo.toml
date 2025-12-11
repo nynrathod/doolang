@@ -29,6 +29,7 @@ clap = { version = "4.5", features = ["derive"] }
 regex = "1"
 bumpalo = "3.19.0"
 
+
 [lib]
 name = "doo"
 path = "src/lib.rs"

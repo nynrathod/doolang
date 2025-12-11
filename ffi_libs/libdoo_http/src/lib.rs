@@ -21,6 +21,13 @@ use hyper_util::rt::TokioIo;
 use matchit::Router;
 use tokio::net::TcpListener;
 
+// use chrono::Local;
+// add these near other imports
+use chrono::Local;
+use std::sync::RwLock;
+use std::thread;
+use std::time::{Duration, Instant};
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Thread-local RFC 7807 last error (status, json body) populated by parsing/param helpers
@@ -42,6 +49,75 @@ fn clear_last_error() {
 
 fn take_last_error() -> Option<(i32, String)> {
     LAST_RFC_ERROR.with(|cell| cell.borrow_mut().take())
+}
+
+// Cached human-readable time (HH:MM:SS), updated once per second
+static TIMESTAMP_CACHE: OnceLock<std::sync::Arc<RwLock<String>>> = OnceLock::new();
+
+fn init_timestamp_updater() {
+    // if already initialized, do nothing
+    if TIMESTAMP_CACHE.get().is_some() {
+        return;
+    }
+
+    // initial value
+    let now = Local::now();
+    let initial = now.format("%H:%M:%S").to_string();
+    let arc_lock = std::sync::Arc::new(RwLock::new(initial));
+
+    // try to set global; if another thread set it concurrently, use the existing one
+    let cache = match TIMESTAMP_CACHE.set(arc_lock.clone()) {
+        Ok(_) => arc_lock,
+        Err(_) => TIMESTAMP_CACHE.get().unwrap().clone(),
+    };
+
+    // spawn background thread to update cached time once per second
+    thread::spawn(move || loop {
+        let t = Local::now().format("%H:%M:%S").to_string();
+        if let Ok(mut w) = cache.write() {
+            *w = t;
+        }
+        thread::sleep(Duration::from_secs(1));
+    });
+}
+
+fn log_request(start: Instant, status: StatusCode, method: &str, path: &str) {
+    // Try to read human-readable cached HH:MM:SS
+    let time_str = if let Some(cache) = TIMESTAMP_CACHE.get() {
+        if let Ok(r) = cache.read() {
+            r.clone()
+        } else {
+            // fallback to epoch seconds as string
+            format!(
+                "{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            )
+        }
+    } else {
+        // fallback if not initialized
+        format!(
+            "{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        )
+    };
+
+    let elapsed_ms = start.elapsed().as_millis();
+    // Example:
+    // [Doo] 15:04:05 | 200 |   2ms | GET /api/users
+    println!(
+        "[Doo] {} | {:3} | {:4}ms | {} {}",
+        time_str,
+        status.as_u16(),
+        elapsed_ms,
+        method,
+        path
+    );
 }
 
 #[no_mangle]
@@ -852,6 +928,9 @@ fn parse_query(query: &str) -> HashMap<String, String> {
 }
 
 async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    // start timer for this request immediately
+    let start = Instant::now();
+
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -859,8 +938,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // Set thread-local path early for downstream errors
     set_current_request_path(&path);
 
-    // Log incoming request
-    println!("→ {} {}", method, path);
+    // Log incoming request shorthand
+    // println!("→ {} {}", method, path);
 
     // Parse query parameters
     let query_params = parse_query(&query);
@@ -886,9 +965,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // Enforce content-type for body methods
     let requires_body = method == "POST" || method == "PUT" || method == "PATCH";
     if requires_body {
-        // Check if Content-Type header exists first
+        // Missing Content-Type header
         if content_type_opt.is_none() {
-            // Missing Content-Type header
             use error::*;
             let err = content_type_error(
                 "Content-Type header required for POST/PUT/PATCH requests".to_string(),
@@ -898,19 +976,22 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             );
             let body_json = err.to_json_string();
             set_last_error(err.status_code() as i32, body_json.clone());
-            return Ok(Response::builder()
+
+            let resp = Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "application/json")
                 .body(Full::new(Bytes::from(body_json)))
-                .unwrap());
+                .unwrap();
+
+            log_request(start, StatusCode::BAD_REQUEST, &method, &path);
+            return Ok(resp);
         }
 
-        // Check if Content-Type is application/json
+        // Wrong Content-Type
         let is_json = content_type
             .to_ascii_lowercase()
             .starts_with("application/json");
         if !is_json {
-            // Wrong Content-Type header
             use error::*;
             let err = content_type_error(
                 "Invalid Content-Type header".to_string(),
@@ -920,11 +1001,15 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             );
             let body_json = err.to_json_string();
             set_last_error(err.status_code() as i32, body_json.clone());
-            return Ok(Response::builder()
+
+            let resp = Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "application/json")
                 .body(Full::new(Bytes::from(body_json)))
-                .unwrap());
+                .unwrap();
+
+            log_request(start, StatusCode::BAD_REQUEST, &method, &path);
+            return Ok(resp);
         }
     }
 
@@ -939,7 +1024,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let (route, params) = match registry.find_route(&method, &path) {
         Some((r, p)) => (r, p),
         None => {
-            // Check if path exists for other methods to return 405
+            // Check for method-not-allowed
             let mut allowed_methods = Vec::new();
             for (m, router) in registry.routes.iter() {
                 if m.eq_ignore_ascii_case(&method) {
@@ -949,11 +1034,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                     allowed_methods.push(m.clone());
                 }
             }
-
             drop(registry);
 
             if !allowed_methods.is_empty() {
-                println!("← 405 Method Not Allowed");
                 let error_response = error::method_not_allowed(
                     "The requested method is not allowed for this route".to_string(),
                     path.clone(),
@@ -961,25 +1044,32 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 )
                 .with_method(method.clone());
                 let error_json = error_response.to_json_string();
-                return Ok(Response::builder()
+
+                let resp = Response::builder()
                     .status(StatusCode::METHOD_NOT_ALLOWED)
                     .header("content-type", "application/json")
                     .body(Full::new(Bytes::from(error_json)))
-                    .unwrap());
+                    .unwrap();
+
+                log_request(start, StatusCode::METHOD_NOT_ALLOWED, &method, &path);
+                return Ok(resp);
             }
 
-            println!("← 404 Not Found");
             let error_response = not_found(
                 "The requested route does not exist".to_string(),
                 path.clone(),
             )
             .with_method(method.clone());
             let error_json = error_response.to_json_string();
-            return Ok(Response::builder()
+
+            let resp = Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header("content-type", "application/json")
                 .body(Full::new(Bytes::from(error_json)))
-                .unwrap());
+                .unwrap();
+
+            log_request(start, StatusCode::NOT_FOUND, &method, &path);
+            return Ok(resp);
         }
     };
 
@@ -1012,7 +1102,6 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     // If there's middleware, create Next chain and call first middleware
     let result = if !all_middleware.is_empty() {
-        // Create Next object that represents the chain
         let middleware_box = Box::new(all_middleware);
         let next = Box::new(DooNext {
             request: req_ptr,
@@ -1021,14 +1110,12 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             current_index: 0,
         });
 
-        // Call the first middleware
         let first_middleware = unsafe {
             let mw_vec_ptr = next.remaining_middleware as *mut Vec<DooMiddlewareFn>;
             let mw_vec = &*mw_vec_ptr;
             mw_vec[0]
         };
 
-        // Create Next for second middleware onward
         let next_for_first = Box::new(DooNext {
             request: req_ptr,
             remaining_middleware: next.remaining_middleware,
@@ -1039,125 +1126,112 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         first_middleware(req_ptr, Box::into_raw(next_for_first))
     } else {
         // No middleware, call handler directly
-        println!(
-            "DEBUG HANDLE_REQUEST: About to call handler, thread-local path is: {}",
-            get_current_request_path()
-        );
         let result = handler(req_ptr);
-        println!(
-            "DEBUG HANDLE_REQUEST: Handler returned, thread-local path is: {}",
-            get_current_request_path()
-        );
         result
     };
 
     // Process result
     let response = unsafe {
         if result.is_null() {
-            println!("← 500 Internal Server Error (null result)");
-            Response::builder()
+            // handler returned null -> 500
+            let resp = Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Full::new(Bytes::from("Handler returned null")))
-                .unwrap()
-        } else {
-            let result_box = Box::from_raw(result);
+                .unwrap();
 
-            if result_box.tag == 0 {
-                // Success - value is DooResponse*
-                if result_box.value.is_null() {
-                    println!("← 200 OK (empty)");
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from("")))
-                        .unwrap()
-                } else {
-                    let response_ptr = result_box.value as *mut DooResponse;
-                    let response = Box::from_raw(response_ptr);
+            log_request(start, StatusCode::INTERNAL_SERVER_ERROR, &method, &path);
+            return Ok(resp);
+        }
 
-                    println!("DEBUG RESPONSE: response.status = {}", response.status);
-                    let status =
-                        StatusCode::from_u16(response.status as u16).unwrap_or(StatusCode::OK);
-                    let body_str = if response.body.is_null() {
-                        String::new()
-                    } else {
-                        CStr::from_ptr(response.body).to_string_lossy().to_string()
-                    };
-                    let content_type_str = if response.content_type.is_null() {
-                        "application/json".to_string()
-                    } else {
-                        CStr::from_ptr(response.content_type)
-                            .to_string_lossy()
-                            .to_string()
-                    };
+        let result_box = Box::from_raw(result);
 
-                    println!(
-                        "← {} {}",
-                        status.as_u16(),
-                        status.canonical_reason().unwrap_or("")
-                    );
-                    Response::builder()
-                        .status(status)
-                        .header("content-type", content_type_str)
-                        .body(Full::new(Bytes::from(body_str)))
-                        .unwrap()
-                }
+        if result_box.tag == 0 {
+            // Success - value is DooResponse*
+            if result_box.value.is_null() {
+                let resp = Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Full::new(Bytes::from("")))
+                    .unwrap();
+
+                log_request(start, StatusCode::OK, &method, &path);
+                return Ok(resp);
             } else {
-                // Error - value is DooHttpError*
-                let error_ptr = result_box.value as *mut DooHttpError;
-                let error = Box::from_raw(error_ptr);
+                let response_ptr = result_box.value as *mut DooResponse;
+                let response = Box::from_raw(response_ptr);
 
-                let status = StatusCode::from_u16(error.status as u16)
-                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                let message = if error.message.is_null() {
-                    "Unknown error".to_string()
+                let status = StatusCode::from_u16(response.status as u16).unwrap_or(StatusCode::OK);
+                let body_str = if response.body.is_null() {
+                    String::new()
                 } else {
-                    CStr::from_ptr(error.message).to_string_lossy().to_string()
+                    CStr::from_ptr(response.body).to_string_lossy().to_string()
+                };
+                let content_type_str = if response.content_type.is_null() {
+                    "application/json".to_string()
+                } else {
+                    CStr::from_ptr(response.content_type)
+                        .to_string_lossy()
+                        .to_string()
                 };
 
-                println!(
-                    "← {} {}",
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("")
-                );
-
-                // Check if message is already RFC 7807 JSON (starts with {"type": or {"detail":)
-                let body_str =
-                    if message.starts_with("{\"type\":") || message.starts_with("{\"detail\":") {
-                        // Already RFC 7807 format, use as-is
-                        message
-                    } else {
-                        // Legacy error, wrap in simple error object
-                        format!("{{\"error\":\"{}\"}}", message.replace("\"", "\\\""))
-                    };
-
-                Response::builder()
+                let resp = Response::builder()
                     .status(status)
-                    .header("content-type", "application/json")
+                    .header("content-type", content_type_str)
                     .body(Full::new(Bytes::from(body_str)))
-                    .unwrap()
+                    .unwrap();
+
+                // Log final success with the actual status code
+                log_request(start, status, &method, &path);
+                return Ok(resp);
             }
+        } else {
+            // Error - value is DooHttpError*
+            let error_ptr = result_box.value as *mut DooHttpError;
+            let error = Box::from_raw(error_ptr);
+
+            let status = StatusCode::from_u16(error.status as u16)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let message = if error.message.is_null() {
+                "Unknown error".to_string()
+            } else {
+                CStr::from_ptr(error.message).to_string_lossy().to_string()
+            };
+
+            let body_str =
+                if message.starts_with("{\"type\":") || message.starts_with("{\"detail\":") {
+                    message
+                } else {
+                    format!("{{\"error\":\"{}\"}}", message.replace("\"", "\\\""))
+                };
+
+            let resp = Response::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body_str)))
+                .unwrap();
+
+            // Log error response with status
+            log_request(start, status, &method, &path);
+            return Ok(resp);
         }
     };
-
-    Ok(response)
 }
 
 #[no_mangle]
 pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut DooResult {
+    // start timer as early as possible (includes runtime creation time)
     let start = std::time::Instant::now();
 
-    // Extract port from Server struct
-    // Server struct layout: { Port: i32, Host: *const c_char }
+    // Extract port from Server struct (same as before)
     let port = if server_ptr.is_null() {
         3000 // Default port
     } else {
         unsafe {
-            // Read the first i32 field (Port)
             let port_ptr = server_ptr as *const i32;
             *port_ptr
         }
     };
 
+    // Create runtime (keep this synchronous)
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => return make_err_http(500, &format!("Failed to create tokio runtime: {}", e)),
@@ -1165,31 +1239,15 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port as u16));
 
+    // Get route count now (safe to read before entering async)
     let routes = get_routes();
     let registry = routes.lock().unwrap();
     let total_routes = registry.route_count;
     drop(registry);
 
-    // Measure boot time after all initialization is done
-    let boot_time_ms = start.elapsed().as_millis();
-
-    println!();
-    println!("   ___    ___   ____ ");
-    println!("  / _ \\  / _ \\ / __ \\");
-    println!(" / // / / // // /_/ /");
-    println!("/____/  \\___/ \\____/        Doo v{}", VERSION);
-    println!("--------------------------------------------------");
-
-    println!("Info Server Online");
-    println!("--------------------------------------------------");
-    println!("• Boot Time:            {} ms", boot_time_ms);
-    println!("• Address:              http://127.0.0.1:{}", port);
-    println!("• Handlers Loaded:      {}", total_routes);
-    println!("• Process ID:           {}", std::process::id());
-    println!("--------------------------------------------------");
-    println!("🚀 Ready. Happy coding!\n");
-
-    runtime.block_on(async {
+    // Run the async binding & accept loop inside runtime.block_on.
+    // Measure boot_time_ms AFTER the bind completes.
+    runtime.block_on(async move {
         let listener = match TcpListener::bind(addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -1198,9 +1256,30 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
             }
         };
 
-        // println!("✓ Listening on {}", addr);
-        // println!();
+        // Now that the socket is bound, compute real boot time
+        let boot_time_ms = start.elapsed().as_millis();
 
+        init_timestamp_updater();
+
+        // Print banner AFTER bind so boot_time_ms is meaningful
+        println!();
+        println!("   ___    ___   ____ ");
+        println!("  / _ \\  / _ \\ / __ \\");
+        println!(" / // / / // // /_/ /");
+        println!("/____/  \\___/ \\____/        Doo v{}", VERSION);
+        println!("--------------------------------------------------");
+
+        println!("Info Server Online");
+        println!("--------------------------------------------------");
+        println!("• Boot Time:            {} ms", boot_time_ms);
+        println!("• Listening on:         http://127.0.0.1:{}", port);
+        println!("• Bound Interface:      0.0.0.0:{}", port);
+        println!("• Handlers Loaded:      {}", total_routes);
+        println!("• Process ID:           {}", std::process::id());
+        println!("--------------------------------------------------");
+        println!("🚀 Server Started.\n");
+
+        // Accept loop (same as before)
         loop {
             let (stream, _) = match listener.accept().await {
                 Ok(s) => s,
@@ -2163,13 +2242,8 @@ pub extern "C" fn doohttp_error_rfc7807(
     };
 
     // If instance is null, empty string, or sentinel "$$THREAD_LOCAL$$", use thread-local request path
-    println!("DEBUG RFC7807: instance pointer address: {:?}", instance);
     let instance_str = if instance.is_null() {
         let path = get_current_request_path();
-        println!(
-            "DEBUG RFC7807: instance is NULL, using thread-local path: {}",
-            path
-        );
         path
     } else {
         let path = unsafe {
@@ -2177,30 +2251,14 @@ pub extern "C" fn doohttp_error_rfc7807(
                 .to_string_lossy()
                 .to_string()
         };
-        println!(
-            "DEBUG RFC7807: path string: '{}', length: {}, bytes: {:?}",
-            path,
-            path.len(),
-            path.as_bytes()
-        );
         // Check for sentinel string or empty string
         if path.is_empty() || path == "__USE_THREAD_LOCAL_REQUEST_PATH_FROM_STORAGE_PLEASE__" {
             let thread_path = get_current_request_path();
-            println!(
-                "DEBUG RFC7807: instance is EMPTY or SENTINEL, using thread-local path: {}",
-                thread_path
-            );
             thread_path
         } else {
-            println!("DEBUG RFC7807: instance is NOT NULL, provided: {}", path);
             path
         }
     };
-
-    println!(
-        "DEBUG RFC7807: Creating error - status={}, detail={}, instance={}",
-        status, detail_str, instance_str
-    );
 
     // Use centralized error module
     use error::*;
@@ -2734,11 +2792,6 @@ pub extern "C" fn doohttp_error_rfc7807_auto_instance(
 
     // Always use thread-local request path
     let instance_str = get_current_request_path();
-
-    println!(
-        "DEBUG RFC7807 AUTO: Creating error - status={}, detail={}, instance={}",
-        status, detail_str, instance_str
-    );
 
     // Use centralized error module
     use error::*;
