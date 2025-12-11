@@ -4772,13 +4772,7 @@ impl<'ctx> CodeGen<'ctx> {
             MirInstr::ResultErr { name, error } => {
                 // Create a Result struct with tag=1 (Err) and the error value
                 // NEW APPROACH: Keep error as pointer (usually string pointer)
-                // eprintln!("[CODEGEN DEBUG] ResultErr: name={}, error={}", name, error);
                 let error_val = self.resolve_value(error);
-                // eprintln!(
-                //     "[CODEGEN DEBUG] ResultErr: error_val type={:?}, is_struct={}",
-                //     error_val.get_type(),
-                //     error_val.is_struct_value()
-                // );
                 self.variable_types
                     .insert(name.clone(), "Result".to_string());
 
@@ -4787,7 +4781,6 @@ impl<'ctx> CodeGen<'ctx> {
                     .get(error)
                     .cloned()
                     .unwrap_or_else(|| "Str".to_string());
-                // eprintln!("[CODEGEN DEBUG] ResultErr: error_type={}", error_type);
 
                 self.result_types
                     .insert(name.clone(), ("Unknown".to_string(), error_type.clone()));
@@ -4822,7 +4815,6 @@ impl<'ctx> CodeGen<'ctx> {
                 // 2. Current function returns Response (is an HTTP handler/middleware)
                 let is_enum_error =
                     error_type.starts_with("Enum(") || self.enum_table.contains_key(&error_type);
-                // eprintln!("[CODEGEN DEBUG] ResultErr: is_enum_error={}", is_enum_error);
                 let is_http_function = if let Some(func_name) = &self.current_function_name {
                     // Check if function is registered as an HTTP handler or middleware
                     // 1. Check if it's in http_handlers_to_register (regular HTTP handlers)
@@ -4844,26 +4836,15 @@ impl<'ctx> CodeGen<'ctx> {
                     let is_http = is_registered_handler
                         || is_registered_middleware
                         || is_middleware_signature;
-                    eprintln!(
-                        "[CODEGEN DEBUG] ResultErr: func={}, is_registered_handler={}, is_registered_middleware={}, is_middleware_signature={}, is_http={}",
-                        func_name, is_registered_handler, is_registered_middleware, is_middleware_signature, is_http
-                    );
                     is_http
                 } else {
-                    eprintln!("[CODEGEN DEBUG] ResultErr: no current_function_name");
                     false
                 };
-                // eprintln!(
-                //     "[CODEGEN DEBUG] ResultErr: is_http_function={}",
-                //     is_http_function
-                // );
 
                 let error_ptr_val = if is_enum_error && is_http_function {
-                    eprintln!("[CODEGEN DEBUG] ResultErr: Converting enum error to DooHttpError (is_enum_error={}, is_http_function={})", is_enum_error, is_http_function);
                     // Convert enum error to DooHttpError
                     // The error_val is an enum struct { i32 tag, ptr payload }
                     if error_val.is_struct_value() {
-                        eprintln!("[CODEGEN DEBUG] ResultErr: error_val is a struct, proceeding with conversion");
                         let enum_struct = error_val.into_struct_value();
 
                         // Extract tag (variant index)
@@ -4958,7 +4939,6 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap()
                             .into_pointer_value();
 
-                        eprintln!("[CODEGEN DEBUG] ResultErr: Extracting path from global request pointer");
                         // Get the current request pointer from global variable
                         let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
                         let global_request_ptr = self
@@ -5050,12 +5030,8 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap();
 
                         // Return pointer to DooHttpError
-                        // eprintln!(
-                        //     "[CODEGEN DEBUG] ResultErr: Created DooHttpError, returning pointer"
-                        // );
                         http_error_ptr
                     } else {
-                        // eprintln!("[CODEGEN DEBUG] ResultErr: error_val is NOT a struct, falling back to default");
                         // Not a struct value - fall back to default handling
                         if error_val.is_pointer_value() {
                             error_val.into_pointer_value()
@@ -5064,7 +5040,6 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }
                 } else {
-                    eprintln!("[CODEGEN DEBUG] ResultErr: Using default error handling (is_enum_error={}, is_http_function={})", is_enum_error, is_http_function);
                     // Default handling for non-HTTP or non-enum errors
                     if error_val.is_pointer_value() {
                         // Already a pointer (string, array, map, struct)

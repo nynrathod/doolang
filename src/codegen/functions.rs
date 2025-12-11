@@ -1763,9 +1763,6 @@ impl<'ctx> CodeGen<'ctx> {
         let i32_type = self.context.i32_type();
         let ptr_type = self.context.ptr_type(AddressSpace::default());
 
-        // Debug: Print error type being processed
-        eprintln!("[CODEGEN DEBUG] Processing error type: {}", error_type);
-
         // Extract the enum variant tag (first field of the enum struct)
         let tag = self
             .builder
@@ -1775,15 +1772,6 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Look up the variant name from enum metadata
         if let Some(enum_variants) = self.enum_variant_order.get(error_type) {
-            eprintln!(
-                "[CODEGEN DEBUG] Found {} variants for {}",
-                enum_variants.len(),
-                error_type
-            );
-            for (idx, (name, _)) in enum_variants.iter().enumerate() {
-                eprintln!("[CODEGEN DEBUG]   Variant {}: {}", idx, name);
-            }
-
             // Declare FFI functions
             let doohttp_error_to_status_fn =
                 if let Some(f) = self.module.get_function("doohttp_error_to_status") {
@@ -1830,11 +1818,6 @@ impl<'ctx> CodeGen<'ctx> {
                 case_info.push((case_block, variant_name.as_str()));
             }
 
-            eprintln!(
-                "[CODEGEN DEBUG] Building switch with {} cases",
-                switch_cases.len()
-            );
-
             // Build switch
             self.builder
                 .build_switch(tag, default_block, &switch_cases)
@@ -1845,10 +1828,6 @@ impl<'ctx> CodeGen<'ctx> {
             let mut phi_msg_vals = vec![];
 
             for (case_block, variant_name) in case_info {
-                eprintln!(
-                    "[CODEGEN DEBUG] Building case for variant: {}",
-                    variant_name
-                );
                 self.builder.position_at_end(case_block);
 
                 let variant_str = self
@@ -1894,7 +1873,6 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             // Default block
-            eprintln!("[CODEGEN DEBUG] Building default error block");
             self.builder.position_at_end(default_block);
             let def_status = i32_type.const_int(500, false);
             let def_msg = self
@@ -1909,10 +1887,6 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
 
             // Merge block with phi nodes
-            eprintln!(
-                "[CODEGEN DEBUG] Building merge block with {} phi entries",
-                phi_status_vals.len()
-            );
             self.builder.position_at_end(merge_block);
             let status_phi = self.builder.build_phi(i32_type, "status_phi").unwrap();
             let msg_phi = self.builder.build_phi(ptr_type, "msg_phi").unwrap();
@@ -1924,7 +1898,6 @@ impl<'ctx> CodeGen<'ctx> {
                 msg_phi.add_incoming(&[(&val, block)]);
             }
 
-            eprintln!("[CODEGEN DEBUG] Error handling complete, returning phi values");
             return (
                 status_phi.as_basic_value().into_int_value(),
                 msg_phi.as_basic_value().into_pointer_value(),
@@ -1932,10 +1905,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         // Fallback: no metadata
-        eprintln!(
-            "[CODEGEN DEBUG] No enum metadata found for {}, using fallback",
-            error_type
-        );
         let status = i32_type.const_int(500, false);
         let msg = self
             .builder
