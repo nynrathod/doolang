@@ -173,12 +173,11 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         body,
         decorators,
         receiver_type,
-        associated_type,
         ..
     } = node
     {
-        // If this is a method declaration (static or instance), use mangled name (Type::method)
-        let func_name = if let Some(type_name) = associated_type {
+        // If this is a method declaration, use mangled name (Type::method)
+        let func_name = if let Some(type_name) = receiver_type {
             format!("{}::{}", type_name, name)
         } else {
             name.clone()
@@ -205,10 +204,10 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
             }
         }
 
-        // For instance methods, first parameter is the receiver with inferred type
-        // For static methods and regular functions, just use all parameters as-is
+        // For methods, first parameter is the receiver with inferred type
+        // For regular functions, just use all parameters as-is
         let (all_params, all_param_types) = if let Some(type_name) = receiver_type {
-            // This is an instance method - first param is receiver
+            // This is a method - first param is receiver
             let mut method_params: Vec<String> = Vec::new();
             let mut method_param_types: Vec<Option<String>> = Vec::new();
 

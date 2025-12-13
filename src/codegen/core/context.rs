@@ -75,7 +75,7 @@ pub struct LoopContext {
 pub struct CodeGen<'ctx> {
     pub context: &'ctx Context,
     pub module: Module<'ctx>, // The container for all generated code (globals, functions, types)
-    pub builder: Builder<'ctx>, // The tool used to insert instructions into block
+    pub builder: Builder<'ctx>, // The tool used to insert instructions into blocks
     pub fpm: PassManager<FunctionValue<'ctx>>, // Function Pass Manager for optimization (e.g., dead code elimination)
     pub symbols: HashMap<String, Symbol<'ctx>>, // Symbol table for local variables (maps names to stack pointers)
     pub temp_values: HashMap<String, BasicValueEnum<'ctx>>, // Stores temporary constant values (used for building complex constants)
@@ -133,14 +133,7 @@ pub struct CodeGen<'ctx> {
     pub enum_variants: HashMap<String, Vec<(String, u32)>>, // Maps enum_name to vec of (variant_name, tag_value)
     pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
-    pub enum_variant_names: HashMap<String, String>, // Maps temp variable name to enum variant name (for error mapping)
-
-    // HTTP handler registration
-    pub uses_http: bool, // Flag to enable HTTP-specific code generation (wrappers, handlers, etc.)
-    pub http_handlers_to_register: Vec<String>, // List of handler function names to register with HTTP FFI
-    pub http_middleware_to_register: Vec<String>, // List of middleware function names to register with HTTP FFI
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
-    pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
 
     // Current function context
     pub current_function_name: Option<String>, // Track the name of the function being currently generated
@@ -199,7 +192,6 @@ impl<'ctx> CodeGen<'ctx> {
             cross_block_vars: std::collections::HashSet::new(),
             current_function_params: Vec::new(),
             function_return_types: HashMap::new(),
-            struct_field_decorators: HashMap::new(),
             function_param_types: HashMap::new(),
             functions_returning_heap: std::collections::HashSet::new(),
 
@@ -223,10 +215,6 @@ impl<'ctx> CodeGen<'ctx> {
             enum_variants: HashMap::new(),
             enum_table: HashMap::new(),
             enum_variant_order: HashMap::new(),
-            enum_variant_names: HashMap::new(),
-            uses_http: false,
-            http_handlers_to_register: Vec::new(),
-            http_middleware_to_register: Vec::new(),
             struct_table: HashMap::new(),
             current_function_name: None,
             current_error_type: None,
