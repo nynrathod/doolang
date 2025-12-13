@@ -1,7 +1,8 @@
+use crate::codegen::core::context::FieldLayout;
 use crate::codegen::core::helpers::parse_tuple_types;
 use crate::codegen::core::CodeGen;
 use crate::mir::mir::{CodegenBlock, MirBlock, MirFunction, MirInstr, MirProgram, MirTerminator};
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
 use std::collections::HashMap;
@@ -20,10 +21,11 @@ impl<'ctx> CodeGen<'ctx> {
         // Store the global instructions for later use (e.g., initialization).
         self.globals = program.globals.clone();
 
-        // Copy enum_table, enum_variant_order, and struct_table from MirProgram for type metadata access
+        // Copy enum_table, enum_variant_order, struct_table, and struct_field_decorators from MirProgram for type metadata access
         self.enum_table = program.enum_table.clone();
         self.enum_variant_order = program.enum_variant_order.clone();
         self.struct_table = program.struct_table.clone();
+        self.struct_field_decorators = program.struct_field_decorators.clone();
 
         // --- PRE-PROCESSING ---
         // CRITICAL: Scan for struct declarations FIRST to populate metadata and create canonical types
@@ -56,14 +58,7 @@ impl<'ctx> CodeGen<'ctx> {
                 field_types,
             } = instr
             {
-                // Store metadata for this struct type
-                let metadata = crate::codegen::core::context::StructMetadata {
-                    field_names: field_names.clone(),
-                    field_types: field_types.clone(),
-                };
-                self.struct_metadata.insert(struct_name.clone(), metadata);
-
-                // Create the canonical LLVM struct type
+                // Create the canonical LLVM struct type first
                 let llvm_field_types: Vec<BasicTypeEnum> = field_types
                     .iter()
                     .map(|type_str| self.type_string_to_llvm_type(type_str))
@@ -72,6 +67,20 @@ impl<'ctx> CodeGen<'ctx> {
                 let struct_type = self.context.struct_type(&llvm_field_types, false);
                 self.canonical_struct_types
                     .insert(struct_name.clone(), struct_type);
+
+                // Compute exact layout from LLVM
+                let (field_layouts, total_size, total_align) =
+                    self.compute_struct_layout(struct_type, field_names, field_types);
+
+                // Store metadata with layout info
+                let metadata = crate::codegen::core::context::StructMetadata {
+                    field_names: field_names.clone(),
+                    field_types: field_types.clone(),
+                    field_layouts,
+                    total_size,
+                    total_align,
+                };
+                self.struct_metadata.insert(struct_name.clone(), metadata);
             }
         }
 
@@ -79,14 +88,7 @@ impl<'ctx> CodeGen<'ctx> {
         // are not included in the MIR globals. This should be fixed by propagating
         // struct declarations from imported modules.
         if !self.struct_metadata.contains_key("FileError") {
-            let metadata = crate::codegen::core::context::StructMetadata {
-                field_names: vec!["Message".to_string()],
-                field_types: vec!["Str".to_string()],
-            };
-            self.struct_metadata
-                .insert("FileError".to_string(), metadata);
-
-            // Also create the canonical LLVM struct type
+            // Create the canonical LLVM struct type
             let llvm_field_types = vec![self
                 .context
                 .ptr_type(inkwell::AddressSpace::default())
@@ -94,35 +96,26 @@ impl<'ctx> CodeGen<'ctx> {
             let struct_type = self.context.struct_type(&llvm_field_types, false);
             self.canonical_struct_types
                 .insert("FileError".to_string(), struct_type);
+
+            // Compute layout
+            let field_names = vec!["Message".to_string()];
+            let field_types = vec!["Str".to_string()];
+            let (field_layouts, total_size, total_align) =
+                self.compute_struct_layout(struct_type, &field_names, &field_types);
+
+            let metadata = crate::codegen::core::context::StructMetadata {
+                field_names,
+                field_types,
+                field_layouts,
+                total_size,
+                total_align,
+            };
+            self.struct_metadata
+                .insert("FileError".to_string(), metadata);
         }
 
         if !self.struct_metadata.contains_key("FileMetadata") {
-            let metadata = crate::codegen::core::context::StructMetadata {
-                field_names: vec![
-                    "isFile".to_string(),
-                    "isDir".to_string(),
-                    "isSymlink".to_string(),
-                    "size".to_string(),
-                    "readonly".to_string(),
-                    "created".to_string(),
-                    "modified".to_string(),
-                    "accessed".to_string(),
-                ],
-                field_types: vec![
-                    "Bool".to_string(),
-                    "Bool".to_string(),
-                    "Bool".to_string(),
-                    "Int".to_string(),
-                    "Bool".to_string(),
-                    "Int".to_string(),
-                    "Int".to_string(),
-                    "Int".to_string(),
-                ],
-            };
-            self.struct_metadata
-                .insert("FileMetadata".to_string(), metadata);
-
-            // Also create the canonical LLVM struct type
+            // Create the canonical LLVM struct type
             // Bool fields are i32 (0 or 1), Int fields are i32, i64 for size/timestamps
             let llvm_field_types = vec![
                 self.context.i32_type().into(), // isFile (Bool as i32)
@@ -137,6 +130,40 @@ impl<'ctx> CodeGen<'ctx> {
             let struct_type = self.context.struct_type(&llvm_field_types, false);
             self.canonical_struct_types
                 .insert("FileMetadata".to_string(), struct_type);
+
+            // Compute layout
+            let field_names = vec![
+                "isFile".to_string(),
+                "isDir".to_string(),
+                "isSymlink".to_string(),
+                "size".to_string(),
+                "readonly".to_string(),
+                "created".to_string(),
+                "modified".to_string(),
+                "accessed".to_string(),
+            ];
+            let field_types = vec![
+                "Bool".to_string(),
+                "Bool".to_string(),
+                "Bool".to_string(),
+                "Int".to_string(),
+                "Bool".to_string(),
+                "Int".to_string(),
+                "Int".to_string(),
+                "Int".to_string(),
+            ];
+            let (field_layouts, total_size, total_align) =
+                self.compute_struct_layout(struct_type, &field_names, &field_types);
+
+            let metadata = crate::codegen::core::context::StructMetadata {
+                field_names,
+                field_types,
+                field_layouts,
+                total_size,
+                total_align,
+            };
+            self.struct_metadata
+                .insert("FileMetadata".to_string(), metadata);
         }
 
         // Pre-scan and declare all functions for forward references
@@ -493,6 +520,92 @@ impl<'ctx> CodeGen<'ctx> {
             ("Bool", "Bool")
         } else {
             ("Int", "Int") // default
+        }
+    }
+
+    /// Compute exact field layout from LLVM struct type using size_of() and manual alignment
+    pub fn compute_struct_layout(
+        &self,
+        struct_type: inkwell::types::StructType<'ctx>,
+        field_names: &[String],
+        field_types: &[String],
+    ) -> (Vec<FieldLayout>, u64, u64) {
+        let mut layouts = Vec::new();
+        let mut current_offset: u64 = 0;
+        let mut max_align: u64 = 1;
+
+        for (i, (name, type_name)) in field_names.iter().zip(field_types.iter()).enumerate() {
+            let field_type = struct_type.get_field_type_at_index(i as u32).unwrap();
+
+            // Get size and alignment for this field type
+            // Use a manual size calculation based on type
+            let size = match &field_type.as_basic_type_enum() {
+                BasicTypeEnum::IntType(int_ty) => {
+                    let bit_width = int_ty.get_bit_width();
+                    ((bit_width + 7) / 8) as u64 // Convert bits to bytes
+                }
+                BasicTypeEnum::FloatType(_) => 8, // f64 is 8 bytes
+                BasicTypeEnum::PointerType(_) => 8, // Pointers are 8 bytes on 64-bit
+                BasicTypeEnum::StructType(_st) => {
+                    // For nested structs, try to get size or use default
+                    if let Some(size_val) = _st.size_of() {
+                        size_val.get_zero_extended_constant().unwrap_or(8)
+                    } else {
+                        8
+                    }
+                }
+                BasicTypeEnum::ArrayType(_) => 8, // Arrays as pointers
+                BasicTypeEnum::VectorType(_) => 16,
+                BasicTypeEnum::ScalableVectorType(_) => 16,
+            };
+            let align = self.get_type_alignment(&field_type.as_basic_type_enum());
+
+            // Align current offset to field alignment
+            current_offset = (current_offset + align - 1) & !(align - 1);
+
+            // Track maximum alignment for struct
+            max_align = max_align.max(align);
+
+            layouts.push(FieldLayout {
+                name: name.clone(),
+                type_name: type_name.clone(),
+                offset: current_offset,
+                size,
+                align,
+            });
+
+            // Move offset forward by field size
+            current_offset += size;
+        }
+
+        // Align total size to struct alignment
+        let total_size = (current_offset + max_align - 1) & !(max_align - 1);
+
+        (layouts, total_size, max_align)
+    }
+
+    /// Get alignment for a type (platform-specific, assuming 64-bit)
+    fn get_type_alignment(&self, ty: &inkwell::types::BasicTypeEnum<'ctx>) -> u64 {
+        match ty {
+            inkwell::types::BasicTypeEnum::IntType(int_ty) => {
+                let bit_width = int_ty.get_bit_width();
+                match bit_width {
+                    1..=8 => 1,
+                    9..=16 => 2,
+                    17..=32 => 4,
+                    _ => 8,
+                }
+            }
+            inkwell::types::BasicTypeEnum::FloatType(_) => 8, // f64 is 8-byte aligned
+            inkwell::types::BasicTypeEnum::PointerType(_) => 8, // Pointers are 8-byte aligned on 64-bit
+            inkwell::types::BasicTypeEnum::StructType(st) => {
+                // For struct types, use max alignment of fields (recursively)
+                // For simplicity, assume 8-byte alignment for nested structs
+                8
+            }
+            inkwell::types::BasicTypeEnum::ArrayType(_) => 8,
+            inkwell::types::BasicTypeEnum::VectorType(_) => 16,
+            inkwell::types::BasicTypeEnum::ScalableVectorType(_) => 16,
         }
     }
 
@@ -1208,12 +1321,6 @@ impl<'ctx> CodeGen<'ctx> {
                     } => {
                         // Only register if not already registered (e.g., from globals)
                         if !self.struct_metadata.contains_key(struct_name) {
-                            let metadata = crate::codegen::core::context::StructMetadata {
-                                field_names: field_names.clone(),
-                                field_types: field_types.clone(),
-                            };
-                            self.struct_metadata.insert(struct_name.clone(), metadata);
-
                             // Create the canonical LLVM struct type
                             let llvm_field_types: Vec<BasicTypeEnum> = field_types
                                 .iter()
@@ -1223,6 +1330,19 @@ impl<'ctx> CodeGen<'ctx> {
                             let struct_type = self.context.struct_type(&llvm_field_types, false);
                             self.canonical_struct_types
                                 .insert(struct_name.clone(), struct_type);
+
+                            // Compute layout
+                            let (field_layouts, total_size, total_align) =
+                                self.compute_struct_layout(struct_type, field_names, field_types);
+
+                            let metadata = crate::codegen::core::context::StructMetadata {
+                                field_names: field_names.clone(),
+                                field_types: field_types.clone(),
+                                field_layouts,
+                                total_size,
+                                total_align,
+                            };
+                            self.struct_metadata.insert(struct_name.clone(), metadata);
                         }
                     }
                     // Arrays are always pointers

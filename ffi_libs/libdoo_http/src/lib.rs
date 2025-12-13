@@ -3,14 +3,13 @@
 
 mod error;
 
-use error::*;
+use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::net::SocketAddr;
 use std::os::raw::c_char;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -21,16 +20,7 @@ use hyper_util::rt::TokioIo;
 use matchit::Router;
 use tokio::net::TcpListener;
 
-// use chrono::Local;
-// add these near other imports
-use chrono::Local;
-use std::sync::RwLock;
-use std::thread;
-use std::time::{Duration, Instant};
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-// Thread-local RFC 7807 last error (status, json body) populated by parsing/param helpers
+use error::not_found; // Thread-local RFC 7807 last error (status, json body) populated by parsing/param helpers
 thread_local! {
     static LAST_RFC_ERROR: RefCell<Option<(i32, String)>> = RefCell::new(None);
 }
@@ -49,75 +39,6 @@ fn clear_last_error() {
 
 fn take_last_error() -> Option<(i32, String)> {
     LAST_RFC_ERROR.with(|cell| cell.borrow_mut().take())
-}
-
-// Cached human-readable time (HH:MM:SS), updated once per second
-static TIMESTAMP_CACHE: OnceLock<std::sync::Arc<RwLock<String>>> = OnceLock::new();
-
-fn init_timestamp_updater() {
-    // if already initialized, do nothing
-    if TIMESTAMP_CACHE.get().is_some() {
-        return;
-    }
-
-    // initial value
-    let now = Local::now();
-    let initial = now.format("%H:%M:%S").to_string();
-    let arc_lock = std::sync::Arc::new(RwLock::new(initial));
-
-    // try to set global; if another thread set it concurrently, use the existing one
-    let cache = match TIMESTAMP_CACHE.set(arc_lock.clone()) {
-        Ok(_) => arc_lock,
-        Err(_) => TIMESTAMP_CACHE.get().unwrap().clone(),
-    };
-
-    // spawn background thread to update cached time once per second
-    thread::spawn(move || loop {
-        let t = Local::now().format("%H:%M:%S").to_string();
-        if let Ok(mut w) = cache.write() {
-            *w = t;
-        }
-        thread::sleep(Duration::from_secs(1));
-    });
-}
-
-fn log_request(start: Instant, status: StatusCode, method: &str, path: &str) {
-    // Try to read human-readable cached HH:MM:SS
-    let time_str = if let Some(cache) = TIMESTAMP_CACHE.get() {
-        if let Ok(r) = cache.read() {
-            r.clone()
-        } else {
-            // fallback to epoch seconds as string
-            format!(
-                "{}",
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-            )
-        }
-    } else {
-        // fallback if not initialized
-        format!(
-            "{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-        )
-    };
-
-    let elapsed_ms = start.elapsed().as_millis();
-    // Example:
-    // [Doo] 15:04:05 | 200 |   2ms | GET /api/users
-    println!(
-        "[Doo] {} | {:3} | {:4}ms | {} {}",
-        time_str,
-        status.as_u16(),
-        elapsed_ms,
-        method,
-        path
-    );
 }
 
 #[no_mangle]
@@ -167,14 +88,30 @@ struct Route {
     middleware: Vec<DooMiddlewareFn>,
 }
 
+/// Handler metadata for validation (includes decorators)
+#[derive(Clone, Debug)]
+struct HandlerMetadata {
+    param_types: Vec<String>,
+    struct_decorators: HashMap<String, HashMap<String, Vec<DecoratorInfo>>>,
+    struct_fields: HashMap<String, Vec<Vec<String>>>,
+    struct_layouts: serde_json::Value,
+    return_type: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DecoratorInfo {
+    name: String,
+    args: Vec<String>,
+}
+
 /// Route registry storing method -> router with handlers
 struct RouteRegistry {
     routes: HashMap<String, Router<Route>>,  // method -> router
     handlers: HashMap<String, DooHandlerFn>, // handler_name -> function pointer
+    handler_metadata: HashMap<String, HandlerMetadata>, // handler_name -> metadata
     middleware: Vec<DooMiddlewareFn>,        // global middleware
     middleware_handlers: HashMap<String, DooMiddlewareFn>, // middleware_name -> function pointer
     groups: HashMap<String, Vec<DooMiddlewareFn>>, // prefix -> middleware for groups
-    route_count: usize,
 }
 
 impl RouteRegistry {
@@ -182,10 +119,10 @@ impl RouteRegistry {
         Self {
             routes: HashMap::new(),
             handlers: HashMap::new(),
+            handler_metadata: HashMap::new(),
             middleware: Vec::new(),
             middleware_handlers: HashMap::new(),
             groups: HashMap::new(),
-            route_count: 0,
         }
     }
 
@@ -204,7 +141,6 @@ impl RouteRegistry {
         if let Err(e) = router.insert(path, route) {
             eprintln!("Failed to register route {} {}: {}", method, path, e);
         } else {
-            self.route_count += 1;
             println!("✓ Registered: {} {}", method, path);
         }
     }
@@ -231,7 +167,6 @@ impl RouteRegistry {
         if let Err(e) = router.insert(path, route) {
             eprintln!("Failed to register route {} {}: {}", method, path, e);
         } else {
-            self.route_count += 1;
             println!(
                 "✓ Registered: {} {} (with {} middleware)",
                 method, path, middleware_len
@@ -278,6 +213,16 @@ impl RouteRegistry {
             }
         }
         None
+    }
+
+    fn find_allowed_methods(&self, path: &str) -> Vec<String> {
+        let mut allowed = Vec::new();
+        for (method, router) in &self.routes {
+            if router.at(path).is_ok() {
+                allowed.push(method.clone());
+            }
+        }
+        allowed
     }
 }
 
@@ -465,24 +410,6 @@ fn make_err_http(status: u16, message: &str) -> *mut DooResult {
     }))
 }
 
-/// Helper: get human-friendly JSON type name
-fn json_type_name(v: &serde_json::Value) -> &'static str {
-    match v {
-        serde_json::Value::Null => "Null",
-        serde_json::Value::Bool(_) => "Bool",
-        serde_json::Value::Number(n) => {
-            if n.is_i64() {
-                "Int"
-            } else {
-                "Float"
-            }
-        }
-        serde_json::Value::String(_) => "Str",
-        serde_json::Value::Array(_) => "Array",
-        serde_json::Value::Object(_) => "Map",
-    }
-}
-
 // ============================================================================
 // FFI Functions - Called from Doo code
 // ============================================================================
@@ -494,6 +421,139 @@ pub extern "C" fn doo_http_register_handler(name: *const c_char, handler: DooHan
     let mut registry = routes.lock().unwrap();
     registry.handlers.insert(handler_name.clone(), handler);
     println!("✓ Registered handler function: {}", handler_name);
+}
+
+/// Register handler with metadata (including decorators for validation)
+#[no_mangle]
+pub extern "C" fn doo_http_register_handler_with_metadata(
+    name: *const c_char,
+    handler: DooHandlerFn,
+    metadata_json: *const c_char,
+) {
+    if name.is_null() || metadata_json.is_null() {
+        return;
+    }
+
+    let handler_name = c_to_string(name);
+    let metadata_str = c_to_string(metadata_json);
+
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+    registry.handlers.insert(handler_name.clone(), handler);
+
+    // Parse metadata JSON to extract struct_decorators
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&metadata_str) {
+        if let Some(struct_decorators_obj) =
+            json.get("struct_decorators").and_then(|v| v.as_object())
+        {
+            let mut struct_decorators = HashMap::new();
+
+            for (struct_name, fields_obj) in struct_decorators_obj {
+                if let Some(fields_map) = fields_obj.as_object() {
+                    let mut field_decorators = HashMap::new();
+
+                    for (field_name, decorators_arr) in fields_map {
+                        if let Some(decorators) = decorators_arr.as_array() {
+                            let mut decorator_list = Vec::new();
+
+                            for decorator in decorators {
+                                if let Some(dec_obj) = decorator.as_object() {
+                                    let name = dec_obj
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+
+                                    let args = dec_obj
+                                        .get("args")
+                                        .and_then(|v| v.as_array())
+                                        .map(|arr| {
+                                            arr.iter()
+                                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+
+                                    decorator_list.push(DecoratorInfo { name, args });
+                                }
+                            }
+
+                            field_decorators.insert(field_name.clone(), decorator_list);
+                        }
+                    }
+
+                    struct_decorators.insert(struct_name.clone(), field_decorators);
+                }
+            }
+
+            // Also extract struct_fields and struct_layouts from metadata
+            let struct_fields = json
+                .get("struct_fields")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .map(|(k, v)| {
+                            let fields = v
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|field_arr| {
+                                            field_arr.as_array().map(|inner| {
+                                                inner
+                                                    .iter()
+                                                    .filter_map(|s| {
+                                                        s.as_str().map(|s| s.to_string())
+                                                    })
+                                                    .collect()
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            (k.clone(), fields)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let struct_layouts = json
+                .get("struct_layouts")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+
+            let return_type = json
+                .get("return_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown")
+                .to_string();
+
+            let param_types = json
+                .get("param_types")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let metadata = HandlerMetadata {
+                param_types,
+                struct_decorators,
+                struct_fields,
+                struct_layouts,
+                return_type,
+            };
+            registry
+                .handler_metadata
+                .insert(handler_name.clone(), metadata);
+        }
+    }
+
+    println!(
+        "✓ Registered handler function with metadata: {}",
+        handler_name
+    );
 }
 
 /// Register a middleware function by name
@@ -860,9 +920,9 @@ pub extern "C" fn doo_http_patch_fn(
 // ============================================================================
 #[no_mangle]
 pub extern "C" fn doo_http_use(
-    server: *const std::ffi::c_void,
+    _server: *const std::ffi::c_void,
     middleware_name: *const c_char,
-) -> *const std::ffi::c_void {
+) -> *mut DooResult {
     let middleware_str = c_to_string(middleware_name);
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
@@ -875,8 +935,7 @@ pub extern "C" fn doo_http_use(
         eprintln!("Warning: Middleware {} not found", middleware_str);
     }
 
-    // Return the server pointer for method chaining
-    server
+    make_ok_void()
 }
 
 // ============================================================================
@@ -928,18 +987,12 @@ fn parse_query(query: &str) -> HashMap<String, String> {
 }
 
 async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    // start timer for this request immediately
-    let start = Instant::now();
-
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
 
-    // Set thread-local path early for downstream errors
-    set_current_request_path(&path);
-
-    // Log incoming request shorthand
-    // println!("→ {} {}", method, path);
+    // Log incoming request
+    println!("→ {} {}", method, path);
 
     // Parse query parameters
     let query_params = parse_query(&query);
@@ -953,63 +1006,34 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     }
 
     // Get content type
-    let content_type_opt = req
+    let content_type = req
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_string());
-    let content_type = content_type_opt
-        .clone()
-        .unwrap_or_else(|| "text/plain".to_string());
+        .unwrap_or("text/plain")
+        .to_string();
 
     // Enforce content-type for body methods
     let requires_body = method == "POST" || method == "PUT" || method == "PATCH";
     if requires_body {
-        // Missing Content-Type header
-        if content_type_opt.is_none() {
-            use error::*;
-            let err = content_type_error(
-                "Content-Type header required for POST/PUT/PATCH requests".to_string(),
-                path.clone(),
-                Some("application/json".to_string()),
-                None,
-            );
-            let body_json = err.to_json_string();
-            set_last_error(err.status_code() as i32, body_json.clone());
-
-            let resp = Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(body_json)))
-                .unwrap();
-
-            log_request(start, StatusCode::BAD_REQUEST, &method, &path);
-            return Ok(resp);
-        }
-
-        // Wrong Content-Type
         let is_json = content_type
             .to_ascii_lowercase()
             .starts_with("application/json");
         if !is_json {
             use error::*;
             let err = content_type_error(
-                "Invalid Content-Type header".to_string(),
+                "Content-Type header required for POST/PUT/PATCH requests".to_string(),
                 path.clone(),
                 Some("application/json".to_string()),
                 Some(content_type.clone()),
             );
             let body_json = err.to_json_string();
             set_last_error(err.status_code() as i32, body_json.clone());
-
-            let resp = Response::builder()
+            return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "application/json")
                 .body(Full::new(Bytes::from(body_json)))
-                .unwrap();
-
-            log_request(start, StatusCode::BAD_REQUEST, &method, &path);
-            return Ok(resp);
+                .unwrap());
         }
     }
 
@@ -1024,52 +1048,37 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let (route, params) = match registry.find_route(&method, &path) {
         Some((r, p)) => (r, p),
         None => {
-            // Check for method-not-allowed
-            let mut allowed_methods = Vec::new();
-            for (m, router) in registry.routes.iter() {
-                if m.eq_ignore_ascii_case(&method) {
-                    continue;
-                }
-                if router.at(&path).is_ok() {
-                    allowed_methods.push(m.clone());
-                }
-            }
+            // Check if path exists with different methods (405 vs 404)
+            let allowed_methods = registry.find_allowed_methods(&path);
             drop(registry);
 
             if !allowed_methods.is_empty() {
-                let error_response = error::method_not_allowed(
-                    "The requested method is not allowed for this route".to_string(),
-                    path.clone(),
-                    allowed_methods,
-                )
-                .with_method(method.clone());
+                // Path exists but method not allowed
+                println!("← 405 Method Not Allowed");
+                use error::*;
+                let error_response =
+                    method_not_allowed_error(path.clone(), method.clone(), allowed_methods);
                 let error_json = error_response.to_json_string();
-
-                let resp = Response::builder()
+                return Ok(Response::builder()
                     .status(StatusCode::METHOD_NOT_ALLOWED)
                     .header("content-type", "application/json")
                     .body(Full::new(Bytes::from(error_json)))
-                    .unwrap();
-
-                log_request(start, StatusCode::METHOD_NOT_ALLOWED, &method, &path);
-                return Ok(resp);
+                    .unwrap());
+            } else {
+                // Path doesn't exist at all
+                println!("← 404 Not Found");
+                let error_response = not_found(
+                    "The requested route does not exist".to_string(),
+                    path.clone(),
+                )
+                .with_method(method.clone());
+                let error_json = error_response.to_json_string();
+                return Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(error_json)))
+                    .unwrap());
             }
-
-            let error_response = not_found(
-                "The requested route does not exist".to_string(),
-                path.clone(),
-            )
-            .with_method(method.clone());
-            let error_json = error_response.to_json_string();
-
-            let resp = Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(error_json)))
-                .unwrap();
-
-            log_request(start, StatusCode::NOT_FOUND, &method, &path);
-            return Ok(resp);
         }
     };
 
@@ -1077,7 +1086,18 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let middleware = route.middleware.clone();
     let global_middleware = registry.middleware.clone();
 
+    // Get handler metadata for validation (need to find handler name from registry)
+    let handler_metadata = registry
+        .handlers
+        .iter()
+        .find(|(_, &h)| h as usize == handler as usize)
+        .and_then(|(name, _)| registry.handler_metadata.get(name))
+        .cloned();
+
     drop(registry);
+
+    // Note: Validation happens in the generated handler wrapper code
+    // during StructInit operations via dooruntime_validate_field
 
     // Create Doo Request
     let params_box = Box::new(params);
@@ -1094,6 +1114,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         headers: Box::into_raw(headers_box) as *mut std::ffi::c_void,
     });
 
+    // Store current request path in thread-local storage for RFC 7807 errors
+    set_current_request_path(&path);
+
     // Combine global and route-specific middleware
     let mut all_middleware = global_middleware.clone();
     all_middleware.extend(middleware.iter().cloned());
@@ -1102,6 +1125,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     // If there's middleware, create Next chain and call first middleware
     let result = if !all_middleware.is_empty() {
+        // Create Next object that represents the chain
         let middleware_box = Box::new(all_middleware);
         let next = Box::new(DooNext {
             request: req_ptr,
@@ -1110,12 +1134,14 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             current_index: 0,
         });
 
+        // Call the first middleware
         let first_middleware = unsafe {
             let mw_vec_ptr = next.remaining_middleware as *mut Vec<DooMiddlewareFn>;
             let mw_vec = &*mw_vec_ptr;
             mw_vec[0]
         };
 
+        // Create Next for second middleware onward
         let next_for_first = Box::new(DooNext {
             request: req_ptr,
             remaining_middleware: next.remaining_middleware,
@@ -1126,112 +1152,166 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         first_middleware(req_ptr, Box::into_raw(next_for_first))
     } else {
         // No middleware, call handler directly
-        let result = handler(req_ptr);
-        result
+        handler(req_ptr)
     };
 
     // Process result
     let response = unsafe {
         if result.is_null() {
-            // handler returned null -> 500
-            let resp = Response::builder()
+            println!("← 500 Internal Server Error (null result)");
+            Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Full::new(Bytes::from("Handler returned null")))
-                .unwrap();
-
-            log_request(start, StatusCode::INTERNAL_SERVER_ERROR, &method, &path);
-            return Ok(resp);
-        }
-
-        let result_box = Box::from_raw(result);
-
-        if result_box.tag == 0 {
-            // Success - value is DooResponse*
-            if result_box.value.is_null() {
-                let resp = Response::builder()
-                    .status(StatusCode::OK)
-                    .body(Full::new(Bytes::from("")))
-                    .unwrap();
-
-                log_request(start, StatusCode::OK, &method, &path);
-                return Ok(resp);
-            } else {
-                let response_ptr = result_box.value as *mut DooResponse;
-                let response = Box::from_raw(response_ptr);
-
-                let status = StatusCode::from_u16(response.status as u16).unwrap_or(StatusCode::OK);
-                let body_str = if response.body.is_null() {
-                    String::new()
-                } else {
-                    CStr::from_ptr(response.body).to_string_lossy().to_string()
-                };
-                let content_type_str = if response.content_type.is_null() {
-                    "application/json".to_string()
-                } else {
-                    CStr::from_ptr(response.content_type)
-                        .to_string_lossy()
-                        .to_string()
-                };
-
-                let resp = Response::builder()
-                    .status(status)
-                    .header("content-type", content_type_str)
-                    .body(Full::new(Bytes::from(body_str)))
-                    .unwrap();
-
-                // Log final success with the actual status code
-                log_request(start, status, &method, &path);
-                return Ok(resp);
-            }
+                .unwrap()
         } else {
-            // Error - value is DooHttpError*
-            let error_ptr = result_box.value as *mut DooHttpError;
-            let error = Box::from_raw(error_ptr);
+            let result_box = Box::from_raw(result);
 
-            let status = StatusCode::from_u16(error.status as u16)
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            let message = if error.message.is_null() {
-                "Unknown error".to_string()
-            } else {
-                CStr::from_ptr(error.message).to_string_lossy().to_string()
-            };
-
-            let body_str =
-                if message.starts_with("{\"type\":") || message.starts_with("{\"detail\":") {
-                    message
+            if result_box.tag == 0 {
+                // Success - value is DooResponse*
+                if result_box.value.is_null() {
+                    println!("← 200 OK (empty)");
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Full::new(Bytes::from("")))
+                        .unwrap()
                 } else {
-                    format!("{{\"error\":\"{}\"}}", message.replace("\"", "\\\""))
+                    let response_ptr = result_box.value as *mut DooResponse;
+                    let response = Box::from_raw(response_ptr);
+
+                    let status =
+                        StatusCode::from_u16(response.status as u16).unwrap_or(StatusCode::OK);
+                    let body_str = if response.body.is_null() {
+                        String::new()
+                    } else {
+                        CStr::from_ptr(response.body).to_string_lossy().to_string()
+                    };
+                    let content_type_str = if response.content_type.is_null() {
+                        "application/json".to_string()
+                    } else {
+                        CStr::from_ptr(response.content_type)
+                            .to_string_lossy()
+                            .to_string()
+                    };
+
+                    println!(
+                        "← {} {}",
+                        status.as_u16(),
+                        status.canonical_reason().unwrap_or("")
+                    );
+                    Response::builder()
+                        .status(status)
+                        .header("content-type", content_type_str)
+                        .body(Full::new(Bytes::from(body_str)))
+                        .unwrap()
+                }
+            } else {
+                // Error - value is DooHttpError*
+                let error_ptr = result_box.value as *mut DooHttpError;
+                let error = Box::from_raw(error_ptr);
+
+                let status = StatusCode::from_u16(error.status as u16)
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                let message = if error.message.is_null() {
+                    "Unknown error".to_string()
+                } else {
+                    CStr::from_ptr(error.message).to_string_lossy().to_string()
                 };
 
-            let resp = Response::builder()
-                .status(status)
-                .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(body_str)))
-                .unwrap();
+                println!(
+                    "← {} {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("")
+                );
 
-            // Log error response with status
-            log_request(start, status, &method, &path);
-            return Ok(resp);
+                // Check if message is already RFC 7807 JSON (starts with {"type": or {"detail":)
+                let body_str =
+                    if message.starts_with("{\"type\":") || message.starts_with("{\"detail\":") {
+                        // Already RFC 7807 format, use as-is
+                        message
+                    } else {
+                        // Legacy error, wrap in simple error object
+                        format!("{{\"error\":\"{}\"}}", message.replace("\"", "\\\""))
+                    };
+
+                Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(body_str)))
+                    .unwrap()
+            }
         }
     };
+
+    Ok(response)
+}
+
+/// Create a new Server instance
+/// Server struct layout: { Port: i32, Host: *const c_char }
+#[no_mangle]
+pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi::c_void {
+    let host_port_str = if host_port.is_null() {
+        ":3000".to_string()
+    } else {
+        unsafe {
+            std::ffi::CStr::from_ptr(host_port)
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+
+    // Parse port from ":3000" or "127.0.0.1:3000" format
+    let port = if let Some(colon_pos) = host_port_str.rfind(':') {
+        host_port_str[colon_pos + 1..]
+            .parse::<i32>()
+            .unwrap_or(3000)
+    } else {
+        3000
+    };
+
+    let host = if host_port_str.contains(':') {
+        let parts: Vec<&str> = host_port_str.split(':').collect();
+        if parts.len() > 1 && !parts[0].is_empty() {
+            string_to_c(parts[0])
+        } else {
+            string_to_c("127.0.0.1")
+        }
+    } else {
+        string_to_c("127.0.0.1")
+    };
+
+    // Allocate Server struct: { Port: i32, Host: *const c_char }
+    let server_size = std::mem::size_of::<i32>() + std::mem::size_of::<*const c_char>();
+    let layout = std::alloc::Layout::from_size_align(server_size, 8).unwrap();
+    let server_ptr = unsafe { std::alloc::alloc(layout) as *mut u8 };
+
+    if server_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        // Write Port (i32) at offset 0
+        *(server_ptr as *mut i32) = port;
+        // Write Host (*const c_char) at offset 8 (aligned)
+        *(server_ptr.add(8) as *mut *const c_char) = host;
+    }
+
+    server_ptr as *mut std::ffi::c_void
 }
 
 #[no_mangle]
 pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut DooResult {
-    // start timer as early as possible (includes runtime creation time)
-    let start = std::time::Instant::now();
-
-    // Extract port from Server struct (same as before)
+    // Extract port from Server struct
+    // Server struct layout: { Port: i32, Host: *const c_char }
     let port = if server_ptr.is_null() {
         3000 // Default port
     } else {
         unsafe {
+            // Read the first i32 field (Port)
             let port_ptr = server_ptr as *const i32;
             *port_ptr
         }
     };
 
-    // Create runtime (keep this synchronous)
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => return make_err_http(500, &format!("Failed to create tokio runtime: {}", e)),
@@ -1239,15 +1319,21 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port as u16));
 
-    // Get route count now (safe to read before entering async)
+    println!();
+    println!("🚀 Server starting on http://127.0.0.1:{}", port);
+    println!();
+
+    // Print all registered routes
     let routes = get_routes();
     let registry = routes.lock().unwrap();
-    let total_routes = registry.route_count;
+    println!("📋 Registered routes:");
+    for (method, _router) in registry.routes.iter() {
+        println!("  {} routes: registered", method);
+    }
+    println!();
     drop(registry);
 
-    // Run the async binding & accept loop inside runtime.block_on.
-    // Measure boot_time_ms AFTER the bind completes.
-    runtime.block_on(async move {
+    runtime.block_on(async {
         let listener = match TcpListener::bind(addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -1256,30 +1342,9 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
             }
         };
 
-        // Now that the socket is bound, compute real boot time
-        let boot_time_ms = start.elapsed().as_millis();
-
-        init_timestamp_updater();
-
-        // Print banner AFTER bind so boot_time_ms is meaningful
+        println!("✓ Listening on {}", addr);
         println!();
-        println!("   ___    ___   ____ ");
-        println!("  / _ \\  / _ \\ / __ \\");
-        println!(" / // / / // // /_/ /");
-        println!("/____/  \\___/ \\____/        Doo v{}", VERSION);
-        println!("--------------------------------------------------");
 
-        println!("Info Server Online");
-        println!("--------------------------------------------------");
-        println!("• Boot Time:            {} ms", boot_time_ms);
-        println!("• Listening on:         http://127.0.0.1:{}", port);
-        println!("• Bound Interface:      0.0.0.0:{}", port);
-        println!("• Handlers Loaded:      {}", total_routes);
-        println!("• Process ID:           {}", std::process::id());
-        println!("--------------------------------------------------");
-        println!("🚀 Server Started.\n");
-
-        // Accept loop (same as before)
         loop {
             let (stream, _) = match listener.accept().await {
                 Ok(s) => s,
@@ -1302,15 +1367,6 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
     });
 
     make_ok_void()
-}
-
-#[no_mangle]
-pub extern "C" fn doo_str_to_int(s: *const c_char) -> i32 {
-    if s.is_null() {
-        return 0;
-    }
-    let str_val = c_to_string(s);
-    str_val.parse::<i32>().unwrap_or(0)
 }
 
 // ============================================================================
@@ -1350,75 +1406,6 @@ pub extern "C" fn doo_http_req_param(req: *const DooRequest, key: *const c_char)
         if let Some(value) = (*params_map).get(&key_str) {
             string_to_c(value)
         } else {
-            // Mark missing path parameter error for downstream handling
-            use error::*;
-            let param = ParameterError::new(key_str.clone())
-                .with_message(format!("Path parameter '{}' is required", key_str));
-            let err = parameter_error(
-                "Path parameter not found".to_string(),
-                get_current_request_path(),
-                param,
-            );
-            set_last_error(err.status_code() as i32, err.to_json_string());
-            std::ptr::null()
-        }
-    }
-}
-
-/// Extract query parameter with type validation and set RFC7807 errors on failure
-#[no_mangle]
-pub extern "C" fn doohttp_extract_query_typed(
-    request: *const DooRequest,
-    param_name: *const libc::c_char,
-    param_type: *const libc::c_char,
-) -> *const libc::c_char {
-    clear_last_error();
-    if request.is_null() || param_name.is_null() || param_type.is_null() {
-        return std::ptr::null();
-    }
-
-    let name_str = unsafe {
-        std::ffi::CStr::from_ptr(param_name)
-            .to_string_lossy()
-            .to_string()
-    };
-    let ty_str = unsafe {
-        std::ffi::CStr::from_ptr(param_type)
-            .to_string_lossy()
-            .to_string()
-    };
-
-    let req = unsafe { &*request };
-    if req.query.is_null() {
-        return std::ptr::null();
-    }
-    let query_map = unsafe { &*(req.query as *const HashMap<String, String>) };
-
-    match query_map.get(&name_str) {
-        Some(value) => {
-            let ok = match ty_str.as_str() {
-                "Int" | "I32" | "I64" => value.parse::<i64>().is_ok(),
-                "Float" | "F32" | "F64" => value.parse::<f64>().is_ok(),
-                "Bool" => value == "true" || value == "false",
-                _ => true,
-            };
-            if ok {
-                string_to_c(value)
-            } else {
-                let param = ParameterError::new(name_str.clone())
-                    .with_expected(ty_str.clone())
-                    .with_received(value.clone());
-                let err = invalid_query_param_type_error(get_current_request_path(), param);
-                set_last_error(err.status_code() as i32, err.to_json_string());
-                std::ptr::null()
-            }
-        }
-        None => {
-            let param = ParameterError::new(name_str.clone())
-                .with_message(format!("Query parameter '{}' is required", name_str))
-                .with_expected(ty_str.clone());
-            let err = missing_query_param_error(get_current_request_path(), param);
-            set_last_error(err.status_code() as i32, err.to_json_string());
             std::ptr::null()
         }
     }
@@ -1521,12 +1508,12 @@ pub extern "C" fn doohttp_parse_json_struct(
     }
 
     let body_str = unsafe { std::ffi::CStr::from_ptr(body).to_string_lossy().to_string() };
-    let struct_name_str = unsafe {
+    let _struct_name_str = unsafe {
         std::ffi::CStr::from_ptr(struct_name)
             .to_string_lossy()
             .to_string()
     };
-    let validator_str = if validator_spec.is_null() {
+    let _validator_str = if validator_spec.is_null() {
         String::new()
     } else {
         unsafe {
@@ -1537,137 +1524,24 @@ pub extern "C" fn doohttp_parse_json_struct(
     };
 
     // Parse JSON
-    let json_value: serde_json::Value = match serde_json::from_str(&body_str) {
+    let _json_value: serde_json::Value = match serde_json::from_str(&body_str) {
         Ok(v) => v,
         Err(_) => {
             // 400 Bad Request - malformed JSON
+            use error::*;
             let inst = get_current_request_path();
-            let err = invalid_json_error(inst);
+            let err = bad_request(
+                "Invalid JSON: malformed or unexpected content".to_string(),
+                inst,
+            );
             set_last_error(err.status_code() as i32, err.to_json_string());
             return std::ptr::null_mut();
         }
     };
 
-    // Must be an object
-    let obj = match json_value.as_object() {
-        Some(o) => o,
-        None => {
-            let inst = get_current_request_path();
-            let err = invalid_json_error(inst);
-            set_last_error(err.status_code() as i32, err.to_json_string());
-            return std::ptr::null_mut();
-        }
-    };
-
-    // Parse validator spec entries: name:type:validators
-    #[derive(Clone)]
-    struct FieldSpec {
-        name: String,
-        ty: String,
-        validators: String,
-    }
-    let mut specs = Vec::new();
-    for entry in validator_str.split(';') {
-        if entry.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = entry.split(':').collect();
-        if parts.len() < 2 {
-            continue;
-        }
-        let name = parts[0].to_string();
-        let ty = parts.get(1).unwrap_or(&"Str").to_string();
-        let validators = if parts.len() > 2 {
-            parts[2..].join(":")
-        } else {
-            String::new()
-        };
-        specs.push(FieldSpec {
-            name,
-            ty,
-            validators,
-        });
-    }
-
-    // Type + required validation
-    let mut field_errors: HashMap<String, FieldError> = HashMap::new();
-    for spec in &specs {
-        match obj.get(&spec.name) {
-            Some(val) => {
-                // Type check - strict type checking
-                let ok = match spec.ty.as_str() {
-                    "Str" | "String" => val.is_string(),
-                    "Int" | "I32" | "I64" => {
-                        // Must be integer JSON type only - reject strings and any floats
-                        val.is_i64() || val.is_u64()
-                    }
-                    "Float" | "F32" | "F64" => {
-                        // Accept any number for float
-                        val.is_number()
-                    }
-                    "Bool" => val.is_boolean(),
-                    "Array" => val.is_array(),
-                    "Map" | "Struct" => val.is_object(),
-                    _ => true,
-                };
-                if !ok {
-                    let mut fe = FieldError::new("Type mismatch in request body".to_string())
-                        .with_expected(spec.ty.clone());
-                    fe = fe.with_received(json_type_name(val).to_string());
-
-                    // Include the actual value in the error
-                    let value_str = match val {
-                        serde_json::Value::String(s) => s.clone(),
-                        serde_json::Value::Number(n) => n.to_string(),
-                        serde_json::Value::Bool(b) => b.to_string(),
-                        _ => val.to_string(),
-                    };
-                    fe = fe.with_value(value_str);
-                    field_errors.insert(spec.name.clone(), fe);
-                } else if matches!(spec.ty.as_str(), "Str" | "String") {
-                    // Check for empty strings on Str fields - all fields are required
-                    if let Some(s) = val.as_str() {
-                        if s.is_empty() {
-                            let fe = FieldError::new(
-                                "This field is required and cannot be empty".to_string(),
-                            )
-                            .with_error("required".to_string())
-                            .with_value(String::new());
-                            field_errors.insert(spec.name.clone(), fe);
-                        }
-                    }
-                }
-            }
-            None => {
-                // Missing required
-                let fe = FieldError::new("This field is required".to_string())
-                    .with_error("required".to_string());
-                field_errors.insert(spec.name.clone(), fe);
-            }
-        }
-    }
-
-    if !field_errors.is_empty() {
-        let inst = get_current_request_path();
-        let err = if field_errors
-            .values()
-            .any(|fe| fe.error.as_deref() == Some("required"))
-        {
-            missing_field_error(inst, field_errors)
-        } else {
-            type_mismatch_error(inst, field_errors)
-        };
-        set_last_error(err.status_code() as i32, err.to_json_string());
-        return std::ptr::null_mut();
-    }
-
-    // Decorator validation (422)
-    if let Err(fields) = validate_json_value(&json_value, &struct_name_str, &validator_str) {
-        let inst = get_current_request_path();
-        let err = validation_failed_error(inst, fields);
-        set_last_error(err.status_code() as i32, err.to_json_string());
-        return std::ptr::null_mut();
-    }
+    // NOTE: Decorator validation happens in generated code before calling this function
+    // This function only parses JSON - validation is done by dooruntime_validate_field
+    // in the handler wrapper code generated by the compiler
 
     // Allocate and return JSON string representation
     let json_str = Box::new(body_str);
@@ -1706,202 +1580,9 @@ pub extern "C" fn doohttp_serialize_struct(
 
 /// Validate a JSON value against decorator specifications
 /// Format: "field1:email;field2:min8|max100;field3:enum:a|b|c"
-fn validate_json_value(
-    json: &serde_json::Value,
-    _struct_name: &str,
-    validator_spec: &str,
-) -> Result<(), HashMap<String, error::FieldError>> {
-    let mut errors: HashMap<String, error::FieldError> = HashMap::new();
-
-    if validator_spec.is_empty() {
-        return Ok(());
-    }
-
-    // Parse validator spec
-    for field_spec in validator_spec.split(';') {
-        if field_spec.is_empty() {
-            continue;
-        }
-
-        let parts: Vec<&str> = field_spec.split(':').collect();
-        if parts.len() < 2 {
-            continue;
-        }
-
-        let field_name = parts[0];
-        let field_type = parts[1];
-        // format is field:type:validator1|validator2...
-        let validators = if parts.len() >= 3 {
-            parts[2..].join(":")
-        } else {
-            String::new()
-        };
-
-        // Get field value from JSON
-        let json_val = json.get(field_name);
-        let field_value = match json_val {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Number(n)) => n.to_string(),
-            Some(serde_json::Value::Bool(b)) => b.to_string(),
-            Some(serde_json::Value::Null) => String::new(),
-            None => String::new(),
-            Some(other) => {
-                let fe = error::FieldError::new("Type mismatch in request body".to_string())
-                    .with_expected("scalar".to_string())
-                    .with_received(json_type_name(other).to_string());
-                errors.insert(field_name.to_string(), fe);
-                continue;
-            }
-        };
-
-        // For numeric types, validate as numbers; for strings, validate as strings
-        let is_numeric_type = matches!(field_type, "Int" | "I32" | "I64" | "Float" | "F32" | "F64");
-        if let Some(fe) = validate_field_value(&field_value, &validators, is_numeric_type) {
-            errors.insert(field_name.to_string(), fe);
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
-}
-
-/// Validate a single field value against decorators
-/// Returns Some(FieldError) when validation fails
-fn validate_field_value(
-    value: &str,
-    validator_spec: &str,
-    is_numeric: bool,
-) -> Option<error::FieldError> {
-    for validator in validator_spec.split('|') {
-        if validator.is_empty() {
-            continue;
-        }
-
-        if let Some(fe) = apply_validator(value, validator, is_numeric) {
-            return Some(fe);
-        }
-    }
-
-    None
-}
-
-/// Apply a single validator to a value, returning FieldError on failure
-fn apply_validator(value: &str, validator: &str, is_numeric: bool) -> Option<FieldError> {
-    if validator == "email" {
-        let valid = value.contains('@') && value.contains('.');
-        if !valid {
-            return Some(
-                FieldError::new("Invalid email format".to_string())
-                    .with_rule("email".to_string())
-                    .with_value(value.to_string()),
-            );
-        }
-    } else if validator.starts_with("min") {
-        if let Ok(min) = validator[3..].parse::<i64>() {
-            if is_numeric {
-                // Numeric validation for Int/Float fields
-                if let Ok(num_val) = value.parse::<i64>() {
-                    if num_val < min {
-                        return Some(
-                            FieldError::new(format!("Must be at least {}", min))
-                                .with_rule(format!("min:{}", min))
-                                .with_value(value.to_string()),
-                        );
-                    }
-                }
-            } else {
-                // String length validation
-                if value.len() < min as usize {
-                    return Some(
-                        FieldError::new(format!("Must be at least {} characters", min))
-                            .with_rule(format!("min:{}", min))
-                            .with_value(value.to_string()),
-                    );
-                }
-            }
-        }
-    } else if validator.starts_with("max") {
-        if let Ok(max) = validator[3..].parse::<i64>() {
-            if is_numeric {
-                // Numeric validation for Int/Float fields
-                if let Ok(num_val) = value.parse::<i64>() {
-                    if num_val > max {
-                        return Some(
-                            FieldError::new(format!("Maximum {} allowed", max))
-                                .with_rule(format!("max:{}", max))
-                                .with_value(value.to_string()),
-                        );
-                    }
-                }
-            } else {
-                // String length validation
-                if value.len() > max as usize {
-                    return Some(
-                        FieldError::new(format!("Maximum {} characters allowed", max))
-                            .with_rule(format!("max:{}", max))
-                            .with_value(value.to_string()),
-                    );
-                }
-            }
-        }
-    } else if validator.starts_with("pattern:") {
-        // Pattern validation would require regex crate; skip for now
-    } else if validator.starts_with("enum:") {
-        let allowed = validator[5..].split('|').collect::<Vec<_>>();
-        if !allowed.contains(&value) {
-            let expected = format!("enum:{}", allowed.join("|"));
-            return Some(
-                FieldError::new(format!("Must be one of: {}", allowed.join(", ")))
-                    .with_rule(format!("enum:{}", allowed.join("|")))
-                    .with_value(value.to_string())
-                    .with_expected(expected),
-            );
-        }
-    } else if validator == "required" {
-        if value.is_empty() {
-            return Some(
-                FieldError::new("This field is required".to_string())
-                    .with_rule("required".to_string()),
-            );
-        }
-    } else if validator == "optional" {
-        // Always ok
-    }
-    None
-}
-
-/// Validate struct field value
-/// FFI signature: doohttp_validate_field_value(value, field_name, validators) -> bool
-#[no_mangle]
-pub extern "C" fn doohttp_validate_field_value(
-    value: *const libc::c_char,
-    field_name: *const libc::c_char,
-    validators: *const libc::c_char,
-) -> libc::c_int {
-    if value.is_null() || field_name.is_null() || validators.is_null() {
-        return 0; // Invalid
-    }
-
-    let value_str = unsafe {
-        std::ffi::CStr::from_ptr(value)
-            .to_string_lossy()
-            .to_string()
-    };
-    let validator_str = unsafe {
-        std::ffi::CStr::from_ptr(validators)
-            .to_string_lossy()
-            .to_string()
-    };
-
-    if validate_field_value(&value_str, &validator_str, false).is_none() {
-        1 // Valid
-    } else {
-        0 // Invalid
-    }
-}
+// NOTE: All validation logic has been moved to libdoo_runtime
+// HTTP layer delegates to dooruntime_validate_field() for all decorator validation
+// This keeps validation centralized and reusable across all FFI libs (http, db, auth)
 
 // ===== PHASE 8: TYPE-SAFE PARAMETERS =====
 
@@ -1949,10 +1630,16 @@ pub extern "C" fn doohttp_extract_param_typed(
                 if value.parse::<i64>().is_ok() {
                     string_to_c(value)
                 } else {
-                    let param = ParameterError::new(param_name_str.clone())
+                    use error::*;
+                    let mut param = ParameterError::new(param_name_str.clone())
                         .with_expected("Int".to_string())
                         .with_received(value.clone());
-                    let err = invalid_path_param_type_error(get_current_request_path(), param);
+                    param = param.with_message("Invalid path parameter type".to_string());
+                    let err = parameter_error(
+                        "Invalid path parameter type".to_string(),
+                        get_current_request_path(),
+                        param,
+                    );
                     set_last_error(err.status_code() as i32, err.to_json_string());
                     std::ptr::null()
                 }
@@ -1961,10 +1648,16 @@ pub extern "C" fn doohttp_extract_param_typed(
                 if value.parse::<f64>().is_ok() {
                     string_to_c(value)
                 } else {
-                    let param = ParameterError::new(param_name_str.clone())
+                    use error::*;
+                    let mut param = ParameterError::new(param_name_str.clone())
                         .with_expected("Float".to_string())
                         .with_received(value.clone());
-                    let err = invalid_path_param_type_error(get_current_request_path(), param);
+                    param = param.with_message("Invalid path parameter type".to_string());
+                    let err = parameter_error(
+                        "Invalid path parameter type".to_string(),
+                        get_current_request_path(),
+                        param,
+                    );
                     set_last_error(err.status_code() as i32, err.to_json_string());
                     std::ptr::null()
                 }
@@ -1973,10 +1666,16 @@ pub extern "C" fn doohttp_extract_param_typed(
                 if value == "true" || value == "false" {
                     string_to_c(value)
                 } else {
-                    let param = ParameterError::new(param_name_str.clone())
+                    use error::*;
+                    let mut param = ParameterError::new(param_name_str.clone())
                         .with_expected("Bool".to_string())
                         .with_received(value.clone());
-                    let err = invalid_path_param_type_error(get_current_request_path(), param);
+                    param = param.with_message("Invalid path parameter type".to_string());
+                    let err = parameter_error(
+                        "Invalid path parameter type".to_string(),
+                        get_current_request_path(),
+                        param,
+                    );
                     set_last_error(err.status_code() as i32, err.to_json_string());
                     std::ptr::null()
                 }
@@ -1984,9 +1683,14 @@ pub extern "C" fn doohttp_extract_param_typed(
             _ => string_to_c(value), // String or other types
         }
     } else {
+        use error::*;
         let param = ParameterError::new(param_name_str.clone())
-            .with_message("Path parameter 'id' is required".to_string());
-        let err = missing_path_param_error(get_current_request_path(), param);
+            .with_message("Path parameter not found".to_string());
+        let err = parameter_error(
+            "Path parameter not found".to_string(),
+            get_current_request_path(),
+            param,
+        );
         set_last_error(err.status_code() as i32, err.to_json_string());
         std::ptr::null()
     }
@@ -2113,7 +1817,7 @@ pub extern "C" fn doohttp_error_to_status(
     variant: *const libc::c_char,
 ) -> libc::c_int {
     if error_type.is_null() || variant.is_null() {
-        return error::ErrorType::InternalError.status_code() as i32;
+        return 500; // Default to 500 Internal Error
     }
 
     let variant_str = unsafe {
@@ -2122,24 +1826,16 @@ pub extern "C" fn doohttp_error_to_status(
             .to_string()
     };
 
-    // Map error variants to status codes using centralized ErrorType
-    use error::ErrorType;
-    let error_type = match variant_str.as_str() {
-        "NotFound" => ErrorType::NotFound,
-        "InvalidInput" | "ValidationError" => ErrorType::UnprocessableEntity,
-        "Unauthorized" => ErrorType::Unauthorized,
-        "Forbidden" => ErrorType::Forbidden,
-        "Conflict" | "AlreadyExists" => ErrorType::Conflict,
-        "BadRequest" => ErrorType::BadRequest,
-        "MethodNotAllowed" => ErrorType::MethodNotAllowed,
-        "TooManyRequests" => ErrorType::TooManyRequests,
-        "NotImplemented" => ErrorType::NotImplemented,
-        "BadGateway" => ErrorType::BadGateway,
-        "ServiceUnavailable" => ErrorType::ServiceUnavailable,
-        _ => ErrorType::InternalError,
-    };
-
-    error_type.status_code() as i32
+    // Map error variants to status codes
+    match variant_str.as_str() {
+        "NotFound" => 404,
+        "InvalidInput" | "ValidationError" => 422,
+        "Unauthorized" => 401,
+        "Forbidden" => 403,
+        "Conflict" | "AlreadyExists" => 409,
+        "BadRequest" => 400,
+        _ => 500, // Default to 500 for unknown errors
+    }
 }
 
 /// Get error message from enum variant
@@ -2159,44 +1855,18 @@ pub extern "C" fn doohttp_error_message(
             .to_string()
     };
 
-    // Generate detailed messages dynamically based on error type
-    use error::ErrorType;
-    let (error_type, message) = match variant_str.as_str() {
-        "NotFound" => (ErrorType::NotFound, "The requested resource does not exist"),
-        "InvalidInput" => (ErrorType::UnprocessableEntity, "Invalid input provided"),
-        "ValidationError" => (ErrorType::UnprocessableEntity, "Validation failed"),
-        "Unauthorized" => (
-            ErrorType::Unauthorized,
-            "Authentication required or token invalid",
-        ),
-        "Forbidden" => (
-            ErrorType::Forbidden,
-            "You do not have permission to access this resource",
-        ),
-        "Conflict" => (ErrorType::Conflict, "Resource conflict"),
-        "AlreadyExists" => (ErrorType::Conflict, "Resource already exists"),
-        "BadRequest" => (ErrorType::BadRequest, "Request is malformed or invalid"),
-        "MethodNotAllowed" => (
-            ErrorType::MethodNotAllowed,
-            "Method not allowed for this resource",
-        ),
-        "TooManyRequests" => (
-            ErrorType::TooManyRequests,
-            "Too many requests, please try again later",
-        ),
-        "NotImplemented" => (
-            ErrorType::NotImplemented,
-            "This feature is not yet implemented",
-        ),
-        "BadGateway" => (ErrorType::BadGateway, "Bad gateway"),
-        "ServiceUnavailable" => (
-            ErrorType::ServiceUnavailable,
-            "Service temporarily unavailable",
-        ),
-        _ => (ErrorType::InternalError, "An unexpected error occurred"),
+    let message = match variant_str.as_str() {
+        "NotFound" => "Resource not found",
+        "InvalidInput" => "Invalid input",
+        "ValidationError" => "Validation failed",
+        "Unauthorized" => "Unauthorized",
+        "Forbidden" => "Forbidden",
+        "Conflict" => "Conflict",
+        "AlreadyExists" => "Resource already exists",
+        "BadRequest" => "Bad request",
+        _ => "Internal server error",
     };
 
-    // Could also use error_type.title() for more standardized messages
     string_to_c(message)
 }
 
@@ -2242,8 +1912,13 @@ pub extern "C" fn doohttp_error_rfc7807(
     };
 
     // If instance is null, empty string, or sentinel "$$THREAD_LOCAL$$", use thread-local request path
+    println!("DEBUG RFC7807: instance pointer address: {:?}", instance);
     let instance_str = if instance.is_null() {
         let path = get_current_request_path();
+        println!(
+            "DEBUG RFC7807: instance is NULL, using thread-local path: {}",
+            path
+        );
         path
     } else {
         let path = unsafe {
@@ -2251,14 +1926,30 @@ pub extern "C" fn doohttp_error_rfc7807(
                 .to_string_lossy()
                 .to_string()
         };
+        println!(
+            "DEBUG RFC7807: path string: '{}', length: {}, bytes: {:?}",
+            path,
+            path.len(),
+            path.as_bytes()
+        );
         // Check for sentinel string or empty string
         if path.is_empty() || path == "__USE_THREAD_LOCAL_REQUEST_PATH_FROM_STORAGE_PLEASE__" {
             let thread_path = get_current_request_path();
+            println!(
+                "DEBUG RFC7807: instance is EMPTY or SENTINEL, using thread-local path: {}",
+                thread_path
+            );
             thread_path
         } else {
+            println!("DEBUG RFC7807: instance is NOT NULL, provided: {}", path);
             path
         }
     };
+
+    println!(
+        "DEBUG RFC7807: Creating error - status={}, detail={}, instance={}",
+        status, detail_str, instance_str
+    );
 
     // Use centralized error module
     use error::*;
@@ -2615,115 +2306,6 @@ pub extern "C" fn doohttp_error_rfc7807_validation(
     string_to_c(&error_json)
 }
 
-/// Create RFC 7807 bad request with fields (for deserialization errors)
-/// FFI signature: doohttp_error_rfc7807_bad_request_with_fields(detail, instance, fields_json) -> json_string
-#[no_mangle]
-pub extern "C" fn doohttp_error_rfc7807_bad_request_with_fields(
-    detail: *const libc::c_char,
-    instance: *const libc::c_char,
-    fields_json: *const libc::c_char,
-) -> *const libc::c_char {
-    if detail.is_null() || fields_json.is_null() {
-        return std::ptr::null();
-    }
-
-    let detail_str = unsafe {
-        std::ffi::CStr::from_ptr(detail)
-            .to_string_lossy()
-            .to_string()
-    };
-
-    // If instance is null, use thread-local request path
-    let instance_str = if instance.is_null() {
-        get_current_request_path()
-    } else {
-        unsafe {
-            std::ffi::CStr::from_ptr(instance)
-                .to_string_lossy()
-                .to_string()
-        }
-    };
-
-    let fields_str = unsafe {
-        std::ffi::CStr::from_ptr(fields_json)
-            .to_string_lossy()
-            .to_string()
-    };
-
-    // Parse the fields JSON string into HashMap<String, FieldError>
-    use error::*;
-    use std::collections::HashMap;
-
-    let fields: HashMap<String, FieldError> = match serde_json::from_str(&fields_str) {
-        Ok(parsed) => {
-            // Convert from generic JSON to FieldError structure
-            let json_obj: serde_json::Map<String, serde_json::Value> = parsed;
-            json_obj
-                .into_iter()
-                .map(|(key, val)| {
-                    let field_err = if let Some(obj) = val.as_object() {
-                        let rule = obj
-                            .get("rule")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let message = obj
-                            .get("message")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let value = obj
-                            .get("value")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let expected = obj
-                            .get("expected")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let received = obj
-                            .get("received")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let error = obj
-                            .get("error")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-
-                        let mut fe = FieldError::new(message);
-                        if !rule.is_empty() {
-                            fe = fe.with_rule(rule);
-                        }
-                        if let Some(v) = value {
-                            fe = fe.with_value(v);
-                        }
-                        if let Some(v) = expected {
-                            fe = fe.with_expected(v);
-                        }
-                        if let Some(v) = received {
-                            fe = fe.with_received(v);
-                        }
-                        if let Some(v) = error {
-                            fe = fe.with_error(v);
-                        }
-                        fe
-                    } else {
-                        FieldError::new("Validation failed".to_string())
-                    };
-                    (key, field_err)
-                })
-                .collect()
-        }
-        Err(_) => {
-            // If parsing fails, create a simple error response
-            HashMap::new()
-        }
-    };
-
-    let error_response = bad_request(detail_str, instance_str).with_fields(fields);
-    let error_json = error_response.to_json_string();
-    string_to_c(&error_json)
-}
-
 /// Create RFC 7807 method not allowed error with allowed methods
 /// FFI signature: doohttp_error_rfc7807_method_not_allowed(detail, instance, allowed_methods) -> json_string
 #[no_mangle]
@@ -2793,6 +2375,11 @@ pub extern "C" fn doohttp_error_rfc7807_auto_instance(
     // Always use thread-local request path
     let instance_str = get_current_request_path();
 
+    println!(
+        "DEBUG RFC7807 AUTO: Creating error - status={}, detail={}, instance={}",
+        status, detail_str, instance_str
+    );
+
     // Use centralized error module
     use error::*;
     let error_response = match status {
@@ -2815,65 +2402,1117 @@ pub extern "C" fn doohttp_error_rfc7807_auto_instance(
     string_to_c(&error_json)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Create RFC 7807 validation error with multiple field errors
+/// FFI signature: doohttp_error_rfc7807_bad_request_with_fields(fields_json) -> json_string
+/// fields_json format: {"FieldName": {"rule": "email", "message": "Invalid email", "value": "bad"}}
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807_bad_request_with_fields(
+    fields_json: *const libc::c_char,
+) -> *const libc::c_char {
+    if fields_json.is_null() {
+        return std::ptr::null();
+    }
 
-    #[test]
-    fn test_route_registration() {
-        extern "C" fn dummy_handler(_req: *mut DooRequest) -> *mut DooResult {
-            std::ptr::null_mut()
+    let fields_json_str = unsafe {
+        std::ffi::CStr::from_ptr(fields_json)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Parse fields JSON
+    let fields_map: std::collections::HashMap<String, serde_json::Value> =
+        match serde_json::from_str(&fields_json_str) {
+            Ok(m) => m,
+            Err(_) => {
+                // Invalid JSON, return simple error
+                let instance_str = get_current_request_path();
+                let error_response = error::bad_request(
+                    "Invalid validation fields format".to_string(),
+                    instance_str,
+                );
+                let error_json = error_response.to_json_string();
+                return string_to_c(&error_json);
+            }
+        };
+
+    // Convert to FieldError map
+    let mut field_errors = std::collections::HashMap::new();
+    for (field_name, field_obj) in fields_map {
+        let rule = field_obj
+            .get("rule")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let message = field_obj
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Validation failed")
+            .to_string();
+        let value = field_obj
+            .get("value")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let field_error = error::FieldError::new(message)
+            .with_rule(rule)
+            .with_value(value);
+        field_errors.insert(field_name, field_error);
+    }
+
+    // Create validation error response
+    let instance_str = get_current_request_path();
+    let error_response = error::validation_error(
+        "One or more fields failed validation".to_string(),
+        instance_str,
+        field_errors,
+    );
+
+    let error_json = error_response.to_json_string();
+    string_to_c(&error_json)
+}
+
+// ===== DECORATOR VALIDATION =====
+// Note: All validation logic is in libdoo_runtime via dooruntime_validate_field()
+// This keeps validation centralized and reusable across all FFI libs (http, db, auth)
+
+/// Format validation error from runtime into RFC 7807 DooResponse
+/// Takes validation error JSON from dooruntime_get_last_validation_error() and request path
+/// Returns DooResponse* with 422 status and RFC 7807 formatted error body
+#[no_mangle]
+/// Validate JSON body, call handler, and serialize response
+/// This is the main entry point for HTTP handlers with validation
+///
+/// Parameters:
+/// - body_json: JSON string from request body
+/// - request_path: HTTP path for error responses
+/// - metadata_json: JSON string with struct_decorators metadata
+/// - handler_fn: Function pointer to the actual handler
+/// - handler_name: Name of handler for debugging
+///
+/// Returns: DooResponse* with either handler result or RFC 7807 validation error
+#[no_mangle]
+pub extern "C" fn doohttp_validate_and_call_handler(
+    body_json: *const libc::c_char,
+    request_path: *const libc::c_char,
+    metadata_json: *const libc::c_char,
+    handler_fn: *const libc::c_void,
+    _handler_name: *const libc::c_char,
+) -> *mut DooResponse {
+    use error::*;
+
+    if body_json.is_null()
+        || request_path.is_null()
+        || metadata_json.is_null()
+        || handler_fn.is_null()
+    {
+        return Box::into_raw(Box::new(DooResponse {
+            status: 500,
+            body: string_to_c(
+                r#"{"type":"internal_error","title":"Internal Server Error","status":500,"detail":"Invalid parameters to validation handler"}"#,
+            ),
+            content_type: string_to_c("application/json"),
+        }));
+    }
+
+    let body_str = unsafe { CStr::from_ptr(body_json).to_string_lossy().to_string() };
+    let path_str = unsafe { CStr::from_ptr(request_path).to_string_lossy().to_string() };
+    let metadata_str = unsafe { CStr::from_ptr(metadata_json).to_string_lossy().to_string() };
+
+    // Parse metadata JSON
+    let metadata: serde_json::Value = match serde_json::from_str(&metadata_str) {
+        Ok(m) => m,
+        Err(_) => {
+            let err = internal_error("Metadata parse error".to_string(), path_str);
+            return Box::into_raw(Box::new(DooResponse {
+                status: 500,
+                body: string_to_c(&err.to_json_string()),
+                content_type: string_to_c("application/json"),
+            }));
+        }
+    };
+
+    // Get param_types to determine struct name
+    let struct_name = metadata
+        .get("param_types")
+        .and_then(|pt| pt.as_array())
+        .and_then(|arr| arr.get(0))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+
+    // Parse body JSON
+    let body_obj = match serde_json::from_str::<serde_json::Value>(&body_str) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        Ok(_) => {
+            let err = bad_request("Request body must be a JSON object".to_string(), path_str);
+            return Box::into_raw(Box::new(DooResponse {
+                status: 400,
+                body: string_to_c(&err.to_json_string()),
+                content_type: string_to_c("application/json"),
+            }));
+        }
+        Err(_) => {
+            let err = bad_request("Invalid JSON format".to_string(), path_str);
+            return Box::into_raw(Box::new(DooResponse {
+                status: 400,
+                body: string_to_c(&err.to_json_string()),
+                content_type: string_to_c("application/json"),
+            }));
+        }
+    };
+
+    // Get struct_decorators for validation
+    let struct_decorators = metadata
+        .get("struct_decorators")
+        .and_then(|sd| sd.get(struct_name))
+        .and_then(|v| v.as_object());
+
+    if let Some(field_decorators) = struct_decorators {
+        let mut validation_errors = std::collections::HashMap::new();
+
+        // Validate each field that has decorators
+        for (field_name, decorators_value) in field_decorators {
+            if let Some(decorators_array) = decorators_value.as_array() {
+                if let Some(field_value) = body_obj.get(field_name) {
+                    // Determine field type from JSON value
+                    let field_type = if field_value.is_string() {
+                        "Str"
+                    } else if field_value.is_i64() || field_value.is_u64() {
+                        "Int"
+                    } else if field_value.is_f64() {
+                        "Float"
+                    } else if field_value.is_boolean() {
+                        "Bool"
+                    } else {
+                        "Unknown"
+                    };
+
+                    // Convert field value to string for validation
+                    let value_str = match field_value {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => field_value.to_string(),
+                    };
+
+                    // Validate with each decorator
+                    for decorator in decorators_array {
+                        let decorators_json = serde_json::to_string(&vec![decorator])
+                            .unwrap_or_else(|_| "[]".to_string());
+
+                        let field_name_cstr = CString::new(field_name.as_str()).unwrap();
+                        let field_type_cstr = CString::new(field_type).unwrap();
+                        let value_cstr = CString::new(value_str.as_str()).unwrap();
+                        let decorators_cstr = CString::new(decorators_json).unwrap();
+
+                        extern "C" {
+                            fn dooruntime_validate_field(
+                                field_name: *const libc::c_char,
+                                field_type: *const libc::c_char,
+                                value: *const libc::c_char,
+                                decorators_json: *const libc::c_char,
+                            ) -> *const libc::c_char;
+                            fn dooruntime_get_last_validation_error() -> *mut libc::c_char;
+                            fn dooruntime_free_string(ptr: *mut libc::c_char);
+                        }
+
+                        unsafe {
+                            let error_ptr = dooruntime_validate_field(
+                                field_name_cstr.as_ptr(),
+                                field_type_cstr.as_ptr(),
+                                value_cstr.as_ptr(),
+                                decorators_cstr.as_ptr(),
+                            );
+
+                            if !error_ptr.is_null() {
+                                // Validation failed - get structured error
+                                let validation_error_json_ptr =
+                                    dooruntime_get_last_validation_error();
+                                if !validation_error_json_ptr.is_null() {
+                                    let error_json_str = CStr::from_ptr(validation_error_json_ptr)
+                                        .to_string_lossy()
+                                        .to_string();
+                                    if let Ok(error_json) =
+                                        serde_json::from_str::<serde_json::Value>(&error_json_str)
+                                    {
+                                        let rule = error_json
+                                            .get("rule")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let message = error_json
+                                            .get("message")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("Validation failed");
+
+                                        let field_error = FieldError::new(field_name.clone())
+                                            .with_rule(rule.to_string())
+                                            .with_value(value_str.clone())
+                                            .with_error(message.to_string());
+
+                                        validation_errors.insert(field_name.clone(), field_error);
+                                    }
+                                    dooruntime_free_string(validation_error_json_ptr);
+                                }
+                                dooruntime_free_string(error_ptr as *mut _);
+                                break; // Stop after first error for this field
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        let routes = get_routes();
-        let mut registry = routes.lock().unwrap();
-        registry.register("GET", "/test", dummy_handler);
-        assert!(registry.routes.contains_key("GET"));
+        // If there are validation errors, return RFC 7807 response
+        if !validation_errors.is_empty() {
+            let err = validation_failed_error(path_str, validation_errors);
+            let body_json = err.to_json_string();
+            return Box::into_raw(Box::new(DooResponse {
+                status: 422,
+                body: string_to_c(&body_json),
+                content_type: string_to_c("application/json"),
+            }));
+        }
     }
 
-    #[test]
-    fn test_query_parsing() {
-        let query = "name=John&age=30";
-        let params = parse_query(query);
-        assert_eq!(params.get("name"), Some(&"John".to_string()));
-        assert_eq!(params.get("age"), Some(&"30".to_string()));
+    // Validation passed - return success with body as-is (handler will process via wrapper)
+    // The actual handler call happens in generated code, we just validated and return OK to proceed
+    Box::into_raw(Box::new(DooResponse {
+        status: 0, // Special status 0 means "validation passed, proceed with handler"
+        body: string_to_c(&body_str),
+        content_type: string_to_c("application/json"),
+    }))
+}
+
+/// Parse JSON body and validate using decorators metadata
+/// Returns DooResponse* with parsed data on success, or RFC 7807 error on validation failure
+///
+/// Parameters:
+/// - body_json: JSON string to parse
+/// - struct_name: Name of the struct type to parse into
+/// - metadata_json: JSON string with struct_decorators metadata
+/// - request_path: HTTP path for error responses
+#[no_mangle]
+pub extern "C" fn doohttp_parse_and_validate_json(
+    body_json: *const libc::c_char,
+    struct_name: *const libc::c_char,
+    metadata_json: *const libc::c_char,
+    request_path: *const libc::c_char,
+) -> *mut DooResponse {
+    use error::*;
+
+    if body_json.is_null()
+        || struct_name.is_null()
+        || metadata_json.is_null()
+        || request_path.is_null()
+    {
+        return Box::into_raw(Box::new(DooResponse {
+            status: 400,
+            body: string_to_c(
+                r#"{"type":"bad_request","title":"Bad Request","status":400,"detail":"Invalid parameters"}"#,
+            ),
+            content_type: string_to_c("application/json"),
+        }));
     }
 
-    // #[test]
-    // fn test_email_validation() {
-    //     assert!(apply_validator("test@example.com", "email").is_none());
-    //     assert!(apply_validator("not-an-email", "email").is_some());
-    // }
+    let body_str = unsafe { CStr::from_ptr(body_json).to_string_lossy().to_string() };
+    let struct_name_str = unsafe { CStr::from_ptr(struct_name).to_string_lossy().to_string() };
+    let metadata_str = unsafe { CStr::from_ptr(metadata_json).to_string_lossy().to_string() };
+    let path_str = unsafe { CStr::from_ptr(request_path).to_string_lossy().to_string() };
 
-    // #[test]
-    // fn test_min_max_validation() {
-    //     assert!(apply_validator("12345678", "min8").is_none());
-    //     assert!(apply_validator("short", "min8").is_some());
-    //     assert!(apply_validator("short", "max10").is_none());
-    //     assert!(apply_validator("this is very long text", "max10").is_some());
-    // }
+    // Parse body JSON
+    let body_obj = match serde_json::from_str::<serde_json::Value>(&body_str) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        Ok(_) => {
+            let err = bad_request("Request body must be a JSON object".to_string(), path_str);
+            return Box::into_raw(Box::new(DooResponse {
+                status: 400,
+                body: string_to_c(&err.to_json_string()),
+                content_type: string_to_c("application/json"),
+            }));
+        }
+        Err(_) => {
+            let err = bad_request("Invalid JSON format".to_string(), path_str);
+            return Box::into_raw(Box::new(DooResponse {
+                status: 400,
+                body: string_to_c(&err.to_json_string()),
+                content_type: string_to_c("application/json"),
+            }));
+        }
+    };
 
-    // #[test]
-    // fn test_enum_validation() {
-    //     assert!(apply_validator("admin", "enum:user|admin|mod").is_none());
-    //     assert!(apply_validator("superadmin", "enum:user|admin|mod").is_some());
-    // }
+    // Parse metadata JSON
+    let metadata: serde_json::Value = match serde_json::from_str(&metadata_str) {
+        Ok(m) => m,
+        Err(_) => {
+            let err = internal_error("Metadata parse error".to_string(), path_str);
+            return Box::into_raw(Box::new(DooResponse {
+                status: 500,
+                body: string_to_c(&err.to_json_string()),
+                content_type: string_to_c("application/json"),
+            }));
+        }
+    };
 
-    #[test]
-    fn test_error_mapping() {
-        use std::ffi::CString;
+    // Get struct_decorators for the specific struct
+    let struct_decorators = metadata
+        .get("struct_decorators")
+        .and_then(|sd| sd.get(&struct_name_str))
+        .and_then(|v| v.as_object());
 
-        let error_type = CString::new("UserError").unwrap();
-        let not_found = CString::new("NotFound").unwrap();
-        let invalid = CString::new("InvalidInput").unwrap();
+    if let Some(field_decorators) = struct_decorators {
+        let mut validation_errors = std::collections::HashMap::new();
 
-        assert_eq!(
-            doohttp_error_to_status(error_type.as_ptr(), not_found.as_ptr()),
-            404
-        );
-        assert_eq!(
-            doohttp_error_to_status(error_type.as_ptr(), invalid.as_ptr()),
-            422
-        );
+        // Validate each field that has decorators
+        for (field_name, decorators_value) in field_decorators {
+            if let Some(decorators_array) = decorators_value.as_array() {
+                if let Some(field_value) = body_obj.get(field_name) {
+                    // Determine field type from JSON value
+                    let field_type = if field_value.is_string() {
+                        "Str"
+                    } else if field_value.is_i64() || field_value.is_u64() {
+                        "Int"
+                    } else if field_value.is_f64() {
+                        "Float"
+                    } else if field_value.is_boolean() {
+                        "Bool"
+                    } else {
+                        "Unknown"
+                    };
+
+                    // Convert field value to string for validation
+                    let value_str = match field_value {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => field_value.to_string(),
+                    };
+
+                    // Validate with each decorator
+                    for decorator in decorators_array {
+                        let decorators_json = serde_json::to_string(&vec![decorator])
+                            .unwrap_or_else(|_| "[]".to_string());
+
+                        let field_name_cstr = CString::new(field_name.as_str()).unwrap();
+                        let field_type_cstr = CString::new(field_type).unwrap();
+                        let value_cstr = CString::new(value_str.as_str()).unwrap();
+                        let decorators_cstr = CString::new(decorators_json).unwrap();
+
+                        extern "C" {
+                            fn dooruntime_validate_field(
+                                field_name: *const libc::c_char,
+                                field_type: *const libc::c_char,
+                                value: *const libc::c_char,
+                                decorators_json: *const libc::c_char,
+                            ) -> *const libc::c_char;
+                            fn dooruntime_get_last_validation_error() -> *mut libc::c_char;
+                            fn dooruntime_free_string(ptr: *mut libc::c_char);
+                        }
+
+                        unsafe {
+                            let error_ptr = dooruntime_validate_field(
+                                field_name_cstr.as_ptr(),
+                                field_type_cstr.as_ptr(),
+                                value_cstr.as_ptr(),
+                                decorators_cstr.as_ptr(),
+                            );
+
+                            if !error_ptr.is_null() {
+                                // Validation failed - get structured error
+                                let validation_error_json_ptr =
+                                    dooruntime_get_last_validation_error();
+                                if !validation_error_json_ptr.is_null() {
+                                    let error_json_str = CStr::from_ptr(validation_error_json_ptr)
+                                        .to_string_lossy()
+                                        .to_string();
+                                    if let Ok(error_json) =
+                                        serde_json::from_str::<serde_json::Value>(&error_json_str)
+                                    {
+                                        let rule = error_json
+                                            .get("rule")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let message = error_json
+                                            .get("message")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("Validation failed");
+
+                                        let field_error = FieldError::new(field_name.clone())
+                                            .with_rule(rule.to_string())
+                                            .with_value(value_str.clone())
+                                            .with_error(message.to_string());
+
+                                        validation_errors.insert(field_name.clone(), field_error);
+                                    }
+                                    dooruntime_free_string(validation_error_json_ptr);
+                                }
+                                dooruntime_free_string(error_ptr as *mut _);
+                                break; // Stop after first error for this field
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If there are validation errors, return RFC 7807 response
+        if !validation_errors.is_empty() {
+            let err = validation_failed_error(path_str, validation_errors);
+            let body_json = err.to_json_string();
+            return Box::into_raw(Box::new(DooResponse {
+                status: 422,
+                body: string_to_c(&body_json),
+                content_type: string_to_c("application/json"),
+            }));
+        }
+    }
+
+    // Validation passed - return success with parsed JSON body
+    Box::into_raw(Box::new(DooResponse {
+        status: 200,
+        body: string_to_c(&body_str),
+        content_type: string_to_c("application/json"),
+    }))
+}
+
+#[no_mangle]
+pub extern "C" fn doohttp_format_validation_error(
+    validation_error_json: *const libc::c_char,
+    request_path: *const libc::c_char,
+) -> *mut DooResponse {
+    if validation_error_json.is_null() || request_path.is_null() {
+        // Return generic 422 error
+        return Box::into_raw(Box::new(DooResponse {
+            status: 422,
+            body: string_to_c(
+                r#"{"type":"validation_error","title":"Validation Failed","status":422,"detail":"Validation error occurred"}"#,
+            ),
+            content_type: string_to_c("application/json"),
+        }));
+    }
+
+    let error_json_str = unsafe {
+        std::ffi::CStr::from_ptr(validation_error_json)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    let path_str = unsafe {
+        std::ffi::CStr::from_ptr(request_path)
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Parse validation error JSON
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&error_json_str) {
+        let field_name = json
+            .get("field_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let rule = json.get("rule").and_then(|v| v.as_str()).unwrap_or("");
+        let message = json
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Validation failed");
+        let value = json.get("value").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Create FieldError using error.rs
+        use error::*;
+        let mut field_errors = std::collections::HashMap::new();
+        let field_error = FieldError::new(field_name.to_string())
+            .with_rule(rule.to_string())
+            .with_value(value.to_string())
+            .with_error(message.to_string());
+
+        field_errors.insert(field_name.to_string(), field_error);
+
+        // Create RFC 7807 validation error response
+        let err = validation_failed_error(path_str, field_errors);
+        let body_json = err.to_json_string();
+
+        Box::into_raw(Box::new(DooResponse {
+            status: 422,
+            body: string_to_c(&body_json),
+            content_type: string_to_c("application/json"),
+        }))
+    } else {
+        // Failed to parse, return generic error
+        Box::into_raw(Box::new(DooResponse {
+            status: 422,
+            body: string_to_c(
+                r#"{"type":"validation_error","title":"Validation Failed","status":422,"detail":"Validation error occurred"}"#,
+            ),
+            content_type: string_to_c("application/json"),
+        }))
     }
 }
+
+/// Serialize a struct to JSON for HTTP response
+/// Takes a pointer to struct data and handler name, looks up metadata from registry
+#[no_mangle]
+pub extern "C" fn doohttp_serialize_struct_to_json(
+    struct_ptr: *const libc::c_void,
+    handler_name: *const libc::c_char,
+) -> *const libc::c_char {
+    if struct_ptr.is_null() || handler_name.is_null() {
+        return string_to_c("{}");
+    }
+
+    let handler_name_str = unsafe { CStr::from_ptr(handler_name).to_string_lossy().to_string() };
+
+    // Get handler metadata from registry
+    let routes = get_routes();
+    let registry = routes.lock().unwrap();
+    let metadata = registry.handler_metadata.get(&handler_name_str).cloned();
+    drop(registry);
+
+    let metadata = match metadata {
+        Some(m) => m,
+        None => return string_to_c("{}"),
+    };
+
+    // Get return type from handler metadata
+    let struct_name = &metadata.return_type;
+
+    let struct_layout = metadata
+        .struct_layouts
+        .get(struct_name)
+        .and_then(|v| v.as_object());
+
+    let struct_layout = match struct_layout {
+        Some(layout) => layout,
+        None => return string_to_c("{}"),
+    };
+
+    let fields = struct_layout.get("fields").and_then(|f| f.as_array());
+
+    let fields = match fields {
+        Some(f) => f,
+        None => return string_to_c("{}"),
+    };
+
+    let mut json_obj = serde_json::Map::new();
+
+    // Read each field from struct memory and add to JSON
+    for field in fields {
+        let field_obj = match field.as_object() {
+            Some(obj) => obj,
+            None => continue,
+        };
+
+        let field_name = match field_obj.get("name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let field_type = match field_obj.get("type").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let offset = match field_obj.get("offset").and_then(|v| v.as_u64()) {
+            Some(o) => o as isize,
+            None => continue,
+        };
+
+        unsafe {
+            let field_ptr = (struct_ptr as *const u8).offset(offset);
+
+            let field_value: serde_json::Value = match field_type {
+                "Int" => {
+                    let val = *(field_ptr as *const i32);
+                    serde_json::json!(val)
+                }
+                "Float" => {
+                    let val = *(field_ptr as *const f64);
+                    serde_json::json!(val)
+                }
+                "Bool" => {
+                    let val = *(field_ptr as *const i32);
+                    serde_json::json!(val != 0)
+                }
+                "Str" => {
+                    let str_ptr = *(field_ptr as *const *const libc::c_char);
+                    if str_ptr.is_null() {
+                        serde_json::json!("")
+                    } else {
+                        let c_str = CStr::from_ptr(str_ptr);
+                        let rust_str = c_str.to_string_lossy().to_string();
+                        serde_json::json!(rust_str)
+                    }
+                }
+                _ => serde_json::json!(null),
+            };
+
+            json_obj.insert(field_name.to_string(), field_value);
+        }
+    }
+
+    let json_str = serde_json::to_string(&json_obj).unwrap_or_else(|_| "{}".to_string());
+    string_to_c(&json_str)
+}
+
+/// Populate struct from request data with JSON parsing and validation
+/// This is the main entry point called by generated handler wrappers
+///
+/// Parameters:
+/// - request_ptr: Pointer to DooRequest
+/// - struct_ptr: Pointer to allocated struct to populate
+/// - source_type: 0=body (JSON), 1=params, 2=query
+/// - handler_name: Name of handler (used to get metadata)
+///
+/// Returns: 0 on success, error code on failure
+#[no_mangle]
+pub extern "C" fn doohttp_populate_struct_from_request(
+    request_ptr: *const libc::c_void,
+    struct_ptr: *mut libc::c_void,
+    source_type: i32,
+    handler_name: *const libc::c_char,
+) -> i32 {
+    use error::*;
+
+    if request_ptr.is_null() || struct_ptr.is_null() {
+        return -1;
+    }
+
+    if handler_name.is_null() {
+        return 0; // No handler name, can't look up metadata
+    }
+
+    let handler_name_str = unsafe { CStr::from_ptr(handler_name).to_string_lossy().to_string() };
+
+    // Cast request to get fields
+    #[repr(C)]
+    struct DooRequestLayout {
+        method: *const libc::c_char,
+        path: *const libc::c_char,
+        body: *const libc::c_char,
+        content_type: *const libc::c_char,
+        params: *const libc::c_void,
+        query: *const libc::c_void,
+        headers: *const libc::c_void,
+    }
+
+    let request = unsafe { &*(request_ptr as *const DooRequestLayout) };
+    let path_str = unsafe { CStr::from_ptr(request.path).to_string_lossy().to_string() };
+
+    // Get handler metadata from registry
+    let routes = get_routes();
+    let registry = routes.lock().unwrap();
+
+    let metadata = registry.handler_metadata.get(&handler_name_str).cloned();
+
+    drop(registry);
+
+    let metadata = match metadata {
+        Some(m) => m,
+        None => {
+            return 0; // No metadata, skip validation
+        }
+    };
+
+    // Determine source based on source_type:
+    // 0 = body (JSON), 1 = path params, 2 = query params
+    let source_data: serde_json::Map<String, serde_json::Value> = match source_type {
+        0 => {
+            // Parse body JSON
+            if request.body.is_null() {
+                return 0; // No body
+            }
+            let body_str = unsafe { CStr::from_ptr(request.body).to_string_lossy().to_string() };
+            if body_str.is_empty() {
+                return 0;
+            }
+            match serde_json::from_str::<serde_json::Value>(&body_str) {
+                Ok(serde_json::Value::Object(obj)) => obj,
+                _ => {
+                    let err = invalid_json_error(path_str.clone());
+                    set_last_error(err.status_code() as i32, err.to_json_string());
+                    return 400;
+                }
+            }
+        }
+        1 => {
+            // Extract from path params
+            if request.params.is_null() {
+                serde_json::Map::new()
+            } else {
+                let params_map = unsafe {
+                    &*(request.params as *const std::collections::HashMap<String, String>)
+                };
+                params_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .collect()
+            }
+        }
+        2 => {
+            // Extract from query params
+            if request.query.is_null() {
+                serde_json::Map::new()
+            } else {
+                let query_map = unsafe {
+                    &*(request.query as *const std::collections::HashMap<String, String>)
+                };
+                query_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .collect()
+            }
+        }
+        _ => serde_json::Map::new(),
+    };
+
+    // Get struct name from param_types based on source_type:
+    // source_type 0 = body (usually last param or only param)
+    // source_type 1 = path (usually first param)
+    // source_type 2 = query (usually first param or named with Query/Params)
+    let struct_name = if !metadata.param_types.is_empty() {
+        // Use heuristic: for path/query, use first param. For body, use last param if multiple, otherwise first
+        let param_index = match source_type {
+            1 | 2 => 0, // path/query use first param
+            _ => {
+                // body uses last param (or first if only one)
+                if metadata.param_types.len() > 1 {
+                    metadata.param_types.len() - 1
+                } else {
+                    0
+                }
+            }
+        };
+        metadata
+            .param_types
+            .get(param_index)
+            .cloned()
+            .unwrap_or_else(|| "Unknown".to_string())
+    } else {
+        "Unknown".to_string()
+    };
+
+    // Check for missing required fields first
+    let struct_layouts = &metadata.struct_layouts;
+    if let Some(struct_layout) = struct_layouts.get(&struct_name) {
+        if let Some(fields) = struct_layout.get("fields").and_then(|f| f.as_array()) {
+            for field in fields {
+                let field_obj = match field.as_object() {
+                    Some(obj) => obj,
+                    None => continue,
+                };
+
+                let field_name = match field_obj.get("name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+
+                let field_type = match field_obj.get("type").and_then(|v| v.as_str()) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+                // Check if field is missing from source data
+                if !source_data.contains_key(field_name) {
+                    // Field is missing - return error based on source type
+                    let err = match source_type {
+                        1 => {
+                            // Path param missing
+                            let param = ParameterError::new(field_name.to_string())
+                                .with_expected(field_type.to_string())
+                                .with_message("Path parameter not found".to_string());
+                            missing_path_param_error(path_str.clone(), param)
+                        }
+                        2 => {
+                            // Query param missing
+                            let param = ParameterError::new(field_name.to_string())
+                                .with_expected(field_type.to_string())
+                                .with_message("Required query parameter missing".to_string());
+                            missing_query_param_error(path_str.clone(), param)
+                        }
+                        _ => {
+                            // Body field missing
+                            let mut fields = std::collections::HashMap::new();
+                            let field_err = FieldError::new(field_name.to_string())
+                                .with_rule("required".to_string())
+                                .with_error("Field is required".to_string());
+                            fields.insert(field_name.to_string(), field_err);
+                            missing_field_error(path_str.clone(), fields)
+                        }
+                    };
+                    set_last_error(err.status_code() as i32, err.to_json_string());
+                    return 400;
+                }
+
+                // Validate type conversion for path/query params
+                if source_type == 1 || source_type == 2 {
+                    if let Some(value) = source_data.get(field_name) {
+                        if let Some(value_str) = value.as_str() {
+                            let type_valid = match field_type {
+                                "Int" => value_str.parse::<i64>().is_ok(),
+                                "Float" => value_str.parse::<f64>().is_ok(),
+                                "Bool" => value_str == "true" || value_str == "false",
+                                "Str" => true,
+                                _ => true,
+                            };
+
+                            if !type_valid {
+                                let err = match source_type {
+                                    1 => {
+                                        let param = ParameterError::new(field_name.to_string())
+                                            .with_expected(field_type.to_string())
+                                            .with_received(value_str.to_string())
+                                            .with_message(
+                                                "Invalid path parameter type".to_string(),
+                                            );
+                                        invalid_path_param_type_error(path_str.clone(), param)
+                                    }
+                                    2 => {
+                                        let param = ParameterError::new(field_name.to_string())
+                                            .with_expected(field_type.to_string())
+                                            .with_received(value_str.to_string())
+                                            .with_message(
+                                                "Invalid query parameter type".to_string(),
+                                            );
+                                        invalid_query_param_type_error(path_str.clone(), param)
+                                    }
+                                    _ => {
+                                        let mut fields = std::collections::HashMap::new();
+                                        let field_err = FieldError::new(field_name.to_string())
+                                            .with_rule("type_mismatch".to_string())
+                                            .with_expected(field_type.to_string())
+                                            .with_received(value_str.to_string())
+                                            .with_error(format!(
+                                                "Expected type {}, received {}",
+                                                field_type, value_str
+                                            ));
+                                        fields.insert(field_name.to_string(), field_err);
+                                        type_mismatch_error(path_str.clone(), fields)
+                                    }
+                                };
+                                set_last_error(err.status_code() as i32, err.to_json_string());
+                                return 400;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate fields with decorators - use metadata directly
+    let struct_decorators = metadata.struct_decorators.get(&struct_name);
+
+    if let Some(field_decorators) = struct_decorators {
+        for (field_name, decorators) in field_decorators {
+            // decorators is Vec<DecoratorInfo>
+            if decorators.is_empty() {
+                continue;
+            }
+
+            {
+                if let Some(field_value) = source_data.get(field_name) {
+                    let field_type = if field_value.is_string() {
+                        "Str"
+                    } else if field_value.is_i64() || field_value.is_u64() {
+                        "Int"
+                    } else if field_value.is_f64() {
+                        "Float"
+                    } else if field_value.is_boolean() {
+                        "Bool"
+                    } else {
+                        "Unknown"
+                    };
+
+                    let value_str = match field_value {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => field_value.to_string(),
+                    };
+
+                    for decorator in decorators {
+                        let decorators_json = serde_json::to_string(&vec![serde_json::json!({
+                            "name": decorator.name,
+                            "args": decorator.args
+                        })])
+                        .unwrap_or_else(|_| "[]".to_string());
+
+                        let field_name_cstr = CString::new(field_name.as_str()).unwrap();
+                        let field_type_cstr = CString::new(field_type).unwrap();
+                        let value_cstr = CString::new(value_str.as_str()).unwrap();
+                        let decorators_cstr = CString::new(decorators_json).unwrap();
+
+                        extern "C" {
+                            fn dooruntime_validate_field(
+                                field_name: *const libc::c_char,
+                                field_type: *const libc::c_char,
+                                value: *const libc::c_char,
+                                decorators_json: *const libc::c_char,
+                            ) -> *const libc::c_char;
+                            fn dooruntime_get_last_validation_error() -> *mut libc::c_char;
+                            fn dooruntime_free_string(ptr: *mut libc::c_char);
+                        }
+
+                        unsafe {
+                            let error_ptr = dooruntime_validate_field(
+                                field_name_cstr.as_ptr(),
+                                field_type_cstr.as_ptr(),
+                                value_cstr.as_ptr(),
+                                decorators_cstr.as_ptr(),
+                            );
+
+                            if !error_ptr.is_null() {
+                                let validation_error_json_ptr =
+                                    dooruntime_get_last_validation_error();
+                                if !validation_error_json_ptr.is_null() {
+                                    let error_json_str = CStr::from_ptr(validation_error_json_ptr)
+                                        .to_string_lossy()
+                                        .to_string();
+                                    if let Ok(error_json) =
+                                        serde_json::from_str::<serde_json::Value>(&error_json_str)
+                                    {
+                                        let rule = error_json
+                                            .get("rule")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let message = error_json
+                                            .get("message")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("Validation failed");
+
+                                        let mut validation_errors =
+                                            std::collections::HashMap::new();
+                                        let field_error = FieldError::new(field_name.clone())
+                                            .with_rule(rule.to_string())
+                                            .with_value(value_str.clone())
+                                            .with_error(message.to_string());
+                                        validation_errors.insert(field_name.clone(), field_error);
+
+                                        dooruntime_free_string(validation_error_json_ptr);
+
+                                        // Validation failed - store error and return error code
+                                        let err = validation_failed_error(
+                                            path_str.clone(),
+                                            validation_errors,
+                                        );
+                                        set_last_error(
+                                            err.status_code() as i32,
+                                            err.to_json_string(),
+                                        );
+                                        return 422; // Unprocessable Entity
+                                    }
+                                }
+                                dooruntime_free_string(error_ptr as *mut _);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Validation passed - populate struct dynamically using actual struct_layouts from metadata
+    let routes = get_routes();
+    let registry = routes.lock().unwrap();
+    let full_metadata = registry.handler_metadata.get(&handler_name_str).cloned();
+    drop(registry);
+
+    if let Some(full_meta) = full_metadata {
+        // Build metadata JSON to parse struct_layouts
+        let metadata_json = serde_json::json!({
+            "struct_layouts": full_meta.struct_layouts,
+        });
+
+        // Get struct layout with actual offsets
+        if let Some(struct_layout) = metadata_json
+            .get("struct_layouts")
+            .and_then(|sl| sl.get(&struct_name))
+            .and_then(|v| v.as_object())
+        {
+            if let Some(fields) = struct_layout.get("fields").and_then(|f| f.as_array()) {
+                let struct_ptr_u8 = struct_ptr as *mut u8;
+
+                // Populate each field using actual offset from metadata
+                for field in fields {
+                    let field_obj = match field.as_object() {
+                        Some(obj) => obj,
+                        None => continue,
+                    };
+
+                    let field_name = match field_obj.get("name").and_then(|v| v.as_str()) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+
+                    let field_type = match field_obj.get("type").and_then(|v| v.as_str()) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+
+                    let offset = match field_obj.get("offset").and_then(|v| v.as_u64()) {
+                        Some(o) => o as usize,
+                        None => continue,
+                    };
+
+                    if let Some(field_value) = source_data.get(field_name) {
+                        unsafe {
+                            match field_type {
+                                "Str" => {
+                                    // Handle both direct strings and strings that need parsing
+                                    let s = if let Some(str_val) = field_value.as_str() {
+                                        str_val
+                                    } else {
+                                        ""
+                                    };
+                                    let c_string = CString::new(s).unwrap();
+                                    let str_ptr = c_string.into_raw();
+                                    std::ptr::write(
+                                        struct_ptr_u8.add(offset) as *mut *const libc::c_char,
+                                        str_ptr,
+                                    );
+                                }
+                                "Int" => {
+                                    // Handle both JSON numbers and string representations
+                                    let n = if let Some(num) = field_value.as_i64() {
+                                        num as i32
+                                    } else if let Some(s) = field_value.as_str() {
+                                        s.parse::<i32>().unwrap_or(0)
+                                    } else {
+                                        0
+                                    };
+                                    std::ptr::write(struct_ptr_u8.add(offset) as *mut i32, n);
+                                }
+                                "Float" => {
+                                    let f = if let Some(num) = field_value.as_f64() {
+                                        num
+                                    } else if let Some(s) = field_value.as_str() {
+                                        s.parse::<f64>().unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    std::ptr::write(struct_ptr_u8.add(offset) as *mut f64, f);
+                                }
+                                "Bool" => {
+                                    let b = if let Some(bool_val) = field_value.as_bool() {
+                                        bool_val
+                                    } else if let Some(s) = field_value.as_str() {
+                                        s == "true"
+                                    } else {
+                                        false
+                                    };
+                                    std::ptr::write(
+                                        struct_ptr_u8.add(offset) as *mut i32,
+                                        if b { 1 } else { 0 },
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    0 // Success
+}
+
+// Tests removed - validation logic moved to libdoo_runtime
+// HTTP layer now delegates all decorator validation to dooruntime_validate_field()

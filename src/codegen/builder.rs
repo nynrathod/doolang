@@ -3,6 +3,1381 @@ use crate::limits::CODEGEN_MAX_DEPTH;
 use crate::mir::MirInstr;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::BasicValueEnum;
+use inkwell::AddressSpace;
+
+impl<'ctx> CodeGen<'ctx> {
+    /// Check if a method name is an HTTP route registration method
+    fn is_http_route_method(&self, method: &str) -> bool {
+        matches!(
+            method,
+            "get"
+                | "post"
+                | "put"
+                | "delete"
+                | "patch"
+                | "getWithMiddleware"
+                | "postWithMiddleware"
+                | "putWithMiddleware"
+                | "deleteWithMiddleware"
+                | "patchWithMiddleware"
+        )
+    }
+
+    /// Helper to get handler metadata as JSON
+    fn get_handler_metadata(&self, handler_name: &str) -> serde_json::Value {
+        // Return empty object if handler not found
+        serde_json::json!({})
+    }
+
+    /// Helper to get handler parameter type name
+    fn get_handler_param_type_name(&self, handler_name: &str, param_index: usize) -> String {
+        "Unknown".to_string()
+    }
+
+    /// Helper to get handler return type name
+    fn get_handler_return_type_name(&self, handler_name: &str) -> String {
+        "Unknown".to_string()
+    }
+
+    /// Generate FFI wrapper function for a handler to bridge Doo types to FFI types
+    /// The wrapper function has signature: extern "C" fn(*mut DooRequest) -> *mut DooResult
+    /// This wrapper validates JSON, calls handler, and serializes response
+    fn generate_handler_wrapper(&mut self, handler_name: &str) -> Option<String> {
+        // Get the original handler function
+        let actual_func_name = self
+            .function_aliases
+            .get(handler_name)
+            .cloned()
+            .unwrap_or_else(|| handler_name.to_string());
+
+        let original_fn = match self.module.get_function(&actual_func_name) {
+            Some(f) => f,
+            None => return None,
+        };
+
+        // Create wrapper function name
+        let wrapper_name = format!("{}_ffi_wrapper", handler_name);
+
+        // Declare FFI types
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let wrapper_fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+
+        // Create the wrapper function
+        let wrapper_fn = self
+            .module
+            .add_function(&wrapper_name, wrapper_fn_type, None);
+        let entry_bb = self.context.append_basic_block(wrapper_fn, "entry");
+
+        // Save current builder position
+        let saved_block = self.builder.get_insert_block();
+
+        self.builder.position_at_end(entry_bb);
+
+        // Get the DooRequest pointer parameter
+        let request_ptr = wrapper_fn.get_nth_param(0).unwrap().into_pointer_value();
+
+        // Declare FFI extraction functions
+        self.declare_request_extraction_functions();
+
+        // Get DooRequest body field (assuming body is at index 2)
+        let request_type = self.context.struct_type(
+            &[
+                ptr_type.into(), // method
+                ptr_type.into(), // path
+                ptr_type.into(), // body
+                ptr_type.into(), // content_type
+                ptr_type.into(), // params
+                ptr_type.into(), // query
+                ptr_type.into(), // headers
+            ],
+            false,
+        );
+
+        // Load body string from request
+        let body_ptr_gep = self
+            .builder
+            .build_struct_gep(request_type, request_ptr, 2, "body_gep")
+            .unwrap();
+        let body_str = self
+            .builder
+            .build_load(ptr_type, body_ptr_gep, "body_str")
+            .unwrap()
+            .into_pointer_value();
+
+        // Build arguments for handler call
+        let param_count = original_fn.count_params();
+        let result = if param_count == 0 {
+            // Handler takes no parameters
+            self.builder
+                .build_call(original_fn, &[], "handler_result")
+                .unwrap()
+                .try_as_basic_value()
+                .left()
+        } else if param_count == 1 {
+            // Handler takes one parameter
+            let param_type = original_fn.get_type().get_param_types()[0];
+
+            // All struct parameters need to be populated from request data
+            // (body, path params, or query params) regardless of decorators
+            if param_type.is_struct_type() || param_type.is_pointer_type() {
+                // Allocate struct for parameter
+                let struct_alloca = if param_type.is_struct_type() {
+                    self.builder
+                        .build_alloca(param_type.into_struct_type(), "param_struct")
+                        .unwrap()
+                } else {
+                    // Handler compiled as pointer but needs struct - allocate based on metadata
+                    // Use a generic allocation size (32 bytes should cover most structs)
+                    let struct_size = i32_type.const_int(32, false);
+                    self.builder
+                        .build_array_malloc(self.context.i8_type(), struct_size, "param_struct")
+                        .unwrap()
+                };
+
+                // Populate struct from request data using FFI helper
+                let populate_fn = if let Some(f) = self
+                    .module
+                    .get_function("doohttp_populate_struct_from_request")
+                {
+                    f
+                } else {
+                    let fn_type = i32_type.fn_type(
+                        &[
+                            ptr_type.into(),
+                            ptr_type.into(),
+                            i32_type.into(),
+                            ptr_type.into(),
+                        ],
+                        false,
+                    );
+                    self.module
+                        .add_function("doohttp_populate_struct_from_request", fn_type, None)
+                };
+
+                let cast_ptr = self
+                    .builder
+                    .build_pointer_cast(struct_alloca, ptr_type, "struct_cast")
+                    .unwrap();
+
+                // Get handler name as C string
+                let handler_name_cstr = self.generate_string_literal_ptr(handler_name);
+
+                // Determine source_type based on parameter type name
+                let source_type = if let Some(stored_param_types) =
+                    self.function_param_types.get(&actual_func_name)
+                {
+                    if !stored_param_types.is_empty() {
+                        let param_type_name = &stored_param_types[0];
+                        if param_type_name.contains("Path") {
+                            1 // path params
+                        } else if param_type_name.contains("Query") {
+                            2 // query params
+                        } else {
+                            0 // body
+                        }
+                    } else {
+                        0 // default to body
+                    }
+                } else {
+                    0 // default to body
+                };
+
+                // Call populate to validate and fill struct from request data
+                let populate_result = self
+                    .builder
+                    .build_call(
+                        populate_fn,
+                        &[
+                            request_ptr.into(),
+                            cast_ptr.into(),
+                            i32_type.const_int(source_type, false).into(),
+                            handler_name_cstr.into(),
+                        ],
+                        "populate_result",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+
+                // Check if validation failed (non-zero return = error)
+                let validation_failed = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        populate_result,
+                        i32_type.const_zero(),
+                        "validation_failed",
+                    )
+                    .unwrap();
+
+                let error_block = self
+                    .context
+                    .append_basic_block(wrapper_fn, "validation_error");
+                let success_block = self
+                    .context
+                    .append_basic_block(wrapper_fn, "validation_success");
+
+                self.builder
+                    .build_conditional_branch(validation_failed, error_block, success_block)
+                    .unwrap();
+
+                // Error block: return RFC 7807 error response
+                self.builder.position_at_end(error_block);
+
+                // Get the error status FIRST (before json consumes the error)
+                let get_status_fn = if self
+                    .module
+                    .get_function("doohttp_last_error_status")
+                    .is_none()
+                {
+                    let fn_type = i32_type.fn_type(&[], false);
+                    self.module
+                        .add_function("doohttp_last_error_status", fn_type, None)
+                } else {
+                    self.module
+                        .get_function("doohttp_last_error_status")
+                        .unwrap()
+                };
+
+                let error_status = self
+                    .builder
+                    .build_call(get_status_fn, &[], "error_status")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+
+                // Now get the error JSON (this consumes the error)
+                let get_error_fn = if self
+                    .module
+                    .get_function("doohttp_last_error_json")
+                    .is_none()
+                {
+                    let fn_type = ptr_type.fn_type(&[], false);
+                    self.module
+                        .add_function("doohttp_last_error_json", fn_type, None)
+                } else {
+                    self.module.get_function("doohttp_last_error_json").unwrap()
+                };
+
+                let error_json = self
+                    .builder
+                    .build_call(get_error_fn, &[], "error_json")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_pointer_value();
+
+                // Build error response
+                let error_response_alloc = self
+                    .builder
+                    .build_malloc(
+                        self.context.struct_type(
+                            &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                            false,
+                        ),
+                        "error_response",
+                    )
+                    .unwrap();
+
+                let error_status_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        self.context.struct_type(
+                            &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                            false,
+                        ),
+                        error_response_alloc,
+                        0,
+                        "error_status_ptr",
+                    )
+                    .unwrap();
+                self.builder
+                    .build_store(error_status_ptr, error_status)
+                    .unwrap();
+
+                let error_body_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        self.context.struct_type(
+                            &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                            false,
+                        ),
+                        error_response_alloc,
+                        1,
+                        "error_body_ptr",
+                    )
+                    .unwrap();
+                self.builder
+                    .build_store(error_body_ptr, error_json)
+                    .unwrap();
+
+                let json_ct = self.generate_string_literal_ptr("application/json");
+                let error_ct_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        self.context.struct_type(
+                            &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                            false,
+                        ),
+                        error_response_alloc,
+                        2,
+                        "error_ct_ptr",
+                    )
+                    .unwrap();
+                self.builder.build_store(error_ct_ptr, json_ct).unwrap();
+
+                // Build DooResult for error
+                let error_result_alloc = self
+                    .builder
+                    .build_malloc(
+                        self.context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                        "error_result",
+                    )
+                    .unwrap();
+
+                let error_tag_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        self.context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                        error_result_alloc,
+                        0,
+                        "error_tag_ptr",
+                    )
+                    .unwrap();
+                self.builder
+                    .build_store(error_tag_ptr, i32_type.const_zero())
+                    .unwrap();
+
+                let error_value_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        self.context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                        error_result_alloc,
+                        1,
+                        "error_value_ptr",
+                    )
+                    .unwrap();
+                self.builder
+                    .build_store(error_value_ptr, error_response_alloc)
+                    .unwrap();
+
+                self.builder
+                    .build_return(Some(&error_result_alloc))
+                    .unwrap();
+
+                // Success block: call handler
+                self.builder.position_at_end(success_block);
+
+                // Call handler with struct pointer (or cast if needed)
+                self.builder
+                    .build_call(original_fn, &[struct_alloca.into()], "handler_result")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+            } else {
+                // Pointer parameter without decorators - pass request pointer
+                self.builder
+                    .build_call(original_fn, &[request_ptr.into()], "handler_result")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+            }
+        } else {
+            // Multiple parameters - allocate structs for each
+            let mut args = vec![];
+            for i in 0..param_count {
+                let param_type = original_fn.get_type().get_param_types()[i as usize];
+
+                if param_type.is_struct_type() || param_type.is_pointer_type() {
+                    let struct_alloca = if param_type.is_struct_type() {
+                        self.builder
+                            .build_alloca(param_type.into_struct_type(), &format!("param_{}", i))
+                            .unwrap()
+                    } else {
+                        // Handler compiled as pointer - allocate generic struct
+                        let struct_size = i32_type.const_int(64, false);
+                        self.builder
+                            .build_array_malloc(
+                                self.context.i8_type(),
+                                struct_size,
+                                &format!("param_{}", i),
+                            )
+                            .unwrap()
+                    };
+
+                    // Populate struct from request data using FFI helper
+                    let populate_fn = if let Some(f) = self
+                        .module
+                        .get_function("doohttp_populate_struct_from_request")
+                    {
+                        f
+                    } else {
+                        let fn_type = i32_type.fn_type(
+                            &[
+                                ptr_type.into(),
+                                ptr_type.into(),
+                                i32_type.into(),
+                                ptr_type.into(),
+                            ],
+                            false,
+                        );
+                        self.module.add_function(
+                            "doohttp_populate_struct_from_request",
+                            fn_type,
+                            None,
+                        )
+                    };
+
+                    let cast_ptr = self
+                        .builder
+                        .build_pointer_cast(struct_alloca, ptr_type, &format!("struct_cast_{}", i))
+                        .unwrap();
+
+                    // Determine source_type based on parameter position and naming:
+                    // - First param: check if it looks like path params (e.g., contains "Path", ":id" in route)
+                    // - Second param: usually body
+                    // - Check param_types from metadata to determine source
+                    let source_type = if let Some(stored_param_types) =
+                        self.function_param_types.get(&actual_func_name)
+                    {
+                        if (i as usize) < stored_param_types.len() {
+                            let param_type_name = &stored_param_types[i as usize];
+                            // Heuristic: if type name contains "Path" or is first param, it's path params
+                            // If contains "Query", it's query params
+                            // Otherwise, it's body
+                            if param_type_name.contains("Path") {
+                                1 // path params
+                            } else if param_type_name.contains("Query") {
+                                2 // query params
+                            } else {
+                                0 // body
+                            }
+                        } else if i == 0 {
+                            1 // First param defaults to path
+                        } else {
+                            0 // Other params default to body
+                        }
+                    } else if i == 0 {
+                        1 // First param defaults to path
+                    } else {
+                        0 // Other params default to body
+                    };
+
+                    // Get handler name as C string
+                    let handler_name_cstr = self.generate_string_literal_ptr(handler_name);
+
+                    let populate_result = self
+                        .builder
+                        .build_call(
+                            populate_fn,
+                            &[
+                                request_ptr.into(),
+                                cast_ptr.into(),
+                                i32_type.const_int(source_type, false).into(),
+                                handler_name_cstr.into(),
+                            ],
+                            &format!("populate_result_{}", i),
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_int_value();
+
+                    // Check if population failed (non-zero return = error)
+                    let populate_failed = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            populate_result,
+                            i32_type.const_zero(),
+                            &format!("populate_failed_{}", i),
+                        )
+                        .unwrap();
+
+                    let param_error_block = self
+                        .context
+                        .append_basic_block(wrapper_fn, &format!("param_error_{}", i));
+                    let param_success_block = self
+                        .context
+                        .append_basic_block(wrapper_fn, &format!("param_success_{}", i));
+
+                    self.builder
+                        .build_conditional_branch(
+                            populate_failed,
+                            param_error_block,
+                            param_success_block,
+                        )
+                        .unwrap();
+
+                    // Error block: return RFC 7807 error response
+                    self.builder.position_at_end(param_error_block);
+
+                    // Get the error status FIRST (before json consumes the error)
+                    let get_status_fn = if self
+                        .module
+                        .get_function("doohttp_last_error_status")
+                        .is_none()
+                    {
+                        let fn_type = i32_type.fn_type(&[], false);
+                        self.module
+                            .add_function("doohttp_last_error_status", fn_type, None)
+                    } else {
+                        self.module
+                            .get_function("doohttp_last_error_status")
+                            .unwrap()
+                    };
+
+                    let error_status = self
+                        .builder
+                        .build_call(get_status_fn, &[], &format!("error_status_{}", i))
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_int_value();
+
+                    // Now get the error JSON (this consumes the error)
+                    let get_error_fn = if self
+                        .module
+                        .get_function("doohttp_last_error_json")
+                        .is_none()
+                    {
+                        let fn_type = ptr_type.fn_type(&[], false);
+                        self.module
+                            .add_function("doohttp_last_error_json", fn_type, None)
+                    } else {
+                        self.module.get_function("doohttp_last_error_json").unwrap()
+                    };
+
+                    let error_json = self
+                        .builder
+                        .build_call(get_error_fn, &[], &format!("error_json_{}", i))
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Build error response
+                    let error_response_alloc = self
+                        .builder
+                        .build_malloc(
+                            self.context.struct_type(
+                                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            ),
+                            &format!("error_response_{}", i),
+                        )
+                        .unwrap();
+
+                    let error_status_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context.struct_type(
+                                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            ),
+                            error_response_alloc,
+                            0,
+                            &format!("error_status_ptr_{}", i),
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(error_status_ptr, error_status)
+                        .unwrap();
+
+                    let error_body_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context.struct_type(
+                                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            ),
+                            error_response_alloc,
+                            1,
+                            &format!("error_body_ptr_{}", i),
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(error_body_ptr, error_json)
+                        .unwrap();
+
+                    let json_ct = self.generate_string_literal_ptr("application/json");
+                    let error_ct_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context.struct_type(
+                                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            ),
+                            error_response_alloc,
+                            2,
+                            &format!("error_ct_ptr_{}", i),
+                        )
+                        .unwrap();
+                    self.builder.build_store(error_ct_ptr, json_ct).unwrap();
+
+                    // Build DooResult for error
+                    let error_result_alloc = self
+                        .builder
+                        .build_malloc(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            &format!("error_result_{}", i),
+                        )
+                        .unwrap();
+
+                    let error_tag_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            error_result_alloc,
+                            0,
+                            &format!("error_tag_ptr_{}", i),
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(error_tag_ptr, i32_type.const_zero())
+                        .unwrap();
+
+                    let error_value_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            error_result_alloc,
+                            1,
+                            &format!("error_value_ptr_{}", i),
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(error_value_ptr, error_response_alloc)
+                        .unwrap();
+
+                    self.builder
+                        .build_return(Some(&error_result_alloc))
+                        .unwrap();
+
+                    // Success block: continue with next parameter
+                    self.builder.position_at_end(param_success_block);
+
+                    args.push(struct_alloca.into());
+                } else if param_type.is_pointer_type() {
+                    args.push(request_ptr.into());
+                } else if param_type.is_int_type() {
+                    args.push(i32_type.const_zero().into());
+                } else {
+                    args.push(ptr_type.const_null().into());
+                }
+            }
+
+            self.builder
+                .build_call(original_fn, &args, "handler_result")
+                .unwrap()
+                .try_as_basic_value()
+                .left()
+        };
+
+        // Convert result to DooResult
+        // Allocate DooResult struct
+        let result_type = self.context.struct_type(
+            &[
+                self.context.i32_type().into(), // tag (0 = Ok, 1 = Err)
+                ptr_type.into(),                // value pointer
+            ],
+            false,
+        );
+
+        let result_alloc = self
+            .builder
+            .build_malloc(result_type, "result_alloc")
+            .unwrap();
+        let result_struct = self
+            .builder
+            .build_pointer_cast(
+                result_alloc,
+                result_type.ptr_type(AddressSpace::default()),
+                "result_cast",
+            )
+            .unwrap();
+
+        if let Some(handler_result) = result {
+            // Allocate DooResponse
+            let response_type = self.context.struct_type(
+                &[
+                    self.context.i32_type().into(), // status
+                    ptr_type.into(),                // body
+                    ptr_type.into(),                // content_type
+                ],
+                false,
+            );
+
+            let response_alloc = self
+                .builder
+                .build_malloc(response_type, "response_alloc")
+                .unwrap();
+            let response_ptr = self
+                .builder
+                .build_pointer_cast(
+                    response_alloc,
+                    response_type.ptr_type(AddressSpace::default()),
+                    "response_cast",
+                )
+                .unwrap();
+
+            // Check if handler returned a pointer (string or struct) or struct (Response)
+            if handler_result.is_pointer_value() {
+                // Handler returned a pointer - could be string or struct pointer
+                // Need to check return type to determine if we should serialize
+                let return_type = self
+                    .function_return_types
+                    .get(&actual_func_name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // If return type is a known struct (not Str), serialize it
+                if !return_type.is_empty()
+                    && return_type != "Str"
+                    && !return_type.contains("Array")
+                    && !return_type.contains("Map")
+                    && self.struct_metadata.contains_key(&return_type)
+                {
+                    // This is a struct pointer - serialize it to JSON
+                    let serialize_fn = if let Some(f) =
+                        self.module.get_function("doohttp_serialize_struct_to_json")
+                    {
+                        f
+                    } else {
+                        let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                        self.module
+                            .add_function("doohttp_serialize_struct_to_json", fn_type, None)
+                    };
+
+                    let handler_name_cstr = self.generate_string_literal_ptr(handler_name);
+
+                    let json_str = self
+                        .builder
+                        .build_call(
+                            serialize_fn,
+                            &[handler_result.into(), handler_name_cstr.into()],
+                            "json_str",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    let status_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(status_ptr, self.context.i32_type().const_int(200, false))
+                        .unwrap();
+
+                    let body_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
+                        .unwrap();
+                    self.builder.build_store(body_ptr, json_str).unwrap();
+
+                    let ct_str = self.generate_string_literal_ptr("application/json");
+                    let ct_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
+                        .unwrap();
+                    self.builder.build_store(ct_ptr, ct_str).unwrap();
+                } else {
+                    // Handler returned a string - wrap it in a 200 OK Response
+                    let status_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(status_ptr, self.context.i32_type().const_int(200, false))
+                        .unwrap();
+
+                    let body_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(body_ptr, handler_result.into_pointer_value())
+                        .unwrap();
+
+                    // Default content-type
+                    let ct_str = self.generate_string_literal_ptr("application/json");
+                    let ct_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
+                        .unwrap();
+                    self.builder.build_store(ct_ptr, ct_str).unwrap();
+                }
+            } else if handler_result.is_struct_value() {
+                let struct_val = handler_result.into_struct_value();
+                let struct_type = struct_val.get_type();
+
+                // Check if this is a Response struct (has 3 fields: Status, Body, ContentType)
+                if struct_type.count_fields() == 3 {
+                    // Assume it's Response struct - extract fields
+                    let status = self
+                        .builder
+                        .build_extract_value(struct_val, 0, "status")
+                        .unwrap();
+
+                    let body = self
+                        .builder
+                        .build_extract_value(struct_val, 1, "body")
+                        .unwrap();
+
+                    let content_type = self
+                        .builder
+                        .build_extract_value(struct_val, 2, "content_type")
+                        .unwrap();
+
+                    // Store into DooResponse
+                    let status_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
+                        .unwrap();
+                    self.builder.build_store(status_ptr, status).unwrap();
+
+                    let body_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
+                        .unwrap();
+                    self.builder.build_store(body_ptr, body).unwrap();
+
+                    let ct_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
+                        .unwrap();
+                    self.builder.build_store(ct_ptr, content_type).unwrap();
+                } else {
+                    // Arbitrary user-defined struct - serialize to JSON using FFI
+                    let struct_alloc = self
+                        .builder
+                        .build_malloc(struct_type, "struct_return_alloc")
+                        .unwrap();
+
+                    // Store struct value to heap
+                    self.builder.build_store(struct_alloc, struct_val).unwrap();
+
+                    // Cast to generic pointer
+                    let struct_ptr = self
+                        .builder
+                        .build_pointer_cast(struct_alloc, ptr_type, "struct_ptr_cast")
+                        .unwrap();
+
+                    // Declare/get doohttp_serialize_struct_to_json function
+                    let serialize_fn = if let Some(f) =
+                        self.module.get_function("doohttp_serialize_struct_to_json")
+                    {
+                        f
+                    } else {
+                        let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                        self.module
+                            .add_function("doohttp_serialize_struct_to_json", fn_type, None)
+                    };
+
+                    // Get handler name as C string
+                    let handler_name_cstr = self.generate_string_literal_ptr(handler_name);
+
+                    // Call serialization function: doohttp_serialize_struct_to_json(struct_ptr, handler_name)
+                    let json_str = self
+                        .builder
+                        .build_call(
+                            serialize_fn,
+                            &[struct_ptr.into(), handler_name_cstr.into()],
+                            "json_str",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Store serialized JSON as response body with 200 status
+                    let status_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(status_ptr, self.context.i32_type().const_int(200, false))
+                        .unwrap();
+
+                    let body_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
+                        .unwrap();
+                    self.builder.build_store(body_ptr, json_str).unwrap();
+
+                    let ct_str = self.generate_string_literal_ptr("application/json");
+                    let ct_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
+                        .unwrap();
+                    self.builder.build_store(ct_ptr, ct_str).unwrap();
+                }
+            } else {
+                // Int or other simple value - convert to string and wrap in 200 OK
+                let status_ptr = self
+                    .builder
+                    .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
+                    .unwrap();
+                self.builder
+                    .build_store(status_ptr, self.context.i32_type().const_int(200, false))
+                    .unwrap();
+
+                let body_ptr = self
+                    .builder
+                    .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
+                    .unwrap();
+                self.builder
+                    .build_store(body_ptr, ptr_type.const_null())
+                    .unwrap();
+
+                let ct_str = self.generate_string_literal_ptr("text/plain");
+                let ct_ptr = self
+                    .builder
+                    .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
+                    .unwrap();
+                self.builder.build_store(ct_ptr, ct_str).unwrap();
+            }
+
+            // Store tag = 0 (success)
+            let tag_ptr = self
+                .builder
+                .build_struct_gep(result_type, result_struct, 0, "tag_ptr")
+                .unwrap();
+            self.builder
+                .build_store(tag_ptr, self.context.i32_type().const_int(0, false))
+                .unwrap();
+
+            // Store response pointer as value
+            let value_ptr = self
+                .builder
+                .build_struct_gep(result_type, result_struct, 1, "value_ptr")
+                .unwrap();
+            let generic_ptr = self
+                .builder
+                .build_pointer_cast(response_ptr, ptr_type, "generic_ptr")
+                .unwrap();
+            self.builder.build_store(value_ptr, generic_ptr).unwrap();
+        } else {
+            // No return value - return null response
+            let tag_ptr = self
+                .builder
+                .build_struct_gep(result_type, result_struct, 0, "tag_ptr")
+                .unwrap();
+            self.builder
+                .build_store(tag_ptr, self.context.i32_type().const_int(0, false))
+                .unwrap();
+
+            let value_ptr = self
+                .builder
+                .build_struct_gep(result_type, result_struct, 1, "value_ptr")
+                .unwrap();
+            self.builder
+                .build_store(value_ptr, ptr_type.const_null())
+                .unwrap();
+        }
+
+        // Return the result pointer
+        let final_ptr = self
+            .builder
+            .build_pointer_cast(result_struct, ptr_type, "final_ptr")
+            .unwrap();
+        self.builder.build_return(Some(&final_ptr)).unwrap();
+
+        // Restore builder position
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+
+        Some(wrapper_name)
+    }
+
+    /// Register HTTP handler function pointer with FFI before route registration
+    /// This extracts the handler name from args and calls doo_http_register_handler_with_metadata
+    fn register_http_handler_if_needed(&mut self, args: &[String]) {
+        // For HTTP route methods, the last argument is the handler function name
+        // e.g., app.get("/path", handlerName) or app.get("/path", middleware, handlerName)
+        if args.is_empty() {
+            return;
+        }
+
+        let handler_temp = args.last().unwrap();
+
+        // Resolve the temp variable to the actual handler name string
+        let handler_name = if handler_temp.starts_with('%') {
+            // This is a temp variable - look up its string value
+            if let Some(string_val) = self.temp_strings.get(handler_temp) {
+                string_val.clone()
+            } else {
+                return;
+            }
+        } else if handler_temp.starts_with('"') {
+            // Direct string literal, strip quotes
+            handler_temp.trim_matches('"').to_string()
+        } else {
+            // Direct identifier
+            handler_temp.clone()
+        };
+
+        // Get handler function to extract metadata
+        let actual_func_name = self
+            .function_aliases
+            .get(&handler_name)
+            .cloned()
+            .unwrap_or_else(|| handler_name.to_string());
+
+        let original_fn = match self.module.get_function(&actual_func_name) {
+            Some(f) => f,
+            None => return,
+        };
+
+        // Build metadata JSON: param types and struct field info
+        let metadata_json = self.build_handler_metadata_json(&original_fn, &actual_func_name);
+
+        // Get the FFI function doo_http_register_handler_with_metadata
+        let register_fn = match self
+            .module
+            .get_function("doo_http_register_handler_with_metadata")
+        {
+            Some(f) => f,
+            None => {
+                // Declare the FFI function if not already present
+                let void_type = self.context.void_type();
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let fn_type =
+                    void_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+                self.module
+                    .add_function("doo_http_register_handler_with_metadata", fn_type, None)
+            }
+        };
+
+        // Generate wrapper function for this handler
+        let wrapper_name = match self.generate_handler_wrapper(&handler_name) {
+            Some(name) => name,
+            None => {
+                eprintln!(
+                    "Warning: Could not generate wrapper for handler '{}'",
+                    handler_name
+                );
+                return;
+            }
+        };
+
+        // Get the wrapper function pointer
+        if let Some(wrapper_fn) = self.module.get_function(&wrapper_name) {
+            // Convert handler name to C string
+            let handler_name_cstr = self.generate_string_literal_ptr(&handler_name);
+
+            // Convert metadata JSON to C string
+            let metadata_cstr = self.generate_string_literal_ptr(&metadata_json);
+
+            // Get wrapper function pointer as generic pointer
+            let wrapper_fn_ptr = wrapper_fn.as_global_value().as_pointer_value();
+            let generic_ptr = self
+                .builder
+                .build_pointer_cast(
+                    wrapper_fn_ptr,
+                    self.context.ptr_type(AddressSpace::default()),
+                    "wrapper_fn_cast",
+                )
+                .unwrap();
+
+            // Call doo_http_register_handler_with_metadata(name, wrapper_fn_ptr, metadata_json)
+            self.builder
+                .build_call(
+                    register_fn,
+                    &[
+                        handler_name_cstr.into(),
+                        generic_ptr.into(),
+                        metadata_cstr.into(),
+                    ],
+                    "register_handler",
+                )
+                .unwrap();
+        }
+    }
+
+    /// Build metadata JSON for a handler function
+    /// Returns JSON with struct layout information including exact field offsets
+    /// Format: {"param_count":1,"param_types":["UserPath"],"struct_fields":{"UserPath":[["id","Int"]]},"struct_layouts":{"UserPath":{"total_size":8,"total_align":8,"fields":[{"name":"id","type":"Int","offset":0,"size":4,"align":4}]}},"return_type":"UserInput"}
+    /// We pass ALL struct metadata and let FFI dynamically match based on request data
+    fn build_handler_metadata_json(
+        &self,
+        func: &inkwell::values::FunctionValue<'ctx>,
+        func_name: &str,
+    ) -> String {
+        let param_count = func.count_params();
+        let mut param_types = vec![];
+        let mut struct_fields_map = std::collections::HashMap::new();
+        let mut struct_layouts_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut struct_decorators_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
+        // Get return type from stored function_return_types
+        let return_type = self
+            .function_return_types
+            .get(func_name)
+            .cloned()
+            .unwrap_or_else(|| "Str".to_string());
+
+        // Pass ALL struct field metadata to FFI - it will match dynamically
+        for (name, metadata) in &self.struct_metadata {
+            if !metadata.field_names.is_empty() {
+                let field_list: Vec<Vec<String>> = metadata
+                    .field_names
+                    .iter()
+                    .zip(&metadata.field_types)
+                    .map(|(fname, ftype)| vec![fname.clone(), ftype.clone()])
+                    .collect();
+                struct_fields_map.insert(name.clone(), field_list);
+
+                // Build layout info JSON string manually
+                let mut layout_json = String::from("{");
+                layout_json.push_str(&format!("\"total_size\":{},", metadata.total_size));
+                layout_json.push_str(&format!("\"total_align\":{},", metadata.total_align));
+                layout_json.push_str("\"fields\":[");
+                for (i, layout) in metadata.field_layouts.iter().enumerate() {
+                    if i > 0 {
+                        layout_json.push(',');
+                    }
+                    layout_json.push_str(&format!(
+                        "{{\"name\":\"{}\",\"type\":\"{}\",\"offset\":{},\"size\":{},\"align\":{}}}",
+                        layout.name, layout.type_name, layout.offset, layout.size, layout.align
+                    ));
+                }
+                layout_json.push_str("]}");
+                struct_layouts_map.insert(name.clone(), layout_json);
+
+                // Build decorators info JSON string manually if decorators exist
+                if let Some(field_decorators) = self.struct_field_decorators.get(name) {
+                    let mut decorators_json = String::from("{");
+                    let mut first_field = true;
+                    for (field_name, decorators) in field_decorators {
+                        if !first_field {
+                            decorators_json.push(',');
+                        }
+                        first_field = false;
+                        decorators_json.push_str(&format!("\"{}\":[", field_name));
+                        for (i, (decorator_name, args)) in decorators.iter().enumerate() {
+                            if i > 0 {
+                                decorators_json.push(',');
+                            }
+                            decorators_json.push_str(&format!("{{\"name\":\"{}\"", decorator_name));
+                            if !args.is_empty() {
+                                decorators_json.push_str(",\"args\":[");
+                                for (j, arg) in args.iter().enumerate() {
+                                    if j > 0 {
+                                        decorators_json.push(',');
+                                    }
+                                    // Escape quotes in arguments
+                                    let escaped_arg =
+                                        arg.replace('\\', "\\\\").replace('"', "\\\"");
+                                    decorators_json.push_str(&format!("\"{}\"", escaped_arg));
+                                }
+                                decorators_json.push(']');
+                            }
+                            decorators_json.push('}');
+                        }
+                        decorators_json.push(']');
+                    }
+                    decorators_json.push('}');
+                    struct_decorators_map.insert(name.clone(), decorators_json);
+                }
+            }
+        }
+
+        // Extract parameter types from stored function_param_types (contains actual struct names)
+        if let Some(stored_param_types) = self.function_param_types.get(func_name) {
+            // Use the actual type names from MIR (e.g., "UserPath", "SignupInput")
+            param_types = stored_param_types.clone();
+        } else {
+            // Fallback: inspect LLVM types (less precise)
+            for i in 0..param_count {
+                let param_type = func.get_type().get_param_types()[i as usize];
+
+                if param_type.is_pointer_type() {
+                    param_types.push(String::from("__struct_ptr__"));
+                } else if param_type.is_int_type() {
+                    param_types.push(String::from("Int"));
+                } else {
+                    param_types.push(String::from("Unknown"));
+                }
+            }
+        }
+
+        // Build JSON manually (simple format)
+        let mut json = String::from("{");
+        json.push_str(&format!("\"param_count\":{},", param_count));
+
+        // param_types array
+        json.push_str("\"param_types\":[");
+        for (i, pt) in param_types.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!("\"{}\"", pt));
+        }
+        json.push_str("],");
+
+        // struct_fields object
+        json.push_str("\"struct_fields\":{");
+        let mut first = true;
+        for (struct_name, fields) in &struct_fields_map {
+            if !first {
+                json.push(',');
+            }
+            first = false;
+            json.push_str(&format!("\"{}\":[", struct_name));
+            for (i, field) in fields.iter().enumerate() {
+                if i > 0 {
+                    json.push(',');
+                }
+                json.push_str(&format!("[\"{}\",\"{}\"]", field[0], field[1]));
+            }
+            json.push(']');
+        }
+        json.push_str("},");
+
+        // struct_layouts object (with exact memory layout)
+        json.push_str("\"struct_layouts\":{");
+        let mut first_layout = true;
+        for (struct_name, layout_json) in &struct_layouts_map {
+            if !first_layout {
+                json.push(',');
+            }
+            first_layout = false;
+            json.push_str(&format!("\"{}\":{}", struct_name, layout_json));
+        }
+        json.push_str("},");
+
+        // struct_decorators object (field-level validation decorators)
+        json.push_str("\"struct_decorators\":{");
+        let mut first_decorator = true;
+        for (struct_name, decorators_json) in &struct_decorators_map {
+            if !first_decorator {
+                json.push(',');
+            }
+            first_decorator = false;
+            json.push_str(&format!("\"{}\":{}", struct_name, decorators_json));
+        }
+        json.push_str("},");
+
+        // return_type
+        json.push_str(&format!("\"return_type\":\"{}\"", return_type));
+
+        json.push('}');
+
+        json
+    }
+
+    /// Generate a string literal and return its pointer
+    fn generate_string_literal_ptr(&mut self, s: &str) -> inkwell::values::PointerValue<'ctx> {
+        // Create a global string constant
+        let string_val = self.context.const_string(s.as_bytes(), true);
+        let global = self.module.add_global(
+            string_val.get_type(),
+            None,
+            &format!(
+                "str_{}",
+                s.replace("::", "_").replace("/", "_").replace(":", "_")
+            ),
+        );
+        global.set_initializer(&string_val);
+        global.set_constant(true);
+        global.set_unnamed_addr(true);
+
+        // Get pointer to the string
+        global.as_pointer_value()
+    }
+
+    /// Declare runtime validation FFI functions
+    fn declare_runtime_validation_functions(&mut self) {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        // dooruntime_validate_field(field_name, field_type, value, decorators_json) -> error_ptr
+        if self
+            .module
+            .get_function("dooruntime_validate_field")
+            .is_none()
+        {
+            let fn_type = ptr_type.fn_type(
+                &[
+                    ptr_type.into(),
+                    ptr_type.into(),
+                    ptr_type.into(),
+                    ptr_type.into(),
+                ],
+                false,
+            );
+            self.module
+                .add_function("dooruntime_validate_field", fn_type, None);
+        }
+
+        // dooruntime_free_string(ptr)
+        if self.module.get_function("dooruntime_free_string").is_none() {
+            let fn_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
+            self.module
+                .add_function("dooruntime_free_string", fn_type, None);
+        }
+    }
+
+    /// Declare FFI functions for extracting data from DooRequest
+    fn declare_request_extraction_functions(&mut self) {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+
+        // doo_http_req_param(request, name) -> *char
+        if self.module.get_function("doo_http_req_param").is_none() {
+            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module
+                .add_function("doo_http_req_param", fn_type, None);
+        }
+
+        // doo_http_req_query(request, name) -> *char
+        if self.module.get_function("doo_http_req_query").is_none() {
+            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module
+                .add_function("doo_http_req_query", fn_type, None);
+        }
+
+        // doohttp_parse_json_struct(json, field_specs, field_count) -> *void
+        if self
+            .module
+            .get_function("doohttp_parse_json_struct")
+            .is_none()
+        {
+            let fn_type =
+                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i32_type.into()], false);
+            self.module
+                .add_function("doohttp_parse_json_struct", fn_type, None);
+        }
+
+        // doo_str_to_int(str) -> i32
+        if self.module.get_function("doo_str_to_int").is_none() {
+            let fn_type = i32_type.fn_type(&[ptr_type.into()], false);
+            self.module.add_function("doo_str_to_int", fn_type, None);
+        }
+    }
+}
 
 impl<'ctx> CodeGen<'ctx> {
     /// Generates LLVM IR for a single Intermediate Representation (MIR) instruction.
@@ -114,6 +1489,13 @@ impl<'ctx> CodeGen<'ctx> {
                 method,
                 args,
             } => {
+                // IMPORTANT: For HTTP route registration methods, we need to register the handler
+                // function pointer BEFORE calling the route registration FFI function.
+                // This ensures the FFI can look up the handler by name when routes are matched.
+                if self.is_http_route_method(method) {
+                    self.register_http_handler_if_needed(args);
+                }
+
                 let result = self.generate_method_call(dest, object, method, args);
                 // CRITICAL FIX: Store the method call result into the symbol alloca if one exists
                 // This ensures that when the value is later loaded (e.g., for print), we get the
@@ -6350,53 +7732,244 @@ impl<'ctx> CodeGen<'ctx> {
                 struct_name,
                 fields,
             } => {
+                // TODO: Validation disabled temporarily - validating wrong values (Request struct fields instead of UserInput)
+                // The issue: validation happens during StructInit for return values, not during input parsing
+                // Need to validate at JSON parse time, not at struct creation time
+                // Clone to avoid borrow checker issues
+                let field_decorators_clone: Option<
+                    std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
+                > = None; // Disabled: self.struct_field_decorators.get(struct_name).cloned();
+                if let Some(field_decorators) = field_decorators_clone {
+                    self.declare_runtime_validation_functions();
+
+                    for (field_name, value_tmp) in fields.iter() {
+                        if let Some(decorators) = field_decorators.get(field_name) {
+                            if decorators.is_empty() {
+                                continue;
+                            }
+
+                            // Get field type - clone metadata and variable_types upfront
+                            let struct_meta_clone = self.struct_metadata.get(struct_name).cloned();
+                            let var_type_clone = self.variable_types.get(value_tmp).cloned();
+                            let field_type = if let Some(meta) = struct_meta_clone {
+                                meta.field_names
+                                    .iter()
+                                    .position(|n| n == field_name)
+                                    .and_then(|idx| meta.field_types.get(idx))
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| "Unknown".to_string())
+                            } else if let Some(type_str) = var_type_clone {
+                                type_str
+                            } else {
+                                "Unknown".to_string()
+                            };
+
+                            // Convert decorators to JSON
+                            let decorators_json = serde_json::to_string(
+                                &decorators
+                                    .iter()
+                                    .map(|(name, args)| {
+                                        serde_json::json!({
+                                            "name": name,
+                                            "args": args
+                                        })
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                            .unwrap_or_else(|_| "[]".to_string());
+
+                            // Get field value as string (clone value upfront to avoid later borrows)
+                            let value = self.resolve_value(value_tmp);
+                            let value_str_ptr = if value.is_int_value() {
+                                // Convert int to string
+                                let int_val = value.into_int_value();
+                                let sprintf_fn = self.get_or_declare_sprintf();
+                                let buffer_size = self.context.i64_type().const_int(32, false);
+                                let malloc_fn = self.get_or_declare_malloc();
+                                let buffer = self
+                                    .builder
+                                    .build_call(malloc_fn, &[buffer_size.into()], "int_str_buffer")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap()
+                                    .into_pointer_value();
+
+                                let fmt = self.generate_string_literal_ptr("%lld");
+                                self.builder
+                                    .build_call(
+                                        sprintf_fn,
+                                        &[buffer.into(), fmt.into(), int_val.into()],
+                                        "",
+                                    )
+                                    .unwrap();
+                                buffer
+                            } else if value.is_float_value() {
+                                // Convert float to string
+                                let float_val = value.into_float_value();
+                                let sprintf_fn = self.get_or_declare_sprintf();
+                                let buffer_size = self.context.i64_type().const_int(32, false);
+                                let malloc_fn = self.get_or_declare_malloc();
+                                let buffer = self
+                                    .builder
+                                    .build_call(
+                                        malloc_fn,
+                                        &[buffer_size.into()],
+                                        "float_str_buffer",
+                                    )
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap()
+                                    .into_pointer_value();
+
+                                let fmt = self.generate_string_literal_ptr("%f");
+                                self.builder
+                                    .build_call(
+                                        sprintf_fn,
+                                        &[buffer.into(), fmt.into(), float_val.into()],
+                                        "",
+                                    )
+                                    .unwrap();
+                                buffer
+                            } else if value.is_pointer_value() {
+                                value.into_pointer_value()
+                            } else {
+                                self.generate_string_literal_ptr("")
+                            };
+
+                            // Create C strings for FFI call
+                            let field_name_ptr = self.generate_string_literal_ptr(field_name);
+                            let field_type_ptr = self.generate_string_literal_ptr(&field_type);
+                            let decorators_json_ptr =
+                                self.generate_string_literal_ptr(&decorators_json);
+
+                            // Call dooruntime_validate_field
+                            let validate_fn = self
+                                .module
+                                .get_function("dooruntime_validate_field")
+                                .unwrap();
+                            let error_ptr = self
+                                .builder
+                                .build_call(
+                                    validate_fn,
+                                    &[
+                                        field_name_ptr.into(),
+                                        field_type_ptr.into(),
+                                        value_str_ptr.into(),
+                                        decorators_json_ptr.into(),
+                                    ],
+                                    "validation_error",
+                                )
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_pointer_value();
+
+                            // Check if validation failed (error_ptr != null)
+                            let is_error = self
+                                .builder
+                                .build_is_not_null(error_ptr, "is_validation_error")
+                                .unwrap();
+
+                            let current_fn = self
+                                .builder
+                                .get_insert_block()
+                                .unwrap()
+                                .get_parent()
+                                .unwrap();
+                            let error_block = self
+                                .context
+                                .append_basic_block(current_fn, "validation_error_block");
+                            let continue_block = self
+                                .context
+                                .append_basic_block(current_fn, "validation_continue");
+
+                            self.builder
+                                .build_conditional_branch(is_error, error_block, continue_block)
+                                .unwrap();
+
+                            // Error block: Store error in runtime (already done by dooruntime_validate_field)
+                            // Don't exit - let HTTP handler wrapper catch and format RFC 7807 response
+                            // For non-HTTP contexts, the wrapper will also check and can exit if needed
+                            self.builder.position_at_end(error_block);
+
+                            // Free error string returned by validation
+                            let free_fn =
+                                self.module.get_function("dooruntime_free_string").unwrap();
+                            self.builder
+                                .build_call(free_fn, &[error_ptr.into()], "")
+                                .unwrap();
+
+                            // Don't exit - just continue to let the struct be created with potentially invalid data
+                            // The handler wrapper will check dooruntime_get_last_validation_error() and handle it
+                            // This allows HTTP handlers to return proper RFC 7807 error responses
+                            self.builder
+                                .build_unconditional_branch(continue_block)
+                                .unwrap();
+
+                            // Continue block
+                            self.builder.position_at_end(continue_block);
+                        }
+                    }
+                }
+
                 // Use the canonical struct type from metadata if available
-                let struct_type =
-                    if let Some(canonical_type) = self.canonical_struct_types.get(struct_name) {
-                        *canonical_type
-                    } else {
-                        // Fallback: infer from values (for backward compatibility)
-                        let field_types: Vec<inkwell::types::BasicTypeEnum> = fields
-                            .iter()
-                            .map(|(_, value_tmp)| {
-                                let val = self.resolve_value(value_tmp);
-                                val.get_type()
-                            })
-                            .collect();
+                let struct_type = if let Some(canonical_type) =
+                    self.canonical_struct_types.get(struct_name)
+                {
+                    *canonical_type
+                } else {
+                    // Fallback: infer from values (for backward compatibility)
+                    let field_types: Vec<inkwell::types::BasicTypeEnum> = fields
+                        .iter()
+                        .map(|(_, value_tmp)| {
+                            let val = self.resolve_value(value_tmp);
+                            val.get_type()
+                        })
+                        .collect();
 
-                        let inferred_type = self.context.struct_type(&field_types, false);
+                    let inferred_type = self.context.struct_type(&field_types, false);
 
-                        // Store struct metadata for field lookups
-                        let field_names: Vec<String> =
-                            fields.iter().map(|(name, _)| name.clone()).collect();
-                        let field_type_names: Vec<String> = fields
-                            .iter()
-                            .enumerate()
-                            .map(|(idx, (_, value_tmp))| {
-                                // Try to get type from variable_types first
-                                if let Some(type_str) = self.variable_types.get(value_tmp) {
-                                    return type_str.clone();
-                                }
-                                // Fall back to inferring from LLVM type
-                                let llvm_type = &field_types[idx];
-                                match llvm_type {
-                                    BasicTypeEnum::IntType(_) => "Int".to_string(),
-                                    BasicTypeEnum::FloatType(_) => "Float".to_string(),
-                                    BasicTypeEnum::PointerType(_) => "Str".to_string(),
-                                    _ => "Unknown".to_string(),
-                                }
-                            })
-                            .collect();
+                    // Store struct metadata for field lookups
+                    let field_names: Vec<String> =
+                        fields.iter().map(|(name, _)| name.clone()).collect();
+                    let field_type_names: Vec<String> = fields
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, (_, value_tmp))| {
+                            // Try to get type from variable_types first
+                            if let Some(type_str) = self.variable_types.get(value_tmp) {
+                                return type_str.clone();
+                            }
+                            // Fall back to inferring from LLVM type
+                            let llvm_type = &field_types[idx];
+                            match llvm_type {
+                                BasicTypeEnum::IntType(_) => "Int".to_string(),
+                                BasicTypeEnum::FloatType(_) => "Float".to_string(),
+                                BasicTypeEnum::PointerType(_) => "Str".to_string(),
+                                _ => "Unknown".to_string(),
+                            }
+                        })
+                        .collect();
 
-                        // Store the LLVM struct type along with metadata
-                        let metadata = crate::codegen::core::context::StructMetadata {
-                            field_names: field_names.clone(),
-                            field_types: field_type_names,
-                        };
-                        self.struct_metadata.insert(struct_name.clone(), metadata);
+                    // Store the LLVM struct type along with metadata
+                    // Compute layout from inferred type
+                    let (field_layouts, total_size, total_align) =
+                        self.compute_struct_layout(inferred_type, &field_names, &field_type_names);
 
-                        inferred_type
+                    let metadata = crate::codegen::core::context::StructMetadata {
+                        field_names: field_names.clone(),
+                        field_types: field_type_names,
+                        field_layouts,
+                        total_size,
+                        total_align,
                     };
+                    self.struct_metadata.insert(struct_name.clone(), metadata);
+
+                    inferred_type
+                };
 
                 // Track this struct instance type for printing
                 // Store with multiple name variations for robust lookups

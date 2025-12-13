@@ -98,7 +98,15 @@ impl<'ctx> CodeGen<'ctx> {
         // Check if there's a custom method defined (format: Type::method)
         if let Some(ref type_str) = type_name {
             let mangled_method_name = format!("{}::{}", type_str, method);
-            if let Some(_func) = self.module.get_function(&mangled_method_name) {
+
+            // Check function aliases first (for FFI functions)
+            let actual_func_name = self
+                .function_aliases
+                .get(&mangled_method_name)
+                .cloned()
+                .unwrap_or_else(|| mangled_method_name.clone());
+
+            if let Some(_func) = self.module.get_function(&actual_func_name) {
                 // This is a custom user-defined method
                 // Call it as a regular function with object as first argument
                 let mut all_args = vec![object.to_string()];

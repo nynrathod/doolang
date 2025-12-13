@@ -300,6 +300,8 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     mir_builder.function_table = std::sync::Arc::new(analyzer.function_table.clone());
     mir_builder.method_table = std::sync::Arc::new(analyzer.method_table.clone());
     mir_builder.struct_table = std::sync::Arc::new(analyzer.struct_table.clone());
+    mir_builder.ffi_metadata = analyzer.ffi_metadata.clone();
+    mir_builder.program.struct_field_decorators = analyzer.struct_field_decorators.clone();
     mir_builder.set_is_main_entry(true); // Mark this as the main entry point
     mir_builder.build_program(&all_nodes);
     mir_builder.finalize();
@@ -324,13 +326,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let context = inkwell::context::Context::create();
     let mut codegen = CodeGen::new("main_module", &context);
     codegen.function_aliases = analyzer.function_aliases.clone();
-    codegen.struct_field_decorators = analyzer.struct_field_decorators.clone();
-
-    // Detect if HTTP module is imported to enable HTTP-specific code generation
-    codegen.uses_http = analyzer
-        .imported_modules
-        .keys()
-        .any(|k| k.contains("std/Http") || k.contains("std\\Http") || k.contains("Http.doo"));
 
     codegen.generate_program(&mir_builder.program);
 
@@ -448,6 +443,25 @@ fn link_object_file(
     // compiled into libdoo.dylib (the main compiler library).
     // Always include it so compiled programs can access these runtime functions.
     ffi_libs.insert("doo".to_string());
+
+    // Always include doo_runtime for centralized decorator validation
+    ffi_libs.insert("doo_runtime".to_string());
+
+    // Include doo_http if any HTTP-related functions are detected in the MIR
+    let has_http = mir_program.functions.iter().any(|f| {
+        f.ffi_lib.as_deref() == Some("doo_http")
+            || f.name.starts_with("Server::")
+            || f.name.contains("::new")
+            || f.name.contains("::post")
+            || f.name.contains("::get")
+            || f.name.contains("::put")
+            || f.name.contains("::delete")
+            || f.name.contains("::patch")
+    });
+
+    if has_http {
+        ffi_libs.insert("doo_http".to_string());
+    }
 
     // Common: Build search paths for libraries (works on all platforms)
     let exe_dir = env::current_exe()

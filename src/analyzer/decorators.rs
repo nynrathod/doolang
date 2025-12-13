@@ -16,6 +16,8 @@ pub enum DecoratorKind {
     Unique,        // @unique - any type (for DB)
     Primary,       // @primary - any type (for DB)
     AutoIncrement, // @autoIncrement - only on Int
+    Auto,          // @auto - only on Int (alias for autoIncrement)
+    Hash,          // @hash - only on Str (for password hashing)
     Optional,      // @optional - any type (HTTP)
     Default,       // @default(value) - any type (HTTP)
     Pattern,       // @pattern(regex) - only on Str (HTTP)
@@ -32,6 +34,8 @@ impl DecoratorKind {
             "unique" => DecoratorKind::Unique,
             "primary" => DecoratorKind::Primary,
             "autoIncrement" => DecoratorKind::AutoIncrement,
+            "auto" => DecoratorKind::Auto,
+            "hash" => DecoratorKind::Hash,
             "optional" => DecoratorKind::Optional,
             "default" => DecoratorKind::Default,
             "pattern" => DecoratorKind::Pattern,
@@ -227,11 +231,54 @@ pub fn validate_decorator(
                     found_type: field_type.to_string(),
                 });
             }
+
             if !decorator.args.is_empty() {
                 return Err(SemanticError::InvalidDecoratorArgs {
                     decorator: "autoIncrement".to_string(),
                     field: field_name.to_string(),
                     message: "autoIncrement decorator takes no arguments".to_string(),
+                });
+            }
+        }
+
+        DecoratorKind::Auto => {
+            // @auto only valid on Int
+            if !is_int_type(field_type) {
+                return Err(SemanticError::InvalidDecoratorType {
+                    decorator: "auto".to_string(),
+                    field: field_name.to_string(),
+                    struct_name: struct_name.to_string(),
+                    expected_type: "Int".to_string(),
+                    found_type: field_type.to_string(),
+                });
+            }
+
+            if !decorator.args.is_empty() {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "auto".to_string(),
+                    field: field_name.to_string(),
+                    message: "auto decorator takes no arguments".to_string(),
+                });
+            }
+        }
+
+        DecoratorKind::Hash => {
+            // @hash only valid on Str
+            if !is_string_type(field_type) {
+                return Err(SemanticError::InvalidDecoratorType {
+                    decorator: "hash".to_string(),
+                    field: field_name.to_string(),
+                    struct_name: struct_name.to_string(),
+                    expected_type: "Str".to_string(),
+                    found_type: field_type.to_string(),
+                });
+            }
+
+            if !decorator.args.is_empty() {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "hash".to_string(),
+                    field: field_name.to_string(),
+                    message: "hash decorator takes no arguments".to_string(),
                 });
             }
         }

@@ -792,6 +792,7 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             params,
             body,
             return_type,
+            error_type: _,
         } => {
             let closure_name = builder.next_tmp();
 

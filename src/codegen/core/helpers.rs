@@ -329,4 +329,17 @@ impl<'ctx> CodeGen<'ctx> {
         let malloc_type = i8_ptr_type.fn_type(&[self.context.i64_type().into()], false);
         self.module.add_function("malloc", malloc_type, None)
     }
+
+    /// Get or declare exit function
+    pub fn get_or_declare_exit(&self) -> FunctionValue<'ctx> {
+        if let Some(func) = self.module.get_function("exit") {
+            return func;
+        }
+
+        let exit_type = self
+            .context
+            .void_type()
+            .fn_type(&[self.context.i32_type().into()], false);
+        self.module.add_function("exit", exit_type, None)
+    }
 }

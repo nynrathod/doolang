@@ -57,6 +57,10 @@ impl<'ctx> CodeGen<'ctx> {
         // Store in temp_values so it can be resolved by name
         self.temp_values.insert(name.to_string(), data_ptr.into());
 
+        // Store the actual string value in temp_strings for handler name resolution
+        self.temp_strings
+            .insert(name.to_string(), value.to_string());
+
         Some(data_ptr.into())
     }
 

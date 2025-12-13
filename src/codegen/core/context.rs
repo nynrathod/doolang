@@ -38,11 +38,24 @@ pub struct MapMetadata {
     pub value_needs_rc: bool,
 }
 
-/// Metadata for tracking struct field information
+/// Field layout information for a single struct field
+#[derive(Debug, Clone)]
+pub struct FieldLayout {
+    pub name: String,
+    pub type_name: String,
+    pub offset: u64,
+    pub size: u64,
+    pub align: u64,
+}
+
+/// Metadata for tracking struct field information and memory layout
 #[derive(Debug, Clone)]
 pub struct StructMetadata {
     pub field_names: Vec<String>,
     pub field_types: Vec<String>,
+    pub field_layouts: Vec<FieldLayout>, // Exact memory layout from LLVM
+    pub total_size: u64,
+    pub total_align: u64,
 }
 
 /// Loop type enumeration
@@ -134,6 +147,7 @@ pub struct CodeGen<'ctx> {
     pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
+    pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
 
     // Current function context
     pub current_function_name: Option<String>, // Track the name of the function being currently generated
@@ -216,6 +230,7 @@ impl<'ctx> CodeGen<'ctx> {
             enum_table: HashMap::new(),
             enum_variant_order: HashMap::new(),
             struct_table: HashMap::new(),
+            struct_field_decorators: HashMap::new(),
             current_function_name: None,
             current_error_type: None,
             closure_bodies: HashMap::new(),

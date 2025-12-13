@@ -28,6 +28,7 @@ pub struct MirBuilder {
     pub current_function_error_type: Option<TypeNode>, // Track if current function has error type for Ok/Err handling
     pub struct_table: Arc<HashMap<String, HashMap<String, TypeNode>>>, // Struct definitions: name -> field_name -> field_type
     pub current_struct_name: Option<String>, // Track current struct context for method analysis
+    pub ffi_metadata: HashMap<String, (Option<String>, Option<String>)>, // FFI metadata: func_name -> (ffi_lib, ffi_symbol)
 }
 
 /// Context for tracking loop break/continue targets
@@ -49,6 +50,7 @@ impl MirBuilder {
                 enum_table: HashMap::new(),
                 struct_table: HashMap::new(),
                 enum_variant_order: HashMap::new(),
+                struct_field_decorators: HashMap::new(),
             },
             tmp_counter: 1,
             block_counter: 0,
@@ -63,6 +65,7 @@ impl MirBuilder {
             current_function_error_type: None,
             struct_table: Arc::new(HashMap::new()),
             current_struct_name: None,
+            ffi_metadata: HashMap::new(),
         }
     }
 
@@ -182,6 +185,40 @@ impl MirBuilder {
                         .iter()
                         .map(|field| field.field_type.format_type_string())
                         .collect();
+
+                    // Extract decorators for each field
+                    let mut field_decorators_map: HashMap<String, Vec<(String, Vec<String>)>> =
+                        HashMap::new();
+                    for field in fields.iter() {
+                        if !field.decorators.is_empty() {
+                            let decorators: Vec<(String, Vec<String>)> = field
+                                .decorators
+                                .iter()
+                                .map(|dec| {
+                                    let args: Vec<String> = dec
+                                        .args
+                                        .iter()
+                                        .map(|arg| match arg {
+                                            AstNode::StringLiteral(s) => s.clone(),
+                                            AstNode::NumberLiteral(n) => n.to_string(),
+                                            AstNode::FloatLiteral(f) => f.to_string(),
+                                            AstNode::BoolLiteral(b) => b.to_string(),
+                                            _ => String::new(),
+                                        })
+                                        .collect();
+                                    (dec.name.clone(), args)
+                                })
+                                .collect();
+                            field_decorators_map.insert(field.name.clone(), decorators);
+                        }
+                    }
+
+                    // Store decorators in program metadata
+                    if !field_decorators_map.is_empty() {
+                        self.program
+                            .struct_field_decorators
+                            .insert(name.clone(), field_decorators_map);
+                    }
 
                     // Emit StructDecl with complete type information
                     self.program.globals.push(MirInstr::StructDecl {

@@ -484,7 +484,23 @@ fn transform_route_group_in_node(node: &mut AstNode) {
         } => {
             // For route registration methods, convert handler identifiers to strings
             // Convert to app.METHOD(path, handler) calls
-            if is_route_registration_method(method) {
+            // Special handling for auth() and crud() methods
+            if method == "auth" && args.len() == 4 {
+                // app.auth(signupPath, loginPath, UserStruct, db)
+                // Convert UserStruct identifier to string
+                transform_route_group_in_node(object);
+                transform_route_group_in_node(&mut args[0]); // signup path
+                transform_route_group_in_node(&mut args[1]); // login path
+                args[2] = convert_handler_to_string(args[2].clone()); // struct name
+                transform_route_group_in_node(&mut args[3]); // db
+            } else if method == "crud" && args.len() == 3 {
+                // app.crud(basePath, ResourceStruct, db)
+                // Convert ResourceStruct identifier to string
+                transform_route_group_in_node(object);
+                transform_route_group_in_node(&mut args[0]); // base path
+                args[1] = convert_handler_to_string(args[1].clone()); // struct name
+                transform_route_group_in_node(&mut args[2]); // db
+            } else if is_route_registration_method(method) {
                 transform_route_group_in_node(object);
 
                 if args.len() == 2 {
@@ -554,6 +570,12 @@ fn transform_route_group_in_node(node: &mut AstNode) {
                     for arg in args {
                         transform_route_group_in_node(arg);
                     }
+                }
+            } else if method == "auth" || method == "crud" {
+                // Fallback for auth/crud with wrong number of args
+                transform_route_group_in_node(object);
+                for arg in args {
+                    transform_route_group_in_node(arg);
                 }
             } else {
                 transform_route_group_in_node(object);

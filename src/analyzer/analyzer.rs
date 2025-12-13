@@ -31,6 +31,7 @@ pub struct SemanticAnalyzer {
     pub(crate) struct_field_visibility: HashMap<String, HashMap<String, bool>>, // Track field visibility for imported structs: struct_name -> (field_name -> is_public)
     pub(crate) imported_struct_names: std::collections::HashSet<String>, // Track which structs are imported (for visibility checking)
     pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
+    pub ffi_metadata: HashMap<String, (Option<String>, Option<String>)>, // Function FFI metadata: func_name -> (ffi_lib, ffi_symbol)
 
     pub(crate) outer_symbol_table: Option<HashMap<String, SymbolInfo>>, // For nested scopes
     pub(crate) project_root: PathBuf, // Root directory for module resolution
@@ -87,6 +88,7 @@ impl SemanticAnalyzer {
             struct_field_visibility: HashMap::new(),
             imported_struct_names: std::collections::HashSet::new(),
             struct_field_decorators: HashMap::new(),
+            ffi_metadata: HashMap::new(),
             outer_symbol_table: None,
             project_root,
             imported_modules: HashMap::new(),
@@ -282,8 +284,35 @@ impl SemanticAnalyzer {
                     error_type,
                     receiver_type,
                     associated_type,
+                    decorators,
                     ..
                 } => {
+                    // Extract FFI metadata from decorators
+                    let mut ffi_lib: Option<String> = None;
+                    let mut ffi_symbol: Option<String> = None;
+
+                    for decorator in decorators {
+                        match decorator.name.as_str() {
+                            "ffi" => {
+                                // @ffi("library_name")
+                                if let Some(arg) = decorator.args.first() {
+                                    if let AstNode::StringLiteral(lib_name) = arg {
+                                        ffi_lib = Some(lib_name.clone());
+                                    }
+                                }
+                            }
+                            "extern" => {
+                                // @extern("symbol_name")
+                                if let Some(arg) = decorator.args.first() {
+                                    if let AstNode::StringLiteral(sym_name) = arg {
+                                        ffi_symbol = Some(sym_name.clone());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
                     // Collect parameter types
                     // For instance methods (first param is 'self' with no type), skip first parameter
                     // For static methods (first param has type), include all parameters
@@ -370,6 +399,21 @@ impl SemanticAnalyzer {
                                 error_type.clone(),
                             ),
                         );
+
+                        // Store FFI metadata if present
+                        if ffi_lib.is_some() || ffi_symbol.is_some() {
+                            self.ffi_metadata
+                                .insert(name.to_string(), (ffi_lib.clone(), ffi_symbol.clone()));
+                        }
+                    }
+
+                    // Also store FFI metadata for methods (with mangled name)
+                    if let Some(type_name) = associated_type {
+                        let mangled_name = format!("{}::{}", type_name, name);
+                        if ffi_lib.is_some() || ffi_symbol.is_some() {
+                            self.ffi_metadata
+                                .insert(mangled_name, (ffi_lib, ffi_symbol));
+                        }
                     }
                 }
                 _ => {} // Skip other nodes in first pass
