@@ -667,7 +667,7 @@ impl fmt::Display for SemanticError {
             ),
             E::UnknownDecorator { decorator, field, struct_name } => write!(
                 f,
-                "error[{}]: unknown decorator @{} on field '{}' in struct '{}'. Valid decorators: @email, @required, @min, @max, @enum, @unique, @primary, @autoIncrement",
+                "error[{}]: unknown decorator @{} on field '{}' in struct '{}'. Valid decorators: @email, @required, @min, @max, @enum, @unique, @primary, @autoIncrement, @auto, @hash",
                 self.code(),
                 decorator,
                 field,

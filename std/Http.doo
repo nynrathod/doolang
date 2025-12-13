@@ -72,73 +72,9 @@ fn StatusServiceUnavailable() -> Int { return 503; }
 
 // === Server Constructor ===
 
-fn Server.new(addr: Str) -> Server {
-    // Parse addr format ":3000" or "127.0.0.1:3000"
-    // Simple port extraction (addr like ":3000")
-    if addr == ":3001" {
-        return Server { Port: 3001, Host: "127.0.0.1" };
-    }
-    if addr == ":3002" {
-        return Server { Port: 3002, Host: "127.0.0.1" };
-    }
-    if addr == ":3003" {
-        return Server { Port: 3003, Host: "127.0.0.1" };
-    }
-    if addr == ":3004" {
-        return Server { Port: 3004, Host: "127.0.0.1" };
-    }
-    if addr == ":3005" {
-        return Server { Port: 3005, Host: "127.0.0.1" };
-    }
-    if addr == ":3006" {
-        return Server { Port: 3006, Host: "127.0.0.1" };
-    }
-    if addr == ":3007" {
-        return Server { Port: 3007, Host: "127.0.0.1" };
-    }
-    if addr == ":3008" {
-        return Server { Port: 3008, Host: "127.0.0.1" };
-    }
-    if addr == ":8080" {
-        return Server { Port: 8080, Host: "127.0.0.1" };
-    }
-    if addr == ":3009" {
-        return Server { Port: 3009, Host: "127.0.0.1" };
-    }
-    if addr == ":3010" {
-        return Server { Port: 3010, Host: "127.0.0.1" };
-    }
-    if addr == ":8000" {
-        return Server { Port: 8000, Host: "127.0.0.1" };
-    }
-    if addr == ":3015" {
-        return Server { Port: 3015, Host: "127.0.0.1" };
-    }
-    if addr == ":8080" {
-        return Server { Port: 8080, Host: "127.0.0.1" };
-    }
-    if addr == ":8000" {
-        return Server { Port: 8000, Host: "127.0.0.1" };
-    }
-    if addr == ":3016" {
-        return Server { Port: 3016, Host: "127.0.0.1" };
-    }
-    if addr == ":3017" {
-        return Server { Port: 3017, Host: "127.0.0.1" };
-    }
-    if addr == ":3018" {
-        return Server { Port: 3018, Host: "127.0.0.1" };
-    }
-    if addr == ":3019" {
-        return Server { Port: 3019, Host: "127.0.0.1" };
-    }
-
-    // Default to port 3000
-    return Server {
-        Port: 3000,
-        Host: "127.0.0.1",
-    };
-}
+@ffi("doo_http")
+@extern("doo_http_server_new")
+fn Server.new(addr: Str) -> Server {}
 
 // === Server Methods - Route Registration ===
 
@@ -196,6 +132,12 @@ fn Server.patchWithMiddleware(self, path: Str, middleware: Str, handler: Str) ->
 @extern("doo_http_use")
 fn Server.use(self, middleware: Str) -> Server {}
 
+// === Middleware Functions ===
+
+@ffi("doo_http")
+@extern("doo_http_jwt")
+fn jwt() -> Str {}
+
 // === Route Groups ===
 
 @ffi("doo_http")
@@ -211,6 +153,16 @@ fn Server.start(self) -> ! HttpError {}
 @ffi("doo_http")
 @extern("doo_http_listen")
 fn Server.listen(self, port: Int) -> ! HttpError {}
+
+// === Auth and CRUD Methods ===
+
+@ffi("doo_http")
+@extern("doo_http_auth")
+fn Server.auth(self, signupPath: Str, loginPath: Str, userStruct: Str, db: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_crud")
+fn Server.crud(self, basePath: Str, resourceStruct: Str, db: Str) -> ! HttpError {}
 
 // === Request Methods ===
 
@@ -472,5 +424,14 @@ fn Response.html(body: Str, status: Int) -> Response {
         Status: status,
         Body: body,
         ContentType: "text/html",
+    };
+}
+
+// Response.Json() - Create JSON response from map/struct
+fn Response.Json(data: Str) -> Response {
+    return Response {
+        Status: 200,
+        Body: data,
+        ContentType: "application/json",
     };
 }

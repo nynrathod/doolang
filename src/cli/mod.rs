@@ -86,6 +86,30 @@ pub fn run_cli(cli: Cli) -> i32 {
                         eprintln!("Build failed with {} errors", result.error_count);
                         return 1;
                     } else if result.success {
+                        // Copy DLLs next to executable on Windows
+                        #[cfg(target_os = "windows")]
+                        {
+                            if let Ok(current_dir) = std::env::current_dir() {
+                                let target_release = current_dir.join("target").join("release");
+                                if target_release.exists() {
+                                    let dll_names = [
+                                        "doo.dll",
+                                        "doo_http.dll",
+                                        "doo_runtime.dll",
+                                        "doo_auth.dll",
+                                        "doo_db.dll",
+                                        "doo_file.dll",
+                                    ];
+                                    for dll_name in &dll_names {
+                                        let dll_src = target_release.join(dll_name);
+                                        if dll_src.exists() {
+                                            let dll_dest = current_dir.join(dll_name);
+                                            let _ = std::fs::copy(&dll_src, &dll_dest);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         println!("✓ Build successful: {}", output);
                         return 0;
                     } else {
@@ -126,6 +150,31 @@ pub fn run_cli(cli: Cli) -> i32 {
                         eprintln!("Compilation failed with {} errors", result.error_count);
                         let _ = std::fs::remove_file(&temp_name);
                         return 1;
+                    }
+
+                    // Copy DLLs next to executable on Windows
+                    #[cfg(target_os = "windows")]
+                    {
+                        if let Ok(current_dir) = std::env::current_dir() {
+                            let target_release = current_dir.join("target").join("release");
+                            if target_release.exists() {
+                                let dll_names = [
+                                    "doo.dll",
+                                    "doo_http.dll",
+                                    "doo_runtime.dll",
+                                    "doo_auth.dll",
+                                    "doo_db.dll",
+                                    "doo_file.dll",
+                                ];
+                                for dll_name in &dll_names {
+                                    let dll_src = target_release.join(dll_name);
+                                    if dll_src.exists() {
+                                        let dll_dest = current_dir.join(dll_name);
+                                        let _ = std::fs::copy(&dll_src, &dll_dest);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {

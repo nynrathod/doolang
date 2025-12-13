@@ -3,6 +3,9 @@ members = [
     ".",
     "ffi_libs/libdoo_file",
     "ffi_libs/libdoo_http",
+    "ffi_libs/libdoo_db",
+    "ffi_libs/libdoo_auth",
+    "ffi_libs/libdoo_runtime",
 ]
 resolver = "2"
 
@@ -28,6 +31,8 @@ llvm-sys = "=181.2.0"
 clap = { version = "4.5", features = ["derive"] }
 regex = "1"
 bumpalo = "3.19.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
 
 
 [lib]
