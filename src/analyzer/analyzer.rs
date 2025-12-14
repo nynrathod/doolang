@@ -1618,19 +1618,43 @@ impl SemanticAnalyzer {
                             // Track this struct as imported (for visibility checking)
                             self.imported_struct_names.insert(name.clone());
 
-                            // CRITICAL: Import methods for this struct from the imported module's method_table
+                            // Determine if this struct should be accessible
+                            // IMPORTANT: Only add to symbol_table for direct imports, NOT namespace imports
+                            // Namespace imports (import std::Http;) should NOT make structs directly accessible
+                            // Only specific imports (import std::http::Server;) or wildcard imports should
+                            let should_add_to_symbol_table = should_import_wildcard
+                                || (!is_namespace_import_or_alias && !specific_imports.is_empty());
+
+                            // CRITICAL: Always import method_table for codegen (needed for struct metadata)
                             if let Some(methods) = imported_analyzer.method_table.get(name) {
                                 self.method_table.insert(name.clone(), methods.clone());
 
-                                // Also register methods in function_table with mangled names (Type::method)
-                                // This allows static method calls like Server::new() to resolve
-                                for (method_name, (params, ret_ty, err_ty)) in methods {
-                                    let mangled_name = format!("{}::{}", name, method_name);
-                                    if !self.function_table.contains_key(&mangled_name) {
-                                        self.function_table.insert(
-                                            mangled_name,
-                                            (params.clone(), ret_ty.clone(), err_ty.clone()),
-                                        );
+                                // Register methods in function_table with mangled names
+                                // For namespace imports: only if struct name matches namespace
+                                // For explicit/wildcard imports: always
+                                let should_register_methods = if is_namespace_import_or_alias {
+                                    // For namespace imports like "import std::Database;",
+                                    // only expose methods if struct name matches the namespace
+                                    // This allows Database::postgres() but NOT Server::new() from "import std::Http;"
+                                    if let Some(ns) = &namespace_prefix {
+                                        name == ns
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    // For explicit imports or wildcard, always register
+                                    true
+                                };
+
+                                if should_register_methods {
+                                    for (method_name, (params, ret_ty, err_ty)) in methods {
+                                        let mangled_name = format!("{}::{}", name, method_name);
+                                        if !self.function_table.contains_key(&mangled_name) {
+                                            self.function_table.insert(
+                                                mangled_name,
+                                                (params.clone(), ret_ty.clone(), err_ty.clone()),
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -1646,12 +1670,6 @@ impl SemanticAnalyzer {
                             }) {
                                 self.imported_structs.push(node.clone());
                             }
-
-                            // IMPORTANT: Only add to symbol_table for direct imports, NOT namespace imports
-                            // Namespace imports (import std::Http;) should NOT make structs directly accessible
-                            // Only specific imports (import std::http::Server;) or wildcard imports should
-                            let should_add_to_symbol_table = should_import_wildcard
-                                || (!is_namespace_import_or_alias && !specific_imports.is_empty());
 
                             if should_add_to_symbol_table {
                                 self.symbol_table.insert(
@@ -1816,16 +1834,9 @@ impl SemanticAnalyzer {
                             }
                         }
 
-                        // Add to symbol_table for type resolution
-                        self.symbol_table.insert(
-                            struct_name.clone(),
-                            SymbolInfo {
-                                ty: TypeNode::Struct(struct_name.clone(), field_types.clone()),
-                                mutable: false,
-                                is_ref_counted: true,
-                                is_parameter: false,
-                            },
-                        );
+                        // DO NOT add to symbol_table here - this is transitive import
+                        // symbol_table entries should only be added in the main import loop
+                        // where we check should_add_to_symbol_table to respect namespace isolation
                     }
                 }
             }
@@ -1844,16 +1855,9 @@ impl SemanticAnalyzer {
                         .insert(struct_name.clone(), methods.clone());
                 }
 
-                // Add to symbol_table for type resolution
-                self.symbol_table.insert(
-                    struct_name.clone(),
-                    SymbolInfo {
-                        ty: TypeNode::Struct(struct_name.clone(), field_types.clone()),
-                        mutable: false,
-                        is_ref_counted: true,
-                        is_parameter: false,
-                    },
-                );
+                // DO NOT add to symbol_table here - this is transitive import
+                // symbol_table entries should only be added in the main import loop
+                // where we check should_add_to_symbol_table to respect namespace isolation
             }
         }
 
@@ -1868,16 +1872,61 @@ impl SemanticAnalyzer {
                         .insert(enum_name.clone(), variant_order.clone());
                 }
 
-                // Add to symbol_table for type resolution
-                self.symbol_table.insert(
-                    enum_name.clone(),
-                    SymbolInfo {
-                        ty: TypeNode::Enum(enum_name.clone(), variants.clone()),
-                        mutable: false,
-                        is_ref_counted: true,
-                        is_parameter: false,
-                    },
-                );
+                // DO NOT add to symbol_table here - this is transitive import
+                // symbol_table entries should only be added in the main import loop
+                // where we check should_add_to_symbol_table to respect namespace isolation
+            }
+        }
+
+        // Import static methods as standalone functions if specified in specific imports
+        // This allows: import std::Database::{postgres}; then call postgres() directly
+        if !specific_imports.is_empty() {
+            for item in specific_imports.iter() {
+                let (method_name, alias) = match item {
+                    crate::parser::ast::ImportItem::Symbol(sym) => (sym.clone(), None),
+                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias) => {
+                        (sym.clone(), Some(alias.clone()))
+                    }
+                    _ => continue,
+                };
+
+                // Check if this symbol is a static method on any struct
+                let mut method_found = false;
+                for (struct_name, methods) in &imported_analyzer.method_table {
+                    if let Some((params, ret_ty, err_ty)) = methods.get(&method_name) {
+                        // Found a method with this name on a struct
+                        // Register it as a standalone function
+                        let function_name = alias.as_ref().unwrap_or(&method_name);
+                        self.function_table.insert(
+                            function_name.clone(),
+                            (params.clone(), ret_ty.clone(), err_ty.clone()),
+                        );
+
+                        // Copy FFI metadata so codegen can find the external function
+                        // The FFI metadata is keyed by the mangled name (e.g., "Database::postgres")
+                        let mangled_method_name = format!("{}::{}", struct_name, method_name);
+                        if let Some(ffi_meta) =
+                            imported_analyzer.ffi_metadata.get(&mangled_method_name)
+                        {
+                            self.ffi_metadata
+                                .insert(function_name.clone(), ffi_meta.clone());
+                        }
+
+                        // CRITICAL: Add function alias mapping from standalone name to mangled name
+                        // This allows codegen to resolve postgres() calls to Database::postgres
+                        // which is needed because MIR declares the function as Database::postgres
+                        self.function_aliases
+                            .insert(function_name.clone(), mangled_method_name.clone());
+
+                        method_found = true;
+                        break;
+                    }
+                }
+
+                // If method was found and imported, continue to next symbol
+                if method_found {
+                    continue;
+                }
             }
         }
 
@@ -1897,10 +1946,9 @@ impl SemanticAnalyzer {
                             }));
                         }
                     }
-                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias) => {
-                        // Check using the alias name since that's what we registered
-                        if !self.function_table.contains_key(alias)
-                            && !self.symbol_table.contains_key(alias)
+                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
+                        if !self.function_table.contains_key(sym)
+                            && !self.symbol_table.contains_key(sym)
                             && !self.struct_table.contains_key(sym)
                             && !self.enum_table.contains_key(sym)
                         {
@@ -1909,7 +1957,7 @@ impl SemanticAnalyzer {
                             }));
                         }
                     }
-                    crate::parser::ast::ImportItem::Wildcard => {}
+                    _ => {}
                 }
             }
         }

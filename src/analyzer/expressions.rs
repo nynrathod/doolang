@@ -1357,11 +1357,26 @@ impl SemanticAnalyzer {
                             }
                         } else {
                             // Neither enum, function, nor static method found
+                            // Check if the type exists (to give better error message)
+                            let error_msg = if self.struct_table.contains_key(enum_name) {
+                                format!(
+                                    "Undefined method '{}' for type '{}'. Did you forget to import it explicitly?",
+                                    variant, enum_name
+                                )
+                            } else if self.enum_table.contains_key(enum_name) {
+                                format!(
+                                    "Undefined enum variant '{}::{}'. Check available variants for enum '{}'",
+                                    enum_name, variant, enum_name
+                                )
+                            } else {
+                                format!(
+                                    "Undefined function or type '{}'. Did you forget to import '{}' explicitly?",
+                                    qualified_name, enum_name
+                                )
+                            };
+
                             Err(SemanticError::UndeclaredVariable(NamedError {
-                                name: format!(
-                                    "Undefined enum type or function '{}'",
-                                    qualified_name
-                                ),
+                                name: error_msg,
                             }))
                         }
                     }
