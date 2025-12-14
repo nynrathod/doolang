@@ -196,7 +196,7 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
 }
 
 #[no_mangle]
-pub extern "C" fn doo_db_table_exists(table_name: *const c_char) -> i32 {
+pub extern "C" fn doo_db_table_exists(_db: *const c_char, table_name: *const c_char) -> i32 {
     let table = match c_to_string(table_name) {
         Ok(s) => s,
         Err(_) => return 0,
@@ -224,7 +224,7 @@ pub extern "C" fn doo_db_table_exists(table_name: *const c_char) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn doo_db_create_table(sql: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_db_create_table(_db: *const c_char, sql: *const c_char) -> *mut DooResult {
     let sql = match c_to_string(sql) {
         Ok(s) => s,
         Err(e) => return make_err_query_failed(e),
@@ -245,7 +245,67 @@ pub extern "C" fn doo_db_create_table(sql: *const c_char) -> *mut DooResult {
 }
 
 #[no_mangle]
-pub extern "C" fn doo_db_execute(sql: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_db_query(_db: *const c_char, sql: *const c_char) -> *mut DooResult {
+    let sql = match c_to_string(sql) {
+        Ok(s) => s,
+        Err(e) => return make_err_query_failed(e),
+    };
+    let client = match get_client() {
+        Ok(c) => c,
+        Err(e) => return make_err_connection_failed(e),
+    };
+    let rt = match runtime() {
+        Ok(r) => r,
+        Err(e) => return make_err(e),
+    };
+    let res = rt.block_on(async { client.query(sql.as_str(), &[]).await });
+    let rows = match res {
+        Ok(r) => r,
+        Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
+    };
+
+    let mut array = Vec::new();
+    for row in rows {
+        let mut obj = serde_json::Map::new();
+        for (i, col) in row.columns().iter().enumerate() {
+            let name = col.name();
+            let value: serde_json::Value = match col.type_().name() {
+                "int4" => row
+                    .get::<usize, Option<i32>>(i)
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null),
+                "int8" => row
+                    .get::<usize, Option<i64>>(i)
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null),
+                "float4" => row
+                    .get::<usize, Option<f32>>(i)
+                    .map(|v| serde_json::Value::from(v as f64))
+                    .unwrap_or(serde_json::Value::Null),
+                "float8" => row
+                    .get::<usize, Option<f64>>(i)
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null),
+                "bool" => row
+                    .get::<usize, Option<bool>>(i)
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null),
+                _ => row
+                    .get::<usize, Option<String>>(i)
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null),
+            };
+            obj.insert(name.to_string(), value);
+        }
+        array.push(serde_json::Value::Object(obj));
+    }
+
+    let json = serde_json::Value::Array(array).to_string();
+    make_ok_string(json)
+}
+
+#[no_mangle]
+pub extern "C" fn doo_db_execute(_db: *const c_char, sql: *const c_char) -> *mut DooResult {
     let sql_str = match c_to_string(sql) {
         Ok(s) => s,
         Err(e) => return make_err_query_failed(format!("Invalid SQL string: {}", e)),
@@ -275,7 +335,45 @@ pub extern "C" fn doo_db_execute(sql: *const c_char) -> *mut DooResult {
 }
 
 #[no_mangle]
-pub extern "C" fn doo_db_query_one_json(sql: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_db_insert(
+    _db: *const c_char,
+    sql: *const c_char,
+    values_json: *const c_char,
+) -> *mut DooResult {
+    let sql_str = match c_to_string(sql) {
+        Ok(s) => s,
+        Err(e) => return make_err_query_failed(format!("Invalid SQL string: {}", e)),
+    };
+    let values_str = match c_to_string(values_json) {
+        Ok(s) => s,
+        Err(e) => return make_err_query_failed(format!("Invalid values JSON: {}", e)),
+    };
+
+    let client = match get_client() {
+        Ok(c) => c,
+        Err(e) => return make_err_connection_failed(e),
+    };
+
+    let rt = match runtime() {
+        Ok(r) => r,
+        Err(e) => return make_err(e),
+    };
+
+    match rt.block_on(async { client.execute(&sql_str, &[&values_str]).await }) {
+        Ok(rows) => make_ok_int(rows as i64),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("duplicate key") || err_str.contains("unique constraint") {
+                make_err_unique_violation("unknown")
+            } else {
+                make_err_query_failed(format!("Insert failed: {}", err_str))
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn doo_db_query_one(_db: *const c_char, sql: *const c_char) -> *mut DooResult {
     let sql = match c_to_string(sql) {
         Ok(s) => s,
         Err(e) => return make_err_query_failed(e),
@@ -463,6 +561,7 @@ pub extern "C" fn doo_db_insert_json(
 /// Returns single row as JSON
 #[no_mangle]
 pub extern "C" fn doo_db_query_one_param(
+    _db: *const c_char,
     sql: *const c_char,
     param_value: *const c_char,
 ) -> *mut DooResult {
@@ -528,7 +627,11 @@ pub extern "C" fn doo_db_query_one_param(
 /// Execute a parameterized query for list (SELECT)
 /// Returns multiple rows as JSON array
 #[no_mangle]
-pub extern "C" fn doo_db_query_param(sql: *const c_char, param: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_db_query_param(
+    _db: *const c_char,
+    sql: *const c_char,
+    param: *const c_char,
+) -> *mut DooResult {
     let sql = match c_to_string(sql) {
         Ok(s) => s,
         Err(e) => return make_err_query_failed(e),
@@ -595,7 +698,11 @@ pub extern "C" fn doo_db_query_param(sql: *const c_char, param: *const c_char) -
 
 /// Execute parameterized INSERT/UPDATE/DELETE and return affected rows
 #[no_mangle]
-pub extern "C" fn doo_db_execute_param(sql: *const c_char, param: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_db_execute_param(
+    _db: *const c_char,
+    sql: *const c_char,
+    param: *const c_char,
+) -> *mut DooResult {
     let sql = match c_to_string(sql) {
         Ok(s) => s,
         Err(e) => return make_err_query_failed(e),
@@ -753,9 +860,9 @@ pub extern "C" fn doo_db_get_error_message(ptr: *mut DooResult) -> *mut c_char {
 /// Execute raw SQL - returns JSON for SELECT, empty string for others
 /// This is a convenience method that auto-detects query type
 #[no_mangle]
-pub extern "C" fn doo_db_raw(sql: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_db_raw(_db: *const c_char, sql: *const c_char) -> *mut DooResult {
     let sql_str = match c_to_string(sql) {
-        Ok(s) => s,
+        Ok(s) => s.trim().to_string(),
         Err(e) => return make_err_query_failed(e),
     };
 
@@ -770,12 +877,12 @@ pub extern "C" fn doo_db_raw(sql: *const c_char) -> *mut DooResult {
     };
 
     // Detect if this is a SELECT query
-    let sql_upper = sql_str.trim().to_uppercase();
+    let sql_upper = sql_str.to_uppercase();
     let is_select = sql_upper.starts_with("SELECT") || sql_upper.starts_with("WITH");
 
     if is_select {
         // Execute as SELECT and return JSON
-        let res = rt.block_on(async { client.query(sql_str.as_str(), &[]).await });
+        let res = rt.block_on(async { client.query(&sql_str, &[]).await });
         let rows = match res {
             Ok(r) => r,
             Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
@@ -820,8 +927,8 @@ pub extern "C" fn doo_db_raw(sql: *const c_char) -> *mut DooResult {
         let json = serde_json::Value::Array(array).to_string();
         make_ok_string(json)
     } else {
-        // Execute as INSERT/UPDATE/DELETE
-        let res = rt.block_on(async { client.execute(sql_str.as_str(), &[]).await });
+        // Execute as INSERT/UPDATE/DELETE/CREATE/DROP/ALTER
+        let res = rt.block_on(async { client.execute(&sql_str, &[]).await });
         match res {
             Ok(_) => make_ok_string(String::new()),
             Err(e) => {
@@ -829,7 +936,16 @@ pub extern "C" fn doo_db_raw(sql: *const c_char) -> *mut DooResult {
                 if err_str.contains("duplicate key") || err_str.contains("unique constraint") {
                     return make_err_unique_violation("unknown");
                 } else {
-                    return make_err_query_failed(format!("Execute failed: {}", e));
+                    // Extract PostgreSQL error code if available
+                    let pg_code = if let Some(db_err) = e.as_db_error() {
+                        db_err.code().code().to_string()
+                    } else {
+                        "UNKNOWN".to_string()
+                    };
+                    return make_err_query_failed(format!(
+                        "SQL: {} | Error: {} | PG Code: {}",
+                        sql_str, e, pg_code
+                    ));
                 }
             }
         }
@@ -838,13 +954,17 @@ pub extern "C" fn doo_db_raw(sql: *const c_char) -> *mut DooResult {
 
 /// Execute raw SQL with parameter - returns JSON for SELECT, empty string for others
 #[no_mangle]
-pub extern "C" fn doo_db_raw_param(sql: *const c_char, param: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_db_raw_param(
+    _db: *const c_char,
+    sql: *const c_char,
+    param: *const c_char,
+) -> *mut DooResult {
     let sql_str = match c_to_string(sql) {
-        Ok(s) => s,
+        Ok(s) => s.trim().to_string(),
         Err(e) => return make_err_query_failed(e),
     };
     let param = match c_to_string(param) {
-        Ok(s) => s,
+        Ok(s) => s.trim().to_string(),
         Err(e) => return make_err_query_failed(e),
     };
 
@@ -858,12 +978,12 @@ pub extern "C" fn doo_db_raw_param(sql: *const c_char, param: *const c_char) -> 
     };
 
     // Detect if this is a SELECT query
-    let sql_upper = sql_str.trim().to_uppercase();
+    let sql_upper = sql_str.to_uppercase();
     let is_select = sql_upper.starts_with("SELECT") || sql_upper.starts_with("WITH");
 
     if is_select {
         // Execute as SELECT and return JSON
-        let res = rt.block_on(async { client.query(sql_str.as_str(), &[&param]).await });
+        let res = rt.block_on(async { client.query(&sql_str, &[&param]).await });
         let rows = match res {
             Ok(r) => r,
             Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
@@ -908,8 +1028,8 @@ pub extern "C" fn doo_db_raw_param(sql: *const c_char, param: *const c_char) -> 
         let json = serde_json::Value::Array(array).to_string();
         make_ok_string(json)
     } else {
-        // Execute as INSERT/UPDATE/DELETE
-        let res = rt.block_on(async { client.execute(sql_str.as_str(), &[&param]).await });
+        // Execute as INSERT/UPDATE/DELETE/CREATE/DROP/ALTER
+        let res = rt.block_on(async { client.execute(&sql_str, &[&param]).await });
         match res {
             Ok(_) => make_ok_string(String::new()),
             Err(e) => {
@@ -917,7 +1037,16 @@ pub extern "C" fn doo_db_raw_param(sql: *const c_char, param: *const c_char) -> 
                 if err_str.contains("duplicate key") || err_str.contains("unique constraint") {
                     return make_err_unique_violation("unknown");
                 } else {
-                    return make_err_query_failed(format!("Execute failed: {}", e));
+                    // Extract PostgreSQL error code if available
+                    let pg_code = if let Some(db_err) = e.as_db_error() {
+                        db_err.code().code().to_string()
+                    } else {
+                        "UNKNOWN".to_string()
+                    };
+                    return make_err_query_failed(format!(
+                        "SQL: {} | Param: {} | Error: {} | PG Code: {}",
+                        sql_str, param, e, pg_code
+                    ));
                 }
             }
         }

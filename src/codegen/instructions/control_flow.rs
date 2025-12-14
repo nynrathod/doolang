@@ -54,6 +54,14 @@ impl<'ctx> CodeGen<'ctx> {
             .cloned()
             .or_else(|| self.function_param_types.get(func).cloned());
 
+        // Check if this is an FFI function call
+        let is_ffi_call = self
+            .function_aliases
+            .values()
+            .any(|v| v == &actual_func_name)
+            || self.function_aliases.contains_key(func)
+            || callee.get_linkage() == inkwell::module::Linkage::External;
+
         // Process arguments, converting JSON.parse results to expected types
         let arg_values: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = args
             .iter()
@@ -82,8 +90,36 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }
                 }
-                // Otherwise, use the value as-is
-                self.resolve_value(arg).into()
+
+                // Get the resolved value
+                let mut val = self.resolve_value(arg);
+
+                // CRITICAL FIX: For FFI calls, if this is a HEAP-ALLOCATED Doo string (has RC header),
+                // we need to skip the header to get the C string pointer
+                // Heap strings: [RC: 4 bytes][Length: 4 bytes][string data + null]
+                // String literals/constants: [string data + null] (no header)
+                // C strings expect: pointer to [string data + null]
+                if is_ffi_call {
+                    // Only skip header for heap-allocated strings, NOT for string literals/constants
+                    let is_heap_string = self.heap_strings.contains(arg);
+
+                    if is_heap_string && val.is_pointer_value() {
+                        let doo_str_ptr = val.into_pointer_value();
+                        // Skip RC header (4 bytes) + length field (4 bytes) = 8 bytes total
+                        let c_str_ptr = unsafe {
+                            self.builder.build_in_bounds_gep(
+                                self.context.i8_type(),
+                                doo_str_ptr,
+                                &[self.context.i32_type().const_int(8, false)],
+                                "c_str_ptr",
+                            )
+                        }
+                        .unwrap();
+                        val = c_str_ptr.into();
+                    }
+                }
+
+                val.into()
             })
             .collect();
 
