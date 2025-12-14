@@ -1,0 +1,75 @@
+// Auth module for Doo
+// Supports JWT-based authentication with bcrypt password hashing
+//
+// Usage:
+//   import std::Auth;
+//
+//   fn main() {
+//       let app = Server::new(":3000");
+//       app.get("/profile", jwt(), ProfileHandler);
+//   }
+//
+// Or with auth/crud:
+//   app.auth("/signup", "/login", User, db);
+//   app.crud("/products", Product, db);
+
+// === Structs ===
+
+// JWT Claims
+struct JwtClaims {
+    Sub: Str,      // Subject (user ID)
+    Exp: Int,      // Expiration timestamp
+    Iat: Int,      // Issued at timestamp
+    Data: Str,     // Custom data (JSON string)
+}
+
+// Auth error struct
+struct AuthError {
+    Code: Int,
+    Message: Str,
+}
+
+// === Password Hashing Functions ===
+
+// Hash a password using bcrypt
+@ffi("doo_auth")
+@extern("doo_auth_hash_password")
+fn hashPassword(password: Str) -> Str ! AuthError {}
+
+// Verify a password against a hash
+@ffi("doo_auth")
+@extern("doo_auth_verify_password")
+fn verifyPassword(password: Str, hashed: Str) -> Bool ! AuthError {}
+
+// === JWT Functions ===
+
+// Sign a JWT token
+// Automatically reads JWT_SECRET from environment
+// expiresSeconds: token validity duration (e.g., 3600 for 1 hour)
+@ffi("doo_auth")
+@extern("doo_auth_sign")
+fn signJwt(sub: Str, dataJson: Str, expiresSeconds: Int) -> Str ! AuthError {}
+
+// Verify and decode a JWT token
+// Returns JSON string with claims
+@ffi("doo_auth")
+@extern("doo_auth_verify")
+fn verifyJwt(token: Str) -> Str ! AuthError {}
+
+// === Helper Functions ===
+
+// Free auth result
+@ffi("doo_auth")
+@extern("doo_auth_free_result")
+fn freeAuthResult(ptr: Int) {}
+
+// Free string from auth
+@ffi("doo_auth")
+@extern("doo_auth_free_string")
+fn freeAuthString(ptr: Int) {}
+
+// === JWT Middleware ===
+
+// JWT middleware function for route protection
+// Usage: import std::Http; app.get("/profile", Http::jwt(), handler)
+// Note: jwt() is defined in std::Http module as FFI function

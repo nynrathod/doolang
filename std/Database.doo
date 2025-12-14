@@ -1,0 +1,128 @@
+// Database module for Doo
+// Supports PostgreSQL with automatic connection, table creation, and CRUD operations
+//
+// Usage:
+//   import std::Database;
+//
+//   struct User {
+//       id: Int @primary @auto,
+//       email: Str @unique,
+//       password: Str @hash,
+//   }
+//
+//   fn main() {
+//       let db = Database::postgres()?;
+//       // Use db for operations
+//   }
+
+// === Structs ===
+
+// Database connection handle
+struct Database {
+    ConnectionType: Str,  // "postgres", "mysql", etc.
+    Connected: Bool,
+}
+
+// Database error struct
+struct DatabaseError {
+    Code: Int,
+    Message: Str,
+}
+
+// Query result
+struct QueryResult {
+    RowsAffected: Int,
+    Data: Str,  // JSON string
+}
+
+// === Database Constructor ===
+
+// Connect to PostgreSQL database
+// Automatically reads DATABASE_URL from environment
+@ffi("doo_db")
+@extern("doo_db_connect_postgres")
+fn Database.postgres() -> Database ! DatabaseError {}
+
+// === Database Query Methods ===
+
+// Check if table exists
+@ffi("doo_db")
+@extern("doo_db_table_exists")
+fn Database.tableExists(self, tableName: Str) -> Bool {}
+
+// Create table from SQL
+@ffi("doo_db")
+@extern("doo_db_create_table")
+fn Database.createTable(self, sql: Str) -> ! DatabaseError {}
+
+// Execute SQL statement (INSERT, UPDATE, DELETE)
+@ffi("doo_db")
+@extern("doo_db_execute")
+fn Database.execute(self, sql: Str) -> Int ! DatabaseError {}
+
+// Query and return JSON array (alias for compatibility)
+@ffi("doo_db")
+@extern("doo_db_query_json")
+fn Database.query(self, sql: Str) -> Str ! DatabaseError {}
+
+// Query single row and return JSON object
+@ffi("doo_db")
+@extern("doo_db_query_one_json")
+fn Database.queryOne(self, sql: Str) -> Str ! DatabaseError {}
+
+// Insert with JSON values and return ID
+@ffi("doo_db")
+@extern("doo_db_insert_json")
+fn Database.insert(self, sql: Str, valuesJson: Str) -> Int ! DatabaseError {}
+
+// === Parameterized Query Methods ===
+
+// Query single row with parameter (safe from SQL injection)
+@ffi("doo_db")
+@extern("doo_db_query_one_param")
+fn Database.queryOneParam(self, sql: Str, param: Str) -> Str ! DatabaseError {}
+
+// Query multiple rows with parameter (safe from SQL injection)
+// Use $1 placeholder in SQL: "SELECT * FROM users WHERE id = $1"
+@ffi("doo_db")
+@extern("doo_db_query_param")
+fn Database.queryParams(self, sql: Str, param: Str) -> Str ! DatabaseError {}
+
+// Execute with parameter (INSERT, UPDATE, DELETE)
+@ffi("doo_db")
+@extern("doo_db_execute_param")
+fn Database.executeParam(self, sql: Str, param: Str) -> Int ! DatabaseError {}
+
+// === Raw SQL Methods (Convenience) ===
+
+// Execute raw SQL - returns JSON for SELECT, empty string for others
+@ffi("doo_db")
+@extern("doo_db_raw")
+fn Database.raw(self, sql: Str) -> Str ! DatabaseError {}
+
+// Execute raw SQL with parameter - returns JSON for SELECT, empty string for others
+@ffi("doo_db")
+@extern("doo_db_raw_param")
+fn Database.rawWithParam(self, sql: Str, param: Str) -> Str ! DatabaseError {}
+
+// === Helper Functions ===
+
+// Free database result
+@ffi("doo_db")
+@extern("doo_db_free_result")
+fn freeDbResult(ptr: Int) {}
+
+// Free string from database
+@ffi("doo_db")
+@extern("doo_db_free_string")
+fn freeDbString(ptr: Int) {}
+
+// Check if result is error
+@ffi("doo_db")
+@extern("doo_db_is_error")
+fn isDbError(ptr: Int) -> Bool {}
+
+// Get error message from result
+@ffi("doo_db")
+@extern("doo_db_get_error_message")
+fn getDbErrorMessage(ptr: Int) -> Str {}
