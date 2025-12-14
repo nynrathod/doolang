@@ -253,6 +253,17 @@ fn extract_identifier_name(node: &AstNode) -> String {
     match node {
         AstNode::Identifier(name) => name.clone(),
         AstNode::StringLiteral(s) => s.clone(),
+        AstNode::FunctionCall { func, args } => {
+            // Handle special middleware functions like jwt()
+            if let AstNode::Identifier(func_name) = func.as_ref() {
+                if func_name == "jwt" && args.is_empty() {
+                    // jwt() returns "jwt" as middleware name
+                    return "jwt".to_string();
+                }
+            }
+            eprintln!("Warning: Expected identifier or string, got function call");
+            "unknown".to_string()
+        }
         _ => {
             eprintln!("Warning: Expected identifier or string, got other node type");
             "unknown".to_string()

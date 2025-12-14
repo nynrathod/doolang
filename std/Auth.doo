@@ -71,5 +71,7 @@ fn freeAuthString(ptr: Int) {}
 // === JWT Middleware ===
 
 // JWT middleware function for route protection
-// Usage: import std::Http; app.get("/profile", Http::jwt(), handler)
-// Note: jwt() is defined in std::Http module as FFI function
+// Usage: import Auth::jwt; app.get("/profile", jwt(), handler)
+@ffi("doo_http")
+@extern("doo_http_jwt")
+fn jwt() -> Str {}

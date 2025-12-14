@@ -224,3 +224,29 @@ pub extern "C" fn doo_auth_free_result(ptr: *mut DooResult) {
         }
     }
 }
+
+#[no_mangle]
+pub extern "C" fn doo_auth_is_error(ptr: *mut DooResult) -> i32 {
+    if ptr.is_null() {
+        return 1; // Treat null as error
+    }
+    unsafe {
+        let res = &*ptr;
+        res.tag
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn doo_auth_get_error_message(ptr: *mut DooResult) -> *const c_char {
+    if ptr.is_null() {
+        return std::ptr::null();
+    }
+    unsafe {
+        let res = &*ptr;
+        if res.tag != 0 && !res.value.is_null() {
+            let err = &*(res.value as *const DooAuthError);
+            return err.message;
+        }
+        std::ptr::null()
+    }
+}

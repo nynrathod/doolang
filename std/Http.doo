@@ -134,12 +134,6 @@ fn Server.patchWithMiddleware(self, path: Str, middleware: Str, handler: Str) ->
 @extern("doo_http_use")
 fn Server.use(self, middleware: Str) -> Server {}
 
-// === Middleware Functions ===
-
-@ffi("doo_http")
-@extern("doo_http_jwt")
-fn jwt() -> Str {}
-
 // === Route Groups ===
 
 @ffi("doo_http")

@@ -679,6 +679,13 @@ pub extern "C" fn doo_http_get_with_middleware(
     // Lookup middleware functions
     let mut middleware_fns = Vec::new();
     for mw_name in middleware_list {
+        // Auto-register JWT middleware if referenced
+        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+            registry
+                .middleware_handlers
+                .insert("jwt".to_string(), jwt_middleware_handler);
+        }
+
         if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
             middleware_fns.push(mw_fn);
         } else {
@@ -715,8 +722,17 @@ pub extern "C" fn doo_http_post_with_middleware(
 
     let mut middleware_fns = Vec::new();
     for mw_name in middleware_list {
+        // Auto-register JWT middleware if referenced
+        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+            registry
+                .middleware_handlers
+                .insert("jwt".to_string(), jwt_middleware_handler);
+        }
+
         if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
             middleware_fns.push(mw_fn);
+        } else {
+            eprintln!("Warning: Middleware {} not found", mw_name);
         }
     }
 
@@ -749,8 +765,17 @@ pub extern "C" fn doo_http_put_with_middleware(
 
     let mut middleware_fns = Vec::new();
     for mw_name in middleware_list {
+        // Auto-register JWT middleware if referenced
+        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+            registry
+                .middleware_handlers
+                .insert("jwt".to_string(), jwt_middleware_handler);
+        }
+
         if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
             middleware_fns.push(mw_fn);
+        } else {
+            eprintln!("Warning: Middleware {} not found", mw_name);
         }
     }
 
@@ -783,8 +808,17 @@ pub extern "C" fn doo_http_delete_with_middleware(
 
     let mut middleware_fns = Vec::new();
     for mw_name in middleware_list {
+        // Auto-register JWT middleware if referenced
+        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+            registry
+                .middleware_handlers
+                .insert("jwt".to_string(), jwt_middleware_handler);
+        }
+
         if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
             middleware_fns.push(mw_fn);
+        } else {
+            eprintln!("Warning: Middleware {} not found", mw_name);
         }
     }
 
@@ -817,8 +851,17 @@ pub extern "C" fn doo_http_patch_with_middleware(
 
     let mut middleware_fns = Vec::new();
     for mw_name in middleware_list {
+        // Auto-register JWT middleware if referenced
+        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+            registry
+                .middleware_handlers
+                .insert("jwt".to_string(), jwt_middleware_handler);
+        }
+
         if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
             middleware_fns.push(mw_fn);
+        } else {
+            eprintln!("Warning: Middleware {} not found", mw_name);
         }
     }
 
@@ -1018,6 +1061,28 @@ pub extern "C" fn doo_http_use(
     }
 
     make_ok_void()
+}
+
+// ============================================================================
+// JWT Middleware FFI Function
+// ============================================================================
+
+/// Returns the JWT middleware name for use in route registration
+/// Called when jwt() is used in Doo code
+#[no_mangle]
+pub extern "C" fn doo_http_jwt() -> *const c_char {
+    // Ensure JWT middleware is registered
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+    if !registry.middleware_handlers.contains_key("jwt") {
+        registry
+            .middleware_handlers
+            .insert("jwt".to_string(), jwt_middleware_handler);
+    }
+    drop(registry);
+
+    // Return the middleware name as a string
+    string_to_c("jwt")
 }
 
 // ============================================================================
@@ -3694,6 +3759,8 @@ extern "C" {
     fn doo_auth_verify(token: *const c_char) -> *mut std::ffi::c_void;
     fn doo_auth_free_result(result: *mut std::ffi::c_void);
     fn doo_auth_free_string(ptr: *mut c_char);
+    fn doo_auth_is_error(result: *mut std::ffi::c_void) -> i32;
+    fn doo_auth_get_error_message(result: *mut std::ffi::c_void) -> *const c_char;
 
     fn dooruntime_validate_field(
         field_name: *const c_char,
@@ -5246,6 +5313,137 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
         table_name,
         columns.join(", ")
     )
+}
+
+// ============================================================================
+// JWT Middleware Implementation
+// ============================================================================
+
+/// JWT middleware function - verifies JWT token from Authorization header
+/// Returns RFC 7807 error if unauthorized
+extern "C" fn jwt_middleware_handler(
+    request: *mut DooRequest,
+    next: *mut DooNext,
+) -> *mut DooResult {
+    unsafe {
+        if request.is_null() {
+            return make_err_http(
+                500,
+                r#"{"type":"about:blank","title":"Internal Server Error","status":500,"detail":"Null request in JWT middleware"}"#,
+            );
+        }
+
+        let req = &*request;
+
+        // Get Authorization header
+        let headers_ptr = req.headers as *mut HashMap<String, String>;
+        let auth_header = if !headers_ptr.is_null() {
+            let headers = &*headers_ptr;
+            headers
+                .get("authorization")
+                .or_else(|| headers.get("Authorization"))
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Check if Authorization header exists
+        if auth_header.is_empty() {
+            let path = if req.path.is_null() {
+                "/".to_string()
+            } else {
+                CStr::from_ptr(req.path).to_string_lossy().to_string()
+            };
+
+            let error_json = format!(
+                r#"{{"type":"unauthorized","title":"Unauthorized","status":401,"detail":"Authentication credentials are missing or invalid","instance":"{}","message":"Missing authorization token"}}"#,
+                path.replace("\"", "\\\"")
+            );
+
+            return make_err_http(401, &error_json);
+        }
+
+        // Extract token from "Bearer <token>" format
+        let token = if auth_header.starts_with("Bearer ") || auth_header.starts_with("bearer ") {
+            auth_header[7..].trim()
+        } else {
+            let path = if req.path.is_null() {
+                "/".to_string()
+            } else {
+                CStr::from_ptr(req.path).to_string_lossy().to_string()
+            };
+
+            let error_json = format!(
+                r#"{{"type":"unauthorized","title":"Unauthorized","status":401,"detail":"Authentication credentials are missing or invalid","instance":"{}","message":"Authorization header must use Bearer scheme"}}"#,
+                path.replace("\"", "\\\"")
+            );
+
+            return make_err_http(401, &error_json);
+        };
+
+        // Verify JWT token using libdoo_auth
+        let token_c = CString::new(token).unwrap();
+        let verify_result = doo_auth_verify(token_c.as_ptr());
+
+        if verify_result.is_null() {
+            let path = if req.path.is_null() {
+                "/".to_string()
+            } else {
+                CStr::from_ptr(req.path).to_string_lossy().to_string()
+            };
+
+            let error_json = format!(
+                r#"{{"type":"unauthorized","title":"Unauthorized","status":401,"detail":"Authentication credentials are missing or invalid","instance":"{}","message":"JWT verification failed"}}"#,
+                path.replace("\"", "\\\"")
+            );
+
+            return make_err_http(401, &error_json);
+        }
+
+        // Check if verification returned an error
+        let is_error = doo_auth_is_error(verify_result);
+        if is_error != 0 {
+            doo_auth_free_result(verify_result);
+
+            let path = if req.path.is_null() {
+                "/".to_string()
+            } else {
+                CStr::from_ptr(req.path).to_string_lossy().to_string()
+            };
+
+            // Consistent error message for both invalid and expired tokens
+            let error_json = format!(
+                r#"{{"type":"unauthorized","title":"Unauthorized","status":401,"detail":"Authentication credentials are missing or invalid","instance":"{}","message":"Invalid JWT token"}}"#,
+                path.replace("\"", "\\\"")
+            );
+
+            return make_err_http(401, &error_json);
+        }
+
+        // Token is valid, free the result and continue to next middleware/handler
+        doo_auth_free_result(verify_result);
+
+        // Call next middleware/handler in chain
+        if next.is_null() {
+            let error_json = r#"{"type":"about:blank","title":"Internal Server Error","status":500,"detail":"Null next in JWT middleware"}"#;
+            return make_err_http(500, error_json);
+        }
+
+        let response = doo_http_next_call(next);
+
+        // Convert response to result
+        if response.is_null() {
+            let error_json = r#"{"type":"about:blank","title":"Internal Server Error","status":500,"detail":"Handler returned null response"}"#;
+            return make_err_http(500, error_json);
+        }
+
+        // Return success with the response
+        Box::into_raw(Box::new(DooResult {
+            tag: 0,
+            value: response as *mut std::ffi::c_void,
+        }))
+    }
 }
 
 // ============================================================================
