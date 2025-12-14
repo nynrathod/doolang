@@ -35,8 +35,10 @@ struct Response {
 }
 
 // Next type for middleware chaining - wraps the next handler in the chain
+// NOTE: Uses two Int fields to store a 64-bit pointer on 64-bit systems
 struct Next {
-    HandlerPtr: Int,     // Pointer to next handler function
+    HandlerPtrLow: Int,   // Low 32 bits of pointer
+    HandlerPtrHigh: Int,  // High 32 bits of pointer (for 64-bit systems)
 }
 
 // HTTP Server struct

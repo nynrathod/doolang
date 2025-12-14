@@ -4,12 +4,14 @@
 mod error;
 
 use serde::Serialize;
+use serde_json::json;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::net::SocketAddr;
 use std::os::raw::c_char;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -20,10 +22,17 @@ use hyper_util::rt::TokioIo;
 use matchit::Router;
 use tokio::net::TcpListener;
 
+use chrono::Local;
+use std::sync::RwLock;
+use std::thread;
+use std::time::{Duration, Instant};
+
 use error::not_found; // Thread-local RFC 7807 last error (status, json body) populated by parsing/param helpers
 thread_local! {
     static LAST_RFC_ERROR: RefCell<Option<(i32, String)>> = RefCell::new(None);
 }
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn set_last_error(status: i32, json: String) {
     LAST_RFC_ERROR.with(|cell| {
@@ -39,6 +48,75 @@ fn clear_last_error() {
 
 fn take_last_error() -> Option<(i32, String)> {
     LAST_RFC_ERROR.with(|cell| cell.borrow_mut().take())
+}
+
+// Cached human-readable time (HH:MM:SS), updated once per second
+static TIMESTAMP_CACHE: OnceLock<std::sync::Arc<RwLock<String>>> = OnceLock::new();
+
+fn init_timestamp_updater() {
+    // if already initialized, do nothing
+    if TIMESTAMP_CACHE.get().is_some() {
+        return;
+    }
+
+    // initial value
+    let now = Local::now();
+    let initial = now.format("%H:%M:%S").to_string();
+    let arc_lock = std::sync::Arc::new(RwLock::new(initial));
+
+    // try to set global; if another thread set it concurrently, use the existing one
+    let cache = match TIMESTAMP_CACHE.set(arc_lock.clone()) {
+        Ok(_) => arc_lock,
+        Err(_) => TIMESTAMP_CACHE.get().unwrap().clone(),
+    };
+
+    // spawn background thread to update cached time once per second
+    thread::spawn(move || loop {
+        let t = Local::now().format("%H:%M:%S").to_string();
+        if let Ok(mut w) = cache.write() {
+            *w = t;
+        }
+        thread::sleep(Duration::from_secs(1));
+    });
+}
+
+fn log_request(start: Instant, status: StatusCode, method: &str, path: &str) {
+    // Try to read human-readable cached HH:MM:SS
+    let time_str = if let Some(cache) = TIMESTAMP_CACHE.get() {
+        if let Ok(r) = cache.read() {
+            r.clone()
+        } else {
+            // fallback to epoch seconds as string
+            format!(
+                "{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            )
+        }
+    } else {
+        // fallback if not initialized
+        format!(
+            "{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        )
+    };
+
+    let elapsed_ms = start.elapsed().as_millis();
+    // Example:
+    // [Doo] 15:04:05 | 200 |   2ms | GET /api/users
+    println!(
+        "[Doo] {} | {:3} | {:4}ms | {} {}",
+        time_str,
+        status.as_u16(),
+        elapsed_ms,
+        method,
+        path
+    );
 }
 
 #[no_mangle]
@@ -112,6 +190,7 @@ struct RouteRegistry {
     middleware: Vec<DooMiddlewareFn>,        // global middleware
     middleware_handlers: HashMap<String, DooMiddlewareFn>, // middleware_name -> function pointer
     groups: HashMap<String, Vec<DooMiddlewareFn>>, // prefix -> middleware for groups
+    route_count: usize,
 }
 
 impl RouteRegistry {
@@ -123,6 +202,7 @@ impl RouteRegistry {
             middleware: Vec::new(),
             middleware_handlers: HashMap::new(),
             groups: HashMap::new(),
+            route_count: 0,
         }
     }
 
@@ -141,6 +221,7 @@ impl RouteRegistry {
         if let Err(e) = router.insert(path, route) {
             eprintln!("Failed to register route {} {}: {}", method, path, e);
         } else {
+            self.route_count += 1;
             println!("✓ Registered: {} {}", method, path);
         }
     }
@@ -167,6 +248,7 @@ impl RouteRegistry {
         if let Err(e) = router.insert(path, route) {
             eprintln!("Failed to register route {} {}: {}", method, path, e);
         } else {
+            self.route_count += 1;
             println!(
                 "✓ Registered: {} {} (with {} middleware)",
                 method, path, middleware_len
@@ -987,6 +1069,8 @@ fn parse_query(query: &str) -> HashMap<String, String> {
 }
 
 async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    let req_start = std::time::Instant::now();
+
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -1242,6 +1326,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         }
     };
 
+    let elapsed = req_start.elapsed();
+    if cfg!(debug_assertions) || std::env::var("DOO_DEBUG").is_ok() {
+        println!(
+            "[DEBUG] {} {} took {} ms",
+            method,
+            path,
+            elapsed.as_millis()
+        );
+    }
+
     Ok(response)
 }
 
@@ -1302,6 +1396,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
 pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut DooResult {
     // Extract port from Server struct
     // Server struct layout: { Port: i32, Host: *const c_char }
+
+    let startup_start = std::time::Instant::now();
+
     let port = if server_ptr.is_null() {
         3000 // Default port
     } else {
@@ -1319,17 +1416,17 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port as u16));
 
-    println!();
-    println!("🚀 Server starting on http://127.0.0.1:{}", port);
-    println!();
-
-    // Print all registered routes
+    // Print all registered routes and handler count
     let routes = get_routes();
     let registry = routes.lock().unwrap();
+    let handler_count = registry.handlers.len();
     println!("📋 Registered routes:");
     for (method, _router) in registry.routes.iter() {
         println!("  {} routes: registered", method);
     }
+
+    let total_routes = registry.route_count;
+
     println!();
     drop(registry);
 
@@ -1342,8 +1439,27 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
             }
         };
 
-        println!("✓ Listening on {}", addr);
+        // Now that the socket is bound, compute real boot time
+        let boot_time_ms = startup_start.elapsed().as_millis();
+
+        init_timestamp_updater();
+
+        // Print banner AFTER bind so boot_time_ms is meaningful
         println!();
+        println!("   ___    ___   ____ ");
+        println!("  / _ \\  / _ \\ / __ \\");
+        println!(" / // / / // // /_/ /");
+        println!("/____/  \\___/ \\____/        Doo v{}", VERSION);
+        println!("--------------------------------------------------");
+
+        println!("Info Server Online");
+        println!("--------------------------------------------------");
+        println!("• Boot Time:            {} ms", boot_time_ms);
+        println!("• Listening on:         http://127.0.0.1:{}", port);
+        println!("• Handlers Loaded:      {}", total_routes);
+        println!("• Process ID:           {}", std::process::id());
+        println!("--------------------------------------------------");
+        println!("🚀 Server Started on http://127.0.0.1:{}\n", port);
 
         loop {
             let (stream, _) = match listener.accept().await {
@@ -3516,3 +3632,1785 @@ pub extern "C" fn doohttp_populate_struct_from_request(
 
 // Tests removed - validation logic moved to libdoo_runtime
 // HTTP layer now delegates all decorator validation to dooruntime_validate_field()
+
+// ============================================================================
+// Auth and CRUD Metadata Storage
+// ============================================================================
+
+#[derive(Clone, Debug)]
+struct AuthMetadata {
+    table_name: String,
+    metadata: serde_json::Value,
+    signup_path: String,
+    login_path: String,
+}
+
+#[derive(Clone, Debug)]
+struct CrudMetadata {
+    table_name: String,
+    metadata: serde_json::Value,
+    base_path: String,
+}
+
+static AUTH_METADATA: OnceLock<Mutex<HashMap<String, AuthMetadata>>> = OnceLock::new();
+static CRUD_METADATA: OnceLock<Mutex<HashMap<String, CrudMetadata>>> = OnceLock::new();
+
+fn get_auth_metadata() -> &'static Mutex<HashMap<String, AuthMetadata>> {
+    AUTH_METADATA.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_crud_metadata() -> &'static Mutex<HashMap<String, CrudMetadata>> {
+    CRUD_METADATA.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// ============================================================================
+// External FFI function declarations for DB and Auth
+// ============================================================================
+
+extern "C" {
+    fn doo_db_table_exists(table_name: *const c_char) -> i32;
+    fn doo_db_create_table(sql: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_db_insert_json(sql: *const c_char, values_json: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_db_query_json(sql: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_db_query_one_json(sql: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_db_query_one_param(sql: *const c_char, param: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_db_execute(sql: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_db_execute_param(sql: *const c_char, param: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_db_is_error(result: *mut std::ffi::c_void) -> i32;
+    fn doo_db_get_error_message(result: *mut std::ffi::c_void) -> *mut c_char;
+    fn doo_db_free_result(result: *mut std::ffi::c_void);
+    fn doo_db_free_string(ptr: *mut c_char);
+
+    fn doo_auth_hash_password(password: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_auth_verify_password(
+        password: *const c_char,
+        hashed: *const c_char,
+    ) -> *mut std::ffi::c_void;
+    fn doo_auth_sign(
+        sub: *const c_char,
+        data_json: *const c_char,
+        expires_seconds: i64,
+    ) -> *mut std::ffi::c_void;
+    fn doo_auth_verify(token: *const c_char) -> *mut std::ffi::c_void;
+    fn doo_auth_free_result(result: *mut std::ffi::c_void);
+    fn doo_auth_free_string(ptr: *mut c_char);
+
+    fn dooruntime_validate_field(
+        field_name: *const c_char,
+        field_type: *const c_char,
+        value: *const c_char,
+        decorators_json: *const c_char,
+    ) -> i32;
+    fn dooruntime_get_last_validation_error() -> *mut c_char;
+    fn dooruntime_clear_validation_error();
+    fn dooruntime_free_string(ptr: *mut c_char);
+}
+
+unsafe fn extract_db_result_string(result: *mut std::ffi::c_void) -> Option<String> {
+    if result.is_null() {
+        return None;
+    }
+    if doo_db_is_error(result) != 0 {
+        return None;
+    }
+    // For OK results, value is the string data
+    let result_struct = result as *mut DooResult;
+    let value_ptr = (*result_struct).value as *mut c_char;
+    if value_ptr.is_null() {
+        return None;
+    }
+    let result_str = CStr::from_ptr(value_ptr).to_string_lossy().into_owned();
+    Some(result_str)
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Convert DB error JSON to RFC 7807 format
+fn convert_db_error_to_rfc7807(db_error_json: &str, instance: String) -> (i32, String) {
+    // Try to parse DB error JSON
+    if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(db_error_json) {
+        if let Some(error_obj) = err_json.get("error").and_then(|e| e.as_object()) {
+            let code = error_obj
+                .get("code")
+                .and_then(|c| c.as_str())
+                .unwrap_or("UNKNOWN");
+            let message = error_obj
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Database error");
+            let pg_code = error_obj.get("pg_code").and_then(|c| c.as_str());
+
+            // Handle UNIQUE_VIOLATION with RFC 7807 validation error format
+            if code == "UNIQUE_VIOLATION" {
+                // Extract field name from message (e.g., "Duplicate value for field: users_email_key")
+                let field_name =
+                    if let Some(msg) = message.strip_prefix("Duplicate value for field: ") {
+                        // Extract field name from constraint (e.g., "users_email_key" -> "email")
+                        if let Some(constraint_parts) = msg.split('_').nth(1) {
+                            constraint_parts.to_string()
+                        } else {
+                            "unknown".to_string()
+                        }
+                    } else {
+                        "unknown".to_string()
+                    };
+
+                let mut fields = std::collections::HashMap::new();
+                fields.insert(
+                    field_name.clone(),
+                    error::FieldError::new(field_name.clone())
+                        .with_rule("unique".to_string())
+                        .with_error(format!("This {} already exists", field_name))
+                        .with_value("***".to_string()),
+                );
+
+                let err = error::validation_failed_error(instance, fields);
+                return (422, err.to_json_string());
+            }
+
+            // Handle other DB errors with generic RFC 7807 format
+            let status = error_obj
+                .get("status")
+                .and_then(|s| s.as_i64())
+                .unwrap_or(500) as i32;
+
+            let err = error::ErrorResponse::new(
+                if status >= 500 {
+                    error::ErrorType::InternalError
+                } else {
+                    error::ErrorType::BadRequest
+                },
+                message.to_string(),
+                instance,
+            );
+
+            return (status, err.to_json_string());
+        }
+    }
+
+    // Fallback to generic error
+    let err = error::internal_server_error(instance);
+    (500, err.to_json_string())
+}
+
+// ============================================================================
+// Auth and CRUD Runtime Handlers (using existing FFI functions)
+// ============================================================================
+
+/// Auth signup handler - uses libdoo_db and libdoo_auth
+extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
+    unsafe {
+        if request.is_null() {
+            return create_error_result(500, "Internal error: null request");
+        }
+
+        let req = &*request;
+        if req.path.is_null() || req.body.is_null() {
+            return create_error_result(500, "Internal error: invalid request");
+        }
+
+        let path = c_to_string(req.path);
+        let body = c_to_string(req.body);
+
+        // Parse JSON body
+        let mut json: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(j) => j,
+            Err(_) => {
+                let err = error::invalid_json_error(path.clone());
+                return create_json_result(400, &err.to_json_string());
+            }
+        };
+
+        // Normalize keys to lowercase for Postgres compatibility
+        if let Some(obj) = json.as_object_mut() {
+            let keys: Vec<String> = obj.keys().cloned().collect();
+            for key in keys {
+                if let Some(value) = obj.remove(&key) {
+                    obj.insert(key.to_lowercase(), value);
+                }
+            }
+        }
+
+        // Get metadata for this path
+        let metadata_map = get_auth_metadata().lock().unwrap();
+        let auth_meta = metadata_map
+            .values()
+            .find(|m| m.signup_path == path)
+            .cloned();
+        drop(metadata_map);
+
+        let auth_meta = match auth_meta {
+            Some(m) => m,
+            None => {
+                return create_error_result(500, "No auth metadata found for this path");
+            }
+        };
+
+        let obj = match json.as_object() {
+            Some(o) => o,
+            None => {
+                return create_error_result(400, "Request body must be a JSON object");
+            }
+        };
+
+        // Validate all fields using libdoo_runtime before processing
+        let metadata = &auth_meta.metadata;
+        let fields = match metadata.get("fields").and_then(|f| f.as_array()) {
+            Some(f) => f,
+            None => {
+                return create_error_result(500, "Invalid metadata: missing fields");
+            }
+        };
+
+        for field in fields.iter() {
+            let field_obj = match field.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            let field_type = field_obj
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("Str");
+            let decorators = field_obj
+                .get("decorators")
+                .and_then(|d| d.as_array())
+                .map(|d| d.clone())
+                .unwrap_or_default();
+
+            // Skip auto fields for validation
+            let is_auto = decorators.iter().any(|d| {
+                d.as_object()
+                    .and_then(|o| o.get("name"))
+                    .and_then(|n| n.as_str())
+                    == Some("auto")
+            });
+            if is_auto {
+                continue;
+            }
+
+            // Get field value (case-insensitive lookup)
+            let value = obj
+                .iter()
+                .find(|(k, _)| k.to_lowercase() == field_name.to_lowercase())
+                .map(|(_, v)| v)
+                .or_else(|| obj.get(field_name));
+
+            if let Some(value) = value {
+                // Convert value to string for validation
+                let value_str = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => continue,
+                };
+
+                // Validate field
+                if let Err((status, error_json)) = validate_field_with_runtime(
+                    field_name,
+                    field_type,
+                    &value_str,
+                    &decorators,
+                    path.clone(),
+                ) {
+                    return create_json_result(status, &error_json);
+                }
+            }
+        }
+
+        // Extract table metadata (already loaded above for validation)
+
+        // Find password field
+        let password_field = fields.iter().find_map(|f| {
+            let field_obj = f.as_object()?;
+            let decorators = field_obj.get("decorators")?.as_array()?;
+            let has_hash = decorators.iter().any(|d| {
+                d.as_object()
+                    .and_then(|o| o.get("name"))
+                    .and_then(|n| n.as_str())
+                    == Some("hash")
+            });
+            if has_hash {
+                field_obj.get("name")?.as_str()
+            } else {
+                None
+            }
+        });
+
+        let password_field_name = match password_field {
+            Some(name) => name,
+            None => {
+                return create_error_result(500, "No password field with @hash decorator found");
+            }
+        };
+
+        // Get password value (case-insensitive lookup)
+        let password_value = obj
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == password_field_name.to_lowercase())
+            .and_then(|(_, v)| v.as_str())
+            .or_else(|| obj.get(password_field_name).and_then(|v| v.as_str()));
+
+        let password_value = match password_value {
+            Some(pwd) => pwd,
+            None => {
+                return create_error_result(
+                    400,
+                    &format!("Missing or invalid field: {}", password_field_name),
+                );
+            }
+        };
+
+        // Hash password using libdoo_auth
+        let password_c = CString::new(password_value).unwrap();
+        let hash_result = doo_auth_hash_password(password_c.as_ptr());
+
+        if hash_result.is_null() {
+            return create_error_result(500, "Failed to hash password");
+        }
+
+        let hash_res = &*(hash_result as *mut DooResult);
+        if hash_res.tag != 0 {
+            doo_auth_free_result(hash_result);
+            return create_error_result(500, "Failed to hash password");
+        }
+
+        let hashed_password = if hash_res.value.is_null() {
+            doo_auth_free_result(hash_result);
+            return create_error_result(500, "Failed to get hashed password");
+        } else {
+            let hash_ptr = hash_res.value as *mut c_char;
+            let hash_str = CStr::from_ptr(hash_ptr).to_string_lossy().into_owned();
+            doo_auth_free_result(hash_result);
+            hash_str
+        };
+
+        // Build INSERT SQL
+        let table_name = &auth_meta.table_name;
+        let mut field_names = Vec::new();
+        let mut placeholders = Vec::new();
+        let mut values_json = Vec::new();
+        let mut param_idx = 1;
+
+        for field in fields.iter() {
+            let field_obj = match field.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Skip auto-generated fields
+            let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
+            if let Some(decs) = decorators {
+                let is_auto = decs.iter().any(|d| {
+                    d.as_object()
+                        .and_then(|o| o.get("name"))
+                        .and_then(|n| n.as_str())
+                        == Some("auto")
+                });
+                if is_auto {
+                    continue;
+                }
+            }
+
+            // Use hashed password for password field (case-insensitive comparison)
+            if field_name.to_lowercase() == password_field_name.to_lowercase() {
+                field_names.push(field_name.to_lowercase());
+                placeholders.push(format!("${}", param_idx));
+                values_json.push(serde_json::Value::String(hashed_password.clone()));
+                param_idx += 1;
+            } else {
+                // Case-insensitive lookup for the field value
+                let value = obj
+                    .iter()
+                    .find(|(k, _)| k.to_lowercase() == field_name.to_lowercase())
+                    .map(|(_, v)| v)
+                    .or_else(|| obj.get(field_name));
+
+                if let Some(value) = value {
+                    field_names.push(field_name.to_lowercase());
+                    placeholders.push(format!("${}", param_idx));
+                    values_json.push(value.clone());
+                    param_idx += 1;
+                }
+            }
+        }
+
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({}) RETURNING id",
+            table_name,
+            field_names.join(", "),
+            placeholders.join(", ")
+        );
+
+        let sql_c = CString::new(sql).unwrap();
+        let values_json_str = serde_json::to_string(&values_json).unwrap();
+        let values_c = CString::new(values_json_str).unwrap();
+
+        // Insert into database
+        let insert_result = doo_db_insert_json(sql_c.as_ptr(), values_c.as_ptr());
+
+        if insert_result.is_null() {
+            return create_error_result(500, "Database insert failed");
+        }
+
+        let insert_res = &*insert_result;
+        let insert_res = &*(insert_result as *mut DooResult);
+        if doo_db_is_error(insert_result) != 0 {
+            let err_msg_ptr = doo_db_get_error_message(insert_result);
+            let err_msg = if err_msg_ptr.is_null() {
+                "Database insert failed".to_string()
+            } else {
+                let msg = CStr::from_ptr(err_msg_ptr).to_string_lossy().into_owned();
+                doo_db_free_string(err_msg_ptr);
+                msg
+            };
+            doo_db_free_result(insert_result);
+
+            // Convert DB error to RFC 7807 format
+            let (status, rfc_error) = convert_db_error_to_rfc7807(&err_msg, path.clone());
+            return create_json_result(status, &rfc_error);
+        }
+
+        // Extract inserted ID
+        let user_id = if insert_res.value.is_null() {
+            1i64
+        } else {
+            insert_res.value as i64
+        };
+        doo_db_free_result(insert_result);
+
+        // Generate JWT token
+        let user_id_str = user_id.to_string();
+        let sub_c = CString::new(user_id_str.clone()).unwrap();
+        let user_data = json!({
+            "id": user_id,
+        });
+        let data_json_str = user_data.to_string();
+        let data_c = CString::new(data_json_str).unwrap();
+        let expires = 86400i64; // 24 hours
+
+        let token_result = doo_auth_sign(sub_c.as_ptr(), data_c.as_ptr(), expires);
+
+        if token_result.is_null() {
+            return create_json_result(
+                201,
+                &format!(
+                    r#"{{"success":true,"message":"User created successfully","id":{}}}"#,
+                    user_id
+                ),
+            );
+        }
+
+        let token_res = &*(token_result as *mut DooResult);
+        let token = if token_res.tag == 0 && !token_res.value.is_null() {
+            let token_ptr = token_res.value as *mut c_char;
+            let token_str = CStr::from_ptr(token_ptr).to_string_lossy().into_owned();
+            doo_auth_free_result(token_result);
+            token_str
+        } else {
+            doo_auth_free_result(token_result);
+            return create_json_result(
+                201,
+                &format!(
+                    r#"{{"success":true,"message":"User created successfully","id":{}}}"#,
+                    user_id
+                ),
+            );
+        };
+
+        // Build user object (get fields from metadata, exclude password)
+        let mut user_obj = serde_json::Map::new();
+        user_obj.insert("id".to_string(), json!(user_id));
+
+        // Add other fields from request body (except password field)
+        for field in fields.iter() {
+            let field_obj = match field.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Skip password and auto fields (case-insensitive)
+            if field_name.to_lowercase() == password_field_name.to_lowercase()
+                || field_name.to_lowercase() == "id"
+            {
+                continue;
+            }
+
+            // Add field from original request (case-insensitive lookup)
+            let value = obj
+                .iter()
+                .find(|(k, _)| k.to_lowercase() == field_name.to_lowercase())
+                .map(|(_, v)| v)
+                .or_else(|| obj.get(field_name));
+
+            if let Some(value) = value {
+                user_obj.insert(field_name.to_lowercase(), value.clone());
+            }
+        }
+
+        // Return success with token and user data
+        let response = json!({
+            "token": token,
+            "user": user_obj,
+        });
+
+        create_json_result(201, &response.to_string())
+    }
+}
+
+/// Helper to validate field using libdoo_runtime
+unsafe fn validate_field_with_runtime(
+    field_name: &str,
+    field_type: &str,
+    value: &str,
+    decorators: &[serde_json::Value],
+    instance: String,
+) -> Result<(), (i32, String)> {
+    // Convert decorators to JSON string format expected by runtime
+    let decorators_json = json!(decorators).to_string();
+
+    let field_name_c = CString::new(field_name).unwrap();
+    let field_type_c = CString::new(field_type).unwrap();
+    let value_c = CString::new(value).unwrap();
+    let decorators_c = CString::new(decorators_json).unwrap();
+
+    let result = dooruntime_validate_field(
+        field_name_c.as_ptr(),
+        field_type_c.as_ptr(),
+        value_c.as_ptr(),
+        decorators_c.as_ptr(),
+    );
+
+    if result != 0 {
+        // Validation failed - get error from runtime
+        let error_ptr = dooruntime_get_last_validation_error();
+        if !error_ptr.is_null() {
+            let error_json = CStr::from_ptr(error_ptr).to_string_lossy().into_owned();
+            dooruntime_free_string(error_ptr);
+            dooruntime_clear_validation_error();
+
+            // Parse the validation error and convert to RFC 7807
+            if let Ok(err_obj) = serde_json::from_str::<serde_json::Value>(&error_json) {
+                let field = err_obj
+                    .get("field_name")
+                    .and_then(|f| f.as_str())
+                    .unwrap_or(field_name);
+                let rule = err_obj
+                    .get("rule")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("validation");
+                let message = err_obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Validation failed");
+
+                let mut fields = std::collections::HashMap::new();
+                fields.insert(
+                    field.to_string(),
+                    error::FieldError::new(field.to_string())
+                        .with_rule(rule.to_string())
+                        .with_error(message.to_string())
+                        .with_value(value.to_string()),
+                );
+
+                let err = error::validation_failed_error(instance, fields);
+                return Err((400, err.to_json_string()));
+            }
+        }
+        return Err((
+            400,
+            format!(
+                r#"{{"error":"Validation failed for field: {}"}}"#,
+                field_name
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Auth signup handler - uses libdoo_db and libdoo_auth
+extern "C" fn auth_login_handler(request: *mut DooRequest) -> *mut DooResult {
+    unsafe {
+        if request.is_null() {
+            return create_error_result(500, "Internal error: null request");
+        }
+
+        let req = &*request;
+        if req.path.is_null() || req.body.is_null() {
+            return create_error_result(500, "Internal error: invalid request");
+        }
+
+        let path = c_to_string(req.path);
+        let body = c_to_string(req.body);
+
+        // Parse JSON body
+        let mut json: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(j) => j,
+            Err(_) => {
+                let err = error::invalid_json_error(path.clone());
+                return create_json_result(400, &err.to_json_string());
+            }
+        };
+
+        // Get metadata for this path
+        let metadata_map = get_auth_metadata().lock().unwrap();
+        let auth_meta = metadata_map
+            .values()
+            .find(|m| m.login_path == path)
+            .cloned();
+        drop(metadata_map);
+
+        let auth_meta = match auth_meta {
+            Some(m) => m,
+            None => {
+                return create_error_result(500, "No auth metadata found for this path");
+            }
+        };
+
+        let obj = match json.as_object() {
+            Some(o) => o,
+            None => {
+                return create_error_result(400, "Request body must be a JSON object");
+            }
+        };
+
+        // Extract table metadata
+        let metadata = &auth_meta.metadata;
+        let fields = match metadata.get("fields").and_then(|f| f.as_array()) {
+            Some(f) => f,
+            None => {
+                return create_error_result(500, "Invalid metadata: missing fields");
+            }
+        };
+
+        // Find unique email/username field and password field
+        let mut unique_field_name = None;
+        let mut password_field_name = None;
+
+        for field in fields.iter() {
+            let field_obj = match field.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
+            if let Some(decs) = decorators {
+                let has_unique = decs.iter().any(|d| {
+                    d.as_object()
+                        .and_then(|o| o.get("name"))
+                        .and_then(|n| n.as_str())
+                        == Some("unique")
+                });
+                let has_hash = decs.iter().any(|d| {
+                    d.as_object()
+                        .and_then(|o| o.get("name"))
+                        .and_then(|n| n.as_str())
+                        == Some("hash")
+                });
+
+                if has_unique && unique_field_name.is_none() {
+                    unique_field_name = Some(field_name);
+                }
+                if has_hash {
+                    password_field_name = Some(field_name);
+                }
+            }
+        }
+
+        let unique_field = match unique_field_name {
+            Some(name) => name,
+            None => {
+                return create_error_result(500, "No unique field found for authentication");
+            }
+        };
+
+        let password_field = match password_field_name {
+            Some(name) => name,
+            None => {
+                return create_error_result(500, "No password field with @hash decorator found");
+            }
+        };
+
+        // Get credentials from request (case-insensitive key lookup)
+        let identifier = obj
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == unique_field.to_lowercase())
+            .and_then(|(_, v)| v.as_str())
+            .or_else(|| obj.get(unique_field).and_then(|v| v.as_str()));
+
+        let identifier = match identifier {
+            Some(id) => id,
+            None => {
+                return create_error_result(
+                    400,
+                    &format!("Missing or invalid field: {}", unique_field),
+                );
+            }
+        };
+
+        let password = obj
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == password_field.to_lowercase())
+            .and_then(|(_, v)| v.as_str())
+            .or_else(|| obj.get(password_field).and_then(|v| v.as_str()));
+
+        let password = match password {
+            Some(pwd) => pwd,
+            None => {
+                return create_error_result(
+                    400,
+                    &format!("Missing or invalid field: {}", password_field),
+                );
+            }
+        };
+
+        // Query user from database (use lowercase column name for Postgres)
+        let table_name = &auth_meta.table_name;
+        let sql = format!(
+            "SELECT * FROM {} WHERE {} = $1",
+            table_name,
+            unique_field.to_lowercase()
+        );
+        let sql_c = CString::new(sql).unwrap();
+        let identifier_c = CString::new(identifier).unwrap();
+
+        let query_result = doo_db_query_one_param(sql_c.as_ptr(), identifier_c.as_ptr());
+
+        if query_result.is_null() {
+            return create_error_result(500, "Database query failed");
+        }
+
+        let query_res = &*(query_result as *mut DooResult);
+        if doo_db_is_error(query_result) != 0 {
+            doo_db_free_result(query_result);
+            return create_error_result(401, "Invalid credentials");
+        }
+
+        let user_json_str = if query_res.value.is_null() {
+            doo_db_free_result(query_result);
+            return create_error_result(401, "Invalid credentials");
+        } else {
+            let json_ptr = query_res.value as *mut c_char;
+            let json_str = CStr::from_ptr(json_ptr).to_string_lossy().into_owned();
+            doo_db_free_result(query_result);
+            json_str
+        };
+
+        // Parse user data
+        let user_data: serde_json::Value = match serde_json::from_str(&user_json_str) {
+            Ok(data) => data,
+            Err(_) => {
+                return create_error_result(500, "Failed to parse user data");
+            }
+        };
+
+        // Get stored password hash (case-insensitive lookup - Postgres lowercases column names)
+        let user_obj = match user_data.as_object() {
+            Some(obj) => obj,
+            None => {
+                return create_error_result(500, "User data is not an object");
+            }
+        };
+
+        let stored_hash = user_obj
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == password_field.to_lowercase())
+            .and_then(|(_, v)| v.as_str());
+
+        let stored_hash = match stored_hash {
+            Some(hash) => hash,
+            None => {
+                return create_error_result(500, "Password hash not found");
+            }
+        };
+
+        // Verify password using libdoo_auth
+        let password_c = CString::new(password).unwrap();
+        let hash_c = CString::new(stored_hash).unwrap();
+        let verify_result = doo_auth_verify_password(password_c.as_ptr(), hash_c.as_ptr());
+
+        if verify_result.is_null() {
+            return create_error_result(500, "Password verification failed");
+        }
+
+        let verify_res = &*(verify_result as *mut DooResult);
+        let is_valid = if verify_res.tag == 0 {
+            (verify_res.value as i32) != 0
+        } else {
+            doo_auth_free_result(verify_result);
+            return create_error_result(401, "Invalid credentials");
+        };
+        doo_auth_free_result(verify_result);
+
+        if !is_valid {
+            return create_error_result(401, "Invalid credentials");
+        }
+
+        // Get user ID
+        let user_id = user_data.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+
+        // Generate JWT token
+        let user_id_str = user_id.to_string();
+        let sub_c = CString::new(user_id_str.clone()).unwrap();
+        let token_data = json!({
+            "id": user_id,
+        });
+        let data_json_str = token_data.to_string();
+        let data_c = CString::new(data_json_str).unwrap();
+        let expires = 86400i64; // 24 hours
+
+        let token_result = doo_auth_sign(sub_c.as_ptr(), data_c.as_ptr(), expires);
+
+        if token_result.is_null() {
+            return create_error_result(500, "Failed to generate token");
+        }
+
+        let token_res = &*(token_result as *mut DooResult);
+        let token = if token_res.tag == 0 && !token_res.value.is_null() {
+            let token_ptr = token_res.value as *mut c_char;
+            let token_str = CStr::from_ptr(token_ptr).to_string_lossy().into_owned();
+            doo_auth_free_result(token_result);
+            token_str
+        } else {
+            doo_auth_free_result(token_result);
+            return create_error_result(500, "Failed to generate token");
+        };
+
+        // Build user response (exclude password - case-insensitive removal)
+        let mut user_response = user_data.as_object().unwrap().clone();
+        user_response.retain(|k, _| k.to_lowercase() != password_field.to_lowercase());
+
+        // Return success with token and user data
+        let response = json!({
+            "token": token,
+            "user": user_response,
+        });
+
+        create_json_result(200, &response.to_string())
+    }
+}
+
+/// CRUD create handler - uses libdoo_db
+extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
+    unsafe {
+        if request.is_null() {
+            return create_error_result(500, "Internal error: null request");
+        }
+
+        let req = &*request;
+        if req.path.is_null() || req.body.is_null() {
+            return create_error_result(400, "Missing request body");
+        }
+
+        let path = c_to_string(req.path);
+        let body = c_to_string(req.body);
+
+        // Parse JSON body
+        let mut json: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(j) => j,
+            Err(_) => {
+                let err = error::invalid_json_error(path.clone());
+                return create_json_result(400, &err.to_json_string());
+            }
+        };
+
+        // Normalize keys to lowercase for Postgres compatibility
+        if let Some(obj) = json.as_object_mut() {
+            let keys: Vec<String> = obj.keys().cloned().collect();
+            for key in keys {
+                if let Some(value) = obj.remove(&key) {
+                    obj.insert(key.to_lowercase(), value);
+                }
+            }
+        }
+
+        // Find metadata for this table
+        let metadata_map = get_crud_metadata().lock().unwrap();
+        let crud_meta = metadata_map
+            .values()
+            .find(|m| path.starts_with(&m.base_path))
+            .cloned();
+        drop(metadata_map);
+
+        let crud_meta = match crud_meta {
+            Some(m) => m,
+            None => {
+                return create_error_result(500, "No CRUD metadata found for this path");
+            }
+        };
+
+        let obj = match json.as_object() {
+            Some(o) => o,
+            None => {
+                return create_error_result(400, "Request body must be a JSON object");
+            }
+        };
+
+        // Get struct name from metadata for error messages
+        let struct_name = crud_meta
+            .metadata
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("Resource");
+
+        // Extract table metadata
+        let metadata = &crud_meta.metadata;
+        let fields = match metadata.get("fields").and_then(|f| f.as_array()) {
+            Some(f) => f,
+            None => {
+                return create_error_result(500, "Invalid metadata: missing fields");
+            }
+        };
+
+        // Build INSERT SQL
+        let table_name = &crud_meta.table_name;
+        let mut field_names = Vec::new();
+        let mut placeholders = Vec::new();
+        let mut values_json = Vec::new();
+        let mut param_idx = 1;
+
+        for field in fields.iter() {
+            let field_obj = match field.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Skip auto-generated fields
+            let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
+            if let Some(decs) = decorators {
+                let is_auto = decs.iter().any(|d| {
+                    d.as_object()
+                        .and_then(|o| o.get("name"))
+                        .and_then(|n| n.as_str())
+                        == Some("auto")
+                });
+                if is_auto {
+                    continue;
+                }
+            }
+
+            // Case-insensitive lookup for the field value
+            let value = obj
+                .iter()
+                .find(|(k, _)| k.to_lowercase() == field_name.to_lowercase())
+                .map(|(_, v)| v)
+                .or_else(|| obj.get(field_name));
+
+            if let Some(value) = value {
+                field_names.push(field_name.to_lowercase());
+                placeholders.push(format!("${}", param_idx));
+                values_json.push(value.clone());
+                param_idx += 1;
+            }
+        }
+
+        if field_names.is_empty() {
+            return create_error_result(400, "No valid fields provided");
+        }
+
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({}) RETURNING id",
+            table_name,
+            field_names.join(", "),
+            placeholders.join(", ")
+        );
+
+        let sql_c = CString::new(sql).unwrap();
+        let values_json_str = serde_json::to_string(&values_json).unwrap();
+        let values_c = CString::new(values_json_str).unwrap();
+
+        // Insert into database
+        let insert_result = doo_db_insert_json(sql_c.as_ptr(), values_c.as_ptr());
+
+        if insert_result.is_null() {
+            return create_error_result(500, "Database insert failed");
+        }
+
+        let insert_res = &*(insert_result as *mut DooResult);
+        if doo_db_is_error(insert_result) != 0 {
+            let err_msg_ptr = doo_db_get_error_message(insert_result);
+            let err_msg = if err_msg_ptr.is_null() {
+                "Database insert failed".to_string()
+            } else {
+                let msg = CStr::from_ptr(err_msg_ptr).to_string_lossy().into_owned();
+                doo_db_free_string(err_msg_ptr);
+                msg
+            };
+            doo_db_free_result(insert_result);
+
+            // Convert DB error to RFC 7807 format
+            let (status, rfc_error) = convert_db_error_to_rfc7807(&err_msg, path.clone());
+            return create_json_result(status, &rfc_error);
+        }
+
+        let resource_id = if insert_res.value.is_null() {
+            1i64
+        } else {
+            insert_res.value as i64
+        };
+        doo_db_free_result(insert_result);
+
+        // Build response with created resource
+        let mut resource_obj = obj.clone();
+        resource_obj.insert("id".to_string(), json!(resource_id));
+
+        create_json_result(201, &serde_json::to_string(&resource_obj).unwrap())
+    }
+}
+
+/// CRUD list handler - uses libdoo_db
+extern "C" fn crud_list_handler(request: *mut DooRequest) -> *mut DooResult {
+    unsafe {
+        if request.is_null() {
+            return create_error_result(500, "Internal error: null request");
+        }
+
+        let req = &*request;
+        if req.path.is_null() {
+            return create_error_result(500, "Internal error: invalid request");
+        }
+
+        let path = c_to_string(req.path);
+
+        // Get metadata for this path
+        let metadata_map = get_crud_metadata().lock().unwrap();
+        let crud_meta = metadata_map
+            .values()
+            .find(|m| path.starts_with(&m.base_path))
+            .cloned();
+        drop(metadata_map);
+
+        let crud_meta = match crud_meta {
+            Some(m) => m,
+            None => {
+                return create_error_result(500, "No CRUD metadata found for this path");
+            }
+        };
+
+        let table_name = &crud_meta.table_name;
+        let sql = format!("SELECT * FROM {}", table_name.to_lowercase());
+        let sql_c = CString::new(sql).unwrap();
+
+        let query_result = doo_db_query_json(sql_c.as_ptr());
+
+        if query_result.is_null() {
+            return create_error_result(500, "Database query failed");
+        }
+
+        let query_res = &*(query_result as *mut DooResult);
+        if doo_db_is_error(query_result) != 0 {
+            let err_msg_ptr = doo_db_get_error_message(query_result);
+            let err_msg = if err_msg_ptr.is_null() {
+                "Database query failed".to_string()
+            } else {
+                let msg = CStr::from_ptr(err_msg_ptr).to_string_lossy().into_owned();
+                doo_db_free_string(err_msg_ptr);
+                msg
+            };
+            doo_db_free_result(query_result);
+            return create_error_result(500, &err_msg);
+        }
+
+        let data_json_str = if query_res.value.is_null() {
+            doo_db_free_result(query_result);
+            "[]".to_string()
+        } else {
+            let json_ptr = query_res.value as *mut c_char;
+            let json_str = CStr::from_ptr(json_ptr).to_string_lossy().into_owned();
+            doo_db_free_result(query_result);
+            json_str
+        };
+
+        // Parse data array
+        let data_array: Vec<serde_json::Value> =
+            serde_json::from_str(&data_json_str).unwrap_or_default();
+
+        // Return array directly
+        create_json_result(200, &data_json_str)
+    }
+}
+
+/// CRUD get handler - uses libdoo_db
+extern "C" fn crud_get_handler(request: *mut DooRequest) -> *mut DooResult {
+    unsafe {
+        if request.is_null() {
+            return create_error_result(500, "Internal error: null request");
+        }
+
+        let req = &*request;
+        if req.path.is_null() || req.params.is_null() {
+            return create_error_result(500, "Internal error: invalid request");
+        }
+
+        let path = c_to_string(req.path);
+
+        // Extract id from params HashMap
+        let params_ptr = req.params as *const HashMap<String, String>;
+        let params = &*params_ptr;
+
+        let id_str = match params.get("id") {
+            Some(id) => id.as_str(),
+            None => {
+                return create_error_result(400, "Missing id parameter");
+            }
+        };
+
+        // Get metadata for this path
+        let metadata_map = get_crud_metadata().lock().unwrap();
+        let crud_meta = metadata_map
+            .values()
+            .find(|m| path.starts_with(&m.base_path))
+            .cloned();
+        drop(metadata_map);
+
+        let crud_meta = match crud_meta {
+            Some(m) => m,
+            None => {
+                return create_error_result(500, "No CRUD metadata found for this path");
+            }
+        };
+
+        // Get struct name from metadata for error messages
+        let struct_name = crud_meta
+            .metadata
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("Resource");
+
+        // Validate ID is numeric to prevent SQL injection
+        let id_num = match id_str.parse::<i64>() {
+            Ok(n) => n,
+            Err(_) => return create_error_result(400, "Invalid ID format"),
+        };
+
+        let table_name = &crud_meta.table_name;
+        // Use direct SQL interpolation since ID is validated numeric
+        let sql = format!(
+            "SELECT * FROM {} WHERE id = {}",
+            table_name.to_lowercase(),
+            id_num
+        );
+        let sql_c = CString::new(sql).unwrap();
+
+        let query_result = doo_db_query_one_json(sql_c.as_ptr());
+
+        if query_result.is_null() {
+            return create_error_result(500, "Database query failed");
+        }
+
+        let query_res = &*(query_result as *mut DooResult);
+        if doo_db_is_error(query_result) != 0 {
+            doo_db_free_result(query_result);
+            return create_error_result(404, "Resource not found");
+        }
+
+        let data_json_str = if query_res.value.is_null() {
+            doo_db_free_result(query_result);
+            return create_error_result(404, "Resource not found");
+        } else {
+            let json_ptr = query_res.value as *mut c_char;
+            let json_str = CStr::from_ptr(json_ptr).to_string_lossy().into_owned();
+            doo_db_free_result(query_result);
+            json_str
+        };
+
+        // Return data directly
+        create_json_result(200, &data_json_str)
+    }
+}
+
+/// CRUD delete handler - uses libdoo_db
+extern "C" fn crud_delete_handler(request: *mut DooRequest) -> *mut DooResult {
+    unsafe {
+        if request.is_null() {
+            return create_error_result(500, "Internal error: null request");
+        }
+
+        let req = &*request;
+        if req.path.is_null() || req.params.is_null() {
+            return create_error_result(500, "Internal error: invalid request");
+        }
+
+        let path = c_to_string(req.path);
+
+        // Extract id from params HashMap
+        let params_ptr = req.params as *const HashMap<String, String>;
+        let params = &*params_ptr;
+
+        let id_str = match params.get("id") {
+            Some(id) => id.as_str(),
+            None => {
+                return create_error_result(400, "Missing id parameter");
+            }
+        };
+
+        // Validate ID is numeric to prevent SQL injection
+        let id_num = match id_str.parse::<i64>() {
+            Ok(n) => n,
+            Err(_) => return create_error_result(400, "Invalid ID format"),
+        };
+
+        // Get metadata for this path
+        let metadata_map = get_crud_metadata().lock().unwrap();
+        let crud_meta = metadata_map
+            .values()
+            .find(|m| path.starts_with(&m.base_path))
+            .cloned();
+        drop(metadata_map);
+
+        let crud_meta = match crud_meta {
+            Some(m) => m,
+            None => {
+                return create_error_result(500, "No CRUD metadata found for this path");
+            }
+        };
+
+        let table_name = &crud_meta.table_name;
+        // Use direct SQL interpolation since ID is validated numeric
+        let sql = format!(
+            "DELETE FROM {} WHERE id = {}",
+            table_name.to_lowercase(),
+            id_num
+        );
+        let sql_c = CString::new(sql).unwrap();
+
+        let delete_result = doo_db_execute(sql_c.as_ptr());
+
+        if delete_result.is_null() {
+            return create_error_result(500, "Database delete failed");
+        }
+
+        let delete_res = &*(delete_result as *mut DooResult);
+        if doo_db_is_error(delete_result) != 0 {
+            let err_msg_ptr = doo_db_get_error_message(delete_result);
+            let err_msg = if err_msg_ptr.is_null() {
+                "Database delete failed".to_string()
+            } else {
+                let msg = CStr::from_ptr(err_msg_ptr).to_string_lossy().into_owned();
+                doo_db_free_string(err_msg_ptr);
+                msg
+            };
+            doo_db_free_result(delete_result);
+            return create_error_result(500, &err_msg);
+        }
+
+        let rows_affected = if delete_res.value.is_null() {
+            0i64
+        } else {
+            delete_res.value as i64
+        };
+        doo_db_free_result(delete_result);
+
+        if rows_affected == 0 {
+            return create_error_result(404, "Resource not found");
+        }
+
+        // Return empty 204 No Content for successful delete
+        let response = Box::into_raw(Box::new(DooResponse {
+            status: 204,
+            body: std::ptr::null_mut(),
+            content_type: string_to_c("application/json"),
+        }));
+        Box::into_raw(Box::new(DooResult {
+            tag: 0,
+            value: response as *mut _,
+        }))
+    }
+}
+
+/// CRUD update handler - uses libdoo_db
+extern "C" fn crud_update_handler(request: *mut DooRequest) -> *mut DooResult {
+    unsafe {
+        if request.is_null() {
+            return create_error_result(500, "Internal error: null request");
+        }
+
+        let req = &*request;
+        if req.path.is_null() || req.params.is_null() {
+            return create_error_result(500, "Internal error: invalid request");
+        }
+
+        let path = c_to_string(req.path);
+
+        // Extract id from params HashMap
+        let params_ptr = req.params as *const HashMap<String, String>;
+        let params = &*params_ptr;
+
+        let id_str = match params.get("id") {
+            Some(id) => id.as_str(),
+            None => {
+                return create_error_result(400, "Missing id parameter");
+            }
+        };
+
+        let body = c_to_string(req.body);
+
+        // Parse JSON body
+        let mut json: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(j) => j,
+            Err(_) => {
+                let err = error::invalid_json_error(path.clone());
+                return create_json_result(400, &err.to_json_string());
+            }
+        };
+
+        // Normalize keys to lowercase for Postgres compatibility
+        if let Some(obj) = json.as_object_mut() {
+            let keys: Vec<String> = obj.keys().cloned().collect();
+            for key in keys {
+                if let Some(value) = obj.remove(&key) {
+                    obj.insert(key.to_lowercase(), value);
+                }
+            }
+        }
+
+        let obj = match json.as_object() {
+            Some(o) => o,
+            None => {
+                return create_error_result(400, "Request body must be a JSON object");
+            }
+        };
+
+        // Get metadata for this path
+        let metadata_map = get_crud_metadata().lock().unwrap();
+        let crud_meta = metadata_map
+            .values()
+            .find(|m| path.starts_with(&m.base_path))
+            .cloned();
+        drop(metadata_map);
+
+        let crud_meta = match crud_meta {
+            Some(m) => m,
+            None => {
+                return create_error_result(500, "No CRUD metadata found for this path");
+            }
+        };
+
+        // Get struct name from metadata for error messages
+        let struct_name = crud_meta
+            .metadata
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("Resource");
+
+        // Extract table metadata
+        let metadata = &crud_meta.metadata;
+        let fields = match metadata.get("fields").and_then(|f| f.as_array()) {
+            Some(f) => f,
+            None => {
+                return create_error_result(500, "Invalid metadata: missing fields");
+            }
+        };
+
+        // Build UPDATE SQL
+        let table_name = &crud_meta.table_name;
+        let mut set_clauses = Vec::new();
+        let mut values_json = Vec::new();
+        let mut param_idx = 1;
+
+        for field in fields.iter() {
+            let field_obj = match field.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Skip auto-generated and primary key fields
+            let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
+            if let Some(decs) = decorators {
+                let is_auto_or_primary = decs.iter().any(|d| {
+                    let dec_name = d
+                        .as_object()
+                        .and_then(|o| o.get("name"))
+                        .and_then(|n| n.as_str());
+                    dec_name == Some("auto") || dec_name == Some("primary")
+                });
+                if is_auto_or_primary {
+                    continue;
+                }
+            }
+
+            // Case-insensitive lookup for the field value
+            let value = obj
+                .iter()
+                .find(|(k, _)| k.to_lowercase() == field_name.to_lowercase())
+                .map(|(_, v)| v)
+                .or_else(|| obj.get(field_name));
+
+            if let Some(value) = value {
+                set_clauses.push(format!("{} = ${}", field_name.to_lowercase(), param_idx));
+                values_json.push(value.clone());
+                param_idx += 1;
+            }
+        }
+
+        if set_clauses.is_empty() {
+            return create_error_result(400, "No valid fields to update");
+        }
+
+        // Validate ID is numeric to prevent SQL injection
+        let id_num = match id_str.parse::<i64>() {
+            Ok(n) => n,
+            Err(_) => return create_error_result(400, "Invalid ID format"),
+        };
+
+        let sql = format!(
+            "UPDATE {} SET {} WHERE id = {} RETURNING id",
+            table_name,
+            set_clauses.join(", "),
+            id_num
+        );
+
+        let sql_c = CString::new(sql).unwrap();
+        let values_json_str = serde_json::to_string(&values_json).unwrap();
+        let values_c = CString::new(values_json_str).unwrap();
+
+        // Execute update
+        let update_result = doo_db_insert_json(sql_c.as_ptr(), values_c.as_ptr());
+
+        if update_result.is_null() {
+            return create_error_result(500, "Database update failed");
+        }
+
+        let update_res = &*(update_result as *mut DooResult);
+        if doo_db_is_error(update_result) != 0 {
+            let err_msg_ptr = doo_db_get_error_message(update_result);
+            let err_msg = if err_msg_ptr.is_null() {
+                "Database update failed".to_string()
+            } else {
+                let msg = CStr::from_ptr(err_msg_ptr).to_string_lossy().into_owned();
+                doo_db_free_string(err_msg_ptr);
+                msg
+            };
+            doo_db_free_result(update_result);
+
+            // Convert DB error to RFC 7807 format
+            let (status, rfc_error) = convert_db_error_to_rfc7807(&err_msg, path.clone());
+            return create_json_result(status, &rfc_error);
+        }
+
+        let resource_id = if update_res.value.is_null() {
+            id_str.parse::<i64>().unwrap_or(0)
+        } else {
+            update_res.value as i64
+        };
+        doo_db_free_result(update_result);
+
+        // Build response with updated resource
+        let mut resource_obj = obj.clone();
+        resource_obj.insert("id".to_string(), json!(resource_id));
+
+        create_json_result(200, &serde_json::to_string(&resource_obj).unwrap())
+    }
+}
+
+// Helper to create JSON response
+fn create_json_result(status: i32, body: &str) -> *mut DooResult {
+    let response = Box::into_raw(Box::new(DooResponse {
+        status,
+        body: string_to_c(body),
+        content_type: string_to_c("application/json"),
+    }));
+    Box::into_raw(Box::new(DooResult {
+        tag: 0,
+        value: response as *mut _,
+    }))
+}
+
+// Helper to create error response
+fn create_error_result(status: i32, message: &str) -> *mut DooResult {
+    let error_json = format!(
+        r#"{{"type":"https://httpstatuses.com/{}","status":{},"detail":"{}"}}"#,
+        status, status, message
+    );
+    create_json_result(status, &error_json)
+}
+
+// Helper to build CREATE TABLE SQL from metadata
+fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> String {
+    let fields = match metadata.get("fields").and_then(|f| f.as_array()) {
+        Some(f) => f,
+        None => return String::new(),
+    };
+
+    let mut columns = Vec::new();
+
+    for field in fields {
+        let field_obj = match field.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let field_type = match field_obj.get("type").and_then(|t| t.as_str()) {
+            Some(t) => t,
+            None => "TEXT",
+        };
+
+        let decorators = field_obj
+            .get("decorators")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut is_primary = false;
+        let mut is_auto = false;
+        let mut is_unique = false;
+        let mut is_hash = false;
+
+        for decorator in &decorators {
+            if let Some(dec_obj) = decorator.as_object() {
+                if let Some(dec_name) = dec_obj.get("name").and_then(|n| n.as_str()) {
+                    match dec_name {
+                        "primary" => is_primary = true,
+                        "auto" => is_auto = true,
+                        "unique" => is_unique = true,
+                        "hash" => is_hash = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let sql_type = if is_hash {
+            "VARCHAR(255)"
+        } else {
+            match field_type {
+                "Int" => {
+                    if is_auto {
+                        "SERIAL"
+                    } else {
+                        "INTEGER"
+                    }
+                }
+                "Float" => "REAL",
+                "Bool" => "BOOLEAN",
+                _ => "TEXT",
+            }
+        };
+
+        // Use lowercase column names for Postgres compatibility
+        let mut column_def = format!("{} {}", field_name.to_lowercase(), sql_type);
+
+        if is_primary {
+            column_def.push_str(" PRIMARY KEY");
+        }
+        if is_unique && !is_primary {
+            column_def.push_str(" UNIQUE");
+        }
+        if !is_auto && !is_primary {
+            column_def.push_str(" NOT NULL");
+        }
+
+        columns.push(column_def);
+    }
+
+    format!(
+        "CREATE TABLE IF NOT EXISTS {} ({})",
+        table_name,
+        columns.join(", ")
+    )
+}
+
+// ============================================================================
+// Auth and CRUD FFI Functions (FFI-only design)
+// ============================================================================
+
+/// Register auth routes (signup and login) with metadata
+/// Called by compiler with struct metadata JSON
+#[no_mangle]
+pub extern "C" fn doo_http_auth_impl(
+    _server: *const std::ffi::c_void,
+    signup_path: *const c_char,
+    login_path: *const c_char,
+    struct_name: *const c_char,
+    metadata_json: *const c_char,
+) -> *mut DooResult {
+    let signup_path_str = c_to_string(signup_path);
+    let login_path_str = c_to_string(login_path);
+    let struct_name_str = c_to_string(struct_name);
+    let metadata_json_str = c_to_string(metadata_json);
+
+    println!("[FFI] doo_http_auth_impl: Registering auth routes");
+    println!("[FFI]   Struct: {}", struct_name_str);
+    println!("[FFI]   Signup: POST {}", signup_path_str);
+    println!("[FFI]   Login: POST {}", login_path_str);
+
+    // Parse and store metadata
+    let metadata: serde_json::Value = match serde_json::from_str(&metadata_json_str) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("[ERROR] Invalid metadata JSON: {}", e);
+            return make_err_http(400, &format!("Invalid metadata: {}", e));
+        }
+    };
+
+    let table_name = struct_name_str.to_lowercase() + "s";
+
+    // Create table from metadata
+    let create_sql = build_create_table_sql(&table_name, &metadata);
+    let sql_c = CString::new(create_sql.clone()).unwrap();
+    let create_result = unsafe { doo_db_create_table(sql_c.as_ptr()) };
+
+    if !create_result.is_null() {
+        if unsafe { doo_db_is_error(create_result) } != 0 {
+            let err_msg_ptr = unsafe { doo_db_get_error_message(create_result) };
+            if !err_msg_ptr.is_null() {
+                let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
+                println!("[WARN] Table creation warning: {}", err_msg);
+                unsafe { doo_db_free_string(err_msg_ptr) };
+            }
+            unsafe { doo_db_free_result(create_result) };
+        } else {
+            println!("[FFI] Table '{}' created/verified", table_name);
+            unsafe { doo_db_free_result(create_result) };
+        }
+    }
+
+    get_auth_metadata().lock().unwrap().insert(
+        struct_name_str.clone(),
+        AuthMetadata {
+            table_name: table_name.clone(),
+            metadata: metadata.clone(),
+            signup_path: signup_path_str.clone(),
+            login_path: login_path_str.clone(),
+        },
+    );
+
+    // Register handlers
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    registry.register("POST", &signup_path_str, auth_signup_handler);
+    registry.register("POST", &login_path_str, auth_login_handler);
+
+    println!(
+        "✓ Auth routes registered: POST {} and POST {}",
+        signup_path_str, login_path_str
+    );
+    println!(
+        "  User struct: {} (table: {}s)",
+        struct_name_str,
+        struct_name_str.to_lowercase()
+    );
+
+    make_ok_void()
+}
+
+/// Register CRUD routes with metadata
+/// Called by compiler with struct metadata JSON
+/// FFI-only design: Accepts metadata JSON and builds everything at runtime
+#[no_mangle]
+pub extern "C" fn doo_http_crud_impl(
+    _server: *const std::ffi::c_void,
+    base_path: *const c_char,
+    struct_name: *const c_char,
+    metadata_json: *const c_char,
+) -> *mut DooResult {
+    let base_path_str = c_to_string(base_path);
+    let struct_name_str = c_to_string(struct_name);
+    let metadata_json_str = c_to_string(metadata_json);
+
+    println!("[FFI] doo_http_crud_impl: Registering CRUD routes");
+    println!("[FFI]   Struct: {}", struct_name_str);
+    println!("[FFI]   Base path: {}", base_path_str);
+
+    // Parse and store metadata
+    let metadata: serde_json::Value = match serde_json::from_str(&metadata_json_str) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("[ERROR] Invalid metadata JSON: {}", e);
+            return make_err_http(400, &format!("Invalid metadata: {}", e));
+        }
+    };
+
+    let table_name = struct_name_str.to_lowercase() + "s";
+
+    // Create table from metadata
+    let create_sql = build_create_table_sql(&table_name, &metadata);
+    let sql_c = CString::new(create_sql.clone()).unwrap();
+    let create_result = unsafe { doo_db_create_table(sql_c.as_ptr()) };
+
+    if !create_result.is_null() {
+        if unsafe { doo_db_is_error(create_result) } != 0 {
+            let err_msg_ptr = unsafe { doo_db_get_error_message(create_result) };
+            if !err_msg_ptr.is_null() {
+                let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
+                println!("[WARN] Table creation warning: {}", err_msg);
+                unsafe { doo_db_free_string(err_msg_ptr) };
+            }
+            unsafe { doo_db_free_result(create_result) };
+        } else {
+            println!("[FFI] Table '{}' created/verified", table_name);
+            unsafe { doo_db_free_result(create_result) };
+        }
+    }
+
+    get_crud_metadata().lock().unwrap().insert(
+        struct_name_str.clone(),
+        CrudMetadata {
+            table_name: table_name.clone(),
+            metadata: metadata.clone(),
+            base_path: base_path_str.clone(),
+        },
+    );
+
+    // Register CRUD handlers
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    let id_path = format!("{}/{{id}}", base_path_str);
+
+    // Register more specific routes (with :id) BEFORE general routes
+    // matchit requires more specific patterns to be registered first
+    registry.register("GET", &id_path, crud_get_handler);
+    registry.register("PUT", &id_path, crud_update_handler);
+    registry.register("DELETE", &id_path, crud_delete_handler);
+    registry.register("POST", &base_path_str, crud_create_handler);
+    registry.register("GET", &base_path_str, crud_list_handler);
+
+    println!("✓ CRUD routes registered:");
+    println!("  POST {} (create)", base_path_str);
+    println!("  GET {} (list)", base_path_str);
+    println!("  GET {} (get)", id_path);
+    println!("  PUT {} (update)", id_path);
+    println!("  DELETE {} (delete)", id_path);
+
+    make_ok_void()
+}
