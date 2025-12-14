@@ -1585,7 +1585,14 @@ impl SemanticAnalyzer {
                             })
                         };
 
-                        if should_import {
+                        // CRITICAL: For explicit imports, also import ALL structs from the module
+                        // to ensure complete type information for codegen. When importing Server,
+                        // we need Response/Request types too since methods reference them.
+                        let should_import_for_type_info = !is_namespace_import_or_alias
+                            && !specific_imports.is_empty()
+                            && *is_public;
+
+                        if should_import || should_import_for_type_info {
                             // Copy struct definition to current struct table
                             if let Some(field_types) = imported_analyzer.struct_table.get(name) {
                                 self.struct_table.insert(name.clone(), field_types.clone());
@@ -1902,14 +1909,24 @@ impl SemanticAnalyzer {
                             (params.clone(), ret_ty.clone(), err_ty.clone()),
                         );
 
+                        // ALSO register the namespace-qualified form (Database::postgres)
+                        // This allows both postgres() and Database::postgres() to work
+                        let mangled_method_name = format!("{}::{}", struct_name, method_name);
+                        self.function_table.insert(
+                            mangled_method_name.clone(),
+                            (params.clone(), ret_ty.clone(), err_ty.clone()),
+                        );
+
                         // Copy FFI metadata so codegen can find the external function
                         // The FFI metadata is keyed by the mangled name (e.g., "Database::postgres")
-                        let mangled_method_name = format!("{}::{}", struct_name, method_name);
                         if let Some(ffi_meta) =
                             imported_analyzer.ffi_metadata.get(&mangled_method_name)
                         {
                             self.ffi_metadata
                                 .insert(function_name.clone(), ffi_meta.clone());
+                            // Also add FFI metadata for the namespace-qualified form
+                            self.ffi_metadata
+                                .insert(mangled_method_name.clone(), ffi_meta.clone());
                         }
 
                         // CRITICAL: Add function alias mapping from standalone name to mangled name

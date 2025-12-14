@@ -1444,6 +1444,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.context.i32_type().into()
         } else if ret_type_str.contains("Struct(")
             || self.struct_metadata.contains_key(ret_type_str)
+            || self.struct_table.contains_key(ret_type_str)
         {
             // Struct return types are pointers to heap-allocated structs
             self.context.ptr_type(AddressSpace::default()).into()
