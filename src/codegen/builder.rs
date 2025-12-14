@@ -118,9 +118,81 @@ impl<'ctx> CodeGen<'ctx> {
             // Handler takes one parameter
             let param_type = original_fn.get_type().get_param_types()[0];
 
-            // All struct parameters need to be populated from request data
-            // (body, path params, or query params) regardless of decorators
-            if param_type.is_struct_type() || param_type.is_pointer_type() {
+            // Check if parameter is a primitive type that needs path param extraction
+            if param_type.is_int_type() {
+                // Handler takes Int parameter - extract from path params
+                // Declare extraction function
+                let extract_fn =
+                    if let Some(f) = self.module.get_function("doohttp_extract_param_int") {
+                        f
+                    } else {
+                        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                        self.module
+                            .add_function("doohttp_extract_param_int", fn_type, None)
+                    };
+
+                // Get the first path parameter name (usually "id")
+                let param_name_cstr = self.generate_string_literal_ptr("id");
+
+                // Extract Int value from path params
+                let param_value = self
+                    .builder
+                    .build_call(
+                        extract_fn,
+                        &[request_ptr.into(), param_name_cstr.into()],
+                        "param_int",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap();
+
+                // Call handler with Int value
+                self.builder
+                    .build_call(original_fn, &[param_value.into()], "handler_result")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+            } else if param_type.is_float_type() {
+                // Handler takes Float parameter - extract from path params
+                // For now, extract as Int and convert to Float
+                let extract_fn =
+                    if let Some(f) = self.module.get_function("doohttp_extract_param_int") {
+                        f
+                    } else {
+                        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                        self.module
+                            .add_function("doohttp_extract_param_int", fn_type, None)
+                    };
+
+                let param_name_cstr = self.generate_string_literal_ptr("id");
+
+                let param_int = self
+                    .builder
+                    .build_call(
+                        extract_fn,
+                        &[request_ptr.into(), param_name_cstr.into()],
+                        "param_int",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value();
+
+                // Convert Int to Float
+                let param_float = self
+                    .builder
+                    .build_signed_int_to_float(param_int, self.context.f64_type(), "param_float")
+                    .unwrap();
+
+                // Call handler with Float value
+                self.builder
+                    .build_call(original_fn, &[param_float.into()], "handler_result")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+            } else if param_type.is_struct_type() || param_type.is_pointer_type() {
                 // Allocate struct for parameter
                 let struct_alloca = if param_type.is_struct_type() {
                     self.builder
@@ -648,7 +720,7 @@ impl<'ctx> CodeGen<'ctx> {
                         )
                         .unwrap();
                     self.builder
-                        .build_store(error_tag_ptr, i32_type.const_zero())
+                        .build_store(error_tag_ptr, i32_type.const_int(1, false))
                         .unwrap();
 
                     let error_value_ptr = self
@@ -957,7 +1029,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builder.build_store(ct_ptr, ct_str).unwrap();
             }
 
-            // Store tag = 0 (success)
+            // Store tag = 0 (success/Ok)
             let tag_ptr = self
                 .builder
                 .build_struct_gep(result_type, result_struct, 0, "tag_ptr")
@@ -977,7 +1049,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
             self.builder.build_store(value_ptr, generic_ptr).unwrap();
         } else {
-            // No return value - return null response
+            // No return value - return null response (still success)
             let tag_ptr = self
                 .builder
                 .build_struct_gep(result_type, result_struct, 0, "tag_ptr")
@@ -6153,7 +6225,7 @@ impl<'ctx> CodeGen<'ctx> {
             // Result/Error handling: Err expression creates an error result
             MirInstr::ResultErr { name, error } => {
                 // Create a Result struct with tag=1 (Err) and the error value
-                // NEW APPROACH: Keep error as pointer (usually string pointer)
+                // CRITICAL FIX: Heap-allocate error value to prevent dangling pointer
                 let error_val = self.resolve_value(error);
                 self.variable_types
                     .insert(name.clone(), "Result".to_string());
@@ -6190,10 +6262,55 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_store(tag_ptr, self.context.i32_type().const_int(1, false))
                     .unwrap();
 
-                // Set error value (convert to pointer representation)
-                let error_ptr_val = if error_val.is_pointer_value() {
-                    // Already a pointer (string, array, map, struct)
-                    error_val.into_pointer_value()
+                // CRITICAL FIX: Heap-allocate the error value to prevent dangling pointer
+                // The error value (especially enum structs) must be on the heap so it survives
+                // beyond the current function's stack frame
+                let error_ptr_val = if error_val.is_struct_value() {
+                    // Struct by value (enum) - heap-allocate it
+                    let struct_val = error_val.into_struct_value();
+                    let struct_type_val = struct_val.get_type();
+
+                    let struct_heap = self
+                        .builder
+                        .build_malloc(struct_type_val, "error_enum_heap")
+                        .unwrap();
+
+                    self.builder.build_store(struct_heap, struct_val).unwrap();
+                    struct_heap
+                } else if error_val.is_pointer_value() {
+                    // Already a pointer - check if we need to copy to heap
+                    // For now, assume string/array/map pointers are already heap-allocated
+                    // For enum pointers (stack-allocated), we need to copy to heap
+                    let error_ptr = error_val.into_pointer_value();
+
+                    // Assume enum structs are {i32, ptr} - 2 field structs
+                    // Try to determine if this needs heap allocation based on variable type
+                    if error_type.contains("Error") || error_type.contains("enum") {
+                        // This is likely an enum - heap-allocate a copy
+                        let enum_struct_type = self
+                            .context
+                            .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+
+                        let enum_heap = self
+                            .builder
+                            .build_malloc(enum_struct_type, "error_enum_heap")
+                            .unwrap();
+
+                        // Load the enum struct from stack
+                        let enum_val = self
+                            .builder
+                            .build_load(enum_struct_type, error_ptr, "enum_val")
+                            .unwrap();
+
+                        // Store it on the heap
+                        self.builder.build_store(enum_heap, enum_val).unwrap();
+
+                        // Return the heap pointer
+                        enum_heap
+                    } else {
+                        // Already a pointer to something on heap (string, array, etc.)
+                        error_ptr
+                    }
                 } else if error_val.is_int_value() {
                     // Cast integer to pointer using inttoptr
                     let int_val = error_val.into_int_value();

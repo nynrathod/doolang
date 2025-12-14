@@ -16,6 +16,15 @@ impl<'ctx> CodeGen<'ctx> {
             return self.generate_json_method(dest, method, args);
         }
 
+        // Check for Server auth() and crud() methods - route to database codegen
+        if method == "auth" && args.len() == 4 {
+            // app.auth(signupPath, loginPath, UserStruct, db)
+            return self.generate_auth_routes(dest, object, args);
+        } else if method == "crud" && args.len() == 3 {
+            // app.crud(basePath, ResourceStruct, db)
+            return self.generate_crud_routes(dest, object, args);
+        }
+
         // First, check if this is a custom user-defined method
         // Try to determine the type name from the object
         let object_val = self.resolve_value(object);
@@ -97,7 +106,14 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Check if there's a custom method defined (format: Type::method)
         if let Some(ref type_str) = type_name {
-            let mangled_method_name = format!("{}::{}", type_str, method);
+            // Extract struct name from "Struct(Name)" format if present
+            let clean_type = if type_str.starts_with("Struct(") && type_str.ends_with(")") {
+                &type_str[7..type_str.len() - 1]
+            } else {
+                type_str.as_str()
+            };
+
+            let mangled_method_name = format!("{}::{}", clean_type, method);
 
             // Check function aliases first (for FFI functions)
             let actual_func_name = self
@@ -116,19 +132,19 @@ impl<'ctx> CodeGen<'ctx> {
             } else {
                 // Method was expected but not found - this is likely a struct method
                 // Check if it's a struct type and provide helpful error
-                if !type_str.starts_with("Array")
-                    && !type_str.starts_with("Map")
-                    && type_str != "Int"
-                    && type_str != "Float"
-                    && type_str != "Bool"
-                    && type_str != "Str"
+                if !clean_type.starts_with("Array")
+                    && !clean_type.starts_with("Map")
+                    && clean_type != "Int"
+                    && clean_type != "Float"
+                    && clean_type != "Bool"
+                    && clean_type != "Str"
                 {
                     for func in self.module.get_functions() {
                         eprintln!("  - {}", func.get_name().to_str().unwrap());
                     }
                     panic!(
                         "Method '{}::{}' was not generated - check MIR generation",
-                        type_str, method
+                        clean_type, method
                     );
                 }
                 // For primitive types, fall through to built-in methods below

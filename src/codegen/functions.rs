@@ -3,7 +3,7 @@ use crate::codegen::core::helpers::parse_tuple_types;
 use crate::codegen::core::CodeGen;
 use crate::mir::mir::{CodegenBlock, MirBlock, MirFunction, MirInstr, MirProgram, MirTerminator};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
-use inkwell::values::{BasicValueEnum, FunctionValue};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
 use std::collections::HashMap;
 
@@ -236,11 +236,1048 @@ impl<'ctx> CodeGen<'ctx> {
             self.fpm.run_on(&llvm_func);
         }
 
+        // --- MIDDLEWARE REGISTRATION ---
+        // Register middleware functions with HTTP FFI
+        // Middleware signature: fn(req: Request, next: Next) -> Response [! ErrorType]
+        for func in &program.functions {
+            // Check if this is a middleware function
+            if func.params.len() == 2 && func.param_types.len() == 2 {
+                let param1 = func.param_types[0].as_ref();
+                let param2 = func.param_types[1].as_ref();
+                let return_type = func.return_type.as_ref();
+
+                // Middleware has signature: (Request, Next) -> Response
+                if param1.map(|s| s.as_str()) == Some("Request")
+                    && param2.map(|s| s.as_str()) == Some("Next")
+                    && return_type.map(|s| s.as_str()) == Some("Response")
+                {
+                    self.register_middleware_function(&func.name, func.error_type.as_deref());
+                }
+            }
+        }
+
         // --- MAIN ENTRY POINT ---
         // For non-main-entry files (imported modules), generate a default main if needed
         if !program.is_main_entry && self.module.get_function("main").is_none() {
             self.generate_default_main();
         }
+    }
+
+    /// Register a middleware function with the HTTP FFI
+    fn register_middleware_function(&mut self, middleware_name: &str, error_type: Option<&str>) {
+        use inkwell::AddressSpace;
+
+        // Get the middleware function
+        let middleware_fn = match self.module.get_function(middleware_name) {
+            Some(f) => f,
+            None => return,
+        };
+
+        // Generate wrapper for the middleware
+        let wrapper_name =
+            self.generate_middleware_wrapper(middleware_name, &middleware_fn, error_type);
+        if wrapper_name.is_none() {
+            return;
+        }
+        let wrapper_name = wrapper_name.unwrap();
+
+        // Get the wrapper function
+        let wrapper_fn = match self.module.get_function(&wrapper_name) {
+            Some(f) => f,
+            None => return,
+        };
+
+        // Declare the FFI registration function if not present
+        let register_fn = if let Some(f) = self.module.get_function("doo_http_register_middleware")
+        {
+            f
+        } else {
+            let void_type = self.context.void_type();
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module
+                .add_function("doo_http_register_middleware", fn_type, None)
+        };
+
+        // Get the entry block of main (or create one if it doesn't exist)
+        let main_fn = if let Some(f) = self.module.get_function("main") {
+            f
+        } else {
+            // If main doesn't exist yet, we'll register during handler generation
+            return;
+        };
+
+        // Find the first instruction in main to insert before it
+        if let Some(entry_block) = main_fn.get_first_basic_block() {
+            if let Some(first_instr) = entry_block.get_first_instruction() {
+                self.builder.position_before(&first_instr);
+            } else {
+                self.builder.position_at_end(entry_block);
+            }
+        } else {
+            return;
+        }
+
+        // Create C string for middleware name
+        let name_global = self
+            .builder
+            .build_global_string_ptr(middleware_name, "middleware_name")
+            .unwrap();
+        let name_cstr = name_global.as_pointer_value();
+
+        // Get wrapper function pointer and cast to generic pointer
+        let wrapper_fn_ptr = wrapper_fn.as_global_value().as_pointer_value();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let generic_ptr = self
+            .builder
+            .build_pointer_cast(wrapper_fn_ptr, ptr_type, "middleware_wrapper_cast")
+            .unwrap();
+
+        // Call doo_http_register_middleware(name, function_ptr)
+        self.builder
+            .build_call(
+                register_fn,
+                &[name_cstr.into(), generic_ptr.into()],
+                "register_middleware",
+            )
+            .unwrap();
+    }
+
+    /// Emit a debug print statement (eprintln in generated code)
+    fn emit_debug_print(&self, message: &str) {
+        let printf_fn_type = self.context.i32_type().fn_type(
+            &[self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()],
+            true,
+        );
+        let printf_fn = if let Some(f) = self.module.get_function("printf") {
+            f
+        } else {
+            self.module.add_function("printf", printf_fn_type, None)
+        };
+
+        let format_str = self
+            .builder
+            .build_global_string_ptr(&format!("{}\n", message), "debug_str")
+            .unwrap();
+        self.builder
+            .build_call(
+                printf_fn,
+                &[format_str.as_pointer_value().into()],
+                "debug_print",
+            )
+            .unwrap();
+    }
+
+    /// Emit a debug print for a pointer value
+    fn emit_debug_print_ptr(&self, message: &str, ptr: inkwell::values::PointerValue<'ctx>) {
+        let printf_fn_type = self.context.i32_type().fn_type(
+            &[self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()],
+            true,
+        );
+        let printf_fn = if let Some(f) = self.module.get_function("printf") {
+            f
+        } else {
+            self.module.add_function("printf", printf_fn_type, None)
+        };
+
+        let i64_type = self.context.i64_type();
+        let ptr_as_int = self
+            .builder
+            .build_ptr_to_int(ptr, i64_type, "ptr_as_int")
+            .unwrap();
+
+        let format_str = self
+            .builder
+            .build_global_string_ptr(&format!("{}: %p\n", message), "debug_ptr_str")
+            .unwrap();
+        self.builder
+            .build_call(
+                printf_fn,
+                &[format_str.as_pointer_value().into(), ptr_as_int.into()],
+                "debug_print_ptr",
+            )
+            .unwrap();
+    }
+
+    /// Emit a debug print for an integer value
+    fn emit_debug_print_int(&self, message: &str, value: inkwell::values::IntValue<'ctx>) {
+        let printf_fn_type = self.context.i32_type().fn_type(
+            &[self
+                .context
+                .ptr_type(inkwell::AddressSpace::default())
+                .into()],
+            true,
+        );
+        let printf_fn = if let Some(f) = self.module.get_function("printf") {
+            f
+        } else {
+            self.module.add_function("printf", printf_fn_type, None)
+        };
+
+        let format_str = self
+            .builder
+            .build_global_string_ptr(&format!("{}: %d\n", message), "debug_int_str")
+            .unwrap();
+        self.builder
+            .build_call(
+                printf_fn,
+                &[format_str.as_pointer_value().into(), value.into()],
+                "debug_print_int",
+            )
+            .unwrap();
+    }
+
+    /// Create a simple DooHttpError struct with status and message
+    fn create_simple_http_error(
+        &self,
+        status: u16,
+        message: &str,
+    ) -> inkwell::values::PointerValue<'ctx> {
+        use inkwell::AddressSpace;
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+
+        let error_http_alloc = self
+            .builder
+            .build_malloc(
+                self.context
+                    .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                "error_http",
+            )
+            .unwrap();
+
+        let error_status_ptr = self
+            .builder
+            .build_struct_gep(
+                self.context
+                    .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                error_http_alloc,
+                0,
+                "error_status_ptr",
+            )
+            .unwrap();
+        self.builder
+            .build_store(error_status_ptr, i32_type.const_int(status as u64, false))
+            .unwrap();
+
+        let error_msg = self
+            .builder
+            .build_global_string_ptr(message, "error_msg")
+            .unwrap()
+            .as_pointer_value();
+        let error_msg_ptr = self
+            .builder
+            .build_struct_gep(
+                self.context
+                    .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                error_http_alloc,
+                1,
+                "error_msg_ptr",
+            )
+            .unwrap();
+        self.builder.build_store(error_msg_ptr, error_msg).unwrap();
+
+        error_http_alloc
+    }
+
+    /// Generate a wrapper for middleware function that converts FFI types to Doo structs
+    /// Middleware signature: extern "C" fn(*mut DooRequest, *mut DooNext) -> *mut DooResult
+    fn generate_middleware_wrapper(
+        &mut self,
+        middleware_name: &str,
+        middleware_fn: &inkwell::values::FunctionValue<'ctx>,
+        error_type: Option<&str>,
+    ) -> Option<String> {
+        use inkwell::AddressSpace;
+
+        let wrapper_name = format!("{}_middleware_wrapper", middleware_name);
+
+        // Check if wrapper already exists
+        if self.module.get_function(&wrapper_name).is_some() {
+            return Some(wrapper_name);
+        }
+
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+
+        // Create wrapper function: extern "C" fn(*mut DooRequest, *mut DooNext) -> *mut DooResult
+        let wrapper_fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+        let wrapper_fn = self
+            .module
+            .add_function(&wrapper_name, wrapper_fn_type, None);
+
+        let entry_bb = self.context.append_basic_block(wrapper_fn, "entry");
+        let saved_block = self.builder.get_insert_block();
+        self.builder.position_at_end(entry_bb);
+
+        // Get parameters
+        let request_ptr = wrapper_fn.get_nth_param(0).unwrap().into_pointer_value();
+        let next_ptr = wrapper_fn.get_nth_param(1).unwrap().into_pointer_value();
+
+        // Get the actual parameter types from the middleware function
+        let middleware_fn_type = middleware_fn.get_type();
+        let param_types = middleware_fn_type.get_param_types();
+
+        if param_types.len() != 2 {
+            eprintln!(
+                "Error: Middleware function {} has wrong number of parameters",
+                middleware_name
+            );
+            if let Some(block) = saved_block {
+                self.builder.position_at_end(block);
+            }
+            return None;
+        }
+
+        // Check if parameters are pointers or structs
+        let request_param_type = param_types[0];
+        let next_param_type = param_types[1];
+
+        // CRITICAL FIX: Pass the original DooRequest pointer directly
+        // DooRequest and Request have the same memory layout for the first 4 fields
+        // FFI methods like Request.header() expect to receive DooRequest* so they can access
+        // the extra fields (params, query, headers) at offsets 4, 5, 6
+        // Simply cast the DooRequest* to Request* - they're compatible
+        let request_arg: BasicMetadataValueEnum = if request_param_type.is_pointer_type() {
+            // Function expects pointer - pass DooRequest pointer directly (cast as Request*)
+            request_ptr.into()
+        } else {
+            // Function expects struct by value - load the first 4 fields from DooRequest
+            // This creates a Request struct by value from DooRequest fields
+            let method_ptr = self
+                .builder
+                .build_load(ptr_type, request_ptr, "method_ptr")
+                .unwrap()
+                .into_pointer_value();
+
+            let path_field_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        ptr_type,
+                        request_ptr,
+                        &[i32_type.const_int(1, false)],
+                        "path_field_ptr",
+                    )
+                    .unwrap()
+            };
+            let path_ptr = self
+                .builder
+                .build_load(ptr_type, path_field_ptr, "path_ptr")
+                .unwrap()
+                .into_pointer_value();
+
+            let body_field_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        ptr_type,
+                        request_ptr,
+                        &[i32_type.const_int(2, false)],
+                        "body_field_ptr",
+                    )
+                    .unwrap()
+            };
+            let body_ptr = self
+                .builder
+                .build_load(ptr_type, body_field_ptr, "body_ptr")
+                .unwrap()
+                .into_pointer_value();
+
+            let content_type_field_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        ptr_type,
+                        request_ptr,
+                        &[i32_type.const_int(3, false)],
+                        "content_type_field_ptr",
+                    )
+                    .unwrap()
+            };
+            let content_type_ptr = self
+                .builder
+                .build_load(ptr_type, content_type_field_ptr, "content_type_ptr")
+                .unwrap()
+                .into_pointer_value();
+
+            // Build Request struct on stack (allocate and store fields)
+            let request_struct_type = self.get_struct_type("Request");
+            let request_alloca = self
+                .builder
+                .build_alloca(request_struct_type, "request_alloca")
+                .unwrap();
+
+            // Store fields in the allocated struct
+            let method_field_ptr = self
+                .builder
+                .build_struct_gep(request_struct_type, request_alloca, 0, "method_field")
+                .unwrap();
+            self.builder
+                .build_store(method_field_ptr, method_ptr)
+                .unwrap();
+
+            let path_field_ptr_gep = self
+                .builder
+                .build_struct_gep(request_struct_type, request_alloca, 1, "path_field")
+                .unwrap();
+            self.builder
+                .build_store(path_field_ptr_gep, path_ptr)
+                .unwrap();
+
+            let body_field_ptr_gep = self
+                .builder
+                .build_struct_gep(request_struct_type, request_alloca, 2, "body_field")
+                .unwrap();
+            self.builder
+                .build_store(body_field_ptr_gep, body_ptr)
+                .unwrap();
+
+            let ct_field_ptr = self
+                .builder
+                .build_struct_gep(request_struct_type, request_alloca, 3, "ct_field")
+                .unwrap();
+            self.builder
+                .build_store(ct_field_ptr, content_type_ptr)
+                .unwrap();
+
+            // Load struct by value
+            self.builder
+                .build_load(request_struct_type, request_alloca, "request_val")
+                .unwrap()
+                .into()
+        };
+
+        // Build Next struct on stack - contains the DooNext pointer
+        // Next has two Int fields (HandlerPtrLow, HandlerPtrHigh) to store a 64-bit pointer
+        let next_struct_type = self.get_struct_type("Next");
+        let next_alloca = self
+            .builder
+            .build_alloca(next_struct_type, "next_alloca")
+            .unwrap();
+
+        // Cast pointer to i64 first
+        let i64_type = self.context.i64_type();
+        let next_as_i64 = self
+            .builder
+            .build_ptr_to_int(next_ptr, i64_type, "next_as_i64")
+            .unwrap();
+
+        // Split into low and high 32 bits
+        let low_bits = self
+            .builder
+            .build_int_truncate(next_as_i64, i32_type, "ptr_low")
+            .unwrap();
+
+        let high_bits_i64 = self
+            .builder
+            .build_right_shift(next_as_i64, i64_type.const_int(32, false), false, "shifted")
+            .unwrap();
+        let high_bits = self
+            .builder
+            .build_int_truncate(high_bits_i64, i32_type, "ptr_high")
+            .unwrap();
+
+        // Store low bits in field 0
+        let low_field_ptr = self
+            .builder
+            .build_struct_gep(next_struct_type, next_alloca, 0, "low_field")
+            .unwrap();
+        self.builder.build_store(low_field_ptr, low_bits).unwrap();
+
+        // Store high bits in field 1
+        let high_field_ptr = self
+            .builder
+            .build_struct_gep(next_struct_type, next_alloca, 1, "high_field")
+            .unwrap();
+        self.builder.build_store(high_field_ptr, high_bits).unwrap();
+
+        let next_arg: BasicMetadataValueEnum = if next_param_type.is_pointer_type() {
+            // Function expects pointer to Next struct
+            next_alloca.into()
+        } else {
+            // Function expects Next struct by value - load it
+            self.builder
+                .build_load(next_struct_type, next_alloca, "next_val")
+                .unwrap()
+                .into()
+        };
+
+        // Call the middleware function with appropriate argument types
+        let middleware_result = self
+            .builder
+            .build_call(
+                *middleware_fn,
+                &[request_arg, next_arg],
+                "middleware_result",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .left();
+
+        // The middleware returns a Response struct or Result<Response, Error>
+        if let Some(response_value) = middleware_result {
+            // Check if this is a pointer to a struct or a direct struct value
+            if response_value.is_pointer_value() {
+                // Pointer to Response struct - just return it directly as DooResponse
+                // Don't try to load it - the pointer IS the response
+                let response_ptr = response_value.into_pointer_value();
+
+                // Build DooResult with the response pointer
+                let result_alloc = self
+                    .builder
+                    .build_malloc(
+                        self.context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                        "result_alloc",
+                    )
+                    .unwrap();
+
+                let tag_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        self.context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                        result_alloc,
+                        0,
+                        "tag_ptr",
+                    )
+                    .unwrap();
+                self.builder
+                    .build_store(tag_ptr, i32_type.const_int(0, false))
+                    .unwrap();
+
+                let value_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        self.context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                        result_alloc,
+                        1,
+                        "value_ptr",
+                    )
+                    .unwrap();
+                self.builder.build_store(value_ptr, response_ptr).unwrap();
+
+                self.builder.build_return(Some(&result_alloc)).unwrap();
+
+                // Restore builder position and return
+                if let Some(block) = saved_block {
+                    self.builder.position_at_end(block);
+                }
+                return Some(wrapper_name);
+            } else if response_value.is_struct_value() {
+                let struct_val = response_value.into_struct_value();
+                let struct_type = struct_val.get_type();
+
+                // Check if it's a Result struct (2 fields) or Response struct (3 fields)
+                if struct_type.count_fields() == 2 {
+                    // This is a Result struct - same handling as pointer case above
+                    let tag = self
+                        .builder
+                        .build_extract_value(struct_val, 0, "result_tag")
+                        .unwrap()
+                        .into_int_value();
+
+                    let is_ok = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            tag,
+                            i32_type.const_int(0, false),
+                            "is_ok",
+                        )
+                        .unwrap();
+
+                    let ok_block = self.context.append_basic_block(wrapper_fn, "result_ok");
+                    let err_block = self.context.append_basic_block(wrapper_fn, "result_err");
+
+                    self.builder
+                        .build_conditional_branch(is_ok, ok_block, err_block)
+                        .unwrap();
+
+                    // Error block: create DooHttpError using RFC 7807 FFI function
+                    self.builder.position_at_end(err_block);
+
+                    // Extract the error enum value (ptr in field 1)
+                    let error_enum_ptr = self
+                        .builder
+                        .build_extract_value(struct_val, 1, "error_enum_ptr")
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Cast to enum struct type {i32 tag, ptr payload}
+                    let enum_struct_type = self
+                        .context
+                        .struct_type(&[i32_type.into(), ptr_type.into()], false);
+
+                    // Load the enum struct
+                    let enum_val = self
+                        .builder
+                        .build_load(enum_struct_type, error_enum_ptr, "error_enum")
+                        .unwrap()
+                        .into_struct_value();
+
+                    // Extract tag (variant index)
+                    let error_tag = self
+                        .builder
+                        .build_extract_value(enum_val, 0, "error_tag")
+                        .unwrap()
+                        .into_int_value();
+
+                    // Get error enum metadata (name and variants)
+                    let (enum_name_str, variant_name_str) = if let Some(error_type_str) = error_type
+                    {
+                        // Get enum variants to map tag to variant name
+                        let variant_name =
+                            if let Some(variants) = self.enum_variant_order.get(error_type_str) {
+                                // Try to find variant name by tag at runtime
+                                // For now, we'll generate a switch/branch for each variant
+                                // But first, let's just use the first matching variant name as default
+                                variants
+                                    .first()
+                                    .map(|(name, _)| name.as_str())
+                                    .unwrap_or("Unknown")
+                            } else {
+                                "Unknown"
+                            };
+                        (error_type_str, variant_name)
+                    } else {
+                        ("Error", "Unknown")
+                    };
+
+                    // Build switch to map tag to variant name at runtime
+                    let error_http_alloc = if let Some(error_type_str) = error_type {
+                        if let Some(variants) = self.enum_variant_order.get(error_type_str) {
+                            // Declare the FFI function for converting enum to RFC 7807
+                            let convert_fn_type = ptr_type.fn_type(
+                                &[
+                                    ptr_type.into(), // enum_name
+                                    i32_type.into(), // variant_tag
+                                    ptr_type.into(), // variant_name
+                                    ptr_type.into(), // instance (request path)
+                                ],
+                                false,
+                            );
+                            let convert_fn = if let Some(f) = self
+                                .module
+                                .get_function("doohttp_middleware_error_to_rfc7807")
+                            {
+                                f
+                            } else {
+                                self.module.add_function(
+                                    "doohttp_middleware_error_to_rfc7807",
+                                    convert_fn_type,
+                                    None,
+                                )
+                            };
+
+                            // Get current request path
+                            let get_path_fn_type = ptr_type.fn_type(&[], false);
+                            let get_path_fn = if let Some(f) =
+                                self.module.get_function("doohttp_get_current_request_path")
+                            {
+                                f
+                            } else {
+                                self.module.add_function(
+                                    "doohttp_get_current_request_path",
+                                    get_path_fn_type,
+                                    None,
+                                )
+                            };
+                            let request_path = self
+                                .builder
+                                .build_call(get_path_fn, &[], "request_path")
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_pointer_value();
+
+                            // For each variant, we need to check the tag and call the FFI with the right variant name
+                            // Create a PHI node to merge results from all branches
+                            let merge_block =
+                                self.context.append_basic_block(wrapper_fn, "error_merge");
+                            let mut variant_blocks = Vec::new();
+
+                            for (idx, (variant_name, _)) in variants.iter().enumerate() {
+                                let variant_block = self.context.append_basic_block(
+                                    wrapper_fn,
+                                    &format!("error_variant_{}", variant_name),
+                                );
+                                variant_blocks.push((
+                                    idx as u64,
+                                    variant_block,
+                                    variant_name.clone(),
+                                ));
+                            }
+
+                            // Default block for unknown variants
+                            let default_block =
+                                self.context.append_basic_block(wrapper_fn, "error_default");
+
+                            // Build switch on error tag
+                            self.builder
+                                .build_switch(
+                                    error_tag,
+                                    default_block,
+                                    &variant_blocks
+                                        .iter()
+                                        .map(|(idx, block, _)| {
+                                            (i32_type.const_int(*idx, false), *block)
+                                        })
+                                        .collect::<Vec<_>>(),
+                                )
+                                .unwrap();
+
+                            // Generate each variant block
+                            let enum_name_cstr = self
+                                .builder
+                                .build_global_string_ptr(enum_name_str, "error_enum_name")
+                                .unwrap()
+                                .as_pointer_value();
+
+                            let mut phi_incoming = Vec::new();
+
+                            for (_idx, block, variant_name) in &variant_blocks {
+                                self.builder.position_at_end(*block);
+
+                                let variant_cstr = self
+                                    .builder
+                                    .build_global_string_ptr(
+                                        variant_name,
+                                        &format!("variant_{}", variant_name),
+                                    )
+                                    .unwrap()
+                                    .as_pointer_value();
+
+                                let error_result = self
+                                    .builder
+                                    .build_call(
+                                        convert_fn,
+                                        &[
+                                            enum_name_cstr.into(),
+                                            error_tag.into(),
+                                            variant_cstr.into(),
+                                            request_path.into(),
+                                        ],
+                                        "error_http",
+                                    )
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .left()
+                                    .unwrap()
+                                    .into_pointer_value();
+
+                                phi_incoming.push((error_result, *block));
+                                self.builder
+                                    .build_unconditional_branch(merge_block)
+                                    .unwrap();
+                            }
+
+                            // Default block
+                            self.builder.position_at_end(default_block);
+                            let default_variant_cstr = self
+                                .builder
+                                .build_global_string_ptr("Unknown", "variant_unknown")
+                                .unwrap()
+                                .as_pointer_value();
+
+                            let default_error_result = self
+                                .builder
+                                .build_call(
+                                    convert_fn,
+                                    &[
+                                        enum_name_cstr.into(),
+                                        error_tag.into(),
+                                        default_variant_cstr.into(),
+                                        request_path.into(),
+                                    ],
+                                    "error_http_default",
+                                )
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_pointer_value();
+
+                            phi_incoming.push((default_error_result, default_block));
+                            self.builder
+                                .build_unconditional_branch(merge_block)
+                                .unwrap();
+
+                            // Merge block with PHI
+                            self.builder.position_at_end(merge_block);
+                            let phi = self.builder.build_phi(ptr_type, "error_http_phi").unwrap();
+                            for (val, block) in phi_incoming {
+                                phi.add_incoming(&[(&val, block)]);
+                            }
+                            phi.as_basic_value().into_pointer_value()
+                        } else {
+                            // No variant info, use simple error
+                            self.create_simple_http_error(401, "Unauthorized")
+                        }
+                    } else {
+                        // No error type, use simple error
+                        self.create_simple_http_error(401, "Unauthorized")
+                    };
+
+                    let error_result_alloc = self
+                        .builder
+                        .build_malloc(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            "error_result",
+                        )
+                        .unwrap();
+
+                    let error_tag_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            error_result_alloc,
+                            0,
+                            "error_tag_ptr",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(error_tag_ptr, i32_type.const_int(1, false))
+                        .unwrap();
+
+                    let error_value_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            error_result_alloc,
+                            1,
+                            "error_value_ptr",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(error_value_ptr, error_http_alloc)
+                        .unwrap();
+
+                    self.builder
+                        .build_return(Some(&error_result_alloc))
+                        .unwrap();
+
+                    // Ok block: extract response pointer and return it
+                    self.builder.position_at_end(ok_block);
+                    let response_ptr = self
+                        .builder
+                        .build_extract_value(struct_val, 1, "response_ptr")
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Build DooResult with the response pointer
+                    let result_alloc = self
+                        .builder
+                        .build_malloc(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            "result_alloc",
+                        )
+                        .unwrap();
+
+                    let tag_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            result_alloc,
+                            0,
+                            "tag_ptr",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(tag_ptr, i32_type.const_int(0, false))
+                        .unwrap();
+
+                    let value_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            result_alloc,
+                            1,
+                            "value_ptr",
+                        )
+                        .unwrap();
+                    self.builder.build_store(value_ptr, response_ptr).unwrap();
+
+                    self.builder.build_return(Some(&result_alloc)).unwrap();
+                } else {
+                    // Direct Response struct (3 fields) - allocate on heap and return pointer
+                    // Response struct: { Status: Int, Body: Str, ContentType: Str }
+                    let response_alloc = self
+                        .builder
+                        .build_malloc(
+                            self.context.struct_type(
+                                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            ),
+                            "response_alloc",
+                        )
+                        .unwrap();
+
+                    // Extract and store Status field
+                    let status_val = self
+                        .builder
+                        .build_extract_value(struct_val, 0, "status_val")
+                        .unwrap()
+                        .into_int_value();
+                    let status_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context.struct_type(
+                                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            ),
+                            response_alloc,
+                            0,
+                            "status_ptr",
+                        )
+                        .unwrap();
+                    self.builder.build_store(status_ptr, status_val).unwrap();
+
+                    // Extract and store Body field
+                    let body_val = self
+                        .builder
+                        .build_extract_value(struct_val, 1, "body_val")
+                        .unwrap()
+                        .into_pointer_value();
+                    let body_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context.struct_type(
+                                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            ),
+                            response_alloc,
+                            1,
+                            "body_ptr",
+                        )
+                        .unwrap();
+                    self.builder.build_store(body_ptr, body_val).unwrap();
+
+                    // Extract and store ContentType field
+                    let ct_val = self
+                        .builder
+                        .build_extract_value(struct_val, 2, "ct_val")
+                        .unwrap()
+                        .into_pointer_value();
+                    let ct_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context.struct_type(
+                                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            ),
+                            response_alloc,
+                            2,
+                            "ct_ptr",
+                        )
+                        .unwrap();
+                    self.builder.build_store(ct_ptr, ct_val).unwrap();
+
+                    // Build DooResult with response pointer
+                    let result_alloc = self
+                        .builder
+                        .build_malloc(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            "result_alloc",
+                        )
+                        .unwrap();
+
+                    let tag_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            result_alloc,
+                            0,
+                            "tag_ptr",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(tag_ptr, i32_type.const_int(0, false))
+                        .unwrap();
+
+                    let value_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            self.context
+                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            result_alloc,
+                            1,
+                            "value_ptr",
+                        )
+                        .unwrap();
+                    self.builder.build_store(value_ptr, response_alloc).unwrap();
+
+                    self.builder.build_return(Some(&result_alloc)).unwrap();
+                }
+            } else {
+                // Not a struct or pointer - this shouldn't happen
+                eprintln!(
+                    "Warning: Middleware returned unexpected type: {:?}",
+                    response_value.get_type()
+                );
+                let result_alloc = self
+                    .builder
+                    .build_malloc(
+                        self.context
+                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                        "result_alloc",
+                    )
+                    .unwrap();
+                self.builder.build_return(Some(&result_alloc)).unwrap();
+                if let Some(block) = saved_block {
+                    self.builder.position_at_end(block);
+                }
+                return Some(wrapper_name);
+            }
+        } else {
+            // No return value - return error
+            eprintln!("Warning: Middleware returned no value");
+            let result_alloc = self
+                .builder
+                .build_malloc(
+                    self.context
+                        .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                    "result_alloc",
+                )
+                .unwrap();
+
+            let tag_ptr = self
+                .builder
+                .build_struct_gep(
+                    self.context
+                        .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                    result_alloc,
+                    0,
+                    "tag_ptr",
+                )
+                .unwrap();
+            self.builder
+                .build_store(tag_ptr, i32_type.const_zero())
+                .unwrap();
+
+            self.builder.build_return(Some(&result_alloc)).unwrap();
+        }
+
+        // Restore builder position
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+
+        Some(wrapper_name)
     }
 
     // ADD THIS NEW METHOD:

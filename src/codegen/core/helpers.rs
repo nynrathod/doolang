@@ -43,6 +43,21 @@ pub fn parse_tuple_types(type_str: &str) -> Vec<String> {
 }
 
 impl<'ctx> CodeGen<'ctx> {
+    /// Helper method to get struct type by name from canonical_struct_types
+    pub fn get_struct_type(&self, struct_name: &str) -> inkwell::types::StructType<'ctx> {
+        self.canonical_struct_types
+            .get(struct_name)
+            .cloned()
+            .unwrap_or_else(|| {
+                // Fallback: create empty struct type if not found
+                eprintln!(
+                    "Warning: Struct type '{}' not found in canonical_struct_types",
+                    struct_name
+                );
+                self.context.struct_type(&[], false)
+            })
+    }
+
     /// Resolves a variable or constant name to its pointer (for arrays/maps).
     /// Used when we need the actual pointer, not the loaded value.
     pub fn resolve_pointer(&self, name: &str) -> PointerValue<'ctx> {
