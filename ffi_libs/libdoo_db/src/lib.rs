@@ -796,6 +796,63 @@ pub extern "C" fn doo_db_query_json(sql: *const c_char) -> *mut DooResult {
 }
 
 #[no_mangle]
+pub extern "C" fn doo_db_query_one_json(sql: *const c_char) -> *mut DooResult {
+    let sql = match c_to_string(sql) {
+        Ok(s) => s,
+        Err(e) => return make_err_query_failed(e),
+    };
+    let client = match get_client() {
+        Ok(c) => c,
+        Err(e) => return make_err_connection_failed(e),
+    };
+    let rt = match runtime() {
+        Ok(r) => r,
+        Err(e) => return make_err(e),
+    };
+
+    let res = rt.block_on(async { client.query_one(sql.as_str(), &[]).await });
+    let row = match res {
+        Ok(r) => r,
+        Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
+    };
+
+    let mut obj = serde_json::Map::new();
+    for (i, col) in row.columns().iter().enumerate() {
+        let name = col.name();
+        let value: serde_json::Value = match col.type_().name() {
+            "int4" => row
+                .get::<usize, Option<i32>>(i)
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null),
+            "int8" => row
+                .get::<usize, Option<i64>>(i)
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null),
+            "float4" => row
+                .get::<usize, Option<f32>>(i)
+                .map(|v| serde_json::Value::from(v as f64))
+                .unwrap_or(serde_json::Value::Null),
+            "float8" => row
+                .get::<usize, Option<f64>>(i)
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null),
+            "bool" => row
+                .get::<usize, Option<bool>>(i)
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null),
+            _ => row
+                .get::<usize, Option<String>>(i)
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null),
+        };
+        obj.insert(name.to_string(), value);
+    }
+
+    let json = serde_json::Value::Object(obj).to_string();
+    make_ok_string(json)
+}
+
+#[no_mangle]
 pub extern "C" fn doo_db_free_string(ptr: *mut c_char) {
     if ptr.is_null() {
         return;
