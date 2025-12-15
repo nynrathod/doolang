@@ -245,11 +245,6 @@ impl<'ctx> CodeGen<'ctx> {
                 "auth_call",
             )
             .unwrap();
-
-        eprintln!(
-            "[CODEGEN] Auth routes registered via FFI for {}",
-            struct_name
-        );
     }
 
     /// Generate FFI call to doo_http_crud
@@ -319,10 +314,5 @@ impl<'ctx> CodeGen<'ctx> {
                 "crud_call",
             )
             .unwrap();
-
-        eprintln!(
-            "[CODEGEN] CRUD routes registered via FFI for {}",
-            struct_name
-        );
     }
 }

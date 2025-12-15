@@ -1485,11 +1485,6 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
     // Print all registered routes and handler count
     let routes = get_routes();
     let registry = routes.lock().unwrap();
-    let handler_count = registry.handlers.len();
-    println!("📋 Registered routes:");
-    for (method, _router) in registry.routes.iter() {
-        println!("  {} routes: registered", method);
-    }
 
     let total_routes = registry.route_count;
 
@@ -5708,11 +5703,6 @@ pub extern "C" fn doo_http_auth_impl(
     let struct_name_str = c_to_string(struct_name);
     let metadata_json_str = c_to_string(metadata_json);
 
-    println!("[FFI] doo_http_auth_impl: Registering auth routes");
-    println!("[FFI]   Struct: {}", struct_name_str);
-    println!("[FFI]   Signup: POST {}", signup_path_str);
-    println!("[FFI]   Login: POST {}", login_path_str);
-
     // Parse and store metadata
     let metadata: serde_json::Value = match serde_json::from_str(&metadata_json_str) {
         Ok(m) => m,
@@ -5741,7 +5731,6 @@ pub extern "C" fn doo_http_auth_impl(
                 }
                 unsafe { doo_db_free_result(create_result) };
             } else {
-                println!("[FFI] Table '{}' created/verified", table_name);
                 unsafe { doo_db_free_result(create_result) };
             }
         }
@@ -5768,11 +5757,6 @@ pub extern "C" fn doo_http_auth_impl(
         "✓ Auth routes registered: POST {} and POST {}",
         signup_path_str, login_path_str
     );
-    println!(
-        "  User struct: {} (table: {}s)",
-        struct_name_str,
-        struct_name_str.to_lowercase()
-    );
 
     make_ok_void()
 }
@@ -5790,10 +5774,6 @@ pub extern "C" fn doo_http_crud_impl(
     let base_path_str = c_to_string(base_path);
     let struct_name_str = c_to_string(struct_name);
     let metadata_json_str = c_to_string(metadata_json);
-
-    println!("[FFI] doo_http_crud_impl: Registering CRUD routes");
-    println!("[FFI]   Struct: {}", struct_name_str);
-    println!("[FFI]   Base path: {}", base_path_str);
 
     // Parse and store metadata
     let metadata: serde_json::Value = match serde_json::from_str(&metadata_json_str) {
@@ -5821,7 +5801,6 @@ pub extern "C" fn doo_http_crud_impl(
             }
             unsafe { doo_db_free_result(create_result) };
         } else {
-            println!("[FFI] Table '{}' created/verified", table_name);
             unsafe { doo_db_free_result(create_result) };
         }
     }
