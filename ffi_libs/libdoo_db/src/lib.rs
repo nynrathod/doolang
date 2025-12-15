@@ -442,6 +442,7 @@ pub extern "C" fn doo_db_insert_json(
         Ok(s) => s,
         Err(e) => return make_err_query_failed(e),
     };
+
     let client = match get_client() {
         Ok(c) => c,
         Err(e) => return make_err_connection_failed(e),
@@ -452,10 +453,11 @@ pub extern "C" fn doo_db_insert_json(
     };
 
     // Parse JSON values array
-    let values: Vec<serde_json::Value> = match serde_json::from_str(&values_json) {
-        Ok(v) => v,
-        Err(e) => return make_err(format!("Invalid JSON values: {e}")),
-    };
+    let values: Vec<serde_json::Value> =
+        match serde_json::from_str::<Vec<serde_json::Value>>(&values_json) {
+            Ok(v) => v,
+            Err(e) => return make_err(format!("Invalid JSON values: {e}")),
+        };
 
     // Convert JSON values to owned types that can be passed to PostgreSQL
     let mut string_values: Vec<String> = Vec::new();
@@ -496,7 +498,7 @@ pub extern "C" fn doo_db_insert_json(
                 }
             }
             serde_json::Value::Bool(b) => {
-                bool_values.push(*b);
+                bool_values.push(b.clone());
                 param_types.push("bool");
                 param_indices.push((i, bool_values.len() - 1));
             }
@@ -514,8 +516,8 @@ pub extern "C" fn doo_db_insert_json(
 
     // Build params vector with references
     let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
-    for (_, type_str) in param_types.iter().enumerate() {
-        let (_, idx) = param_indices[params.len()];
+    for (i, type_str) in param_types.iter().enumerate() {
+        let (_, idx) = param_indices[i];
         match *type_str {
             "string" | "null" => params.push(&string_values[idx]),
             "int32" => params.push(&int32_values[idx]),

@@ -27,6 +27,23 @@ thread_local! {
     static LAST_VALIDATION_ERROR: RefCell<Option<ValidationError>> = RefCell::new(None);
 }
 
+/// Thread-local storage for JSON type mismatch errors during struct deserialization
+thread_local! {
+    static JSON_TYPE_MISMATCH: RefCell<Option<(String, String, String)>> = RefCell::new(None);
+}
+
+fn set_json_type_mismatch(field_name: String, expected_type: String, actual_type: String) {
+    JSON_TYPE_MISMATCH.with(|cell| {
+        *cell.borrow_mut() = Some((field_name, expected_type, actual_type));
+    });
+}
+
+fn clear_json_type_mismatch() {
+    JSON_TYPE_MISMATCH.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
 fn set_validation_error(error: ValidationError) {
     LAST_VALIDATION_ERROR.with(|cell| {
         *cell.borrow_mut() = Some(error);
@@ -1021,4 +1038,457 @@ pub extern "C" fn dooruntime_db_error_rfc7807(
             .map(|c| c.into_raw())
             .unwrap_or(std::ptr::null_mut())
     }
+}
+
+/// Validate that a JSON string value matches the expected type
+/// Returns 1 if valid, 0 if invalid
+/// For Int: checks if value is a number in JSON (not a string)
+/// For Float: checks if value is a number in JSON
+/// For Bool: checks if value is true/false in JSON
+/// For Str: checks if value is a string in JSON
+#[no_mangle]
+pub extern "C" fn dooruntime_validate_json_type(
+    json_value: *const libc::c_char,
+    expected_type: *const libc::c_char,
+) -> i32 {
+    if json_value.is_null() || expected_type.is_null() {
+        return 0;
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json_value).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    let type_str = unsafe {
+        match CStr::from_ptr(expected_type).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    // Parse the JSON value
+    let json_val: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+
+    // Check if the JSON value matches the expected type
+    match type_str {
+        "Int" => {
+            if json_val.is_i64() || json_val.is_u64() {
+                1
+            } else {
+                0
+            }
+        }
+        "Float" => {
+            if json_val.is_f64() || json_val.is_i64() || json_val.is_u64() {
+                1
+            } else {
+                0
+            }
+        }
+        "Bool" => {
+            if json_val.is_boolean() {
+                1
+            } else {
+                0
+            }
+        }
+        "Str" => {
+            if json_val.is_string() {
+                1
+            } else {
+                0
+            }
+        }
+        _ => 1, // Unknown type, allow it
+    }
+}
+
+/// Get the actual JSON type of a value as a string
+/// Returns: "number", "string", "boolean", "null", "array", "object"
+#[no_mangle]
+pub extern "C" fn dooruntime_get_json_type(json_value: *const libc::c_char) -> *mut libc::c_char {
+    if json_value.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json_value).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let json_val: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let type_name = match json_val {
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Null => "null",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    };
+
+    CString::new(type_name)
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Extract a field value from JSON object and return as Int
+/// Returns the integer value, or 0 if field not found or type mismatch
+/// This validates that the JSON value is actually a number, not a string
+#[no_mangle]
+pub extern "C" fn json_get_int(json: *const libc::c_char, field_name: *const libc::c_char) -> i32 {
+    if json.is_null() || field_name.is_null() {
+        return 0;
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    let field_str = unsafe {
+        match CStr::from_ptr(field_name).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    // Parse JSON
+    let json_obj: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+
+    // Extract field
+    if let Some(field_value) = json_obj.get(field_str) {
+        // Validate it's a number
+        if let Some(num) = field_value.as_i64() {
+            return num as i32;
+        } else if let Some(num) = field_value.as_u64() {
+            return num as i32;
+        } else {
+            // Type mismatch - set error
+            let actual_type = if field_value.is_string() {
+                "string"
+            } else if field_value.is_boolean() {
+                "boolean"
+            } else if field_value.is_null() {
+                "null"
+            } else if field_value.is_array() {
+                "array"
+            } else if field_value.is_object() {
+                "object"
+            } else {
+                "unknown"
+            };
+            set_json_type_mismatch(
+                field_str.to_string(),
+                "Int".to_string(),
+                actual_type.to_string(),
+            );
+        }
+    }
+
+    0 // Field not found or wrong type
+}
+
+/// Extract a field value from JSON object and return as Float
+/// Returns the float value, or 0.0 if field not found or type mismatch
+#[no_mangle]
+pub extern "C" fn json_get_float(
+    json: *const libc::c_char,
+    field_name: *const libc::c_char,
+) -> f64 {
+    if json.is_null() || field_name.is_null() {
+        return 0.0;
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0.0,
+        }
+    };
+
+    let field_str = unsafe {
+        match CStr::from_ptr(field_name).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0.0,
+        }
+    };
+
+    // Parse JSON
+    let json_obj: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return 0.0,
+    };
+
+    // Extract field
+    if let Some(field_value) = json_obj.get(field_str) {
+        // Validate it's a number
+        if let Some(num) = field_value.as_f64() {
+            return num;
+        } else if let Some(num) = field_value.as_i64() {
+            return num as f64;
+        } else if let Some(num) = field_value.as_u64() {
+            return num as f64;
+        } else {
+            // Type mismatch - set error
+            let actual_type = if field_value.is_string() {
+                "string"
+            } else if field_value.is_boolean() {
+                "boolean"
+            } else if field_value.is_null() {
+                "null"
+            } else if field_value.is_array() {
+                "array"
+            } else if field_value.is_object() {
+                "object"
+            } else {
+                "unknown"
+            };
+            set_json_type_mismatch(
+                field_str.to_string(),
+                "Float".to_string(),
+                actual_type.to_string(),
+            );
+        }
+    }
+
+    0.0 // Field not found or wrong type
+}
+
+/// Extract a field value from JSON object and return as Bool
+/// Returns 1 for true, 0 for false or not found
+#[no_mangle]
+pub extern "C" fn json_get_bool(json: *const libc::c_char, field_name: *const libc::c_char) -> i32 {
+    if json.is_null() || field_name.is_null() {
+        return 0;
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    let field_str = unsafe {
+        match CStr::from_ptr(field_name).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    // Parse JSON
+    let json_obj: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+
+    // Extract field
+    if let Some(field_value) = json_obj.get(field_str) {
+        // Validate it's a boolean
+        if let Some(b) = field_value.as_bool() {
+            return if b { 1 } else { 0 };
+        } else {
+            // Type mismatch - set error
+            let actual_type = if field_value.is_string() {
+                "string"
+            } else if field_value.is_number() {
+                "number"
+            } else if field_value.is_null() {
+                "null"
+            } else if field_value.is_array() {
+                "array"
+            } else if field_value.is_object() {
+                "object"
+            } else {
+                "unknown"
+            };
+            set_json_type_mismatch(
+                field_str.to_string(),
+                "Bool".to_string(),
+                actual_type.to_string(),
+            );
+        }
+    }
+
+    0 // Field not found or wrong type
+}
+
+/// Check if there was a JSON type mismatch error
+/// Returns JSON string with error details, or null if no error
+#[no_mangle]
+pub extern "C" fn dooruntime_get_json_type_mismatch() -> *mut libc::c_char {
+    JSON_TYPE_MISMATCH.with(|cell| {
+        if let Some((field_name, expected_type, actual_type)) = cell.borrow().as_ref() {
+            let error = json!({
+                "field": field_name,
+                "expected": expected_type,
+                "actual": actual_type,
+                "message": format!("Field '{}' expected type '{}' but got '{}'", field_name, expected_type, actual_type)
+            });
+
+            if let Ok(json_str) = serde_json::to_string(&error) {
+                return CString::new(json_str)
+                    .map(|c| c.into_raw())
+                    .unwrap_or(std::ptr::null_mut());
+            }
+        }
+        std::ptr::null_mut()
+    })
+}
+
+/// Clear JSON type mismatch error
+#[no_mangle]
+pub extern "C" fn dooruntime_clear_json_type_mismatch() {
+    clear_json_type_mismatch();
+}
+
+/// Extract a field value from JSON object and return as String
+/// Returns pointer to string (caller must free), or NULL if not found
+#[no_mangle]
+pub extern "C" fn json_get_str(
+    json: *const libc::c_char,
+    field_name: *const libc::c_char,
+) -> *mut libc::c_char {
+    if json.is_null() || field_name.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let field_str = unsafe {
+        match CStr::from_ptr(field_name).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    // Parse JSON
+    let json_obj: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    // Extract field
+    if let Some(field_value) = json_obj.get(field_str) {
+        // Validate it's a string
+        if let Some(s) = field_value.as_str() {
+            return CString::new(s)
+                .map(|c| c.into_raw())
+                .unwrap_or(std::ptr::null_mut());
+        } else {
+            // Type mismatch - set error
+            let actual_type = if field_value.is_number() {
+                "number"
+            } else if field_value.is_boolean() {
+                "boolean"
+            } else if field_value.is_null() {
+                "null"
+            } else if field_value.is_array() {
+                "array"
+            } else if field_value.is_object() {
+                "object"
+            } else {
+                "unknown"
+            };
+            set_json_type_mismatch(
+                field_str.to_string(),
+                "Str".to_string(),
+                actual_type.to_string(),
+            );
+        }
+    }
+
+    std::ptr::null_mut() // Field not found or wrong type
+}
+
+/// Validate that a JSON field exists and has the correct type
+/// Returns 1 if valid, 0 if invalid or missing
+#[no_mangle]
+pub extern "C" fn json_validate_field_type(
+    json: *const libc::c_char,
+    field_name: *const libc::c_char,
+    expected_type: *const libc::c_char,
+) -> i32 {
+    if json.is_null() || field_name.is_null() || expected_type.is_null() {
+        return 0;
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    let field_str = unsafe {
+        match CStr::from_ptr(field_name).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    let type_str = unsafe {
+        match CStr::from_ptr(expected_type).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    // Parse JSON
+    let json_obj: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+
+    // Extract field
+    if let Some(field_value) = json_obj.get(field_str) {
+        // Check type
+        match type_str {
+            "Int" | "number" => {
+                if field_value.is_i64() || field_value.is_u64() {
+                    return 1;
+                }
+            }
+            "Float" => {
+                if field_value.is_f64() || field_value.is_i64() || field_value.is_u64() {
+                    return 1;
+                }
+            }
+            "Bool" | "boolean" => {
+                if field_value.is_boolean() {
+                    return 1;
+                }
+            }
+            "Str" | "string" => {
+                if field_value.is_string() {
+                    return 1;
+                }
+            }
+            _ => return 1, // Unknown type, allow it
+        }
+    }
+
+    0 // Field not found or wrong type
 }

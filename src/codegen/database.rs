@@ -57,10 +57,9 @@ impl<'ctx> CodeGen<'ctx> {
             &metadata_json,
         );
 
-        // Return server object
-        let server_val = self.resolve_value(object);
-        self.temp_values.insert(dest.to_string(), server_val);
-        Some(server_val)
+        // Return None - the result is not actually used and trying to create a Result
+        // struct causes segfaults. The FFI side effect (registering routes) is what matters.
+        None
     }
 
     /// Generate CRUD routes for a resource
@@ -107,10 +106,9 @@ impl<'ctx> CodeGen<'ctx> {
         // Call FFI: doo_http_crud(server, base_path, struct_name, metadata_json)
         self.generate_crud_ffi_call(object, base_path, &struct_name, &metadata_json);
 
-        // Return server object
-        let server_val = self.resolve_value(object);
-        self.temp_values.insert(dest.to_string(), server_val);
-        Some(server_val)
+        // Return None - the result is not actually used and trying to create a Result
+        // struct causes segfaults. The FFI side effect (registering routes) is what matters.
+        None
     }
 
     /// Extract string literal from argument
@@ -233,7 +231,7 @@ impl<'ctx> CodeGen<'ctx> {
             .build_global_string_ptr(metadata_json, "auth_metadata")
             .unwrap();
 
-        // Call FFI
+        // Call FFI - ignore result (memory leak but avoids crash)
         self.builder
             .build_call(
                 auth_fn,
@@ -308,7 +306,7 @@ impl<'ctx> CodeGen<'ctx> {
             .build_global_string_ptr(metadata_json, "crud_metadata")
             .unwrap();
 
-        // Call FFI
+        // Call FFI - ignore result (memory leak but avoids crash)
         self.builder
             .build_call(
                 crud_fn,

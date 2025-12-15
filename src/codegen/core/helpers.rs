@@ -58,6 +58,14 @@ impl<'ctx> CodeGen<'ctx> {
             })
     }
 
+    /// Helper method to get struct type by name, returning Option instead of panicking
+    pub fn get_struct_type_if_exists(
+        &self,
+        struct_name: &str,
+    ) -> Option<inkwell::types::StructType<'ctx>> {
+        self.canonical_struct_types.get(struct_name).cloned()
+    }
+
     /// Resolves a variable or constant name to its pointer (for arrays/maps).
     /// Used when we need the actual pointer, not the loaded value.
     pub fn resolve_pointer(&self, name: &str) -> PointerValue<'ctx> {

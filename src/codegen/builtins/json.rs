@@ -2695,6 +2695,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let json_get_float_fn = self.get_or_declare_json_get_float();
                 let json_get_bool_fn = self.get_or_declare_json_get_bool();
                 let json_get_str_fn = self.get_or_declare_json_get_str();
+                let json_validate_field_fn = self.get_or_declare_json_validate_field();
 
                 for (field_idx, (field_name, field_type)) in metadata
                     .field_names
@@ -2719,6 +2720,30 @@ impl<'ctx> CodeGen<'ctx> {
 
                     match field_type.as_str() {
                         "Int" => {
+                            // Validate field type before extraction
+                            let type_str = self
+                                .builder
+                                .build_global_string_ptr("Int", "type_int")
+                                .unwrap();
+                            let is_valid = self
+                                .builder
+                                .build_call(
+                                    json_validate_field_fn,
+                                    &[
+                                        json_str_ptr.into(),
+                                        field_name_str.as_pointer_value().into(),
+                                        type_str.as_pointer_value().into(),
+                                    ],
+                                    "validate_field_int",
+                                )
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_int_value();
+
+                            // If validation fails (returns 0), store 0 and continue
+                            // The HTTP layer will detect this as a validation error
                             let val = self
                                 .builder
                                 .build_call(
@@ -2797,6 +2822,56 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
+                // Check for JSON type mismatch errors after deserialization
+                let check_mismatch_fn = self
+                    .module
+                    .get_function("dooruntime_get_json_type_mismatch")
+                    .unwrap_or_else(|| {
+                        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let fn_type = ptr_type.fn_type(&[], false);
+                        self.module
+                            .add_function("dooruntime_get_json_type_mismatch", fn_type, None)
+                    });
+
+                let error_ptr = self
+                    .builder
+                    .build_call(check_mismatch_fn, &[], "check_type_mismatch")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_pointer_value();
+
+                // Check if error_ptr is null (no error)
+                let has_error = self
+                    .builder
+                    .build_is_not_null(error_ptr, "has_type_error")
+                    .unwrap();
+
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let error_block = self.context.append_basic_block(current_fn, "type_error");
+                let success_block = self.context.append_basic_block(current_fn, "type_success");
+
+                self.builder
+                    .build_conditional_branch(has_error, error_block, success_block)
+                    .unwrap();
+
+                // Error block: return null to signal error
+                self.builder.position_at_end(error_block);
+                let null_return = self
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .const_null();
+                self.builder.build_return(Some(&null_return)).unwrap();
+
+                // Success block: return the struct
+                self.builder.position_at_end(success_block);
+
                 return Some(struct_ptr.into());
             }
 
@@ -2849,6 +2924,18 @@ impl<'ctx> CodeGen<'ctx> {
         self.module.get_function(fn_name).unwrap_or_else(|| {
             let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            self.module.add_function(fn_name, fn_type, None)
+        })
+    }
+
+    fn get_or_declare_json_validate_field(&self) -> inkwell::values::FunctionValue<'ctx> {
+        let fn_name = "json_validate_field_type";
+        self.module.get_function(fn_name).unwrap_or_else(|| {
+            let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+            let fn_type = self
+                .context
+                .i32_type()
+                .fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
             self.module.add_function(fn_name, fn_type, None)
         })
     }
