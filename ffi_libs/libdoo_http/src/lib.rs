@@ -1246,8 +1246,21 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     drop(registry);
 
-    // Note: Validation happens in the generated handler wrapper code
-    // during StructInit operations via dooruntime_validate_field
+    // Validate JSON body for POST/PUT/PATCH requests
+    if requires_body && !body.is_empty() {
+        if let Err(_) = serde_json::from_str::<serde_json::Value>(&body) {
+            use error::*;
+            let err = invalid_json_error(path.clone());
+            let body_json = err.to_json_string();
+            set_last_error(err.status_code() as i32, body_json.clone());
+            log_request(req_start, StatusCode::BAD_REQUEST, &method, &path);
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body_json)))
+                .unwrap());
+        }
+    }
 
     // Create Doo Request
     let params_box = Box::new(params);
@@ -3290,7 +3303,9 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         }
     }
 
-    let json_str = serde_json::to_string(&json_obj).unwrap_or_else(|_| "{}".to_string());
+    // Wrap in {"data": ...} format for RFC 7807 compliance
+    let wrapped = serde_json::json!({ "data": json_obj });
+    let json_str = serde_json::to_string(&wrapped).unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
     string_to_c(&json_str)
 }
 
@@ -3542,6 +3557,64 @@ pub extern "C" fn doohttp_populate_struct_from_request(
     // Validate fields with decorators - use metadata directly
     let struct_decorators = metadata.struct_decorators.get(&struct_name);
 
+    // Validate field types for JSON body (source_type == 0)
+    if source_type == 0 {
+        if let Some(struct_layout_obj) = struct_layouts.get(&struct_name).and_then(|v| v.as_object()) {
+            if let Some(fields_array) = struct_layout_obj.get("fields").and_then(|f| f.as_array()) {
+            let mut type_errors = std::collections::HashMap::new();
+            
+            for field_info in fields_array {
+                if let Some(field_obj) = field_info.as_object() {
+                    let field_name = field_obj.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let expected_type = field_obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    
+                    if let Some(field_value) = source_data.get(field_name) {
+                        let type_matches = match expected_type {
+                            "Int" => field_value.is_i64() || field_value.is_u64(),
+                            "Float" => field_value.is_f64(),
+                            "Bool" => field_value.is_boolean(),
+                            "Str" => field_value.is_string(),
+                            _ => true, // Unknown types pass
+                        };
+                        
+                        if !type_matches {
+                            let received_type = if field_value.is_string() {
+                                "String"
+                            } else if field_value.is_i64() || field_value.is_u64() {
+                                "Int"
+                            } else if field_value.is_f64() {
+                                "Float"
+                            } else if field_value.is_boolean() {
+                                "Bool"
+                            } else {
+                                "Unknown"
+                            };
+                            
+                            let field_err = FieldError::new(field_name.to_string())
+                                .with_rule("type_mismatch".to_string())
+                                .with_expected(expected_type.to_string())
+                                .with_received(received_type.to_string())
+                                .with_value(field_value.to_string())
+                                .with_error(format!(
+                                    "Expected type {}, received {}",
+                                    expected_type, received_type
+                                ));
+                            type_errors.insert(field_name.to_string(), field_err);
+                        }
+                    }
+                }
+            }
+            
+            if !type_errors.is_empty() {
+                let err = type_mismatch_error(path_str.clone(), type_errors);
+                set_last_error(err.status_code() as i32, err.to_json_string());
+                return 400;
+            }
+            }
+        }
+    }
+
+    // Validate decorators
     if let Some(field_decorators) = struct_decorators {
         for (field_name, decorators) in field_decorators {
             // decorators is Vec<DecoratorInfo>
@@ -4225,6 +4298,49 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
 
         // Extract table metadata (already loaded above for validation)
 
+        // Validate required fields (fields without @auto or @default)
+        let mut missing_fields = Vec::new();
+        for field in fields.iter() {
+            if let Some(field_obj) = field.as_object() {
+                if let Some(field_name) = field_obj.get("name").and_then(|n| n.as_str()) {
+                    // Check if field has @auto or @default decorator
+                    let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
+                    let has_auto_or_default = if let Some(decs) = decorators {
+                        decs.iter().any(|d| {
+                            let dec_name = d.as_object()
+                                .and_then(|o| o.get("name"))
+                                .and_then(|n| n.as_str());
+                            dec_name == Some("auto") || dec_name == Some("default")
+                        })
+                    } else {
+                        false
+                    };
+                    
+                    // If field is required (no @auto, no @default) and missing from request
+                    if !has_auto_or_default && !obj.contains_key(&field_name.to_lowercase()) {
+                        missing_fields.push(field_name.to_string());
+                    }
+                }
+            }
+        }
+        
+        if !missing_fields.is_empty() {
+            use error::*;
+            let mut field_errors = std::collections::HashMap::new();
+            for field_name in missing_fields {
+                let field_err = FieldError::new(field_name.clone())
+                    .with_rule("required".to_string())
+                    .with_error(format!("Field '{}' is required", field_name));
+                field_errors.insert(field_name, field_err);
+            }
+            let err = validation_error(
+                "Missing required fields".to_string(),
+                path.clone(),
+                field_errors
+            );
+            return create_json_result(400, &err.to_json_string());
+        }
+
         // Find password field
         let password_field = fields.iter().find_map(|f| {
             let field_obj = f.as_object()?;
@@ -4341,6 +4457,25 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                     placeholders.push(format!("${}", param_idx));
                     values_json.push(value.clone());
                     param_idx += 1;
+                } else {
+                    // Check if field has @default decorator
+                    if let Some(decs) = decorators {
+                        if let Some(default_value) = decs.iter().find_map(|d| {
+                            let dec_obj = d.as_object()?;
+                            if dec_obj.get("name")?.as_str()? == "default" {
+                                let args = dec_obj.get("args")?.as_array()?;
+                                args.first()?.as_str()
+                            } else {
+                                None
+                            }
+                        }) {
+                            // Apply default value
+                            field_names.push(field_name.to_lowercase());
+                            placeholders.push(format!("${}", param_idx));
+                            values_json.push(serde_json::Value::String(default_value.to_string()));
+                            param_idx += 1;
+                        }
+                    }
                 }
             }
         }
@@ -4889,6 +5024,92 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
             }
         };
 
+        // Validate field types before insert
+        let mut type_errors = std::collections::HashMap::new();
+        for field in fields.iter() {
+            if let Some(field_obj) = field.as_object() {
+                if let Some(field_name) = field_obj.get("name").and_then(|n| n.as_str()) {
+                    if let Some(expected_type) = field_obj.get("type").and_then(|t| t.as_str()) {
+                        if let Some(field_value) = obj.get(&field_name.to_lowercase()) {
+                            let type_matches = match expected_type {
+                                "Int" => field_value.is_i64() || field_value.is_u64(),
+                                "Float" => field_value.is_f64(),
+                                "Bool" => field_value.is_boolean(),
+                                "Str" => field_value.is_string(),
+                                _ => true,
+                            };
+                            
+                            if !type_matches {
+                                use error::*;
+                                let received_type = if field_value.is_string() { "String" }
+                                    else if field_value.is_i64() || field_value.is_u64() { "Int" }
+                                    else if field_value.is_f64() { "Float" }
+                                    else if field_value.is_boolean() { "Bool" }
+                                    else { "Unknown" };
+                                
+                                let field_err = FieldError::new(field_name.to_string())
+                                    .with_rule("type_mismatch".to_string())
+                                    .with_expected(expected_type.to_string())
+                                    .with_received(received_type.to_string())
+                                    .with_value(field_value.to_string())
+                                    .with_error(format!("Expected type {}, received {}", expected_type, received_type));
+                                type_errors.insert(field_name.to_string(), field_err);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if !type_errors.is_empty() {
+            use error::*;
+            let err = type_mismatch_error(path.clone(), type_errors);
+            return create_json_result(400, &err.to_json_string());
+        }
+
+        // Validate required fields (fields without @auto or @default)
+        let mut missing_fields = Vec::new();
+        for field in fields.iter() {
+            if let Some(field_obj) = field.as_object() {
+                if let Some(field_name) = field_obj.get("name").and_then(|n| n.as_str()) {
+                    // Check if field has @auto or @default decorator
+                    let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
+                    let has_auto_or_default = if let Some(decs) = decorators {
+                        decs.iter().any(|d| {
+                            let dec_name = d.as_object()
+                                .and_then(|o| o.get("name"))
+                                .and_then(|n| n.as_str());
+                            dec_name == Some("auto") || dec_name == Some("default")
+                        })
+                    } else {
+                        false
+                    };
+                    
+                    // If field is required (no @auto, no @default) and missing from request
+                    if !has_auto_or_default && !obj.contains_key(&field_name.to_lowercase()) {
+                        missing_fields.push(field_name.to_string());
+                    }
+                }
+            }
+        }
+        
+        if !missing_fields.is_empty() {
+            use error::*;
+            let mut field_errors = std::collections::HashMap::new();
+            for field_name in missing_fields {
+                let field_err = FieldError::new(field_name.clone())
+                    .with_rule("required".to_string())
+                    .with_error(format!("Field '{}' is required", field_name));
+                field_errors.insert(field_name, field_err);
+            }
+            let err = validation_error(
+                "Missing required fields".to_string(),
+                path.clone(),
+                field_errors
+            );
+            return create_json_result(400, &err.to_json_string());
+        }
+
         // Build INSERT SQL
         let table_name = &crud_meta.table_name;
         let mut field_names = Vec::new();
@@ -4933,6 +5154,25 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 placeholders.push(format!("${}", param_idx));
                 values_json.push(value.clone());
                 param_idx += 1;
+            } else {
+                // Check if field has @default decorator
+                if let Some(decs) = decorators {
+                    if let Some(default_value) = decs.iter().find_map(|d| {
+                        let dec_obj = d.as_object()?;
+                        if dec_obj.get("name")?.as_str()? == "default" {
+                            let args = dec_obj.get("args")?.as_array()?;
+                            args.first()?.as_str()
+                        } else {
+                            None
+                        }
+                    }) {
+                        // Apply default value
+                        field_names.push(field_name.to_lowercase());
+                        placeholders.push(format!("${}", param_idx));
+                        values_json.push(serde_json::Value::String(default_value.to_string()));
+                        param_idx += 1;
+                    }
+                }
             }
         }
 
@@ -5750,6 +5990,12 @@ pub extern "C" fn doo_http_auth_impl(
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
 
+    // CRITICAL: Register JWT middleware so CRUD routes can use it
+    registry.middleware_handlers.insert(
+        "jwt".to_string(),
+        jwt_middleware_handler
+    );
+
     registry.register("POST", &signup_path_str, auth_signup_handler);
     registry.register("POST", &login_path_str, auth_login_handler);
 
@@ -5820,15 +6066,29 @@ pub extern "C" fn doo_http_crud_impl(
 
     let id_path = format!("{}/{{id}}", base_path_str);
 
+    // Check for noAuth flag in metadata
+    let no_auth = metadata.get("noAuth").and_then(|v| v.as_bool()).unwrap_or(false);
+
     // Register more specific routes (with :id) BEFORE general routes
     // matchit requires more specific patterns to be registered first
-    registry.register("GET", &id_path, crud_get_handler);
-    registry.register("PUT", &id_path, crud_update_handler);
-    registry.register("DELETE", &id_path, crud_delete_handler);
-    registry.register("POST", &base_path_str, crud_create_handler);
-    registry.register("GET", &base_path_str, crud_list_handler);
-
-    println!("✓ CRUD routes registered:");
+    if no_auth {
+        // Public CRUD routes - no JWT required
+        registry.register("GET", &id_path, crud_get_handler);
+        registry.register("PUT", &id_path, crud_update_handler);
+        registry.register("DELETE", &id_path, crud_delete_handler);
+        registry.register("POST", &base_path_str, crud_create_handler);
+        registry.register("GET", &base_path_str, crud_list_handler);
+        println!("✓ CRUD routes registered (public - no auth):");
+    } else {
+        // Protected CRUD routes - JWT required
+        let jwt_mw: Vec<DooMiddlewareFn> = vec![jwt_middleware_handler];
+        registry.register_with_middleware("GET", &id_path, crud_get_handler, jwt_mw.clone());
+        registry.register_with_middleware("PUT", &id_path, crud_update_handler, jwt_mw.clone());
+        registry.register_with_middleware("DELETE", &id_path, crud_delete_handler, jwt_mw.clone());
+        registry.register_with_middleware("POST", &base_path_str, crud_create_handler, jwt_mw.clone());
+        registry.register_with_middleware("GET", &base_path_str, crud_list_handler, jwt_mw.clone());
+        println!("✓ CRUD routes registered (JWT auth required):");
+    }
     println!("  POST {} (create)", base_path_str);
     println!("  GET {} (list)", base_path_str);
     println!("  GET {} (get)", id_path);

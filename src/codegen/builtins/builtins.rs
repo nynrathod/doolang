@@ -16,6 +16,21 @@ impl<'ctx> CodeGen<'ctx> {
             return self.generate_json_method(dest, method, args);
         }
 
+        // Check for Database static methods
+        if object == "Database" {
+            if method == "get" {
+                // Database::get() - retrieve global DB instance
+                return self.generate_database_get(dest);
+            }
+            // For other Database methods like postgres(), fall through to normal call handling
+        }
+
+        // Check for Database instance methods that need type-aware handling
+        if method == "raw" || method == "rawWithParams" {
+            // db.raw() / db.rawWithParams() - auto-deserialize JSON into typed arrays based on return type
+            return self.generate_database_raw_typed(dest, object, method, args);
+        }
+
         // Check for Server auth() and crud() methods - route to database codegen
         if method == "auth" && args.len() == 4 {
             // app.auth(signupPath, loginPath, UserStruct, db)
@@ -277,5 +292,138 @@ impl<'ctx> CodeGen<'ctx> {
             }
             _ => None,
         }
+    }
+
+    /// Generate call to doo_db_get_global FFI function
+    /// Returns the global database instance that was initialized via Database::postgres()
+    fn generate_database_get(&mut self, dest: &str) -> Option<BasicValueEnum<'ctx>> {
+        use inkwell::AddressSpace;
+
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        // Declare doo_db_get_global FFI function if not already declared
+        let get_global_fn = self
+            .module
+            .get_function("doo_db_get_global")
+            .unwrap_or_else(|| {
+                let fn_type = ptr_type.fn_type(&[], false);
+                self.module.add_function("doo_db_get_global", fn_type, None)
+            });
+
+        // Call FFI function
+        let result = self
+            .builder
+            .build_call(get_global_fn, &[], "db_get_global")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        // Store result in temp_values
+        self.temp_values.insert(dest.to_string(), result);
+
+        Some(result)
+    }
+
+    /// Generate Database.raw() or Database.rawWithParams() call
+    /// Automatically converts JSON result to typed data based on expected return type:
+    /// - If return type is Str: returns raw JSON string
+    /// - If return type is struct or [struct]: automatically parses JSON
+    /// Returns DooResult* which will be unwrapped by MIR TryPropagate
+    fn generate_database_raw_typed(
+        &mut self,
+        dest: &str,
+        object: &str,
+        method: &str,
+        args: &[String],
+    ) -> Option<BasicValueEnum<'ctx>> {
+        use inkwell::AddressSpace;
+
+        if args.is_empty() {
+            eprintln!("Error: db.{}() requires SQL query argument", method);
+            return None;
+        }
+
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        // Get Database instance and SQL query
+        let db_val = self.resolve_value(object);
+        let sql_arg = self.resolve_value(&args[0]);
+
+        // Determine which FFI function to call based on method
+        let (raw_fn_name, call_args) = if method == "rawWithParams" {
+            // db.rawWithParams(sql, params) -> doo_db_raw_param(db, sql, params)
+            if args.len() < 2 {
+                eprintln!(
+                    "Error: db.rawWithParams() requires 2 arguments: SQL query and parameters"
+                );
+                return None;
+            }
+            let params_arg = self.resolve_value(&args[1]);
+            (
+                "doo_db_raw_param",
+                vec![db_val.into(), sql_arg.into(), params_arg.into()],
+            )
+        } else {
+            // db.raw(sql) -> doo_db_raw(db, sql)
+            ("doo_db_raw", vec![db_val.into(), sql_arg.into()])
+        };
+
+        // Declare the appropriate FFI function
+        let raw_fn = if let Some(f) = self.module.get_function(raw_fn_name) {
+            f
+        } else {
+            let fn_type = if method == "rawWithParams" {
+                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false)
+            } else {
+                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false)
+            };
+            self.module.add_function(raw_fn_name, fn_type, None)
+        };
+
+        // Call the FFI function - returns DooResult*
+        let raw_result = self
+            .builder
+            .build_call(raw_fn, &call_args, "db_raw_result")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        // Store the raw result - TryPropagate will unwrap it
+        self.temp_values.insert(dest.to_string(), raw_result);
+
+        // Determine the expected Ok type for the Result
+        // Priority: 1) Explicit variable type annotation, 2) Function return type
+        let expected_ok_type = self
+            .variable_types
+            .get(dest)
+            .cloned()
+            .or_else(|| {
+                // Fall back to function return type if no explicit annotation
+                if let Some(func_name) = &self.current_function_name {
+                    self.function_return_types.get(func_name).cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "Str".to_string());
+
+        // Store result_types for TryPropagate to use when unwrapping
+        // Result<OkType, DatabaseError>
+        self.result_types.insert(
+            dest.to_string(),
+            (expected_ok_type.clone(), "DatabaseError".to_string()),
+        );
+
+        // ALWAYS mark db.raw() results as potentially needing JSON parsing
+        // The actual parsing decision will be made at TryPropagate time based on:
+        // 1. Explicit variable type annotation (let result: [User] = ...)
+        // 2. Function return type (fn foo() -> [User])
+        // If neither specifies a non-Str type, it will remain as JSON string
+        self.temp_values
+            .insert(format!("{}_needs_json_parse", dest), raw_result);
+
+        Some(raw_result)
     }
 }

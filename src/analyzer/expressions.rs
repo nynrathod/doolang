@@ -1799,7 +1799,40 @@ impl SemanticAnalyzer {
         method: &str,
         args: &[AstNode],
     ) -> Result<TypeNode, SemanticError> {
-        // First check if this is a custom user-defined method
+        // Special handling for Database methods - override stdlib return types
+        // Check this BEFORE method_table lookup to allow polymorphic JSON deserialization
+        match object_type {
+            TypeNode::TypeRef(name) | TypeNode::Struct(name, _) if name == "Database" => {
+                match method {
+                    "raw" => {
+                        if args.len() != 1 {
+                            return Err(SemanticError::FunctionArgumentMismatch {
+                                name: "Database.raw".to_string(),
+                                expected: 1,
+                                found: args.len(),
+                            });
+                        }
+                        return Ok(TypeNode::Any);
+                    }
+                    "rawWithParams" => {
+                        if args.len() != 2 {
+                            return Err(SemanticError::FunctionArgumentMismatch {
+                                name: "Database.rawWithParams".to_string(),
+                                expected: 2,
+                                found: args.len(),
+                            });
+                        }
+                        return Ok(TypeNode::Any);
+                    }
+                    _ => {
+                        // Fall through to normal method lookup for other Database methods
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Now check if this is a custom user-defined method
         let type_name = match object_type {
             TypeNode::Int => "Int",
             TypeNode::Float => "Float",
@@ -2371,6 +2404,7 @@ impl SemanticAnalyzer {
                     correct_type: None,
                 }),
             },
+
             TypeNode::Builtin(name) if name == "JSON" => match method {
                 "parse" => {
                     if args.len() != 1 {

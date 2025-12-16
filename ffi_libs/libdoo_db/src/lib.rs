@@ -49,6 +49,7 @@ pub struct DooDatabase {
 
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 static CLIENT: OnceCell<Arc<Client>> = OnceCell::new();
+static GLOBAL_DB: OnceCell<Arc<Client>> = OnceCell::new();
 
 fn runtime() -> Result<&'static Runtime, String> {
     RUNTIME.get_or_try_init(|| Runtime::new().map_err(|e| format!("Failed to create runtime: {e}")))
@@ -191,7 +192,13 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
         }
     });
 
-    CLIENT.set(Arc::new(client)).ok();
+    // Store in both CLIENT (for backward compatibility) and GLOBAL_DB
+    let client_arc = Arc::new(client);
+    CLIENT.set(client_arc.clone()).ok();
+
+    // Store in global DB for get() access
+    GLOBAL_DB.set(client_arc.clone()).ok();
+
     make_ok_database("postgres".to_string(), true)
 }
 
@@ -1016,13 +1023,14 @@ pub extern "C" fn doo_db_raw(_db: *const c_char, sql: *const c_char) -> *mut Doo
 pub extern "C" fn doo_db_raw_param(
     _db: *const c_char,
     sql: *const c_char,
-    param: *const c_char,
+    params_json: *const c_char,
 ) -> *mut DooResult {
     let sql_str = match c_to_string(sql) {
         Ok(s) => s.trim().to_string(),
         Err(e) => return make_err_query_failed(e),
     };
-    let param = match c_to_string(param) {
+
+    let params_str = match c_to_string(params_json) {
         Ok(s) => s.trim().to_string(),
         Err(e) => return make_err_query_failed(e),
     };
@@ -1036,13 +1044,83 @@ pub extern "C" fn doo_db_raw_param(
         Err(e) => return make_err(e),
     };
 
+    // Parse params as JSON - can be a single value, array, or object
+    let params_value: serde_json::Value = match serde_json::from_str(&params_str) {
+        Ok(v) => v,
+        Err(_) => {
+            // If not valid JSON, try to parse as number first, then fall back to string
+            if let Ok(i) = params_str.parse::<i64>() {
+                serde_json::Value::Number(serde_json::Number::from(i))
+            } else if let Ok(f) = params_str.parse::<f64>() {
+                serde_json::Value::Number(
+                    serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0)),
+                )
+            } else if params_str == "true" || params_str == "false" {
+                serde_json::Value::Bool(params_str == "true")
+            } else {
+                serde_json::Value::String(params_str.clone())
+            }
+        }
+    };
+
+    // Convert JSON params to PostgreSQL parameters
+    // Supports: primitives, arrays (for ANY/ALL), and objects (as JSONB)
+    let pg_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> = match &params_value {
+        serde_json::Value::Array(arr) => {
+            // If it's an array, each element becomes a separate $1, $2, $3... parameter
+            arr.iter()
+                .map(|v| -> Box<dyn tokio_postgres::types::ToSql + Sync> {
+                    match v {
+                        serde_json::Value::String(s) => Box::new(s.clone()),
+                        serde_json::Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                // Use i32 for integers to match postgres INT4
+                                Box::new(i as i32)
+                            } else if let Some(f) = n.as_f64() {
+                                Box::new(f)
+                            } else {
+                                Box::new(n.to_string())
+                            }
+                        }
+                        serde_json::Value::Bool(b) => Box::new(*b),
+                        serde_json::Value::Null => Box::new(None::<String>),
+                        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                            // Nested arrays/objects as JSONB
+                            Box::new(serde_json::to_string(v).unwrap_or_default())
+                        }
+                    }
+                })
+                .collect()
+        }
+        serde_json::Value::String(s) => vec![Box::new(s.clone())],
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                // Use i32 for integers to match postgres INT4
+                vec![Box::new(i as i32)]
+            } else if let Some(f) = n.as_f64() {
+                vec![Box::new(f)]
+            } else {
+                vec![Box::new(n.to_string())]
+            }
+        }
+        serde_json::Value::Bool(b) => vec![Box::new(*b)],
+        serde_json::Value::Object(_) => {
+            // Struct/object as JSONB string
+            vec![Box::new(params_str.clone())]
+        }
+        serde_json::Value::Null => vec![Box::new(None::<String>)],
+    };
+
     // Detect if this is a SELECT query
     let sql_upper = sql_str.to_uppercase();
     let is_select = sql_upper.starts_with("SELECT") || sql_upper.starts_with("WITH");
 
     if is_select {
         // Execute as SELECT and return JSON
-        let res = rt.block_on(async { client.query(&sql_str, &[&param]).await });
+        let pg_params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+            pg_params.iter().map(|p| p.as_ref()).collect();
+
+        let res = rt.block_on(async { client.query(&sql_str, &pg_params_refs[..]).await });
         let rows = match res {
             Ok(r) => r,
             Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
@@ -1088,7 +1166,10 @@ pub extern "C" fn doo_db_raw_param(
         make_ok_string(json)
     } else {
         // Execute as INSERT/UPDATE/DELETE/CREATE/DROP/ALTER
-        let res = rt.block_on(async { client.execute(&sql_str, &[&param]).await });
+        let pg_params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+            pg_params.iter().map(|p| p.as_ref()).collect();
+
+        let res = rt.block_on(async { client.execute(&sql_str, &pg_params_refs[..]).await });
         match res {
             Ok(_) => make_ok_string(String::new()),
             Err(e) => {
@@ -1103,8 +1184,8 @@ pub extern "C" fn doo_db_raw_param(
                         "UNKNOWN".to_string()
                     };
                     return make_err_query_failed(format!(
-                        "SQL: {} | Param: {} | Error: {} | PG Code: {}",
-                        sql_str, param, e, pg_code
+                        "SQL: {} | Params: {} | Error: {} | PG Code: {}",
+                        sql_str, params_str, e, pg_code
                     ));
                 }
             }
@@ -1280,11 +1361,39 @@ fn extract_field_name(err: &tokio_postgres::Error) -> Option<String> {
 
 fn make_err_not_null_violation(field: &str) -> *mut DooResult {
     let err = Box::new(DooDbError {
-        code: 23502,
+        code: 2,
         message: string_to_c(format!("Field '{}' cannot be null", field)),
     });
     Box::into_raw(Box::new(DooResult {
         tag: 1,
         value: Box::into_raw(err) as *mut _,
     }))
+}
+
+/// Get the global database instance
+/// This allows handlers to access the database without explicit parameter passing
+#[no_mangle]
+pub extern "C" fn doo_db_get_global() -> *mut DooResult {
+    match GLOBAL_DB.get() {
+        Some(db_mutex) => {
+            // Database was initialized, return success
+            make_ok_database("postgres".to_string(), true)
+        }
+        None => {
+            // Database not initialized yet
+            make_err_connection_failed(
+                "Database not initialized. Call Database::postgres() first".to_string(),
+            )
+        }
+    }
+}
+
+/// Query database and return JSON array for typed deserialization
+/// This is identical to doo_db_raw but explicitly indicates array return
+/// The compiler will deserialize the JSON array into typed structs
+#[no_mangle]
+pub extern "C" fn doo_db_query_array(_db: *const c_char, sql: *const c_char) -> *mut DooResult {
+    // For SELECT queries, doo_db_raw already returns JSON arrays
+    // Just delegate to it
+    doo_db_raw(_db, sql)
 }

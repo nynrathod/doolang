@@ -818,14 +818,103 @@ impl<'ctx> CodeGen<'ctx> {
                     .cloned()
                     .unwrap_or_default();
 
-                // If return type is a known struct (not Str), serialize it
-                if !return_type.is_empty()
+                // Check if return type is array of structs: Array(StructName) or [StructName]
+                let is_struct_array =
+                    if return_type.starts_with("Array(") && return_type.ends_with(")") {
+                        let inner = &return_type[6..return_type.len() - 1];
+                        self.struct_metadata.contains_key(inner)
+                    } else if return_type.starts_with('[') && return_type.ends_with(']') {
+                        let inner = &return_type[1..return_type.len() - 1];
+                        self.struct_metadata.contains_key(inner)
+                    } else {
+                        false
+                    };
+
+                // If return type is a struct (not Str, not array), serialize it
+                let is_struct = !return_type.is_empty()
                     && return_type != "Str"
                     && !return_type.contains("Array")
                     && !return_type.contains("Map")
-                    && self.struct_metadata.contains_key(&return_type)
-                {
-                    // This is a struct pointer - serialize it to JSON
+                    && !return_type.starts_with('[')
+                    && self.struct_metadata.contains_key(&return_type);
+
+                if is_struct_array {
+                    // Array of structs - serialize using struct metadata
+                    // Extract struct name from type
+                    let struct_name = if return_type.starts_with("Array(") {
+                        &return_type[6..return_type.len() - 1]
+                    } else {
+                        &return_type[1..return_type.len() - 1]
+                    };
+
+                    // Get struct metadata - build JSON manually
+                    let metadata = self.struct_metadata.get(struct_name).cloned();
+                    let metadata_json = if let Some(meta) = metadata {
+                        // Convert struct metadata to JSON manually
+                        let fields: Vec<String> = meta
+                            .field_names
+                            .iter()
+                            .zip(meta.field_types.iter())
+                            .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
+                            .collect();
+                        format!("{{{}}}", fields.join(","))
+                    } else {
+                        "{}".to_string()
+                    };
+                    let metadata_cstr = self.generate_string_literal_ptr(&metadata_json);
+                    let struct_name_cstr = self.generate_string_literal_ptr(struct_name);
+
+                    // Call array_to_json_with_metadata(array_ptr, struct_name, metadata_json)
+                    let array_to_json_fn = if let Some(f) =
+                        self.module.get_function("array_to_json_with_metadata")
+                    {
+                        f
+                    } else {
+                        let fn_type = ptr_type
+                            .fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+                        self.module
+                            .add_function("array_to_json_with_metadata", fn_type, None)
+                    };
+
+                    let json_str = self
+                        .builder
+                        .build_call(
+                            array_to_json_fn,
+                            &[
+                                handler_result.into(),
+                                struct_name_cstr.into(),
+                                metadata_cstr.into(),
+                            ],
+                            "json_str",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
+
+                    let status_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(status_ptr, self.context.i32_type().const_int(200, false))
+                        .unwrap();
+
+                    let body_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
+                        .unwrap();
+                    self.builder.build_store(body_ptr, json_str).unwrap();
+
+                    let ct_str = self.generate_string_literal_ptr("application/json");
+                    let ct_ptr = self
+                        .builder
+                        .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
+                        .unwrap();
+                    self.builder.build_store(ct_ptr, ct_str).unwrap();
+                } else if is_struct {
+                    // Single struct - use serialize function
                     let serialize_fn = if let Some(f) =
                         self.module.get_function("doohttp_serialize_struct_to_json")
                     {
@@ -938,50 +1027,86 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     self.builder.build_store(ct_ptr, content_type).unwrap();
                 } else {
-                    // Arbitrary user-defined struct - serialize to JSON using FFI
-                    let struct_alloc = self
-                        .builder
-                        .build_malloc(struct_type, "struct_return_alloc")
-                        .unwrap();
-
-                    // Store struct value to heap
-                    self.builder.build_store(struct_alloc, struct_val).unwrap();
-
-                    // Cast to generic pointer
-                    let struct_ptr = self
-                        .builder
-                        .build_pointer_cast(struct_alloc, ptr_type, "struct_ptr_cast")
-                        .unwrap();
-
-                    // Declare/get doohttp_serialize_struct_to_json function
-                    let serialize_fn = if let Some(f) =
-                        self.module.get_function("doohttp_serialize_struct_to_json")
-                    {
-                        f
-                    } else {
-                        let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-                        self.module
-                            .add_function("doohttp_serialize_struct_to_json", fn_type, None)
+                    // Check if this is a Result type (2 fields: tag and value)
+                    // If so, unwrap it to get the actual value pointer
+                    let is_result_type = struct_type.count_fields() == 2 && {
+                        let first_field_type = struct_type.get_field_type_at_index(0).unwrap();
+                        first_field_type.is_int_type()
                     };
 
-                    // Get handler name as C string
-                    let handler_name_cstr = self.generate_string_literal_ptr(handler_name);
+                    // Get return type to determine if we need serialization
+                    let return_type = self
+                        .function_return_types
+                        .get(&actual_func_name)
+                        .cloned()
+                        .unwrap_or_default();
 
-                    // Call serialization function: doohttp_serialize_struct_to_json(struct_ptr, handler_name)
-                    let json_str = self
-                        .builder
-                        .build_call(
-                            serialize_fn,
-                            &[struct_ptr.into(), handler_name_cstr.into()],
-                            "json_str",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap()
-                        .into_pointer_value();
+                    let value_ptr_for_response = if is_result_type {
+                        // This is a Result type - extract the value pointer from field 1
+                        self.builder
+                            .build_extract_value(struct_val, 1, "result_value_ptr")
+                            .unwrap()
+                            .into_pointer_value()
+                    } else {
+                        // Regular struct - allocate and store it
+                        let struct_alloc = self
+                            .builder
+                            .build_malloc(struct_type, "struct_return_alloc")
+                            .unwrap();
+                        self.builder.build_store(struct_alloc, struct_val).unwrap();
+                        struct_alloc
+                    };
 
-                    // Store serialized JSON as response body with 200 status
+                    // Check if return type is Str or array - both use value directly as JSON
+                    let is_string_or_array_return = return_type == "Str"
+                        || return_type.is_empty()
+                        || return_type.starts_with("Array(")
+                        || return_type.starts_with('[');
+
+                    let response_body_ptr = if is_string_or_array_return {
+                        // Return type is Str or [Struct] - value is already JSON string from db.raw()
+                        // Just return the pointer directly
+                        value_ptr_for_response
+                    } else {
+                        // Return type is a struct - serialize to JSON
+                        let struct_ptr = self
+                            .builder
+                            .build_pointer_cast(value_ptr_for_response, ptr_type, "struct_ptr_cast")
+                            .unwrap();
+
+                        // Declare/get doohttp_serialize_struct_to_json function
+                        let serialize_fn = if let Some(f) =
+                            self.module.get_function("doohttp_serialize_struct_to_json")
+                        {
+                            f
+                        } else {
+                            let fn_type =
+                                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                            self.module.add_function(
+                                "doohttp_serialize_struct_to_json",
+                                fn_type,
+                                None,
+                            )
+                        };
+
+                        // Get handler name as C string
+                        let handler_name_cstr = self.generate_string_literal_ptr(handler_name);
+
+                        // Call serialization function
+                        self.builder
+                            .build_call(
+                                serialize_fn,
+                                &[struct_ptr.into(), handler_name_cstr.into()],
+                                "json_str",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value()
+                    };
+
+                    // Store response with 200 status
                     let status_ptr = self
                         .builder
                         .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
@@ -994,7 +1119,9 @@ impl<'ctx> CodeGen<'ctx> {
                         .builder
                         .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
                         .unwrap();
-                    self.builder.build_store(body_ptr, json_str).unwrap();
+                    self.builder
+                        .build_store(body_ptr, response_body_ptr)
+                        .unwrap();
 
                     let ct_str = self.generate_string_literal_ptr("application/json");
                     let ct_ptr = self
@@ -6743,6 +6870,22 @@ impl<'ctx> CodeGen<'ctx> {
                         })
                         .unwrap_or_else(|| "Int".to_string());
 
+                    // Check if this result needs JSON parsing (from db.raw() or db.rawWithParams())
+                    let needs_json_parse = self
+                        .temp_values
+                        .contains_key(&format!("{}_needs_json_parse", result_tmp));
+
+                    // Determine the expected type for JSON parsing
+                    // Priority: 1) Explicit variable type annotation, 2) Function return type
+                    let expected_type = self.variable_types.get(name).cloned().or_else(|| {
+                        // Fall back to function return type if no explicit annotation
+                        if let Some(func_name) = &self.current_function_name {
+                            self.function_return_types.get(func_name).cloned()
+                        } else {
+                            None
+                        }
+                    });
+
                     // For void Ok types, don't try to extract a value
                     if ok_type == "Void" || ok_type.is_empty() {
                         // Void result - no value to extract, just continue
@@ -6761,7 +6904,8 @@ impl<'ctx> CodeGen<'ctx> {
                         // Check if it's a tuple type
                         let is_tuple_type = ok_type.starts_with("Tuple(") || ok_type.contains(',');
 
-                        let actual_value = if ok_type.contains("Str")
+                        // Handle JSON parsing for database results if needed
+                        let mut actual_value = if ok_type.contains("Str")
                             || ok_type.contains("String")
                             || ok_type.contains("Array")
                             || ok_type.contains("Map")
@@ -6812,16 +6956,86 @@ impl<'ctx> CodeGen<'ctx> {
                                 .into()
                         };
 
+                        // AUTO-PARSE JSON if needed (db.raw() with typed return)
+                        if needs_json_parse && expected_type.is_some() {
+                            let target_type = expected_type.clone().unwrap();
+
+                            // Only parse if target type is NOT Str/String
+                            if target_type != "Str" && target_type != "String" {
+                                // The actual_value is a JSON string pointer
+                                // We need to parse it into the target type using convert_json_string_to_type()
+
+                                let json_str_ptr = if actual_value.is_pointer_value() {
+                                    actual_value.into_pointer_value()
+                                } else {
+                                    // Should always be pointer for Str type
+                                    ok_value_ptr
+                                };
+
+                                // Use convert_json_string_to_type for proper typed parsing
+                                if let Some(parsed) =
+                                    self.convert_json_string_to_type(json_str_ptr, &target_type)
+                                {
+                                    actual_value = parsed;
+
+                                    // Update tracking metadata for parsed result
+                                    if target_type.starts_with("Array(")
+                                        || target_type.starts_with('[')
+                                    {
+                                        let element_type = if target_type.starts_with("Array(") {
+                                            &target_type[6..target_type.len() - 1]
+                                        } else {
+                                            &target_type[1..target_type.len() - 1]
+                                        };
+                                        let contains_strings = element_type == "Str";
+                                        self.array_metadata.insert(
+                                            name.clone(),
+                                            crate::codegen::ArrayMetadata {
+                                                length: 0,
+                                                element_type: element_type.to_string(),
+                                                contains_strings,
+                                            },
+                                        );
+                                        self.heap_arrays.insert(name.clone());
+                                    } else if self.struct_metadata.contains_key(&target_type) {
+                                        self.struct_instance_types
+                                            .insert(name.clone(), target_type.clone());
+                                        self.heap_arrays.insert(name.clone());
+                                    } else if target_type.starts_with("Struct(")
+                                        && target_type.ends_with(")")
+                                    {
+                                        let struct_name = &target_type[7..target_type.len() - 1];
+                                        self.struct_instance_types
+                                            .insert(name.clone(), struct_name.to_string());
+                                        self.heap_arrays.insert(name.clone());
+                                    }
+                                }
+                            }
+                        }
+
                         // Store the unwrapped value
                         self.temp_values.insert(name.clone(), actual_value);
 
                         // Set the variable type to the Ok type (not Result anymore - it's been unwrapped)
-                        // Normalize struct types to "Struct(Name)" format
-                        let normalized_type = if is_struct_type && !ok_type.contains("Struct(") {
-                            format!("Struct({})", ok_type)
+                        // But if we parsed JSON, use the expected_type instead
+                        let type_to_store = if needs_json_parse && expected_type.is_some() {
+                            let target = expected_type.clone().unwrap();
+                            if target != "Str" && target != "String" {
+                                target
+                            } else {
+                                ok_type.clone()
+                            }
                         } else {
                             ok_type.clone()
                         };
+
+                        // Normalize struct types to "Struct(Name)" format
+                        let normalized_type =
+                            if is_struct_type && !type_to_store.contains("Struct(") {
+                                format!("Struct({})", type_to_store)
+                            } else {
+                                type_to_store
+                            };
                         self.variable_types.insert(name.clone(), normalized_type);
 
                         // If this is a struct type, also track it for heap management

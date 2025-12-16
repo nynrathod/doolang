@@ -100,8 +100,11 @@ impl<'ctx> CodeGen<'ctx> {
 
         let metadata = struct_metadata.unwrap();
 
-        // Build metadata JSON
-        let metadata_json = self.build_metadata_json(&struct_name, &metadata, &decorators);
+        // Extract actual path string for noAuth detection
+        let base_path_str = self.extract_string_literal(base_path);
+
+        // Build metadata JSON with noAuth flag based on path
+        let metadata_json = self.build_metadata_json_with_path(&struct_name, &metadata, &decorators, &base_path_str);
 
         // Call FFI: doo_http_crud(server, base_path, struct_name, metadata_json)
         self.generate_crud_ffi_call(object, base_path, &struct_name, &metadata_json);
@@ -162,6 +165,47 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         format!("{{\"fields\":[{}]}}", fields.join(","))
+    }
+
+    /// Build metadata JSON with noAuth flag for CRUD routes
+    fn build_metadata_json_with_path(
+        &self,
+        struct_name: &str,
+        metadata: &crate::codegen::core::StructMetadata,
+        decorators: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
+        base_path: &str,
+    ) -> String {
+        let mut fields = Vec::new();
+
+        for (i, field_name) in metadata.field_names.iter().enumerate() {
+            let field_type = &metadata.field_types[i];
+            let field_decorators = decorators.get(field_name).cloned().unwrap_or_default();
+
+            let mut decorator_array = Vec::new();
+            for (dec_name, dec_args) in field_decorators {
+                let args_json: Vec<String> = dec_args
+                    .iter()
+                    .map(|arg| format!("\"{}\"", arg.replace("\"", "\\\"")))
+                    .collect();
+                decorator_array.push(format!(
+                    "{{\"name\":\"{}\",\"args\":[{}]}}",
+                    dec_name,
+                    args_json.join(",")
+                ));
+            }
+
+            fields.push(format!(
+                "{{\"name\":\"{}\",\"type\":\"{}\",\"decorators\":[{}]}}",
+                field_name,
+                field_type,
+                decorator_array.join(",")
+            ));
+        }
+
+        // Check if path contains "/public/" to determine noAuth
+        let no_auth = base_path.contains("/public/");
+        
+        format!("{{\"fields\":[{}],\"noAuth\":{}}}", fields.join(","), no_auth)
     }
 
     /// Generate FFI call to doo_http_auth

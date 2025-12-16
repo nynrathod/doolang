@@ -50,6 +50,30 @@ impl SemanticAnalyzer {
                 let patterns = self.collect_and_validate_targets(pattern)?;
                 let expected_count = patterns.len();
 
+                // Check if RHS is db.raw() or db.rawWithParams() without type annotation
+                // Default to Str type (JSON string) if no type annotation provided
+                if type_annotation.is_none() {
+                    if let AstNode::TryPropagate { expr } = &**value {
+                        if let AstNode::MethodCall { object, method, .. } = &**expr {
+                            // Check if this is a Database method call
+                            let obj_type = self.infer_type(&**object)?;
+                            if let TypeNode::TypeRef(type_name) = obj_type {
+                                if type_name == "Database"
+                                    && (method == "raw" || method == "rawWithParams")
+                                {
+                                    // Show error - type annotation is mandatory for db.raw()
+                                    return Err(SemanticError::ParseErrorMsg(
+                                        format!(
+                                            "Type annotation required for db.{}() result. Allowed types: Str, [Struct], Struct, Int, Bool, Float\nExample: let result: [Struct] = db.{}(...)?",
+                                            method, method
+                                        )
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // For empty maps and arrays, use the type annotation if available
                 let rhs_type = if let Some(annotated_type) = type_annotation.as_ref() {
                     // If we have a type annotation and value is empty map/array, use annotation directly

@@ -686,6 +686,96 @@ pub fn internal_server_error_with_trace(instance: String, trace_id: String) -> E
     .with_trace_id(trace_id)
 }
 
+// ============================================================================
+// Success Response Wrappers (RFC 7807 Compliant)
+// ============================================================================
+
+/// Standard success response wrapper - wraps data in { "data": ... }
+pub fn success_response(data: Value) -> (u16, String) {
+    let response = json!({
+        "data": data
+    });
+    (200, response.to_string())
+}
+
+/// Created response (201) with data wrapper
+pub fn created_response(data: Value) -> (u16, String) {
+    let response = json!({
+        "data": data
+    });
+    (201, response.to_string())
+}
+
+/// No content response (204)
+pub fn no_content_response() -> (u16, String) {
+    (204, String::new())
+}
+
+/// Auth signup response - exclude password field
+/// Takes user data as JSON value, removes password, wraps in data
+pub fn auth_signup_response(mut user_data: Value) -> (u16, String) {
+    // Remove password field if present
+    if let Some(obj) = user_data.as_object_mut() {
+        obj.remove("Password");
+        obj.remove("password");
+    }
+    created_response(user_data)
+}
+
+/// Auth login response - token + user (without password)
+pub fn auth_login_response(token: String, mut user_data: Value) -> (u16, String) {
+    // Remove password field if present
+    if let Some(obj) = user_data.as_object_mut() {
+        obj.remove("Password");
+        obj.remove("password");
+    }
+    
+    let response = json!({
+        "data": {
+            "token": token,
+            "user": user_data
+        }
+    });
+    (200, response.to_string())
+}
+
+/// CRUD create response (201)
+pub fn crud_create_response(created_data: Value) -> (u16, String) {
+    created_response(created_data)
+}
+
+/// CRUD read single response (200)
+pub fn crud_read_response(data: Value) -> (u16, String) {
+    success_response(data)
+}
+
+/// CRUD read multiple response (200) - array of items
+pub fn crud_list_response(items: Value) -> (u16, String) {
+    success_response(items)
+}
+
+/// CRUD update response (200)
+pub fn crud_update_response(updated_data: Value) -> (u16, String) {
+    success_response(updated_data)
+}
+
+/// CRUD delete response - can be 200 with ID or 204 no content
+pub fn crud_delete_response(deleted_id: Option<i64>) -> (u16, String) {
+    if let Some(id) = deleted_id {
+        success_response(json!({ "id": id }))
+    } else {
+        no_content_response()
+    }
+}
+
+/// Generic success with custom status code
+pub fn success_with_status(status: u16, data: Value) -> (u16, String) {
+    let response = json!({
+        "data": data
+    });
+    (status, response.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

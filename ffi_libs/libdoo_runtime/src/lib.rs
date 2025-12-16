@@ -323,12 +323,114 @@ fn validate_field_decorators(
                 // Runtime can't check uniqueness without DB query
                 // This is a no-op here; DB FFI will handle it
             }
+            "default" => {
+                // @default is handled during value extraction, not validation
+                // If value is empty, the default will be applied
+                // This is a no-op here; default extraction happens separately
+            }
             _ => {
                 // Unknown decorator - ignore
             }
         }
     }
     Ok(())
+}
+
+/// Extract default value for a field based on @default decorator
+/// Returns empty string if no default is found
+pub extern "C" fn dooruntime_get_default_value(
+    decorators_json: *const std::os::raw::c_char,
+    field_type: *const std::os::raw::c_char,
+) -> *mut std::os::raw::c_char {
+    if decorators_json.is_null() || field_type.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let decorators_str = unsafe {
+        match std::ffi::CStr::from_ptr(decorators_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let field_type_str = unsafe {
+        match std::ffi::CStr::from_ptr(field_type).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let decorators: Vec<FieldDecorator> = match serde_json::from_str(decorators_str) {
+        Ok(d) => d,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    for decorator in decorators {
+        if decorator.name == "default" {
+            if let Some(default_value) = decorator.args.first() {
+                // Validate that default value matches the field type
+                let validated_value = match field_type_str {
+                    "Str" => default_value.clone(),
+                    "Int" => {
+                        // Verify it's a valid integer
+                        if default_value.parse::<i64>().is_ok() {
+                            default_value.clone()
+                        } else {
+                            return std::ptr::null_mut();
+                        }
+                    }
+                    "Bool" => {
+                        // Verify it's a valid boolean
+                        let lower = default_value.to_lowercase();
+                        if lower == "true" || lower == "false" {
+                            lower
+                        } else {
+                            return std::ptr::null_mut();
+                        }
+                    }
+                    "Float" => {
+                        // Verify it's a valid float
+                        if default_value.parse::<f64>().is_ok() {
+                            default_value.clone()
+                        } else {
+                            return std::ptr::null_mut();
+                        }
+                    }
+                    _ => return std::ptr::null_mut(),
+                };
+
+                return std::ffi::CString::new(validated_value)
+                    .ok()
+                    .map(|s| s.into_raw())
+                    .unwrap_or(std::ptr::null_mut());
+            }
+        }
+    }
+
+    std::ptr::null_mut()
+}
+
+/// Check if a field has @default decorator
+pub extern "C" fn dooruntime_has_default_decorator(
+    decorators_json: *const std::os::raw::c_char,
+) -> bool {
+    if decorators_json.is_null() {
+        return false;
+    }
+
+    let decorators_str = unsafe {
+        match std::ffi::CStr::from_ptr(decorators_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+
+    let decorators: Vec<FieldDecorator> = match serde_json::from_str(decorators_str) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+
+    decorators.iter().any(|d| d.name == "default")
 }
 
 // ============================================================================
@@ -1492,3 +1594,294 @@ pub extern "C" fn json_validate_field_type(
 
     0 // Field not found or wrong type
 }
+
+// ============================================================================
+// JSON VALIDATION FOR HTTP REQUEST BODIES (RFC 7807 Enhanced)
+// ============================================================================
+
+/// Check for missing required fields in JSON body
+/// Returns JSON string with missing field errors, or null if all fields present
+/// Format: {"fields": {"field_name": {"error": "required", "message": "This field is required"}}}
+#[no_mangle]
+pub extern "C" fn dooruntime_check_missing_fields(
+    json: *const c_char,
+    required_fields_json: *const c_char, // JSON array of required field names
+) -> *mut c_char {
+    if json.is_null() || required_fields_json.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let json_str = match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let required_str = match CStr::from_ptr(required_fields_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        // Parse JSON body
+        let json_obj: serde_json::Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(_) => return std::ptr::null_mut(), // Malformed JSON - will be caught elsewhere
+        };
+
+        // Parse required fields
+        let required_fields: Vec<String> = match serde_json::from_str(required_str) {
+            Ok(v) => v,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let mut missing_fields = serde_json::Map::new();
+
+        // Check each required field
+        for field_name in required_fields {
+            if let Some(obj) = json_obj.as_object() {
+                if !obj.contains_key(&field_name) {
+                    let mut field_error = serde_json::Map::new();
+                    field_error.insert("error".to_string(), json!("required"));
+                    field_error.insert(
+                        "message".to_string(),
+                        json!("This field is required"),
+                    );
+                    missing_fields.insert(field_name, json!(field_error));
+                }
+            }
+        }
+
+        // If any fields missing, return error JSON
+        if !missing_fields.is_empty() {
+            let error_obj = json!({
+                "fields": missing_fields
+            });
+
+            CString::new(error_obj.to_string())
+                .map(|c| c.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        } else {
+            std::ptr::null_mut() // All fields present
+        }
+    }
+}
+
+/// Validate all field types in JSON body against expected types
+/// Returns JSON string with type mismatch errors, or null if all types correct
+/// field_types_json format: {"field_name": "Int", "email": "Str", ...}
+/// Returns: {"fields": {"field": {"expected": "Int", "received": "String", "value": "invalid"}}}
+#[no_mangle]
+pub extern "C" fn dooruntime_validate_field_types(
+    json: *const c_char,
+    field_types_json: *const c_char,
+) -> *mut c_char {
+    if json.is_null() || field_types_json.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let json_str = match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let types_str = match CStr::from_ptr(field_types_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        // Parse JSON body
+        let json_obj: serde_json::Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        // Parse expected types
+        let field_types: serde_json::Map<String, serde_json::Value> =
+            match serde_json::from_str(types_str) {
+                Ok(v) => v,
+                Err(_) => return std::ptr::null_mut(),
+            };
+
+        let mut type_errors = serde_json::Map::new();
+
+        // Check each field type
+        if let Some(obj) = json_obj.as_object() {
+            for (field_name, expected_type_val) in &field_types {
+                if let Some(expected_type) = expected_type_val.as_str() {
+                    if let Some(field_value) = obj.get(field_name) {
+                        let is_valid = match expected_type {
+                            "Int" => field_value.is_i64() || field_value.is_u64(),
+                            "Float" => {
+                                field_value.is_f64()
+                                    || field_value.is_i64()
+                                    || field_value.is_u64()
+                            }
+                            "Bool" => field_value.is_boolean(),
+                            "Str" => field_value.is_string(),
+                            _ => true, // Unknown type, skip validation
+                        };
+
+                        if !is_valid {
+                            let actual_type = if field_value.is_string() {
+                                "String"
+                            } else if field_value.is_i64() || field_value.is_u64() {
+                                "Int"
+                            } else if field_value.is_f64() {
+                                "Float"
+                            } else if field_value.is_boolean() {
+                                "Bool"
+                            } else if field_value.is_array() {
+                                "Array"
+                            } else if field_value.is_object() {
+                                "Object"
+                            } else {
+                                "Unknown"
+                            };
+
+                            let value_str = field_value.to_string();
+                            let mut field_error = serde_json::Map::new();
+                            field_error.insert("expected".to_string(), json!(expected_type));
+                            field_error.insert("received".to_string(), json!(actual_type));
+                            field_error.insert("value".to_string(), json!(value_str));
+                            type_errors.insert(field_name.clone(), json!(field_error));
+                        }
+                    }
+                }
+            }
+        }
+
+        // If any type errors, return error JSON
+        if !type_errors.is_empty() {
+            let error_obj = json!({
+                "fields": type_errors
+            });
+
+            CString::new(error_obj.to_string())
+                .map(|c| c.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        } else {
+            std::ptr::null_mut() // All types correct
+        }
+    }
+}
+
+/// Comprehensive validation: checks missing fields, type mismatches, and decorators
+/// Returns RFC 7807 formatted error JSON with all validation errors, or null if valid
+/// This combines missing field check, type validation, and decorator validation in one call
+#[no_mangle]
+pub extern "C" fn dooruntime_validate_json_body(
+    json: *const c_char,
+    struct_metadata_json: *const c_char, // Contains required_fields, field_types, and decorators
+) -> *mut c_char {
+    if json.is_null() || struct_metadata_json.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let json_str = match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let metadata_str = match CStr::from_ptr(struct_metadata_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        // Parse JSON body
+        let json_obj: serde_json::Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        // Parse metadata
+        let metadata: serde_json::Value = match serde_json::from_str(metadata_str) {
+            Ok(v) => v,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let mut all_errors = serde_json::Map::new();
+        let mut error_detail = String::from("Validation failed");
+
+        // 1. Check missing required fields
+        if let Some(required_fields) = metadata.get("required_fields").and_then(|v| v.as_array()) {
+            if let Some(obj) = json_obj.as_object() {
+                for field_val in required_fields {
+                    if let Some(field_name) = field_val.as_str() {
+                        if !obj.contains_key(field_name) {
+                            let mut field_error = serde_json::Map::new();
+                            field_error.insert("error".to_string(), json!("required"));
+                            field_error.insert(
+                                "message".to_string(),
+                                json!("This field is required"),
+                            );
+                            all_errors.insert(field_name.to_string(), json!(field_error));
+                            error_detail = "Required field missing in request body".to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check type mismatches
+        if let Some(field_types) = metadata.get("field_types").and_then(|v| v.as_object()) {
+            if let Some(obj) = json_obj.as_object() {
+                for (field_name, expected_type_val) in field_types {
+                    if let Some(expected_type) = expected_type_val.as_str() {
+                        if let Some(field_value) = obj.get(field_name) {
+                            let is_valid = match expected_type {
+                                "Int" => field_value.is_i64() || field_value.is_u64(),
+                                "Float" => {
+                                    field_value.is_f64()
+                                        || field_value.is_i64()
+                                        || field_value.is_u64()
+                                }
+                                "Bool" => field_value.is_boolean(),
+                                "Str" => field_value.is_string(),
+                                _ => true,
+                            };
+
+                            if !is_valid {
+                                let actual_type = if field_value.is_string() {
+                                    "String"
+                                } else if field_value.is_i64() || field_value.is_u64() {
+                                    "Int"
+                                } else if field_value.is_f64() {
+                                    "Float"
+                                } else if field_value.is_boolean() {
+                                    "Bool"
+                                } else {
+                                    "Unknown"
+                                };
+
+                                let mut field_error = serde_json::Map::new();
+                                field_error.insert("expected".to_string(), json!(expected_type));
+                                field_error.insert("received".to_string(), json!(actual_type));
+                                field_error
+                                    .insert("value".to_string(), json!(field_value.to_string()));
+                                all_errors.insert(field_name.clone(), json!(field_error));
+                                error_detail = "Type mismatch in request body".to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If any errors found, return RFC 7807 formatted error
+        if !all_errors.is_empty() {
+            let error_obj = json!({
+                "fields": all_errors,
+                "detail": error_detail
+            });
+
+            CString::new(error_obj.to_string())
+                .map(|c| c.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        } else {
+            std::ptr::null_mut() // All validation passed
+        }
+    }
+}
+

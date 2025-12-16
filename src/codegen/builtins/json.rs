@@ -15,6 +15,25 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
+    /// Helper method for parsing JSON with explicit pointer and target type
+    /// Used for automatic db.raw() result parsing
+    pub fn generate_json_parse_typed(
+        &mut self,
+        dest: &str,
+        json_str_ptr: inkwell::values::PointerValue<'ctx>,
+        target_type: &str,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        // Store the JSON string pointer temporarily
+        let temp_json_name = format!("{}_json_temp", dest);
+        self.temp_values
+            .insert(temp_json_name.clone(), json_str_ptr.into());
+        self.heap_strings.insert(temp_json_name.clone());
+
+        // Call the existing generate_json_parse with the temp name
+        let args = vec![temp_json_name, target_type.to_string()];
+        self.generate_json_parse(dest, &args)
+    }
+
     fn generate_json_parse(&mut self, dest: &str, args: &[String]) -> Option<BasicValueEnum<'ctx>> {
         if args.is_empty() {
             return None;
@@ -2158,8 +2177,15 @@ impl<'ctx> CodeGen<'ctx> {
                 "Bool" => "json_parse_array_bool",
                 "Str" => "json_parse_array_str",
                 _ => {
-                    // Fallback - return pointer as-is for unsupported types
-                    return Some(json_str_ptr.into());
+                    // Check if element type is a known struct
+                    if self.struct_metadata.contains_key(element_type) {
+                        // For struct arrays, return JSON string as-is
+                        // The HTTP handler will serialize it directly
+                        return Some(json_str_ptr.into());
+                    } else {
+                        // Fallback - return pointer as-is for unsupported types
+                        return Some(json_str_ptr.into());
+                    }
                 }
             };
 
