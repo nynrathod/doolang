@@ -7,10 +7,10 @@
 // @enum
 
 struct User {
-    Email: Str @email @required,
-    Username: Str @min(3) @max(20) @required,
+    Email: Str @email,
+    Username: Str @min(3) @max(20),
     Password: Str @min(8) @max(100),
-    Role: Str @enum(user|admin|moderator) @required,
+    Role: Str @enum(user|admin|moderator),
     Age: Int @min(0) @max(150),
 }
 

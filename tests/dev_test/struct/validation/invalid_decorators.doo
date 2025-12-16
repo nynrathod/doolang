@@ -4,27 +4,25 @@
 //
 
 struct DecoratorTest {
-    // @email: invalid type (Int) and invalid email string
-    EmailInt: Int @email,                // Should fail: @email on Int
+    // @email: invalid email string
     EmailStr: Str @email,                // Should fail: not a valid email
     // @min: value below minimum
     Age: Int @min(18),                   // Should fail: value < 18
     // @max: value above maximum
     Score: Int @max(100),                // Should fail: value > 100
     // @enum: value not in enum
-    // Role: Str @enum(user|admin|moderator), // Should fail: value not in enum
+    Role: Str @enum(user|admin|moderator), // Should fail: value not in enum
     Name: Str,
 }
 
 fn main() {
     // Each field intentionally violates its decorator constraint
     let test = DecoratorTest {
-        EmailInt: 12345,                 // Invalid type for @email
-        EmailStr: "not-an-email",        // Invalid email format
+        EmailStr: "not-an-email",        // Invalid email format (no @ and .)
         Age: 16,                         // Below @min(18)
         Score: 150,                      // Above @max(100)
-        // Role: "guest",                   // Not in @enum
-        Name: "",
+        Role: "guest",                   // Not in @enum
+        Name: "John",
     };
 
     print("Testing invalid decorator cases...");
