@@ -72,6 +72,9 @@ pub enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+
+    /// Upgrade doo to the latest version
+    Upgrade,
 }
 
 // Simple string constants for emojis since we removed console::Emoji
@@ -84,6 +87,9 @@ const PACKAGE: &str = "📦 ";
 const KEY: &str = "🔑 ";
 const CLOUD: &str = "☁️  ";
 const HAMMER: &str = "🔨 ";
+const ARROW_UP: &str = "⬆️  ";
+const INFO: &str = "ℹ️  ";
+
 
 /// Entrypoint for CLI logic.
 /// Returns exit code (0 for success, nonzero for error).
@@ -140,10 +146,20 @@ pub fn run_cli(cli: Cli) -> i32 {
             args,
         }) => {
             let temp_name = format!("temp_doo_{}", std::process::id());
+            
+            // Use target/release for temporary binary to find DLLs and keep root clean
+            let target_dir = Path::new("target").join("release");
+            if !target_dir.exists() {
+                let _ = std::fs::create_dir_all(&target_dir);
+            }
+            
+            // output_name should be the path without extension
+            let output_path_buf = target_dir.join(&temp_name);
+            let output_name = output_path_buf.to_string_lossy().to_string();
 
             let opts = CompileOptions {
                 input_path: path.clone(),
-                output_name: temp_name.clone(),
+                output_name: output_name.clone(),
                 dev_mode: false,
                 print_ast: false,
                 print_mir: false,
@@ -159,14 +175,21 @@ pub fn run_cli(cli: Cli) -> i32 {
                             "{} Compilation failed with {} errors",
                             ERROR, result.error_count
                         );
-                        let _ = std::fs::remove_file(&temp_name);
+                        // Try to cleanup if file was created
+                        let _ = std::fs::remove_file(&output_name); 
+                        if cfg!(windows) {
+                            let _ = std::fs::remove_file(format!("{}.exe", output_name));
+                        }
                         return 1;
                     }
-                    copy_dlls_if_needed();
+                    // No need to copy DLLs anymore!
                 }
                 Err(e) => {
                     eprintln!("{} Failed to compile: {}", ERROR, e);
-                    let _ = std::fs::remove_file(&temp_name);
+                    let _ = std::fs::remove_file(&output_name);
+                    if cfg!(windows) {
+                        let _ = std::fs::remove_file(format!("{}.exe", output_name));
+                    }
                     return 1;
                 }
             }
@@ -176,15 +199,17 @@ pub fn run_cli(cli: Cli) -> i32 {
             } else {
                 temp_name.clone()
             };
-            let exe_path = match std::env::current_dir() {
-                Ok(dir) => dir.join(&exe_name),
+            
+            // Full absolute path to executable
+            let exe_full_path = match std::env::current_dir() {
+                Ok(dir) => dir.join("target").join("release").join(&exe_name),
                 Err(_) => {
                     eprintln!("{} Error: Could not determine current directory", ERROR);
                     return 1;
                 }
             };
 
-            let status = Command::new(&exe_path)
+            let status = Command::new(&exe_full_path)
                 .args(&args)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
@@ -194,18 +219,19 @@ pub fn run_cli(cli: Cli) -> i32 {
             let code = match status {
                 Ok(s) => {
                     let code = s.code().unwrap_or(1);
-                    if !s.success() {
-                        let _ = std::fs::remove_file(&exe_path);
-                    }
+                    // Cleanup exe
+                    let _ = std::fs::remove_file(&exe_full_path);
                     code
                 }
                 Err(e) => {
                     eprintln!("{} Failed to start process: {}", ERROR, e);
-                    let _ = std::fs::remove_file(&exe_path);
+                    let _ = std::fs::remove_file(&exe_full_path);
                     1
                 }
             };
-            let _ = std::fs::remove_file(&exe_path);
+            
+            // Final attempt cleanup
+            let _ = std::fs::remove_file(&exe_full_path);
             code
         }
         Some(Commands::Check { path }) => {
@@ -236,34 +262,14 @@ pub fn run_cli(cli: Cli) -> i32 {
                 }
             }
         }
+        Some(Commands::Upgrade) => run_upgrade(),
     }
 }
 
-// Helper to copy DLLs on Windows
+// Helper to copy DLLs on Windows - REMOVED to avoid pollution
+// Instead, we rely on the binary being in target/release or PATH being set correctly
 fn copy_dlls_if_needed() {
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(current_dir) = std::env::current_dir() {
-            let target_release = current_dir.join("target").join("release");
-            if target_release.exists() {
-                let dll_names = [
-                    "doo.dll",
-                    "doo_http.dll",
-                    "doo_runtime.dll",
-                    "doo_auth.dll",
-                    "doo_db.dll",
-                    "doo_file.dll",
-                ];
-                for dll_name in &dll_names {
-                    let dll_src = target_release.join(dll_name);
-                    if dll_src.exists() {
-                        let dll_dest = current_dir.join(dll_name);
-                        let _ = std::fs::copy(&dll_src, &dll_dest);
-                    }
-                }
-            }
-        }
-    }
+    // No-op: User requested to stop copying DLLs to root
 }
 
 fn run_init(name_arg: Option<String>, template_arg: Option<String>) -> i32 {
@@ -539,3 +545,384 @@ fn run_deploy() -> i32 {
         }
     }
 }
+
+/// Upgrade doo to the latest version
+fn run_upgrade() -> i32 {
+    println!("\n{} Doo Upgrade", ARROW_UP);
+
+    // Get current version from Cargo.toml embedded version
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("{} Current version: v{}", INFO, current_version);
+
+    // Detect platform
+    let platform = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "mac"
+    } else {
+        "linux"
+    };
+
+    println!("{} Detected platform: {}", INFO, platform);
+
+    // Fetch latest version from GitHub API
+    println!("{} Checking for updates...", PACKAGE);
+
+    let latest_version = match fetch_latest_version() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{} Failed to check for updates: {}", ERROR, e);
+            return 1;
+        }
+    };
+
+    let latest_version_num = latest_version.trim_start_matches('v');
+    println!("{} Latest version: v{}", INFO, latest_version_num);
+
+    // Compare versions
+    if current_version == latest_version_num {
+        println!("\n{} You're already on the latest version!", CHECK);
+        return 0;
+    }
+
+    println!(
+        "\n{} Upgrading v{} → v{}",
+        ARROW_UP, current_version, latest_version_num
+    );
+
+    // Get the doo installation directory
+    let install_dir = match get_doo_install_dir() {
+        Some(dir) => dir,
+        None => {
+            eprintln!("{} Could not determine doo installation directory", ERROR);
+            eprintln!("   Please reinstall doo using the install script.");
+            return 1;
+        }
+    };
+
+    println!("{} Installation directory: {}", INFO, install_dir.display());
+
+    // Download and extract new version
+    if let Err(e) = download_and_upgrade(&install_dir, platform, &latest_version, latest_version_num) {
+        eprintln!("{} Upgrade failed: {}", ERROR, e);
+        return 1;
+    }
+
+    println!("\n{} Upgrade complete! You now have doo v{}", SPARKLE, latest_version_num);
+    println!("   Run 'doo --version' to verify.");
+
+    0
+}
+
+/// Fetch the latest version tag from GitHub API
+fn fetch_latest_version() -> Result<String, String> {
+    let api_url = "https://api.github.com/repos/nynrathod/doolang/releases/latest";
+
+    if cfg!(target_os = "windows") {
+        // Use PowerShell on Windows
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "(Invoke-RestMethod -Uri '{}' -Headers @{{'User-Agent'='doo-upgrade'}}).tag_name",
+                    api_url
+                ),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        // Use curl on Unix
+        let output = Command::new("curl")
+            .args(["-fsSL", "-H", "User-Agent: doo-upgrade", api_url])
+            .output()
+            .map_err(|e| format!("Failed to run curl: {}", e))?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        // Parse JSON to get tag_name
+        let json_str = String::from_utf8_lossy(&output.stdout);
+        
+        // Simple JSON parsing for tag_name
+        if let Some(start) = json_str.find("\"tag_name\":") {
+            let rest = &json_str[start + 11..];
+            if let Some(quote_start) = rest.find('"') {
+                let rest = &rest[quote_start + 1..];
+                if let Some(quote_end) = rest.find('"') {
+                    return Ok(rest[..quote_end].to_string());
+                }
+            }
+        }
+
+        Err("Failed to parse version from GitHub API response".to_string())
+    }
+}
+
+/// Get the directory where doo is installed
+fn get_doo_install_dir() -> Option<PathBuf> {
+    // Try to find where the current executable is
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            return Some(parent.to_path_buf());
+        }
+    }
+
+    // Fallback: check standard installation directory
+    let home = env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .ok()?;
+    
+    let default_dir = Path::new(&home).join(".doo").join("bin");
+    if default_dir.exists() {
+        return Some(default_dir);
+    }
+
+    None
+}
+
+/// Download and upgrade doo
+fn download_and_upgrade(
+    install_dir: &Path,
+    platform: &str,
+    version_tag: &str,
+    version_num: &str,
+) -> Result<(), String> {
+    let download_url = format!(
+        "https://github.com/nynrathod/doolang/releases/download/{}/doo-{}-{}.zip",
+        version_tag, platform, version_num
+    );
+
+    println!("{} Downloading from: {}", TRUCK, download_url);
+
+    // Create temp directory
+    let temp_dir = env::temp_dir().join(format!("doo-upgrade-{}", std::process::id()));
+    fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+
+    let zip_path = temp_dir.join("doo.zip");
+    let extract_dir = temp_dir.join("extracted");
+
+    // Download the zip file
+    if cfg!(target_os = "windows") {
+        let status = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{}' -OutFile '{}'",
+                    download_url,
+                    zip_path.display()
+                ),
+            ])
+            .status()
+            .map_err(|e| format!("Failed to download: {}", e))?;
+
+        if !status.success() {
+            return Err("Download failed".to_string());
+        }
+    } else {
+        let status = Command::new("curl")
+            .args(["-fsSL", &download_url, "-o", &zip_path.to_string_lossy()])
+            .status()
+            .map_err(|e| format!("Failed to download: {}", e))?;
+
+        if !status.success() {
+            return Err("Download failed".to_string());
+        }
+    }
+
+    println!("{} Extracting...", PACKAGE);
+
+    // Extract the zip file
+    fs::create_dir_all(&extract_dir)
+        .map_err(|e| format!("Failed to create extract directory: {}", e))?;
+
+    if cfg!(target_os = "windows") {
+        let status = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    zip_path.display(),
+                    extract_dir.display()
+                ),
+            ])
+            .status()
+            .map_err(|e| format!("Failed to extract: {}", e))?;
+
+        if !status.success() {
+            return Err("Extraction failed".to_string());
+        }
+    } else {
+        let status = Command::new("unzip")
+            .args(["-q", "-o", &zip_path.to_string_lossy(), "-d", &extract_dir.to_string_lossy()])
+            .status()
+            .map_err(|e| format!("Failed to extract: {}", e))?;
+
+        if !status.success() {
+            return Err("Extraction failed".to_string());
+        }
+    }
+
+    // Find the extracted content (handle nested folder structure)
+    let source_dir = find_doo_in_extracted(&extract_dir)?;
+
+    println!("{} Backing up and replacing files...", HAMMER);
+
+    // Create backup directory
+    let backup_dir = temp_dir.join("backup");
+    fs::create_dir_all(&backup_dir)
+        .map_err(|e| format!("Failed to create backup directory: {}", e))?;
+
+    // Known release files to update (only replace these, not user files)
+    let release_files = get_release_file_patterns();
+
+    // Backup and replace files
+    for entry in fs::read_dir(&source_dir)
+        .map_err(|e| format!("Failed to read source directory: {}", e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+        let dest_path = install_dir.join(&file_name);
+
+        // Only update release files, skip unknown files
+        if !is_release_file(&file_name_str, &release_files) && !entry.path().is_dir() {
+            continue;
+        }
+
+        // Backup existing file/dir if it exists
+        if dest_path.exists() {
+            let backup_path = backup_dir.join(&file_name);
+            if entry.path().is_dir() {
+                copy_dir_recursive(&dest_path, &backup_path)?;
+                fs::remove_dir_all(&dest_path).ok();
+            } else {
+                fs::copy(&dest_path, &backup_path).ok();
+                fs::remove_file(&dest_path).ok();
+            }
+        }
+
+        // Copy new file/dir
+        if entry.path().is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else {
+            fs::copy(&entry.path(), &dest_path)
+                .map_err(|e| format!("Failed to copy {}: {}", file_name_str, e))?;
+        }
+
+        println!("   {} Updated {}", CHECK, file_name_str);
+    }
+
+    // Make executable on Unix
+    if !cfg!(target_os = "windows") {
+        let doo_path = install_dir.join("doo");
+        let _ = Command::new("chmod").args(["+x", &doo_path.to_string_lossy()]).status();
+    }
+
+    // Cleanup temp directory
+    let _ = fs::remove_dir_all(&temp_dir);
+
+    Ok(())
+}
+
+/// Find the directory containing doo binary in extracted content
+fn find_doo_in_extracted(extract_dir: &Path) -> Result<PathBuf, String> {
+    let doo_exe = if cfg!(target_os = "windows") {
+        "doo.exe"
+    } else {
+        "doo"
+    };
+
+    // Check if doo is directly in extract_dir
+    if extract_dir.join(doo_exe).exists() {
+        return Ok(extract_dir.to_path_buf());
+    }
+
+    // Look in subdirectories
+    for entry in fs::read_dir(extract_dir)
+        .map_err(|e| format!("Failed to read extract directory: {}", e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        if entry.path().is_dir() {
+            let possible_path = entry.path().join(doo_exe);
+            if possible_path.exists() {
+                return Ok(entry.path());
+            }
+        }
+    }
+
+    // Fallback: return first subdirectory
+    for entry in fs::read_dir(extract_dir)
+        .map_err(|e| format!("Failed to read extract directory: {}", e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        if entry.path().is_dir() {
+            return Ok(entry.path());
+        }
+    }
+
+    Err("Could not find extracted files".to_string())
+}
+
+/// Get list of known release file patterns
+fn get_release_file_patterns() -> Vec<&'static str> {
+    vec![
+        "doo",
+        "doo.exe",
+        "doo.dll",
+        "doo.dll.exp",
+        "doo.dll.lib",
+        "doo_file.dll",
+        "doo_file.dll.exp",
+        "doo_file.dll.lib",
+        "libdoo.so",
+        "libdoo.dylib",
+        "libdoo_file.so",
+        "libdoo_file.dylib",
+        "std", // std library folder
+    ]
+}
+
+/// Check if a file matches release file patterns
+fn is_release_file(file_name: &str, patterns: &[&str]) -> bool {
+    for pattern in patterns {
+        if file_name == *pattern || file_name.starts_with("doo") || file_name.starts_with("libdoo") {
+            return true;
+        }
+    }
+    file_name == "std"
+}
+
+/// Recursively copy a directory
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst)
+        .map_err(|e| format!("Failed to create directory {}: {}", dst.display(), e))?;
+
+    for entry in fs::read_dir(src)
+        .map_err(|e| format!("Failed to read directory {}: {}", src.display(), e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)
+                .map_err(|e| format!("Failed to copy {}: {}", src_path.display(), e))?;
+        }
+    }
+
+    Ok(())
+}
+
