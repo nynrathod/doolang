@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::raw::c_char;
 use std::path::Path;
 
