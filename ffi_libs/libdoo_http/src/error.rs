@@ -3,6 +3,8 @@
 //! This module provides a centralized, dynamic error response builder
 //! that follows RFC 7807 specification for all HTTP error responses.
 
+#![allow(dead_code)]
+
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 

@@ -171,6 +171,7 @@ struct Route {
 struct HandlerMetadata {
     param_types: Vec<String>,
     struct_decorators: HashMap<String, HashMap<String, Vec<DecoratorInfo>>>,
+    #[allow(dead_code)]
     struct_fields: HashMap<String, Vec<Vec<String>>>,
     struct_layouts: serde_json::Value,
     return_type: String,
@@ -189,6 +190,7 @@ struct RouteRegistry {
     handler_metadata: HashMap<String, HandlerMetadata>, // handler_name -> metadata
     middleware: Vec<DooMiddlewareFn>,        // global middleware
     middleware_handlers: HashMap<String, DooMiddlewareFn>, // middleware_name -> function pointer
+    #[allow(dead_code)]
     groups: HashMap<String, Vec<DooMiddlewareFn>>, // prefix -> middleware for groups
     route_count: usize,
 }
@@ -1237,7 +1239,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let global_middleware = registry.middleware.clone();
 
     // Get handler metadata for validation (need to find handler name from registry)
-    let handler_metadata = registry
+    let _handler_metadata = registry
         .handlers
         .iter()
         .find(|(_, &h)| h as usize == handler as usize)
@@ -1446,10 +1448,10 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
         if parts.len() > 1 && !parts[0].is_empty() {
             string_to_c(parts[0])
         } else {
-            string_to_c("127.0.0.1")
+            string_to_c("0.0.0.0")
         }
     } else {
-        string_to_c("127.0.0.1")
+        string_to_c("0.0.0.0")
     };
 
     // Allocate Server struct: { Port: i32, Host: *const c_char }
@@ -1493,7 +1495,7 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         Err(e) => return make_err_http(500, &format!("Failed to create tokio runtime: {}", e)),
     };
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port as u16));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port as u16));
 
     // Print all registered routes and handler count
     let routes = get_routes();
@@ -1519,21 +1521,24 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         init_timestamp_updater();
 
         // Print banner AFTER bind so boot_time_ms is meaningful
+        // Cyan color ANSI escape code: \x1b[36m ... \x1b[0m
         println!();
-        println!("   ___    ___   ____ ");
-        println!("  / _ \\  / _ \\ / __ \\");
-        println!(" / // / / // // /_/ /");
-        println!("/____/  \\___/ \\____/        Doo v{}", VERSION);
+        println!("\x1b[36m  ____              ");
+        println!(" |  _ \\  ___   ___  ");
+        println!(" | | | |/ _ \\ / _ \\ ");
+        println!(" | |_| | (_) | (_) |");
+        println!(" |____/ \\___/ \\___/          Doo v{}\x1b[0m", VERSION);
         println!("--------------------------------------------------");
+        println!();
 
         println!("Info Server Online");
         println!("--------------------------------------------------");
         println!("• Boot Time:            {} ms", boot_time_ms);
-        println!("• Listening on:         http://127.0.0.1:{}", port);
+        println!("• Listening on:         http://0.0.0.0:{}", port);
         println!("• Handlers Loaded:      {}", total_routes);
         println!("• Process ID:           {}", std::process::id());
         println!("--------------------------------------------------");
-        println!("🚀 Server Started on http://127.0.0.1:{}\n", port);
+        println!("🚀 Server Started on http://0.0.0.0:{}\n", port);
 
         loop {
             let (stream, _) = match listener.accept().await {
@@ -2747,7 +2752,7 @@ pub extern "C" fn doohttp_error_rfc7807_bad_request_with_fields(
 /// - handler_name: Name of handler for debugging
 ///
 /// Returns: DooResponse* with either handler result or RFC 7807 validation error
-#[no_mangle]
+
 pub extern "C" fn doohttp_validate_and_call_handler(
     body_json: *const libc::c_char,
     request_path: *const libc::c_char,
@@ -3559,57 +3564,61 @@ pub extern "C" fn doohttp_populate_struct_from_request(
 
     // Validate field types for JSON body (source_type == 0)
     if source_type == 0 {
-        if let Some(struct_layout_obj) = struct_layouts.get(&struct_name).and_then(|v| v.as_object()) {
+        if let Some(struct_layout_obj) =
+            struct_layouts.get(&struct_name).and_then(|v| v.as_object())
+        {
             if let Some(fields_array) = struct_layout_obj.get("fields").and_then(|f| f.as_array()) {
-            let mut type_errors = std::collections::HashMap::new();
-            
-            for field_info in fields_array {
-                if let Some(field_obj) = field_info.as_object() {
-                    let field_name = field_obj.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let expected_type = field_obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    
-                    if let Some(field_value) = source_data.get(field_name) {
-                        let type_matches = match expected_type {
-                            "Int" => field_value.is_i64() || field_value.is_u64(),
-                            "Float" => field_value.is_f64(),
-                            "Bool" => field_value.is_boolean(),
-                            "Str" => field_value.is_string(),
-                            _ => true, // Unknown types pass
-                        };
-                        
-                        if !type_matches {
-                            let received_type = if field_value.is_string() {
-                                "String"
-                            } else if field_value.is_i64() || field_value.is_u64() {
-                                "Int"
-                            } else if field_value.is_f64() {
-                                "Float"
-                            } else if field_value.is_boolean() {
-                                "Bool"
-                            } else {
-                                "Unknown"
+                let mut type_errors = std::collections::HashMap::new();
+
+                for field_info in fields_array {
+                    if let Some(field_obj) = field_info.as_object() {
+                        let field_name =
+                            field_obj.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        let expected_type =
+                            field_obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                        if let Some(field_value) = source_data.get(field_name) {
+                            let type_matches = match expected_type {
+                                "Int" => field_value.is_i64() || field_value.is_u64(),
+                                "Float" => field_value.is_f64(),
+                                "Bool" => field_value.is_boolean(),
+                                "Str" => field_value.is_string(),
+                                _ => true, // Unknown types pass
                             };
-                            
-                            let field_err = FieldError::new(field_name.to_string())
-                                .with_rule("type_mismatch".to_string())
-                                .with_expected(expected_type.to_string())
-                                .with_received(received_type.to_string())
-                                .with_value(field_value.to_string())
-                                .with_error(format!(
-                                    "Expected type {}, received {}",
-                                    expected_type, received_type
-                                ));
-                            type_errors.insert(field_name.to_string(), field_err);
+
+                            if !type_matches {
+                                let received_type = if field_value.is_string() {
+                                    "String"
+                                } else if field_value.is_i64() || field_value.is_u64() {
+                                    "Int"
+                                } else if field_value.is_f64() {
+                                    "Float"
+                                } else if field_value.is_boolean() {
+                                    "Bool"
+                                } else {
+                                    "Unknown"
+                                };
+
+                                let field_err = FieldError::new(field_name.to_string())
+                                    .with_rule("type_mismatch".to_string())
+                                    .with_expected(expected_type.to_string())
+                                    .with_received(received_type.to_string())
+                                    .with_value(field_value.to_string())
+                                    .with_error(format!(
+                                        "Expected type {}, received {}",
+                                        expected_type, received_type
+                                    ));
+                                type_errors.insert(field_name.to_string(), field_err);
+                            }
                         }
                     }
                 }
-            }
-            
-            if !type_errors.is_empty() {
-                let err = type_mismatch_error(path_str.clone(), type_errors);
-                set_last_error(err.status_code() as i32, err.to_json_string());
-                return 400;
-            }
+
+                if !type_errors.is_empty() {
+                    let err = type_mismatch_error(path_str.clone(), type_errors);
+                    set_last_error(err.status_code() as i32, err.to_json_string());
+                    return 400;
+                }
             }
         }
     }
@@ -3839,7 +3848,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                                     },
                                                 );
                                                 set_last_error(400, error.to_json_string());
-                                                unsafe { dooruntime_free_string(error_ptr) };
+                                                dooruntime_free_string(error_ptr);
                                                 return 400;
                                             }
                                         }
@@ -4047,7 +4056,7 @@ extern "C" {
     ) -> *mut std::ffi::c_void;
     fn doo_db_is_error(result: *mut std::ffi::c_void) -> i32;
     fn doo_db_get_error_message(result: *mut std::ffi::c_void) -> *mut c_char;
-    fn doo_db_free_result(result: *mut std::ffi::c_void);
+    fn doo_db_result_free(result: *mut std::ffi::c_void);
     fn doo_db_free_string(ptr: *mut c_char);
 
     fn doo_auth_hash_password(password: *const c_char) -> *mut std::ffi::c_void;
@@ -4071,7 +4080,7 @@ extern "C" {
         field_type: *const c_char,
         value: *const c_char,
         decorators_json: *const c_char,
-    ) -> i32;
+    ) -> *const c_char;
     fn dooruntime_get_last_validation_error() -> *mut c_char;
     fn dooruntime_clear_validation_error();
     fn dooruntime_free_string(ptr: *mut c_char);
@@ -4111,7 +4120,7 @@ fn convert_db_error_to_rfc7807(db_error_json: &str, instance: String) -> (i32, S
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("Database error");
-            let pg_code = error_obj.get("pg_code").and_then(|c| c.as_str());
+            let _pg_code = error_obj.get("pg_code").and_then(|c| c.as_str());
 
             // Handle UNIQUE_VIOLATION with RFC 7807 validation error format
             if code == "UNIQUE_VIOLATION" {
@@ -4173,22 +4182,33 @@ fn convert_db_error_to_rfc7807(db_error_json: &str, instance: String) -> (i32, S
 /// Auth signup handler - uses libdoo_db and libdoo_auth
 extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
     unsafe {
+        println!("[DEBUG] auth_signup_handler called");
+
         if request.is_null() {
+            println!("[ERROR] Null request");
             return create_error_result(500, "Internal error: null request");
         }
 
         let req = &*request;
         if req.path.is_null() || req.body.is_null() {
+            println!("[ERROR] Invalid request pointers");
             return create_error_result(500, "Internal error: invalid request");
         }
 
         let path = c_to_string(req.path);
         let body = c_to_string(req.body);
 
+        println!("[DEBUG] Path: {}", path);
+        println!("[DEBUG] Body: {}", body);
+
         // Parse JSON body
         let mut json: serde_json::Value = match serde_json::from_str(&body) {
-            Ok(j) => j,
-            Err(_) => {
+            Ok(j) => {
+                println!("[DEBUG] JSON parsed successfully");
+                j
+            }
+            Err(e) => {
+                println!("[ERROR] JSON parse failed: {}", e);
                 let err = error::invalid_json_error(path.clone());
                 return create_json_result(400, &err.to_json_string());
             }
@@ -4206,6 +4226,13 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
 
         // Get metadata for this path
         let metadata_map = get_auth_metadata().lock().unwrap();
+        println!(
+            "[DEBUG] Auth metadata paths available: {:?}",
+            metadata_map
+                .values()
+                .map(|m| &m.signup_path)
+                .collect::<Vec<_>>()
+        );
         let auth_meta = metadata_map
             .values()
             .find(|m| m.signup_path == path)
@@ -4213,8 +4240,12 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
         drop(metadata_map);
 
         let auth_meta = match auth_meta {
-            Some(m) => m,
+            Some(m) => {
+                println!("[DEBUG] Found auth metadata for table: {}", m.table_name);
+                m
+            }
             None => {
+                println!("[ERROR] No auth metadata found for path: {}", path);
                 return create_error_result(500, "No auth metadata found for this path");
             }
         };
@@ -4307,7 +4338,8 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                     let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
                     let has_auto_or_default = if let Some(decs) = decorators {
                         decs.iter().any(|d| {
-                            let dec_name = d.as_object()
+                            let dec_name = d
+                                .as_object()
                                 .and_then(|o| o.get("name"))
                                 .and_then(|n| n.as_str());
                             dec_name == Some("auto") || dec_name == Some("default")
@@ -4315,7 +4347,7 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                     } else {
                         false
                     };
-                    
+
                     // If field is required (no @auto, no @default) and missing from request
                     if !has_auto_or_default && !obj.contains_key(&field_name.to_lowercase()) {
                         missing_fields.push(field_name.to_string());
@@ -4323,7 +4355,7 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                 }
             }
         }
-        
+
         if !missing_fields.is_empty() {
             use error::*;
             let mut field_errors = std::collections::HashMap::new();
@@ -4336,7 +4368,7 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
             let err = validation_error(
                 "Missing required fields".to_string(),
                 path.clone(),
-                field_errors
+                field_errors,
             );
             return create_json_result(400, &err.to_json_string());
         }
@@ -4359,8 +4391,12 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
         });
 
         let password_field_name = match password_field {
-            Some(name) => name,
+            Some(name) => {
+                println!("[DEBUG] Password field: {}", name);
+                name
+            }
             None => {
+                println!("[ERROR] No password field with @hash decorator found");
                 return create_error_result(500, "No password field with @hash decorator found");
             }
         };
@@ -4387,22 +4423,26 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
         let hash_result = doo_auth_hash_password(password_c.as_ptr());
 
         if hash_result.is_null() {
+            println!("[ERROR] Hash result is null");
             return create_error_result(500, "Failed to hash password");
         }
 
         let hash_res = &*(hash_result as *mut DooResult);
         if hash_res.tag != 0 {
+            println!("[ERROR] Hash result tag is non-zero: {}", hash_res.tag);
             doo_auth_free_result(hash_result);
             return create_error_result(500, "Failed to hash password");
         }
 
         let hashed_password = if hash_res.value.is_null() {
+            println!("[ERROR] Hash value is null");
             doo_auth_free_result(hash_result);
             return create_error_result(500, "Failed to get hashed password");
         } else {
             let hash_ptr = hash_res.value as *mut c_char;
             let hash_str = CStr::from_ptr(hash_ptr).to_string_lossy().into_owned();
             doo_auth_free_result(hash_result);
+            println!("[DEBUG] Password hashed successfully");
             hash_str
         };
 
@@ -4469,10 +4509,41 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                                 None
                             }
                         }) {
-                            // Apply default value
+                            // Apply default value - convert to proper JSON type based on field type
                             field_names.push(field_name.to_lowercase());
                             placeholders.push(format!("${}", param_idx));
-                            values_json.push(serde_json::Value::String(default_value.to_string()));
+
+                            // Get field type
+                            let field_type_str = field_obj
+                                .get("type")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("Str");
+
+                            // Convert default value to proper type
+                            let typed_value = match field_type_str {
+                                "Int" => {
+                                    if let Ok(int_val) = default_value.parse::<i64>() {
+                                        serde_json::Value::Number(int_val.into())
+                                    } else {
+                                        serde_json::Value::String(default_value.to_string())
+                                    }
+                                }
+                                "Float" => {
+                                    if let Ok(float_val) = default_value.parse::<f64>() {
+                                        serde_json::json!(float_val)
+                                    } else {
+                                        serde_json::Value::String(default_value.to_string())
+                                    }
+                                }
+                                "Bool" => match default_value.to_lowercase().as_str() {
+                                    "true" => serde_json::Value::Bool(true),
+                                    "false" => serde_json::Value::Bool(false),
+                                    _ => serde_json::Value::String(default_value.to_string()),
+                                },
+                                _ => serde_json::Value::String(default_value.to_string()),
+                            };
+
+                            values_json.push(typed_value);
                             param_idx += 1;
                         }
                     }
@@ -4487,22 +4558,28 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
             placeholders.join(", ")
         );
 
+        println!("[DEBUG] SQL: {}", sql);
+        println!("[DEBUG] Values: {:?}", values_json);
+
         let sql_c = CString::new(sql.clone()).unwrap();
         let values_json_str = serde_json::to_string(&values_json).unwrap();
         let values_c = CString::new(values_json_str.clone()).unwrap();
 
         // Insert into database
+        println!("[DEBUG] Calling doo_db_insert_json...");
         let insert_result = doo_db_insert_json(sql_c.as_ptr(), values_c.as_ptr());
 
         if insert_result.is_null() {
+            println!("[ERROR] Insert result is null");
             return create_error_result(500, "Database insert failed");
         }
 
-        let insert_res = &*insert_result;
+        let _insert_res = &*insert_result;
         let insert_res = &*(insert_result as *mut DooResult);
         let is_error = doo_db_is_error(insert_result);
 
         if is_error != 0 {
+            println!("[ERROR] Database insert failed, is_error: {}", is_error);
             let err_msg_ptr = doo_db_get_error_message(insert_result);
             let err_msg = if err_msg_ptr.is_null() {
                 "Database insert failed".to_string()
@@ -4511,20 +4588,25 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                 doo_db_free_string(err_msg_ptr);
                 msg
             };
-            doo_db_free_result(insert_result);
+            println!("[ERROR] DB Error message: {}", err_msg);
+            doo_db_result_free(insert_result);
 
             // Convert DB error to RFC 7807 format
             let (status, rfc_error) = convert_db_error_to_rfc7807(&err_msg, path.clone());
             return create_json_result(status, &rfc_error);
         }
 
+        println!("[DEBUG] Insert successful");
+
         // Extract inserted ID
         let user_id = if insert_res.value.is_null() {
+            println!("[WARN] Insert value is null, using default ID 1");
             1i64
         } else {
             insert_res.value as i64
         };
-        doo_db_free_result(insert_result);
+        println!("[DEBUG] User ID: {}", user_id);
+        doo_db_result_free(insert_result);
 
         // Generate JWT token
         let user_id_str = user_id.to_string();
@@ -4633,7 +4715,7 @@ unsafe fn validate_field_with_runtime(
         decorators_c.as_ptr(),
     );
 
-    if result != 0 {
+    if !result.is_null() {
         // Validation failed - get error from runtime
         let error_ptr = dooruntime_get_last_validation_error();
         if !error_ptr.is_null() {
@@ -4697,7 +4779,7 @@ extern "C" fn auth_login_handler(request: *mut DooRequest) -> *mut DooResult {
         let body = c_to_string(req.body);
 
         // Parse JSON body
-        let mut json: serde_json::Value = match serde_json::from_str(&body) {
+        let json: serde_json::Value = match serde_json::from_str(&body) {
             Ok(j) => j,
             Err(_) => {
                 let err = error::invalid_json_error(path.clone());
@@ -4843,17 +4925,17 @@ extern "C" fn auth_login_handler(request: *mut DooRequest) -> *mut DooResult {
         let is_error = doo_db_is_error(query_result);
 
         if is_error != 0 {
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             return create_error_result(401, "Invalid credentials");
         }
 
         let user_json_str = if query_res.value.is_null() {
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             return create_error_result(401, "Invalid credentials");
         } else {
             let json_ptr = query_res.value as *mut c_char;
             let json_str = CStr::from_ptr(json_ptr).to_string_lossy().into_owned();
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             json_str
         };
 
@@ -5009,7 +5091,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
         };
 
         // Get struct name from metadata for error messages
-        let struct_name = crud_meta
+        let _struct_name = crud_meta
             .metadata
             .get("name")
             .and_then(|n| n.as_str())
@@ -5038,21 +5120,30 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                                 "Str" => field_value.is_string(),
                                 _ => true,
                             };
-                            
+
                             if !type_matches {
                                 use error::*;
-                                let received_type = if field_value.is_string() { "String" }
-                                    else if field_value.is_i64() || field_value.is_u64() { "Int" }
-                                    else if field_value.is_f64() { "Float" }
-                                    else if field_value.is_boolean() { "Bool" }
-                                    else { "Unknown" };
-                                
+                                let received_type = if field_value.is_string() {
+                                    "String"
+                                } else if field_value.is_i64() || field_value.is_u64() {
+                                    "Int"
+                                } else if field_value.is_f64() {
+                                    "Float"
+                                } else if field_value.is_boolean() {
+                                    "Bool"
+                                } else {
+                                    "Unknown"
+                                };
+
                                 let field_err = FieldError::new(field_name.to_string())
                                     .with_rule("type_mismatch".to_string())
                                     .with_expected(expected_type.to_string())
                                     .with_received(received_type.to_string())
                                     .with_value(field_value.to_string())
-                                    .with_error(format!("Expected type {}, received {}", expected_type, received_type));
+                                    .with_error(format!(
+                                        "Expected type {}, received {}",
+                                        expected_type, received_type
+                                    ));
                                 type_errors.insert(field_name.to_string(), field_err);
                             }
                         }
@@ -5060,7 +5151,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 }
             }
         }
-        
+
         if !type_errors.is_empty() {
             use error::*;
             let err = type_mismatch_error(path.clone(), type_errors);
@@ -5076,7 +5167,8 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                     let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
                     let has_auto_or_default = if let Some(decs) = decorators {
                         decs.iter().any(|d| {
-                            let dec_name = d.as_object()
+                            let dec_name = d
+                                .as_object()
                                 .and_then(|o| o.get("name"))
                                 .and_then(|n| n.as_str());
                             dec_name == Some("auto") || dec_name == Some("default")
@@ -5084,7 +5176,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                     } else {
                         false
                     };
-                    
+
                     // If field is required (no @auto, no @default) and missing from request
                     if !has_auto_or_default && !obj.contains_key(&field_name.to_lowercase()) {
                         missing_fields.push(field_name.to_string());
@@ -5092,7 +5184,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 }
             }
         }
-        
+
         if !missing_fields.is_empty() {
             use error::*;
             let mut field_errors = std::collections::HashMap::new();
@@ -5105,7 +5197,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
             let err = validation_error(
                 "Missing required fields".to_string(),
                 path.clone(),
-                field_errors
+                field_errors,
             );
             return create_json_result(400, &err.to_json_string());
         }
@@ -5208,7 +5300,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 doo_db_free_string(err_msg_ptr);
                 msg
             };
-            doo_db_free_result(insert_result);
+            doo_db_result_free(insert_result);
 
             // Convert DB error to RFC 7807 format
             let (status, rfc_error) = convert_db_error_to_rfc7807(&err_msg, path.clone());
@@ -5220,7 +5312,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
         } else {
             insert_res.value as i64
         };
-        doo_db_free_result(insert_result);
+        doo_db_result_free(insert_result);
 
         // Build response with created resource
         let mut resource_obj = obj.clone();
@@ -5279,22 +5371,22 @@ extern "C" fn crud_list_handler(request: *mut DooRequest) -> *mut DooResult {
                 doo_db_free_string(err_msg_ptr);
                 msg
             };
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             return create_error_result(500, &err_msg);
         }
 
         let data_json_str = if query_res.value.is_null() {
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             "[]".to_string()
         } else {
             let json_ptr = query_res.value as *mut c_char;
             let json_str = CStr::from_ptr(json_ptr).to_string_lossy().into_owned();
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             json_str
         };
 
         // Parse data array
-        let data_array: Vec<serde_json::Value> =
+        let _data_array: Vec<serde_json::Value> =
             serde_json::from_str(&data_json_str).unwrap_or_default();
 
         // Return array directly
@@ -5343,7 +5435,7 @@ extern "C" fn crud_get_handler(request: *mut DooRequest) -> *mut DooResult {
         };
 
         // Get struct name from metadata for error messages
-        let struct_name = crud_meta
+        let _struct_name = crud_meta
             .metadata
             .get("name")
             .and_then(|n| n.as_str())
@@ -5372,17 +5464,17 @@ extern "C" fn crud_get_handler(request: *mut DooRequest) -> *mut DooResult {
 
         let query_res = &*(query_result as *mut DooResult);
         if doo_db_is_error(query_result) != 0 {
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             return create_error_result(404, "Resource not found");
         }
 
         let data_json_str = if query_res.value.is_null() {
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             return create_error_result(404, "Resource not found");
         } else {
             let json_ptr = query_res.value as *mut c_char;
             let json_str = CStr::from_ptr(json_ptr).to_string_lossy().into_owned();
-            doo_db_free_result(query_result);
+            doo_db_result_free(query_result);
             json_str
         };
 
@@ -5462,7 +5554,7 @@ extern "C" fn crud_delete_handler(request: *mut DooRequest) -> *mut DooResult {
                 doo_db_free_string(err_msg_ptr);
                 msg
             };
-            doo_db_free_result(delete_result);
+            doo_db_result_free(delete_result);
             return create_error_result(500, &err_msg);
         }
 
@@ -5471,7 +5563,7 @@ extern "C" fn crud_delete_handler(request: *mut DooRequest) -> *mut DooResult {
         } else {
             delete_res.value as i64
         };
-        doo_db_free_result(delete_result);
+        doo_db_result_free(delete_result);
 
         if rows_affected == 0 {
             return create_error_result(404, "Resource not found");
@@ -5559,7 +5651,7 @@ extern "C" fn crud_update_handler(request: *mut DooRequest) -> *mut DooResult {
         };
 
         // Get struct name from metadata for error messages
-        let struct_name = crud_meta
+        let _struct_name = crud_meta
             .metadata
             .get("name")
             .and_then(|n| n.as_str())
@@ -5658,7 +5750,7 @@ extern "C" fn crud_update_handler(request: *mut DooRequest) -> *mut DooResult {
                 doo_db_free_string(err_msg_ptr);
                 msg
             };
-            doo_db_free_result(update_result);
+            doo_db_result_free(update_result);
 
             // Convert DB error to RFC 7807 format
             let (status, rfc_error) = convert_db_error_to_rfc7807(&err_msg, path.clone());
@@ -5670,7 +5762,7 @@ extern "C" fn crud_update_handler(request: *mut DooRequest) -> *mut DooResult {
         } else {
             update_res.value as i64
         };
-        doo_db_free_result(update_result);
+        doo_db_result_free(update_result);
 
         // Build response with updated resource
         let mut resource_obj = obj.clone();
@@ -5693,11 +5785,42 @@ fn create_json_result(status: i32, body: &str) -> *mut DooResult {
     }))
 }
 
-// Helper to create error response
+// Helper to create error response with RFC 7807 compliant format
 fn create_error_result(status: i32, message: &str) -> *mut DooResult {
+    let title = match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Error",
+    };
+    let error_type = match status {
+        400 => "bad_request",
+        401 => "unauthorized",
+        403 => "forbidden",
+        404 => "not_found",
+        405 => "method_not_allowed",
+        409 => "conflict",
+        422 => "validation_error",
+        429 => "rate_limit_exceeded",
+        500 => "internal_error",
+        501 => "not_implemented",
+        502 => "bad_gateway",
+        503 => "service_unavailable",
+        _ => "error",
+    };
+    let instance = get_current_request_path();
     let error_json = format!(
-        r#"{{"type":"https://httpstatuses.com/{}","status":{},"detail":"{}"}}"#,
-        status, status, message
+        r#"{{"type":"{}","title":"{}","status":{},"detail":"{}","instance":"{}"}}"#,
+        error_type, title, status, message, instance
     );
     create_json_result(status, &error_json)
 }
@@ -5969,9 +6092,9 @@ pub extern "C" fn doo_http_auth_impl(
                     println!("[WARN] Table creation warning: {}", err_msg);
                     unsafe { doo_db_free_string(err_msg_ptr) };
                 }
-                unsafe { doo_db_free_result(create_result) };
+                unsafe { doo_db_result_free(create_result) };
             } else {
-                unsafe { doo_db_free_result(create_result) };
+                unsafe { doo_db_result_free(create_result) };
             }
         }
     }
@@ -5991,10 +6114,9 @@ pub extern "C" fn doo_http_auth_impl(
     let mut registry = routes.lock().unwrap();
 
     // CRITICAL: Register JWT middleware so CRUD routes can use it
-    registry.middleware_handlers.insert(
-        "jwt".to_string(),
-        jwt_middleware_handler
-    );
+    registry
+        .middleware_handlers
+        .insert("jwt".to_string(), jwt_middleware_handler);
 
     registry.register("POST", &signup_path_str, auth_signup_handler);
     registry.register("POST", &login_path_str, auth_login_handler);
@@ -6045,9 +6167,9 @@ pub extern "C" fn doo_http_crud_impl(
                 println!("[WARN] Table creation warning: {}", err_msg);
                 unsafe { doo_db_free_string(err_msg_ptr) };
             }
-            unsafe { doo_db_free_result(create_result) };
+            unsafe { doo_db_result_free(create_result) };
         } else {
-            unsafe { doo_db_free_result(create_result) };
+            unsafe { doo_db_result_free(create_result) };
         }
     }
 
@@ -6067,7 +6189,10 @@ pub extern "C" fn doo_http_crud_impl(
     let id_path = format!("{}/{{id}}", base_path_str);
 
     // Check for noAuth flag in metadata
-    let no_auth = metadata.get("noAuth").and_then(|v| v.as_bool()).unwrap_or(false);
+    let no_auth = metadata
+        .get("noAuth")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Register more specific routes (with :id) BEFORE general routes
     // matchit requires more specific patterns to be registered first
@@ -6085,7 +6210,12 @@ pub extern "C" fn doo_http_crud_impl(
         registry.register_with_middleware("GET", &id_path, crud_get_handler, jwt_mw.clone());
         registry.register_with_middleware("PUT", &id_path, crud_update_handler, jwt_mw.clone());
         registry.register_with_middleware("DELETE", &id_path, crud_delete_handler, jwt_mw.clone());
-        registry.register_with_middleware("POST", &base_path_str, crud_create_handler, jwt_mw.clone());
+        registry.register_with_middleware(
+            "POST",
+            &base_path_str,
+            crud_create_handler,
+            jwt_mw.clone(),
+        );
         registry.register_with_middleware("GET", &base_path_str, crud_list_handler, jwt_mw.clone());
         println!("✓ CRUD routes registered (JWT auth required):");
     }

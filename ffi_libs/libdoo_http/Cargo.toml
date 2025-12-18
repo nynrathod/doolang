@@ -20,3 +20,5 @@ urlencoding = "2.1"
 regex = "1.10"
 chrono = "0.4.42"
 libdoo_runtime = { path = "../libdoo_runtime" }
+libdoo_db = { path = "../libdoo_db" }
+libdoo_auth = { path = "../libdoo_auth" }

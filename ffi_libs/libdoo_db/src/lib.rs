@@ -3,9 +3,11 @@ use serde_json::json;
 use std::env;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Once;
 use tokio::runtime::Runtime;
+use tokio::sync::Notify;
 use tokio_postgres::{Client, NoTls};
 
 static INIT: Once = Once::new();
@@ -19,13 +21,16 @@ fn load_env() {
 
 // Link to centralized runtime functions
 extern "C" {
+    #[allow(dead_code)]
     fn dooruntime_db_error(code: *const c_char, message: *const c_char) -> *mut c_char;
+    #[allow(dead_code)]
     fn dooruntime_db_error_rfc7807(
         code: *const c_char,
         message: *const c_char,
         instance: *const c_char,
         field: *const c_char,
     ) -> *mut c_char;
+    #[allow(dead_code)]
     fn dooruntime_free_string(ptr: *mut c_char);
 }
 
@@ -50,6 +55,8 @@ pub struct DooDatabase {
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 static CLIENT: OnceCell<Arc<Client>> = OnceCell::new();
 static GLOBAL_DB: OnceCell<Arc<Client>> = OnceCell::new();
+static SHUTDOWN_SIGNAL: OnceCell<Arc<Notify>> = OnceCell::new();
+static IS_CONNECTED: AtomicBool = AtomicBool::new(false);
 
 fn runtime() -> Result<&'static Runtime, String> {
     RUNTIME.get_or_try_init(|| Runtime::new().map_err(|e| format!("Failed to create runtime: {e}")))
@@ -185,10 +192,25 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
         Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
     };
 
-    // Spawn the connection task on the runtime
+    // Initialize shutdown signal
+    let shutdown = Arc::new(Notify::new());
+    SHUTDOWN_SIGNAL.set(shutdown.clone()).ok();
+    IS_CONNECTED.store(true, Ordering::SeqCst);
+
+    // Spawn the connection task with shutdown handling
     rt.spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("Connection error: {}", e);
+        tokio::select! {
+            result = connection => {
+                if let Err(e) = result {
+                    // Only print error if not a normal shutdown
+                    if IS_CONNECTED.load(Ordering::SeqCst) {
+                        eprintln!("Connection error: {}", e);
+                    }
+                }
+            }
+            _ = shutdown.notified() => {
+                // Shutdown requested, exit cleanly
+            }
         }
     });
 
@@ -200,6 +222,23 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
     GLOBAL_DB.set(client_arc.clone()).ok();
 
     make_ok_database("postgres".to_string(), true)
+}
+
+/// Shutdown the database connection cleanly
+/// This should be called before program exit to avoid segfaults
+#[no_mangle]
+pub extern "C" fn doo_db_shutdown() {
+    // Mark as disconnected first to suppress any error messages
+    IS_CONNECTED.store(false, Ordering::SeqCst);
+    
+    // Signal the connection task to shutdown
+    // The notify will wake up the spawned task which will then exit
+    if let Some(shutdown) = SHUTDOWN_SIGNAL.get() {
+        shutdown.notify_one();
+    }
+    
+    // Don't block here - the exit(0) call in generated code will handle termination
+    // Blocking on the runtime can cause hangs if the connection task doesn't respond quickly
 }
 
 #[no_mangle]
@@ -872,12 +911,14 @@ pub extern "C" fn doo_db_free_string(ptr: *mut c_char) {
 }
 
 #[no_mangle]
-pub extern "C" fn doo_db_free_result(ptr: *mut DooResult) {
+pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
     if ptr.is_null() {
         return;
     }
     unsafe {
         let res = Box::from_raw(ptr);
+        // Only free error values - Ok values might be integers cast to pointers
+        // or strings that will be freed separately
         if res.tag != 0 && !res.value.is_null() {
             let _ = Box::from_raw(res.value as *mut DooDbError);
         }
@@ -1375,7 +1416,7 @@ fn make_err_not_null_violation(field: &str) -> *mut DooResult {
 #[no_mangle]
 pub extern "C" fn doo_db_get_global() -> *mut DooResult {
     match GLOBAL_DB.get() {
-        Some(db_mutex) => {
+        Some(_db_mutex) => {
             // Database was initialized, return success
             make_ok_database("postgres".to_string(), true)
         }
@@ -1396,4 +1437,14 @@ pub extern "C" fn doo_db_query_array(_db: *const c_char, sql: *const c_char) -> 
     // For SELECT queries, doo_db_raw already returns JSON arrays
     // Just delegate to it
     doo_db_raw(_db, sql)
+}
+
+/// Force a clean program exit
+/// This is needed because the Tokio runtime stored in a static OnceCell
+/// doesn't shut down cleanly, causing the program to hang or crash on exit.
+/// Calling this function will immediately exit with code 0.
+#[no_mangle]
+pub extern "C" fn doo_db_cleanup_and_exit() {
+    eprintln!("[DEBUG FFI] doo_db_cleanup_and_exit called");
+    std::process::exit(0);
 }
