@@ -1819,12 +1819,46 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
-        // Perform cleanup before returning from main
+        // DEBUG: Print before cleanup
+        let debug_msg1 = self
+            .builder
+            .build_global_string_ptr("[DEBUG] Before cleanup\n", "debug_cleanup")
+            .unwrap();
+        let printf_fn = self.get_or_declare_printf();
+        self.builder
+            .build_call(printf_fn, &[debug_msg1.as_pointer_value().into()], "debug1")
+            .unwrap();
+
+        // Perform cleanup before exiting
         self.generate_function_exit_cleanup();
 
+        // DEBUG: Print after cleanup, before exit
+        let debug_msg2 = self
+            .builder
+            .build_global_string_ptr("[DEBUG] After cleanup, calling exit(0)\n", "debug_exit")
+            .unwrap();
+        self.builder
+            .build_call(printf_fn, &[debug_msg2.as_pointer_value().into()], "debug2")
+            .unwrap();
+
+        // Call exit(0) to force a clean exit
+        // This bypasses the Tokio runtime shutdown issue where the runtime
+        // stored in a static OnceCell doesn't shut down cleanly
+        let exit_fn = self.module.get_function("exit").unwrap_or_else(|| {
+            let fn_type = self
+                .context
+                .void_type()
+                .fn_type(&[self.context.i32_type().into()], false);
+            self.module.add_function("exit", fn_type, None)
+        });
+
         let zero = self.context.i32_type().const_int(0, false);
-        // Generates the `ret i32 0` instruction.
-        self.builder.build_return(Some(&zero)).unwrap();
+        self.builder
+            .build_call(exit_fn, &[zero.into()], "exit_call")
+            .unwrap();
+
+        // Add unreachable since exit() never returns
+        self.builder.build_unreachable().unwrap();
     }
 
     /// Generates the LLVM structure and code for a single MIR function.
@@ -3244,6 +3278,19 @@ impl<'ctx> CodeGen<'ctx> {
     /// Generate cleanup for all RC variables at function exit
     /// This ensures variables in conditional blocks are properly cleaned up
     fn generate_function_exit_cleanup(&mut self) {
+        // Call doo_db_shutdown() to cleanly terminate any database connections
+        // This signals the Tokio runtime's spawned connection task to exit, preventing segfaults
+        let db_shutdown_fn = self
+            .module
+            .get_function("doo_db_shutdown")
+            .unwrap_or_else(|| {
+                let fn_type = self.context.void_type().fn_type(&[], false);
+                self.module.add_function("doo_db_shutdown", fn_type, None)
+            });
+        self.builder
+            .build_call(db_shutdown_fn, &[], "db_shutdown")
+            .unwrap();
+
         // OWNERSHIP MODEL:
         // Only cleanup heap objects that:
         // 1. Have a symbol (alloca in entry block) - these are guaranteed valid across all blocks
@@ -3827,11 +3874,33 @@ impl<'ctx> CodeGen<'ctx> {
                 // Only symbols can be safely accessed at function exit because allocas are in the entry block.
 
                 if values.is_empty() {
-                    // Check if this is the main function - it must return i32 0
+                    // Check if this is the main function - it must call exit(0) for clean termination
                     let fn_name = func.get_name().to_str().unwrap();
                     if fn_name == "main" {
+                        // Call doo_db_shutdown to cleanly terminate database connections
+                        let db_shutdown_fn =
+                            self.module.get_function("doo_db_shutdown").unwrap_or_else(|| {
+                                let fn_type = self.context.void_type().fn_type(&[], false);
+                                self.module.add_function("doo_db_shutdown", fn_type, None)
+                            });
+                        self.builder
+                            .build_call(db_shutdown_fn, &[], "db_shutdown")
+                            .unwrap();
+
+                        // Call exit(0) for clean termination instead of returning
+                        // This prevents segfaults from Tokio runtime shutdown issues
+                        let exit_fn = self.module.get_function("exit").unwrap_or_else(|| {
+                            let fn_type = self
+                                .context
+                                .void_type()
+                                .fn_type(&[self.context.i32_type().into()], false);
+                            self.module.add_function("exit", fn_type, None)
+                        });
                         let zero = self.context.i32_type().const_int(0, false);
-                        self.builder.build_return(Some(&zero)).unwrap();
+                        self.builder
+                            .build_call(exit_fn, &[zero.into()], "exit_call")
+                            .unwrap();
+                        self.builder.build_unreachable().unwrap();
                     } else if self.current_error_type.is_some() {
                         // Void return with error type - wrap in Ok Result with null pointer
                         let ptr_type = self.context.ptr_type(AddressSpace::default());
@@ -3866,10 +3935,85 @@ impl<'ctx> CodeGen<'ctx> {
                             .builder
                             .build_load(result_struct_type, result_alloca, "void_ok_result_val")
                             .unwrap();
-                        self.builder.build_return(Some(&result_val)).unwrap();
+
+                        // Check if we're in main function - if so, call exit(0) instead of returning
+                        let fn_name = func.get_name().to_str().unwrap();
+                        if fn_name == "main" {
+                            // Flush stdout to ensure all output is written before exit
+                            let fflush_fn =
+                                self.module.get_function("fflush").unwrap_or_else(|| {
+                                    let fn_type = self.context.i32_type().fn_type(
+                                        &[self
+                                            .context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into()],
+                                        false,
+                                    );
+                                    self.module.add_function("fflush", fn_type, None)
+                                });
+                            let null_ptr = self
+                                .context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null();
+                            self.builder
+                                .build_call(fflush_fn, &[null_ptr.into()], "flush_stdout")
+                                .unwrap();
+
+                            let exit_fn = self.module.get_function("exit").unwrap_or_else(|| {
+                                let fn_type = self
+                                    .context
+                                    .void_type()
+                                    .fn_type(&[self.context.i32_type().into()], false);
+                                self.module.add_function("exit", fn_type, None)
+                            });
+                            let zero = self.context.i32_type().const_int(0, false);
+                            self.builder
+                                .build_call(exit_fn, &[zero.into()], "exit_call")
+                                .unwrap();
+                            self.builder.build_unreachable().unwrap();
+                        } else {
+                            self.builder.build_return(Some(&result_val)).unwrap();
+                        }
                     } else {
                         // Void return - no value, no error type
-                        self.builder.build_return(None).unwrap();
+                        // Check if we're in main function - if so, call exit(0) instead of returning
+                        let fn_name = func.get_name().to_str().unwrap();
+                        if fn_name == "main" {
+                            // Flush stdout to ensure all output is written before exit
+                            let fflush_fn =
+                                self.module.get_function("fflush").unwrap_or_else(|| {
+                                    let fn_type = self.context.i32_type().fn_type(
+                                        &[self
+                                            .context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into()],
+                                        false,
+                                    );
+                                    self.module.add_function("fflush", fn_type, None)
+                                });
+                            let null_ptr = self
+                                .context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null();
+                            self.builder
+                                .build_call(fflush_fn, &[null_ptr.into()], "flush_stdout")
+                                .unwrap();
+
+                            let exit_fn = self.module.get_function("exit").unwrap_or_else(|| {
+                                let fn_type = self
+                                    .context
+                                    .void_type()
+                                    .fn_type(&[self.context.i32_type().into()], false);
+                                self.module.add_function("exit", fn_type, None)
+                            });
+                            let zero = self.context.i32_type().const_int(0, false);
+                            self.builder
+                                .build_call(exit_fn, &[zero.into()], "exit_call")
+                                .unwrap();
+                            self.builder.build_unreachable().unwrap();
+                        } else {
+                            self.builder.build_return(None).unwrap();
+                        }
                     }
                 } else if values.len() == 1 {
                     // Single return value
@@ -4165,7 +4309,46 @@ impl<'ctx> CodeGen<'ctx> {
                                 .builder
                                 .build_load(result_struct_type, result_alloca, "ok_result_val")
                                 .unwrap();
-                            self.builder.build_return(Some(&result_val)).unwrap();
+
+                            // For main function, call exit(0) to bypass Tokio runtime shutdown issues
+                            let fn_name = func.get_name().to_str().unwrap();
+                            if fn_name == "main" {
+                                // Flush stdout to ensure all output is written before exit
+                                let fflush_fn =
+                                    self.module.get_function("fflush").unwrap_or_else(|| {
+                                        let fn_type = self.context.i32_type().fn_type(
+                                            &[self
+                                                .context
+                                                .ptr_type(inkwell::AddressSpace::default())
+                                                .into()],
+                                            false,
+                                        );
+                                        self.module.add_function("fflush", fn_type, None)
+                                    });
+                                let null_ptr = self
+                                    .context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .const_null();
+                                self.builder
+                                    .build_call(fflush_fn, &[null_ptr.into()], "flush_stdout")
+                                    .unwrap();
+
+                                let exit_fn =
+                                    self.module.get_function("exit").unwrap_or_else(|| {
+                                        let fn_type = self
+                                            .context
+                                            .void_type()
+                                            .fn_type(&[self.context.i32_type().into()], false);
+                                        self.module.add_function("exit", fn_type, None)
+                                    });
+                                let zero = self.context.i32_type().const_int(0, false);
+                                self.builder
+                                    .build_call(exit_fn, &[zero.into()], "main_exit")
+                                    .unwrap();
+                                self.builder.build_unreachable().unwrap();
+                            } else {
+                                self.builder.build_return(Some(&result_val)).unwrap();
+                            }
                         }
                     } else {
                         // Normal return (no error type)
@@ -4193,7 +4376,44 @@ impl<'ctx> CodeGen<'ctx> {
                         } else {
                             val
                         };
-                        self.builder.build_return(Some(&final_val)).unwrap();
+                        // For main function, call exit(0) to bypass Tokio runtime shutdown issues
+                        let fn_name = func.get_name().to_str().unwrap();
+                        if fn_name == "main" {
+                            // Flush stdout to ensure all output is written before exit
+                            let fflush_fn =
+                                self.module.get_function("fflush").unwrap_or_else(|| {
+                                    let fn_type = self.context.i32_type().fn_type(
+                                        &[self
+                                            .context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into()],
+                                        false,
+                                    );
+                                    self.module.add_function("fflush", fn_type, None)
+                                });
+                            let null_ptr = self
+                                .context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null();
+                            self.builder
+                                .build_call(fflush_fn, &[null_ptr.into()], "flush_stdout")
+                                .unwrap();
+
+                            let exit_fn = self.module.get_function("exit").unwrap_or_else(|| {
+                                let fn_type = self
+                                    .context
+                                    .void_type()
+                                    .fn_type(&[self.context.i32_type().into()], false);
+                                self.module.add_function("exit", fn_type, None)
+                            });
+                            let zero = self.context.i32_type().const_int(0, false);
+                            self.builder
+                                .build_call(exit_fn, &[zero.into()], "main_exit")
+                                .unwrap();
+                            self.builder.build_unreachable().unwrap();
+                        } else {
+                            self.builder.build_return(Some(&final_val)).unwrap();
+                        }
                     }
                 } else {
                     // Multiple return values - build a struct

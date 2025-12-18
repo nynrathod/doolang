@@ -359,7 +359,23 @@ impl<'ctx> CodeGen<'ctx> {
                 );
                 return None;
             }
-            let params_arg = self.resolve_value(&args[1]);
+            let params_arg_raw = self.resolve_value(&args[1]);
+            
+            // Convert non-pointer types to string for FFI
+            // The FFI function expects a string parameter (ptr type)
+            let params_arg = if params_arg_raw.is_int_value() {
+                // Convert Int to string using sprintf
+                let int_val = params_arg_raw.into_int_value();
+                self.convert_int_to_string_via_sprintf(int_val)
+            } else if params_arg_raw.is_float_value() {
+                // Convert Float to string using sprintf
+                let float_val = params_arg_raw.into_float_value();
+                self.convert_float_to_string_via_sprintf(float_val)
+            } else {
+                // Already a pointer (string) or other compatible type
+                params_arg_raw
+            };
+            
             (
                 "doo_db_raw_param",
                 vec![db_val.into(), sql_arg.into(), params_arg.into()],

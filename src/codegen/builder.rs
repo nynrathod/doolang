@@ -6518,9 +6518,21 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // CRITICAL FIX: If result_val is a pointer, we need to load the Result struct from it
                 // This happens when FFI functions return pointer to Result struct
+                let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+
+                // Declare doo_db_result_free function ONCE outside the conditional
+                // This prevents signature mismatches from multiple declarations
+                let free_result_fn = self
+                    .module
+                    .get_function("doo_db_result_free")
+                    .unwrap_or_else(|| {
+                        let fn_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
+                        self.module
+                            .add_function("doo_db_result_free", fn_type, None)
+                    });
+
                 if result_val.is_pointer_value() && !result_val.is_struct_value() {
                     let result_ptr = result_val.into_pointer_value();
-                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
                     let result_struct_type = self
                         .context
                         .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
@@ -6528,6 +6540,11 @@ impl<'ctx> CodeGen<'ctx> {
                         .builder
                         .build_load(result_struct_type, result_ptr, "result_struct_load_try")
                         .expect("Failed to load Result struct from pointer in TryPropagate");
+
+                    // NOTE: We do NOT free the DooResult wrapper here because the value pointer
+                    // inside it (e.g., JSON string) is still needed and will be extracted later.
+                    // The wrapper will be cleaned up when the program exits or when proper
+                    // reference counting is implemented.
                 }
 
                 // Try to load Result struct if not already a struct value (fallback for symbols)
@@ -7036,7 +7053,16 @@ impl<'ctx> CodeGen<'ctx> {
                             } else {
                                 type_to_store
                             };
-                        self.variable_types.insert(name.clone(), normalized_type);
+                        self.variable_types
+                            .insert(name.clone(), normalized_type.clone());
+
+                        // If this is a string type, track it in heap_strings for proper printing
+                        if normalized_type == "Str"
+                            || normalized_type == "String"
+                            || normalized_type.contains("Str")
+                        {
+                            self.heap_strings.insert(name.clone());
+                        }
 
                         // If this is a struct type, also track it for heap management
                         if is_struct_type {
@@ -7133,16 +7159,37 @@ impl<'ctx> CodeGen<'ctx> {
                 let mut result_val = self.resolve_value(result_tmp);
 
                 // If result_val is a pointer, load the Result struct from it
+                let ptr_type_unwrap = self.context.ptr_type(inkwell::AddressSpace::default());
+
+                // Declare doo_db_free_result function ONCE outside the conditional
+                let free_result_fn_unwrap = self
+                    .module
+                    .get_function("doo_db_free_result")
+                    .unwrap_or_else(|| {
+                        let fn_type = self
+                            .context
+                            .void_type()
+                            .fn_type(&[ptr_type_unwrap.into()], false);
+                        self.module
+                            .add_function("doo_db_free_result", fn_type, None)
+                    });
+
                 if result_val.is_pointer_value() && !result_val.is_struct_value() {
                     let result_ptr = result_val.into_pointer_value();
-                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
-                    let result_struct_type = self
-                        .context
-                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
+                    let result_struct_type = self.context.struct_type(
+                        &[self.context.i32_type().into(), ptr_type_unwrap.into()],
+                        false,
+                    );
                     result_val = self
                         .builder
                         .build_load(result_struct_type, result_ptr, "result_struct_load_unwrap")
                         .expect("Failed to load Result struct from pointer in UnwrapOrPanic");
+
+                    // CRITICAL: Free the DooResult wrapper after extracting the struct
+                    // This prevents memory leaks and corruption from FFI-allocated structures
+                    self.builder
+                        .build_call(free_result_fn_unwrap, &[result_ptr.into()], "")
+                        .unwrap();
                 }
 
                 // Try to load Result struct if not already a struct value
