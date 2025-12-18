@@ -1,7 +1,10 @@
 pub mod templates;
 
 use clap::{Parser, Subcommand};
-use dialoguer::{theme::ColorfulTheme, Password, Select};
+use dialoguer::{
+    theme::{ColorfulTheme, SimpleTheme},
+    Confirm, MultiSelect, Password, Select,
+};
 use std::io::{self, Write};
 
 use std::env;
@@ -33,8 +36,12 @@ pub enum Commands {
         template: Option<String>,
     },
 
-    /// Deploy the project to Fly.io
-    Deploy,
+    /// Deploy the project to Fly.io or Railway
+    Deploy {
+        /// Show detailed build and deployment logs
+        #[arg(long, short)]
+        verbose: bool,
+    },
 
     /// Build the project to a persistent binary
     Build {
@@ -77,19 +84,16 @@ pub enum Commands {
     Upgrade,
 }
 
-// Simple string constants for emojis since we removed console::Emoji
-const SPARKLE: &str = "✨ ";
-const TRUCK: &str = "🚚 ";
-const ROCKET: &str = "🚀 ";
-const ERROR: &str = "❌ ";
-const CHECK: &str = "✅ ";
-const PACKAGE: &str = "📦 ";
-const KEY: &str = "🔑 ";
-const CLOUD: &str = "☁️  ";
-const HAMMER: &str = "🔨 ";
-const ARROW_UP: &str = "⬆️  ";
-const INFO: &str = "ℹ️  ";
-
+// Simple string constants - minimal emoji usage for clean UX
+const SPARKLE: &str = "✨";
+const TRUCK: &str = "  ";
+const ERROR: &str = "✗ ";
+const CHECK: &str = "✓ ";
+const PACKAGE: &str = "  ";
+const KEY: &str = "  ";
+const HAMMER: &str = "  ";
+const ARROW_UP: &str = "  ";
+const INFO: &str = "  ";
 
 /// Entrypoint for CLI logic.
 /// Returns exit code (0 for success, nonzero for error).
@@ -103,7 +107,7 @@ pub fn run_cli(cli: Cli) -> i32 {
             0
         }
         Some(Commands::Init { name, template }) => run_init(name, template),
-        Some(Commands::Deploy) => run_deploy(),
+        Some(Commands::Deploy { verbose }) => run_deploy(verbose),
         Some(Commands::Build {
             path,
             output,
@@ -146,13 +150,13 @@ pub fn run_cli(cli: Cli) -> i32 {
             args,
         }) => {
             let temp_name = format!("temp_doo_{}", std::process::id());
-            
+
             // Use target/release for temporary binary to find DLLs and keep root clean
             let target_dir = Path::new("target").join("release");
             if !target_dir.exists() {
                 let _ = std::fs::create_dir_all(&target_dir);
             }
-            
+
             // output_name should be the path without extension
             let output_path_buf = target_dir.join(&temp_name);
             let output_name = output_path_buf.to_string_lossy().to_string();
@@ -176,7 +180,7 @@ pub fn run_cli(cli: Cli) -> i32 {
                             ERROR, result.error_count
                         );
                         // Try to cleanup if file was created
-                        let _ = std::fs::remove_file(&output_name); 
+                        let _ = std::fs::remove_file(&output_name);
                         if cfg!(windows) {
                             let _ = std::fs::remove_file(format!("{}.exe", output_name));
                         }
@@ -199,7 +203,7 @@ pub fn run_cli(cli: Cli) -> i32 {
             } else {
                 temp_name.clone()
             };
-            
+
             // Full absolute path to executable
             let exe_full_path = match std::env::current_dir() {
                 Ok(dir) => dir.join("target").join("release").join(&exe_name),
@@ -209,19 +213,54 @@ pub fn run_cli(cli: Cli) -> i32 {
                 }
             };
 
-            let status = Command::new(&exe_full_path)
+            use std::sync::{Arc, Mutex};
+
+            let child = Command::new(&exe_full_path)
                 .args(&args)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
-                .status();
+                .spawn();
 
-            let code = match status {
-                Ok(s) => {
-                    let code = s.code().unwrap_or(1);
-                    // Cleanup exe
+            let code = match child {
+                Ok(child) => {
+                    // Handle Ctrl+C to kill the child process
+                    let child_process = Arc::new(Mutex::new(Some(child)));
+                    let child_process_clone = child_process.clone();
+
+                    // Set Ctrl+C handler
+                    let _ = ctrlc::set_handler(move || {
+                        if let Ok(mut guard) = child_process_clone.lock() {
+                            if let Some(child) = guard.as_mut() {
+                                let _ = child.kill();
+                            }
+                        }
+                        std::process::exit(130);
+                    });
+
+                    // Wait for the child to finish
+                    // We need to release the lock while waiting to allow the signal handler to acquire it
+                    // However, Child::wait() takes &mut self, so we'd need to keep the lock.
+                    // Instead, we can poll or just block if we don't mind the signal handler potentially blocking on the lock.
+                    // Loop with short sleep to allow signal handler to grab lock if needed
+                    let result = loop {
+                        // Scope to drop lock immediately
+                        {
+                            let mut guard = child_process.lock().unwrap();
+                            if let Some(c) = guard.as_mut() {
+                                if let Ok(Some(status)) = c.try_wait() {
+                                    break status.code().unwrap_or(1);
+                                }
+                            } else {
+                                // Child killed/gone
+                                break 1;
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    };
+
                     let _ = std::fs::remove_file(&exe_full_path);
-                    code
+                    result
                 }
                 Err(e) => {
                     eprintln!("{} Failed to start process: {}", ERROR, e);
@@ -229,7 +268,7 @@ pub fn run_cli(cli: Cli) -> i32 {
                     1
                 }
             };
-            
+
             // Final attempt cleanup
             let _ = std::fs::remove_file(&exe_full_path);
             code
@@ -362,6 +401,106 @@ fn run_init(name_arg: Option<String>, template_arg: Option<String>) -> i32 {
     0
 }
 
+fn run_deploy(verbose: bool) -> i32 {
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  🚀 Doo Deploy");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    // ================================================================
+    // Step 1: Validate project structure
+    // ================================================================
+    if !validate_project_structure(verbose) {
+        return 1;
+    }
+
+    // ================================================================
+    // Step 2: Select deployment platform
+    // ================================================================
+    let platforms = vec![
+        "Fly.io",
+        // "Railway"
+    ];
+
+    let platform_idx = match Select::with_theme(&SimpleTheme)
+        .with_prompt("Select platform")
+        .items(&platforms)
+        .default(0)
+        .interact()
+    {
+        Ok(idx) => idx,
+        Err(_) => {
+            println!("{}Failed to select platform", ERROR);
+            return 1;
+        }
+    };
+
+    let platform_name = platforms[platform_idx];
+    println!();
+    println!("→ Platform: {}", platform_name);
+    println!();
+
+    // ================================================================
+    // Step 3: Deploy to selected platform
+    // ================================================================
+    match platform_name {
+        "Fly.io" => deploy_flyio(verbose),
+        "Railway" => deploy_railway(verbose),
+        _ => {
+            println!("{} Unknown platform", ERROR);
+            1
+        }
+    }
+}
+
+// ============================================================================
+// PROJECT VALIDATION
+// ============================================================================
+
+fn validate_project_structure(_verbose: bool) -> bool {
+    use templates::DOCKERFILE_CONTENT;
+
+    // Check for main.doo
+    let main_doo = Path::new("main.doo");
+    if !main_doo.exists() {
+        println!("{}main.doo not found", ERROR);
+        println!("  Make sure you're in a doo project directory.");
+        println!("  Run 'doo init <name>' to create a new project.\n");
+        return false;
+    }
+
+    // Check for .env file (optional but create if missing)
+    let env_file = Path::new(".env");
+    let env_exists = env_file.exists();
+    if !env_exists {
+        let _ = fs::write(env_file, "# Doo environment variables\n");
+    }
+
+    // Check for Dockerfile (create if missing)
+    let dockerfile = Path::new("Dockerfile");
+    let dockerfile_exists = dockerfile.exists();
+    if !dockerfile_exists {
+        let _ = fs::write(dockerfile, DOCKERFILE_CONTENT);
+    }
+
+    // Print validation tree
+    println!("{}Project validated", CHECK);
+    println!("  ├─ main.doo");
+    println!("  ├─ .env{}", if env_exists { "" } else { " (created)" });
+    println!(
+        "  └─ Dockerfile{}",
+        if dockerfile_exists { "" } else { " (created)" }
+    );
+    println!();
+
+    true
+}
+
+// ============================================================================
+// FLY.IO DEPLOYMENT
+// ============================================================================
+
 fn check_flyctl_installed() -> bool {
     Command::new("flyctl")
         .arg("version")
@@ -373,9 +512,25 @@ fn check_flyctl_installed() -> bool {
 }
 
 fn install_flyctl() -> bool {
-    println!("{} flyctl not found. Installing...", PACKAGE);
+    println!("{} flyctl not found.", PACKAGE);
+
+    let install = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt(" Would you like to install Fly.io CLI?")
+        .default(true)
+        .interact()
+        .unwrap_or(false);
+
+    if !install {
+        println!("{} Installation cancelled", INFO);
+        println!("   Install manually: https://fly.io/docs/hands-on/install-flyctl/");
+        return false;
+    }
+
+    println!("{} Installing flyctl...", TRUCK);
+
     let result = if cfg!(target_os = "windows") {
         Command::new("powershell")
+            .arg("-NoProfile")
             .arg("-Command")
             .arg("iwr https://fly.io/install.ps1 -useb | iex")
             .status()
@@ -389,158 +544,736 @@ fn install_flyctl() -> bool {
     match result {
         Ok(s) if s.success() => {
             println!("{} flyctl installed successfully!", CHECK);
+            // Add to PATH for current session
             let home = env::var("HOME")
                 .or_else(|_| env::var("USERPROFILE"))
                 .unwrap_or_default();
             let bin_path = Path::new(&home).join(".fly").join("bin");
             if bin_path.exists() {
                 let path_env = env::var("PATH").unwrap_or_default();
-                let new_path = format!(
-                    "{}{}{}",
-                    path_env,
-                    if cfg!(windows) { ";" } else { ":" },
-                    bin_path.display()
-                );
+                let separator = if cfg!(windows) { ";" } else { ":" };
+                let new_path = format!("{}{}{}", path_env, separator, bin_path.display());
                 env::set_var("PATH", new_path);
             }
             true
         }
-        _ => {
-            println!("{} Failed to install flyctl.", ERROR);
+        Ok(_) => {
+            println!("{} Installation failed", ERROR);
+            println!("   Try installing manually: https://fly.io/docs/hands-on/install-flyctl/");
+            false
+        }
+        Err(e) => {
+            println!("{} Failed to run installer: {}", ERROR, e);
+            println!("   Try installing manually: https://fly.io/docs/hands-on/install-flyctl/");
             false
         }
     }
 }
 
-fn ensure_env_vars() {
+fn read_env_vars() -> Vec<(String, String)> {
+    let mut vars = Vec::new();
     let env_path = Path::new(".env");
-    let mut current_content = String::new();
-    if env_path.exists() {
-        current_content = fs::read_to_string(env_path).unwrap_or_default();
+
+    if let Ok(content) = fs::read_to_string(env_path) {
+        for line in content.lines() {
+            let line = line.trim();
+            // Skip comments and empty lines
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim().to_string();
+                let value = value.trim().to_string();
+                if !key.is_empty() {
+                    vars.push((key, value));
+                }
+            }
+        }
     }
 
-    let mut needs_update = false;
-    let mut new_content = current_content.clone();
+    vars
+}
 
-    if !new_content.contains("DATABASE_URL=") {
-        if !new_content.is_empty() && !new_content.ends_with('\n') {
-            new_content.push('\n');
-        }
-        new_content.push_str("DATABASE_URL=postgres://postgres:postgres@localhost:5432/doo_app\n");
-        needs_update = true;
-    }
-    if !new_content.contains("JWT_SECRET=") {
-        if !new_content.is_empty() && !new_content.ends_with('\n') {
-            new_content.push('\n');
-        }
-        new_content.push_str("JWT_SECRET=super_secret_key_change_me\n");
-        needs_update = true;
-    }
-    if !new_content.contains("FLY_API_TOKEN=") {
-        if !new_content.is_empty() && !new_content.ends_with('\n') {
-            new_content.push('\n');
-        }
-        new_content.push_str("FLY_API_TOKEN=\n");
-        needs_update = true;
+fn prompt_env_vars_for_production() -> Vec<(String, String)> {
+    let env_vars = read_env_vars();
+
+    if env_vars.is_empty() {
+        println!("{} No environment variables found in .env", INFO);
+        return Vec::new();
     }
 
-    if needs_update {
-        if let Err(e) = fs::write(env_path, &new_content) {
-            eprintln!("{} Failed to update .env: {}", ERROR, e);
-        } else {
-            println!("{} Updated .env with default variables", CHECK);
+    println!(
+        "\n{} Select environment variables to set in production:",
+        KEY
+    );
+    println!("   (Use Space to select, Enter to confirm)");
+    println!(
+        "   {} Never auto-upload secrets - you'll set values manually\n",
+        INFO
+    );
+
+    let var_names: Vec<String> = env_vars.iter().map(|(k, _)| k.clone()).collect();
+
+    // Pre-select DATABASE_URL and JWT_SECRET if they exist
+    let defaults: Vec<bool> = var_names
+        .iter()
+        .map(|name| {
+            name == "DATABASE_URL"
+                || name == "JWT_SECRET"
+                || name.contains("SECRET")
+                || name.contains("KEY")
+                || name.contains("TOKEN")
+        })
+        .collect();
+
+    let selected_indices = match MultiSelect::with_theme(&ColorfulTheme::default())
+        .items(&var_names)
+        .defaults(&defaults)
+        .interact()
+    {
+        Ok(indices) => indices,
+        Err(_) => Vec::new(),
+    };
+
+    let mut result: Vec<(String, String)> = Vec::new();
+
+    for idx in selected_indices {
+        let var_name = &var_names[idx];
+        let current_value = &env_vars[idx].1;
+
+        // Prompt for production value
+        println!("\n   {} Enter production value for {}:", KEY, var_name);
+        println!(
+            "   Current local value: {}",
+            if current_value.len() > 20 {
+                format!("{}...", &current_value[..20])
+            } else {
+                current_value.clone()
+            }
+        );
+
+        let value = match Password::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!("   {}", var_name))
+            .allow_empty_password(true)
+            .interact()
+        {
+            Ok(v) if !v.is_empty() => v,
+            _ => current_value.clone(), // Use local value if empty
+        };
+
+        result.push((var_name.clone(), value));
+    }
+
+    result
+}
+
+fn deploy_flyio(verbose: bool) -> i32 {
+    // Check and install flyctl
+    if !check_flyctl_installed() {
+        println!("→ Installing Fly CLI...");
+
+        if !install_flyctl() {
+            println!("{}Fly CLI installation failed", ERROR);
+            println!("  Install manually: https://fly.io/docs/flyctl/install/");
+            return 1;
+        }
+        println!("{}Fly CLI installed", CHECK);
+    }
+
+    // Authenticate (silent check)
+    let whoami = Command::new("flyctl")
+        .args(["auth", "whoami"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if whoami.is_err() || !whoami.unwrap().success() {
+        println!("→ Authenticating with Fly.io...");
+        // Need to authenticate - this must be interactive (opens browser)
+        let status = Command::new("flyctl")
+            .args(["auth", "login"])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+
+        if status.is_err() || !status.unwrap().success() {
+            println!("{}Authentication failed", ERROR);
+            return 1;
+        }
+    }
+    println!("{}Authenticated with Fly.io", CHECK);
+
+    // Check if this is first deploy (fly.toml doesn't exist)
+    let is_first_deploy = !Path::new("fly.toml").exists();
+
+    if is_first_deploy {
+        println!();
+        println!("→ Creating Fly app...");
+
+        let status = Command::new("flyctl")
+            .args(["launch", "--no-deploy", "--generate-name"])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                println!("{}Fly app created", CHECK);
+            }
+            _ => {
+                println!("{}Failed to create Fly app", ERROR);
+                println!("  Try: flyctl launch --no-deploy");
+                return 1;
+            }
+        }
+
+        // Ask for secrets on first deploy only
+        let env_vars = prompt_env_vars_for_production();
+        if !env_vars.is_empty() {
+            print!("→ Setting secrets...");
+            io::stdout().flush().ok();
+
+            let secrets_args: Vec<String> = env_vars
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+
+            let mut cmd = Command::new("flyctl");
+            cmd.arg("secrets").arg("set").arg("--stage");
+            for arg in &secrets_args {
+                cmd.arg(arg);
+            }
+
+            let status = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status();
+
+            match status {
+                Ok(s) if s.success() => {
+                    println!(" {}done", CHECK);
+                }
+                _ => {
+                    println!(" {}warning: some secrets may not be set", INFO);
+                }
+            }
+        }
+    }
+
+    // Deploy
+    println!();
+    println!("→ Deploying to Fly.io...");
+
+    let start = std::time::Instant::now();
+
+    let status = Command::new("flyctl")
+        .args(["deploy"])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            let duration = start.elapsed();
+            println!(
+                "\r{}Deployed successfully ({:.1}s)",
+                CHECK,
+                duration.as_secs_f64()
+            );
+
+            // Get deployment URL
+            let output = Command::new("flyctl").args(["status", "--json"]).output();
+            let mut hostname = String::new();
+
+            if let Ok(out) = output {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if let Some(start) = stdout.find("\"Hostname\":") {
+                    let rest = &stdout[start + 11..];
+                    if let Some(quote_start) = rest.find('"') {
+                        let rest = &rest[quote_start + 1..];
+                        if let Some(quote_end) = rest.find('"') {
+                            hostname = rest[..quote_end].to_string();
+                        }
+                    }
+                }
+            }
+
+            println!();
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            if !hostname.is_empty() {
+                println!("  ✨ Live at https://{}", hostname);
+            } else {
+                println!("  ✨ Deployed! Run 'flyctl open' to view");
+            }
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!();
+
+            0
+        }
+        Ok(_) => {
+            println!("\r{}Deployment failed", ERROR);
+            println!();
+            println!("  Troubleshooting:");
+            println!("  • Run with --verbose to see full logs");
+            println!("  • Check logs: flyctl logs");
+            println!("  • Build locally: docker build .");
+            1
+        }
+        Err(e) => {
+            println!("\r{}Deployment error: {}", ERROR, e);
+            println!();
+            println!("  Check your network connection and try again.");
+            1
         }
     }
 }
 
-fn run_deploy() -> i32 {
-    println!("\n{} {} {}", ROCKET, "Doo Deployment", "(Fly.io)");
+// ============================================================================
+// RAILWAY DEPLOYMENT
+// ============================================================================
 
-    if !check_flyctl_installed() {
-        if !install_flyctl() {
-            return 1;
+fn check_railway_installed() -> bool {
+    // First try PATH
+    let in_path = Command::new("railway")
+        .arg("version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if in_path {
+        return true;
+    }
+
+    // Check custom install location (Windows)
+    #[cfg(target_os = "windows")]
+    {
+        let local_bin = env::var("USERPROFILE")
+            .map(|p| format!("{}\\AppData\\Local\\Programs\\railway", p))
+            .unwrap_or_default();
+
+        let railway_exe = format!("{}\\railway.exe", local_bin);
+
+        if Path::new(&railway_exe).exists() {
+            // Add to PATH for current process
+            if let Ok(current_path) = env::var("PATH") {
+                env::set_var("PATH", format!("{};{}", local_bin, current_path));
+            }
+            return true;
         }
     }
 
-    ensure_env_vars();
+    false
+}
 
-    if let Ok(lines) = fs::read_to_string(".env") {
-        for line in lines.lines() {
-            if let Some((key, value)) = line.split_once('=') {
-                env::set_var(key.trim(), value.trim());
+fn install_railway() -> bool {
+    println!("→ Installing Railway CLI...");
+
+    // Platform-specific installation
+    #[cfg(target_os = "windows")]
+    {
+        // Get paths
+        let scoop_path = env::var("USERPROFILE")
+            .map(|p| format!("{}\\scoop\\shims\\scoop.cmd", p))
+            .unwrap_or_default();
+
+        let railway_via_scoop = env::var("USERPROFILE")
+            .map(|p| format!("{}\\scoop\\shims\\railway.exe", p))
+            .unwrap_or_default();
+
+        // Target path for direct download (user's local bin)
+        let local_bin = env::var("USERPROFILE")
+            .map(|p| format!("{}\\AppData\\Local\\Programs\\railway", p))
+            .unwrap_or_default();
+
+        let railway_exe = format!("{}\\railway.exe", local_bin);
+
+        // Method 1: Check if scoop is already installed
+        if Path::new(&scoop_path).exists() {
+            println!("  Installing via scoop...");
+
+            let scoop_install = Command::new(&scoop_path)
+                .args(["install", "railway"])
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status();
+
+            if scoop_install.is_ok() && scoop_install.unwrap().success() {
+                if Path::new(&railway_via_scoop).exists() {
+                    println!("{}Railway CLI installed successfully!", CHECK);
+                    return true;
+                }
             }
+            println!("  scoop install failed, trying npm...");
         }
-    }
 
-    let token = env::var("FLY_API_TOKEN").unwrap_or_default();
-    if token.is_empty() {
-        println!("\n{} Authentication required for Fly.io", KEY);
-        println!("   Please enter your Fly.io API token (or press Enter to run 'fly auth login')");
-
-        let input = match Password::with_theme(&ColorfulTheme::default())
-            .with_prompt("Token")
-            .allow_empty_password(true)
-            .interact()
-        {
-            Ok(s) => s,
-            Err(_) => String::new(),
-        };
-
-        if input.is_empty() {
-            println!("{} Running 'fly auth login'...", SPARKLE);
-            let status = Command::new("flyctl").arg("auth").arg("login").status();
-            if status.is_err() || !status.unwrap().success() {
-                println!("{} Login failed", ERROR);
-                return 1;
-            }
-        } else {
-            let env_path = Path::new(".env");
-            if let Ok(content) = fs::read_to_string(env_path) {
-                let new_content = if content.contains("FLY_API_TOKEN=") {
-                    content
-                        .lines()
-                        .map(|line| {
-                            if line.starts_with("FLY_API_TOKEN=") {
-                                format!("FLY_API_TOKEN={}", input)
-                            } else {
-                                line.to_string()
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                } else {
-                    format!("{}\nFLY_API_TOKEN={}", content, input)
-                };
-
-                let _ = fs::write(env_path, new_content);
-                env::set_var("FLY_API_TOKEN", input);
-            }
-        }
-    }
-
-    if !Path::new("fly.toml").exists() {
-        println!("{} Initializing Fly app...", CLOUD);
-        let status = Command::new("flyctl")
-            .arg("launch")
-            .arg("--no-deploy")
+        // Method 2: Try npm if available
+        let npm_install = Command::new("npm")
+            .args(["install", "-g", "@railway/cli"])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .status();
 
-        if status.is_err() || !status.unwrap().success() {
-            println!("{} Fly launch failed", ERROR);
-            return 1;
+        if npm_install.is_ok() && npm_install.unwrap().success() {
+            println!("{}Railway CLI installed successfully!", CHECK);
+            return true;
+        }
+
+        // Method 3: Direct binary download using curl.exe (built into Windows 10/11)
+        println!("  Downloading Railway CLI binary...");
+
+        // Create directory
+        let _ = fs::create_dir_all(&local_bin);
+
+        // Get latest version from GitHub API
+        let version_output = Command::new("curl.exe")
+            .args([
+                "-s",
+                "https://api.github.com/repos/railwayapp/cli/releases/latest",
+            ])
+            .output();
+
+        let version = if let Ok(output) = version_output {
+            let json = String::from_utf8_lossy(&output.stdout);
+            // Find "tag_name":"vX.X.X" pattern
+            if let Some(start) = json.find("\"tag_name\":") {
+                let after_tag = &json[start + 11..];
+                if let Some(quote_start) = after_tag.find('"') {
+                    let version_start = &after_tag[quote_start + 1..];
+                    if let Some(quote_end) = version_start.find('"') {
+                        version_start[..quote_end].to_string()
+                    } else {
+                        "v4.15.1".to_string()
+                    }
+                } else {
+                    "v4.15.1".to_string()
+                }
+            } else {
+                "v4.15.1".to_string()
+            }
+        } else {
+            "v4.15.1".to_string()
+        };
+
+        let zip_url = format!(
+            "https://github.com/railwayapp/cli/releases/download/{}/railway-{}-x86_64-pc-windows-msvc.zip",
+            version, version
+        );
+        let zip_path = format!("{}\\railway.zip", local_bin);
+
+        println!("  Downloading {}...", version);
+
+        // Download zip file
+        let curl_download = Command::new("curl.exe")
+            .args(["-L", "-s", "-o", &zip_path, &zip_url])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+
+        if curl_download.is_ok()
+            && curl_download.unwrap().success()
+            && Path::new(&zip_path).exists()
+        {
+            // Extract using tar (built into Windows 10+)
+            println!("  Extracting...");
+            let extract = Command::new("tar")
+                .args(["-xf", &zip_path, "-C", &local_bin])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+
+            // Clean up zip
+            let _ = fs::remove_file(&zip_path);
+
+            if extract.is_ok() && extract.unwrap().success() && Path::new(&railway_exe).exists() {
+                // Add to PATH for current process
+                if let Ok(current_path) = env::var("PATH") {
+                    env::set_var("PATH", format!("{};{}", local_bin, current_path));
+                }
+
+                println!("{}Railway CLI installed successfully!", CHECK);
+                return true;
+            }
+        }
+
+        // Clean up any partial downloads
+        let _ = fs::remove_file(&zip_path);
+
+        // All methods failed
+        println!("{}Could not auto-install Railway CLI", ERROR);
+        println!();
+        println!("  Please install manually:");
+        println!("  1. Install Node.js from https://nodejs.org");
+        println!("  2. Run: npm i -g @railway/cli");
+        println!();
+        return false;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: Use Homebrew
+        let brew_check = Command::new("brew")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        let brew_available = brew_check.is_ok() && brew_check.unwrap().success();
+
+        if !brew_available {
+            println!("  Homebrew not found, installing Homebrew first...");
+
+            let brew_install = Command::new("bash")
+                .args(["-c", "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""])
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status();
+
+            match brew_install {
+                Ok(s) if s.success() => {
+                    println!("{}Homebrew installed", CHECK);
+                }
+                _ => {
+                    println!("{}Could not install Homebrew", ERROR);
+                    println!("  Install manually: https://brew.sh/");
+                    return false;
+                }
+            }
+        }
+
+        println!("  Installing Railway via Homebrew...");
+        let install = Command::new("brew")
+            .args(["install", "railway"])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+
+        match install {
+            Ok(s) if s.success() => {
+                println!("{}Railway CLI installed successfully!", CHECK);
+                return true;
+            }
+            _ => {
+                println!("{}Homebrew install failed", ERROR);
+                println!("  Try: brew install railway");
+                return false;
+            }
         }
     }
 
-    println!("\n{} Deploying to Fly.io...", TRUCK);
-    let status = Command::new("flyctl").arg("deploy").status();
+    #[cfg(target_os = "linux")]
+    {
+        // Linux: Use shell script
+        println!("  Installing Railway via shell script...");
+        let install = Command::new("bash")
+            .args(["-c", "curl -fsSL https://railway.app/install.sh | sh"])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+
+        match install {
+            Ok(s) if s.success() => {
+                println!("{}Railway CLI installed successfully!", CHECK);
+                return true;
+            }
+            _ => {
+                println!("{}Shell script install failed", ERROR);
+                println!("  Try: curl -fsSL https://railway.app/install.sh | sh");
+                return false;
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        println!("{}Platform not supported for auto-install", ERROR);
+        println!("  Install manually: https://docs.railway.com/guides/cli");
+        return false;
+    }
+}
+
+fn deploy_railway(verbose: bool) -> i32 {
+    // Check and install Railway CLI
+    if !check_railway_installed() {
+        println!("→ Installing Railway CLI...");
+
+        if !install_railway() {
+            println!("{}Railway CLI installation failed", ERROR);
+            println!("  Install manually: npm i -g @railway/cli");
+            return 1;
+        }
+        println!("{}Railway CLI installed", CHECK);
+    }
+
+    // Authenticate (silent check)
+    let whoami = Command::new("railway")
+        .arg("whoami")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if whoami.is_err() || !whoami.unwrap().success() {
+        println!("→ Authenticating with Railway...");
+        println!("  Note: Allow local network access in your browser when prompted");
+
+        // Try browser login first
+        let status = Command::new("railway")
+            .arg("login")
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+
+        let browser_failed = status.is_err() || !status.unwrap().success();
+
+        // Verify login actually worked (browser login may return success even if cancelled)
+        let auth_check = Command::new("railway")
+            .arg("whoami")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        let auth_succeeded = auth_check.is_ok() && auth_check.unwrap().success();
+
+        // If browser login failed or auth didn't work, try browserless
+        if browser_failed || !auth_succeeded {
+            println!("  Browser login incomplete, trying token-based login...");
+            println!("  Get your token from: https://railway.app/account/tokens");
+
+            let browserless_status = Command::new("railway")
+                .args(["login", "--browserless"])
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status();
+
+            if browserless_status.is_err() || !browserless_status.unwrap().success() {
+                println!("{}Authentication failed", ERROR);
+                return 1;
+            }
+        }
+    }
+    println!("{}Authenticated with Railway", CHECK);
+
+    // Check if linked to a project (first deploy check)
+    let status_check = Command::new("railway")
+        .arg("status")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    let is_first_deploy = match status_check {
+        Ok(s) => !s.success(),
+        Err(_) => true,
+    };
+
+    if is_first_deploy {
+        // Get project name from directory
+        let current_dir = env::current_dir().unwrap_or_default();
+        let project_name = current_dir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "doo-app".to_string());
+
+        print!("→ Creating Railway project...");
+        io::stdout().flush().ok();
+
+        let status = Command::new("railway")
+            .args(["init", "-n", &project_name])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                println!("{}Railway project created", CHECK);
+            }
+            _ => {
+                println!("{}Failed to create Railway project", ERROR);
+                println!("  Manage billing: https://railway.app/account/billing");
+                return 1;
+            }
+        }
+
+        // Link the project
+        println!("→ Linking project...");
+
+        let link_status = Command::new("railway")
+            .arg("link")
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+
+        if link_status.is_ok() && link_status.unwrap().success() {
+            println!("{}Project linked", CHECK);
+        } else {
+            println!("{}Link manually if needed: railway link", INFO);
+        }
+
+        // Ask for secrets on first deploy only
+        let env_vars = prompt_env_vars_for_production();
+        if !env_vars.is_empty() {
+            println!("→ Setting environment variables...");
+
+            for (key, value) in &env_vars {
+                let var_string = format!("{}={}", key, value);
+                let status = Command::new("railway")
+                    .args(["variables", "set", &var_string])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+
+                match status {
+                    Ok(s) if s.success() => {
+                        println!("  {}{} set", CHECK, key);
+                    }
+                    _ => {
+                        println!("  {}Failed to set {}", INFO, key);
+                    }
+                }
+            }
+        }
+    }
+
+    // Deploy
+    println!();
+    println!("→ Deploying to Railway...");
+
+    let start = std::time::Instant::now();
+
+    let status = Command::new("railway")
+        .arg("up")
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+
+    let duration = start.elapsed();
 
     match status {
         Ok(s) if s.success() => {
-            println!("\n{} Deployment successful!", SPARKLE);
+            println!(
+                "\r{}Deployed successfully ({:.1}s)",
+                CHECK,
+                duration.as_secs_f64()
+            );
+
+            println!();
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("  ✨ Deployed! Run 'railway open' to view");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!();
+
             0
         }
-        _ => {
-            println!("\n{} Deployment failed", ERROR);
+        Ok(_) => {
+            println!("\r{}Deployment failed", ERROR);
+            println!();
+            println!("  Troubleshooting:");
+            println!("  • Run with --verbose to see full logs");
+            println!("  • Check logs: railway logs");
+            println!("  • Build locally: docker build .");
+            1
+        }
+        Err(e) => {
+            println!("\r{}Deployment error: {}", ERROR, e);
+            println!();
+            println!("  Check your network connection and try again.");
             1
         }
     }
@@ -603,12 +1336,17 @@ fn run_upgrade() -> i32 {
     println!("{} Installation directory: {}", INFO, install_dir.display());
 
     // Download and extract new version
-    if let Err(e) = download_and_upgrade(&install_dir, platform, &latest_version, latest_version_num) {
+    if let Err(e) =
+        download_and_upgrade(&install_dir, platform, &latest_version, latest_version_num)
+    {
         eprintln!("{} Upgrade failed: {}", ERROR, e);
         return 1;
     }
 
-    println!("\n{} Upgrade complete! You now have doo v{}", SPARKLE, latest_version_num);
+    println!(
+        "\n{} Upgrade complete! You now have doo v{}",
+        SPARKLE, latest_version_num
+    );
     println!("   Run 'doo --version' to verify.");
 
     0
@@ -650,7 +1388,7 @@ fn fetch_latest_version() -> Result<String, String> {
 
         // Parse JSON to get tag_name
         let json_str = String::from_utf8_lossy(&output.stdout);
-        
+
         // Simple JSON parsing for tag_name
         if let Some(start) = json_str.find("\"tag_name\":") {
             let rest = &json_str[start + 11..];
@@ -676,10 +1414,8 @@ fn get_doo_install_dir() -> Option<PathBuf> {
     }
 
     // Fallback: check standard installation directory
-    let home = env::var("HOME")
-        .or_else(|_| env::var("USERPROFILE"))
-        .ok()?;
-    
+    let home = env::var("HOME").or_else(|_| env::var("USERPROFILE")).ok()?;
+
     let default_dir = Path::new(&home).join(".doo").join("bin");
     if default_dir.exists() {
         return Some(default_dir);
@@ -704,8 +1440,7 @@ fn download_and_upgrade(
 
     // Create temp directory
     let temp_dir = env::temp_dir().join(format!("doo-upgrade-{}", std::process::id()));
-    fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp directory: {}", e))?;
 
     let zip_path = temp_dir.join("doo.zip");
     let extract_dir = temp_dir.join("extracted");
@@ -764,7 +1499,13 @@ fn download_and_upgrade(
         }
     } else {
         let status = Command::new("unzip")
-            .args(["-q", "-o", &zip_path.to_string_lossy(), "-d", &extract_dir.to_string_lossy()])
+            .args([
+                "-q",
+                "-o",
+                &zip_path.to_string_lossy(),
+                "-d",
+                &extract_dir.to_string_lossy(),
+            ])
             .status()
             .map_err(|e| format!("Failed to extract: {}", e))?;
 
@@ -787,8 +1528,8 @@ fn download_and_upgrade(
     let release_files = get_release_file_patterns();
 
     // Backup and replace files
-    for entry in fs::read_dir(&source_dir)
-        .map_err(|e| format!("Failed to read source directory: {}", e))?
+    for entry in
+        fs::read_dir(&source_dir).map_err(|e| format!("Failed to read source directory: {}", e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let file_name = entry.file_name();
@@ -826,7 +1567,9 @@ fn download_and_upgrade(
     // Make executable on Unix
     if !cfg!(target_os = "windows") {
         let doo_path = install_dir.join("doo");
-        let _ = Command::new("chmod").args(["+x", &doo_path.to_string_lossy()]).status();
+        let _ = Command::new("chmod")
+            .args(["+x", &doo_path.to_string_lossy()])
+            .status();
     }
 
     // Cleanup temp directory
@@ -849,8 +1592,8 @@ fn find_doo_in_extracted(extract_dir: &Path) -> Result<PathBuf, String> {
     }
 
     // Look in subdirectories
-    for entry in fs::read_dir(extract_dir)
-        .map_err(|e| format!("Failed to read extract directory: {}", e))?
+    for entry in
+        fs::read_dir(extract_dir).map_err(|e| format!("Failed to read extract directory: {}", e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         if entry.path().is_dir() {
@@ -862,8 +1605,8 @@ fn find_doo_in_extracted(extract_dir: &Path) -> Result<PathBuf, String> {
     }
 
     // Fallback: return first subdirectory
-    for entry in fs::read_dir(extract_dir)
-        .map_err(|e| format!("Failed to read extract directory: {}", e))?
+    for entry in
+        fs::read_dir(extract_dir).map_err(|e| format!("Failed to read extract directory: {}", e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         if entry.path().is_dir() {
@@ -896,7 +1639,8 @@ fn get_release_file_patterns() -> Vec<&'static str> {
 /// Check if a file matches release file patterns
 fn is_release_file(file_name: &str, patterns: &[&str]) -> bool {
     for pattern in patterns {
-        if file_name == *pattern || file_name.starts_with("doo") || file_name.starts_with("libdoo") {
+        if file_name == *pattern || file_name.starts_with("doo") || file_name.starts_with("libdoo")
+        {
             return true;
         }
     }
@@ -925,4 +1669,3 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 
     Ok(())
 }
-
