@@ -461,6 +461,19 @@ fn link_object_file(
 
     if has_http {
         ffi_libs.insert("doo_http".to_string());
+        // doo_http depends on doo_db and doo_auth - ensure they're included
+        ffi_libs.insert("doo_db".to_string());
+        ffi_libs.insert("doo_auth".to_string());
+    }
+
+    // Also check if any database functions are used directly
+    let has_db = mir_program.functions.iter().any(|f| {
+        f.ffi_lib.as_deref() == Some("doo_db")
+            || f.name.starts_with("Database::")
+            || f.name.contains("db_")
+    });
+    if has_db {
+        ffi_libs.insert("doo_db".to_string());
     }
 
     // Common: Build search paths for libraries (works on all platforms)
@@ -646,9 +659,17 @@ fn link_object_file(
             cmd.arg("-framework").arg("CoreFoundation");
         }
 
-        // Link FFI libraries
+        // Link FFI libraries in correct dependency order
+        // Order matters on Unix: dependents before dependencies
+        let lib_order = ["doo_http", "doo_auth", "doo_db", "doo_file", "doo_runtime", "doo"];
+        let mut sorted_libs: Vec<&String> = lib_order
+            .iter()
+            .filter_map(|lib| ffi_libs.iter().find(|l| l.as_str() == *lib))
+            .collect();
+        sorted_libs.extend(ffi_libs.iter().filter(|l| !lib_order.contains(&l.as_str())));
+
         let mut added_paths = std::collections::HashSet::new();
-        for ffi_lib in &ffi_libs {
+        for ffi_lib in sorted_libs {
             if let Some((lib_dir, lib_file)) = find_ffi_lib(ffi_lib, &ffi_search_paths) {
                 // For shared libraries, add -L and -l flags with rpath
                 let is_shared = lib_file
