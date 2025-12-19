@@ -131,8 +131,20 @@ impl<'ctx> CodeGen<'ctx> {
                             .add_function("doohttp_extract_param_int", fn_type, None)
                     };
 
-                // Get the first path parameter name (usually "id")
-                let param_name_cstr = self.generate_string_literal_ptr("id");
+                // Get the actual parameter name from function metadata (not hardcoded "id")
+                let param_name = if let Some(param_names) =
+                    self.function_param_names.get(&actual_func_name)
+                {
+                    if !param_names.is_empty() {
+                        param_names[0].clone()
+                    } else {
+                        "id".to_string() // fallback
+                    }
+                } else {
+                    "id".to_string() // fallback
+                };
+
+                let param_name_cstr = self.generate_string_literal_ptr(&param_name);
 
                 // Extract Int value from path params
                 let param_value = self
@@ -818,14 +830,19 @@ impl<'ctx> CodeGen<'ctx> {
                     .cloned()
                     .unwrap_or_default();
 
+                // DEBUG: Print handler wrapper info
+                eprintln!("[DEBUG WRAPPER] actual_func_name: {}", actual_func_name);
+                eprintln!("[DEBUG WRAPPER] return_type: '{}'", return_type);
+
                 // Check if return type is array of structs: Array(StructName) or [StructName]
+                // For db.raw() results, the data is already JSON - we just need to detect array types
                 let is_struct_array =
                     if return_type.starts_with("Array(") && return_type.ends_with(")") {
-                        let inner = &return_type[6..return_type.len() - 1];
-                        self.struct_metadata.contains_key(inner)
+                        // Array(Type) - treat as struct array for serialization
+                        true
                     } else if return_type.starts_with('[') && return_type.ends_with(']') {
-                        let inner = &return_type[1..return_type.len() - 1];
-                        self.struct_metadata.contains_key(inner)
+                        // [Type] - treat as struct array for serialization
+                        true
                     } else {
                         false
                     };
@@ -1556,6 +1573,13 @@ impl<'ctx> CodeGen<'ctx> {
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
             self.module
                 .add_function("doo_http_req_query", fn_type, None);
+        }
+
+        // doo_http_req_user_id(request) -> i32 (extracts user ID from JWT token)
+        if self.module.get_function("doo_http_req_user_id").is_none() {
+            let fn_type = i32_type.fn_type(&[ptr_type.into()], false);
+            self.module
+                .add_function("doo_http_req_user_id", fn_type, None);
         }
 
         // doohttp_parse_json_struct(json, field_specs, field_count) -> *void

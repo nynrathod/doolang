@@ -119,6 +119,7 @@ pub struct CodeGen<'ctx> {
     pub current_function_params: Vec<(String, Option<String>)>, // Track current function parameters (name, type) for RC on return
     pub function_return_types: HashMap<String, String>, // Track function return types for proper RC handling on call results
     pub function_param_types: HashMap<String, Vec<String>>, // Track function parameter types for JSON.parse conversion
+    pub function_param_names: HashMap<String, Vec<String>>, // Track function parameter NAMES for path param extraction
     pub functions_returning_heap: std::collections::HashSet<String>, // Track functions that return heap-allocated values
 
     pub boolean_temps: std::collections::HashSet<String>, // Track temporary variables from boolean-returning methods
@@ -207,6 +208,7 @@ impl<'ctx> CodeGen<'ctx> {
             current_function_params: Vec::new(),
             function_return_types: HashMap::new(),
             function_param_types: HashMap::new(),
+            function_param_names: HashMap::new(),
             functions_returning_heap: std::collections::HashSet::new(),
 
             boolean_temps: std::collections::HashSet::new(),

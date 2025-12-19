@@ -160,6 +160,25 @@ fn make_err_query_failed(msg: String) -> *mut DooResult {
     make_err_with_code("QUERY_FAILED", "42601", msg)
 }
 
+fn make_err_from_pg_error(e: &tokio_postgres::Error) -> *mut DooResult {
+    let default_code = "XX000".to_string();
+    let (code, msg) = if let Some(db_err) = e.as_db_error() {
+        let c = db_err.code().code().to_string();
+        let m = db_err.message();
+        let d = db_err.detail().unwrap_or("");
+        let h = db_err.hint().unwrap_or("");
+        let full_msg = if !d.is_empty() || !h.is_empty() {
+            format!("{} (Detail: {}, Hint: {})", m, d, h)
+        } else {
+            m.to_string()
+        };
+        (c, full_msg)
+    } else {
+        (default_code, e.to_string())
+    };
+    make_err_with_code("QUERY_FAILED", &code, msg)
+}
+
 fn get_client() -> Result<Arc<Client>, String> {
     CLIENT
         .get()
@@ -230,13 +249,13 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
 pub extern "C" fn doo_db_shutdown() {
     // Mark as disconnected first to suppress any error messages
     IS_CONNECTED.store(false, Ordering::SeqCst);
-    
+
     // Signal the connection task to shutdown
     // The notify will wake up the spawned task which will then exit
     if let Some(shutdown) = SHUTDOWN_SIGNAL.get() {
         shutdown.notify_one();
     }
-    
+
     // Don't block here - the exit(0) call in generated code will handle termination
     // Blocking on the runtime can cause hangs if the connection task doesn't respond quickly
 }
@@ -286,7 +305,7 @@ pub extern "C" fn doo_db_create_table(_db: *const c_char, sql: *const c_char) ->
     let res = rt.block_on(async { client.execute(sql.as_str(), &[]).await });
     match res {
         Ok(_) => make_ok_void(),
-        Err(e) => make_err_query_failed(format!("Table creation failed: {}", e)),
+        Err(e) => make_err_from_pg_error(&e),
     }
 }
 
@@ -307,7 +326,7 @@ pub extern "C" fn doo_db_query(_db: *const c_char, sql: *const c_char) -> *mut D
     let res = rt.block_on(async { client.query(sql.as_str(), &[]).await });
     let rows = match res {
         Ok(r) => r,
-        Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
+        Err(e) => return make_err_from_pg_error(&e),
     };
 
     let mut array = Vec::new();
@@ -591,6 +610,8 @@ pub extern "C" fn doo_db_insert_json(
             make_ok_int(id)
         }
         Err(e) => {
+            // Log the actual PostgreSQL error for debugging
+
             // Handle specific PostgreSQL errors
             if is_unique_violation(&e) {
                 let field = extract_field_name(&e).unwrap_or_else(|| "unknown".to_string());
@@ -600,7 +621,20 @@ pub extern "C" fn doo_db_insert_json(
                 let field = extract_field_name(&e).unwrap_or_else(|| "unknown".to_string());
                 return make_err_not_null_violation(&field);
             }
-            make_err(format!("Insert failed: {e}"))
+
+            // Check for other common PostgreSQL errors
+            if let Some(db_err) = e.as_db_error() {
+                let pg_code = db_err.code().code();
+
+                // Return the actual database error message
+                make_err(format!(
+                    "Insert failed: {} (code: {})",
+                    db_err.message(),
+                    pg_code
+                ))
+            } else {
+                make_err(format!("Insert failed: {}", e))
+            }
         }
     }
 }
@@ -1445,6 +1479,5 @@ pub extern "C" fn doo_db_query_array(_db: *const c_char, sql: *const c_char) -> 
 /// Calling this function will immediately exit with code 0.
 #[no_mangle]
 pub extern "C" fn doo_db_cleanup_and_exit() {
-    eprintln!("[DEBUG FFI] doo_db_cleanup_and_exit called");
     std::process::exit(0);
 }

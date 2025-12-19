@@ -1946,6 +1946,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .push((param_name.clone(), param_type));
         }
 
+        // Store function parameter names for path param extraction in handler wrappers
+        self.function_param_names
+            .insert(func.name.clone(), func.params.clone());
+
         // Use the predeclared function (which already has correct signature with Result wrapping if needed)
         let llvm_func = self.module.get_function(&func.name).expect(&format!(
             "Function '{}' should have been predeclared",
