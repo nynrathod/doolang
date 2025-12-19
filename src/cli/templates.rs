@@ -83,8 +83,14 @@ pub const STARTER_TEMPLATE: Template = Template {
     files: &[
         TemplateFile {
             path: "main.doo",
-            content: r#"import std::Http::Server;
+            content: r#"// 🔥 Doo - The fastest way to build and deploy production APIs
+// Template: Blog API (Posts + Comments + JWT Auth)
+// Run: doo run | Deploy: doo deploy
+// Learn more at: https://github.com/nynrathod/doolang
 
+import std::Http::Server;
+
+// Handlers are automatically serialized to JSON by Doo
 fn home() -> Str {
     return "Hello World from Doo!";
 }
@@ -92,8 +98,10 @@ fn home() -> Str {
 fn main() {
     let app = Server::new(":3000");
 
+    // Register a GET route at "/" that calls the home() function
     app.get("/", home);
 
+    // Start the server
     app.start();
 }
 "#,
@@ -119,40 +127,40 @@ pub const TODO_TEMPLATE: Template = Template {
     files: &[
         TemplateFile {
             path: "main.doo",
-            content: r#"import std::Http::Server;
+            content: r#"// 🔥 Doo - The fastest way to build and deploy production APIs
+// Template: Blog API (Posts + Comments + JWT Auth)
+// Run: doo run | Deploy: doo deploy
+// Learn more at: https://github.com/nynrathod/doolang
+
+import std::Http::Server;
 import std::Database;
 import std::Auth::jwt;
 
 struct User {
-    id: Int @primary @auto,
-    Email: Str @email @unique,
-    Password: Str @hash @min(8) @max(20),
+    id: Int @primary @auto,                 // Primary key, auto-incremented
+    Email: Str @email @unique,              // Email validation + unique constraint
+    Password: Str @hash @min(8) @max(20),   // Auto-hashed, length validated
     Name: Str,
 }
+
 
 struct Todo {
     id: Int @primary @auto,
     Title: Str,
     Completed: Bool @default(false),
-    UserId: Int, // Link to User
+    UserId: Int,
 }
 
 fn main() {
-    // Auto-propagate error if connection fails
+    // Auto read DATABASE_URL in .env
     let db = Database::postgres()?;
-    let app = Server::new(":3000");
 
-    // Generates:
-    // - POST /signup (email, password, name)
-    // - POST /login (email, password) -> Returns JWT
+    let app = Server::new(":3105");
+
+    // Authentication via JWT
     app.auth("/signup", "/login", User, db);
 
-    // Generates:
-    // - GET    /todos       (List)
-    // - POST   /todos       (Create)
-    // - GET    /todos/:id   (Get one)
-    // - PUT    /todos/:id   (Update)
-    // - DELETE /todos/:id   (Delete)
+    // Posts:    GET, POST, GET/:id, PUT/:id, DELETE/:id at /todos
     app.crud("/todos", Todo, db);
 
     app.start();
@@ -181,9 +189,9 @@ pub const BLOG_TEMPLATE: Template = Template {
         TemplateFile {
             path: "models.doo",
             content: r#"struct User {
-    id: Int @primary @auto,
-    Email: Str @email @unique,
-    Password: Str @hash @min(8) @max(20),
+    id: Int @primary @auto,                 // Primary key, auto-incremented
+    Email: Str @email @unique,              // Email validation + unique constraint
+    Password: Str @hash @min(8) @max(20),   // Auto-hashed, length validated
     Name: Str,
     Role: Str @default("user"),
 }
@@ -202,6 +210,7 @@ struct Comment {
     PostId: Int,
     AuthorId: Int,
 }
+
 "#,
         },
         TemplateFile {
@@ -209,30 +218,37 @@ struct Comment {
             content: r#"import std::Database::{DatabaseError};
 import models::{Post};
 
-// Custom handler using raw SQL with global database
 fn GetFeed() -> [Post] ! DatabaseError {
-    // Access global database instance
     let db = Database::get()?;
 
-    // db.raw returns a JSON string of the result
     let result: [Post] = db.raw("
-        SELECT p.title, u.name as authorName
-        FROM Post p
-        JOIN User u ON p.AuthorId = u.id
-        WHERE p.Published = true
-    ");
+        SELECT p.title
+        FROM posts p
+        JOIN users u ON p.authorid = u.id
+        WHERE p.published = true
+    ")?;
 
     Ok result;
 }
 
-// Get posts for a specific user by ID
 fn GetUserPosts(authorId: Int) -> [Post] ! DatabaseError {
     let db = Database::get()?;
 
     let result: [Post] = db.rawWithParams("
-        SELECT * FROM Post
-        WHERE AuthorId = $1
-    ", authorId);
+        SELECT * FROM posts
+        WHERE authorid = $1
+    ", authorId)?;
+
+    Ok result;
+}
+
+fn GetMyPosts(userId: Int) -> [Post] ! DatabaseError {
+    let db = Database::get()?;
+
+    let result: [Post] = db.rawWithParams("
+        SELECT * FROM posts
+        WHERE authorid = $1
+    ", userId)?;
 
     Ok result;
 }
@@ -240,32 +256,38 @@ fn GetUserPosts(authorId: Int) -> [Post] ! DatabaseError {
         },
         TemplateFile {
             path: "main.doo",
-            content: r#"
-                    import std::Http::Server;
+            content: r#"// 🔥 Doo - The fastest way to build and deploy production APIs
+// Template: Blog API (Posts + Comments + JWT Auth)
+// Run: doo run | Deploy: doo deploy
+// Learn more at: https://github.com/nynrathod/doolang
+
+import std::Http::Server;
 import std::Database;
 import std::Auth::jwt;
 import models::{Post, Comment, User};
-import handlers::{GetFeed, GetUserPosts};
+import handlers::{GetFeed, GetUserPosts, GetMyPosts};
 
 fn main() {
+    // Auto read DATABASE_URL in .env
     let db = Database::postgres()?;
-    let app = Server::new(":3000");
 
+    let app = Server::new(":3106");
+
+    // Authentication via JWT
     app.auth("/api/auth/signup", "/api/auth/login", User, db);
 
+    // Posts:    GET, POST, GET/:id, PUT/:id, DELETE/:id at /api/posts
+    // Comments: GET, POST, GET/:id, PUT/:id, DELETE/:id at /api/comments
     app.crud("/api/posts", Post, db);
     app.crud("/api/comments", Comment, db);
 
     app.get("/api/feed",  GetFeed);
-    app.get("/api/user/posts", GetUserPosts);
-
-
+    app.get("/api/user/:authorId/posts", GetUserPosts);
     app.get("/api/public/feed",  GetFeed);
-    // app.get("/api/user/posts", GetUserPosts);
 
     app.start();
 }
-                "#,
+"#,
         },
         TemplateFile {
             path: ".env",
