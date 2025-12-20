@@ -132,17 +132,16 @@ impl<'ctx> CodeGen<'ctx> {
                     };
 
                 // Get the actual parameter name from function metadata (not hardcoded "id")
-                let param_name = if let Some(param_names) =
-                    self.function_param_names.get(&actual_func_name)
-                {
-                    if !param_names.is_empty() {
-                        param_names[0].clone()
+                let param_name =
+                    if let Some(param_names) = self.function_param_names.get(&actual_func_name) {
+                        if !param_names.is_empty() {
+                            param_names[0].clone()
+                        } else {
+                            "id".to_string() // fallback
+                        }
                     } else {
                         "id".to_string() // fallback
-                    }
-                } else {
-                    "id".to_string() // fallback
-                };
+                    };
 
                 let param_name_cstr = self.generate_string_literal_ptr(&param_name);
 
@@ -830,10 +829,6 @@ impl<'ctx> CodeGen<'ctx> {
                     .cloned()
                     .unwrap_or_default();
 
-                // DEBUG: Print handler wrapper info
-                eprintln!("[DEBUG WRAPPER] actual_func_name: {}", actual_func_name);
-                eprintln!("[DEBUG WRAPPER] return_type: '{}'", return_type);
-
                 // Check if return type is array of structs: Array(StructName) or [StructName]
                 // For db.raw() results, the data is already JSON - we just need to detect array types
                 let is_struct_array =
@@ -1074,16 +1069,71 @@ impl<'ctx> CodeGen<'ctx> {
                         struct_alloc
                     };
 
-                    // Check if return type is Str or array - both use value directly as JSON
-                    let is_string_or_array_return = return_type == "Str"
-                        || return_type.is_empty()
-                        || return_type.starts_with("Array(")
-                        || return_type.starts_with('[');
+                    // Check if return type is Str or array
+                    // if it is Str, it's a pointer to a string (already JSON or plain text)
+                    // if it is Array, it might be a pointer to an Array struct which needs serialization
+                    let is_array_return =
+                        return_type.starts_with("Array(") || return_type.starts_with('[');
+                    let is_string_return = return_type == "Str" || return_type.is_empty();
 
-                    let response_body_ptr = if is_string_or_array_return {
-                        // Return type is Str or [Struct] - value is already JSON string from db.raw()
-                        // Just return the pointer directly
+                    let response_body_ptr = if is_string_return {
+                        // Return type is Str - value is already JSON string (or we treat it as such)
                         value_ptr_for_response
+                    } else if is_array_return {
+                        // Array return - assume it's an Array struct that needs serialization
+                        // Extract struct name from type
+                        let struct_name = if return_type.starts_with("Array(") {
+                            &return_type[6..return_type.len() - 1]
+                        } else {
+                            &return_type[1..return_type.len() - 1]
+                        };
+
+                        // Get struct metadata - build JSON manually
+                        let metadata = self.struct_metadata.get(struct_name).cloned();
+                        let metadata_json = if let Some(meta) = metadata {
+                            // Convert struct metadata to JSON manually
+                            let fields: Vec<String> = meta
+                                .field_names
+                                .iter()
+                                .zip(meta.field_types.iter())
+                                .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
+                                .collect();
+                            format!("{{{}}}", fields.join(","))
+                        } else {
+                            "{}".to_string()
+                        };
+                        let metadata_cstr = self.generate_string_literal_ptr(&metadata_json);
+                        let struct_name_cstr = self.generate_string_literal_ptr(struct_name);
+
+                        // Call array_to_json_with_metadata(array_ptr, struct_name, metadata_json)
+                        let array_to_json_fn = if let Some(f) =
+                            self.module.get_function("array_to_json_with_metadata")
+                        {
+                            f
+                        } else {
+                            let fn_type = ptr_type.fn_type(
+                                &[ptr_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            );
+                            self.module
+                                .add_function("array_to_json_with_metadata", fn_type, None)
+                        };
+
+                        self.builder
+                            .build_call(
+                                array_to_json_fn,
+                                &[
+                                    value_ptr_for_response.into(),
+                                    struct_name_cstr.into(),
+                                    metadata_cstr.into(),
+                                ],
+                                "json_str",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value()
                     } else {
                         // Return type is a struct - serialize to JSON
                         let struct_ptr = self
@@ -6536,6 +6586,7 @@ impl<'ctx> CodeGen<'ctx> {
                 name,
                 result: result_tmp,
                 error_block: _error_block,
+                expected_ok_type: mir_expected_ok_type,
             } => {
                 // Extract the Result struct and check the tag
                 let mut result_val = self.resolve_value(result_tmp);
@@ -6911,21 +6962,27 @@ impl<'ctx> CodeGen<'ctx> {
                         })
                         .unwrap_or_else(|| "Int".to_string());
 
+                    // Determine the expected type for JSON parsing
+                    // Priority: 1) MIR expected_ok_type from Let statement type annotation
+                    //           2) Explicit variable type in variable_types
+                    //           3) Function return type (fallback, may be wrong for scalar extraction)
+                    let expected_type = mir_expected_ok_type
+                        .clone()
+                        .or_else(|| self.variable_types.get(name).cloned())
+                        .or_else(|| {
+                            // Fall back to function return type if no explicit annotation
+                            if let Some(func_name) = &self.current_function_name {
+                                self.function_return_types.get(func_name).cloned()
+                            } else {
+                                None
+                            }
+                        })
+                        .or(Some(ok_type.clone()));
+
                     // Check if this result needs JSON parsing (from db.raw() or db.rawWithParams())
                     let needs_json_parse = self
                         .temp_values
                         .contains_key(&format!("{}_needs_json_parse", result_tmp));
-
-                    // Determine the expected type for JSON parsing
-                    // Priority: 1) Explicit variable type annotation, 2) Function return type
-                    let expected_type = self.variable_types.get(name).cloned().or_else(|| {
-                        // Fall back to function return type if no explicit annotation
-                        if let Some(func_name) = &self.current_function_name {
-                            self.function_return_types.get(func_name).cloned()
-                        } else {
-                            None
-                        }
-                    });
 
                     // For void Ok types, don't try to extract a value
                     if ok_type == "Void" || ok_type.is_empty() {
@@ -6998,26 +7055,51 @@ impl<'ctx> CodeGen<'ctx> {
                         };
 
                         // AUTO-PARSE JSON if needed (db.raw() with typed return)
+                        println!(
+                            "TRYPROP_DEBUG: needs_json_parse={} expected_type={:?}",
+                            needs_json_parse, expected_type
+                        );
                         if needs_json_parse && expected_type.is_some() {
                             let target_type = expected_type.clone().unwrap();
+                            println!("TRYPROP_DEBUG: target_type={}", target_type);
 
-                            // Only parse if target type is NOT Str/String
+                            // Parse JSON for all types except raw strings (Str/String)
+                            // Scalar types (Int/Float/Bool) from db.rawWithParams need JSON parsing
+                            // via atoi/atof in convert_json_string_to_type
                             if target_type != "Str" && target_type != "String" {
+                                println!(
+                                    "TRYPROP_DEBUG: Entering JSON parse path for type={}",
+                                    target_type
+                                );
+
                                 // The actual_value is a JSON string pointer
                                 // We need to parse it into the target type using convert_json_string_to_type()
 
                                 let json_str_ptr = if actual_value.is_pointer_value() {
+                                    println!("TRYPROP_DEBUG: actual_value is pointer");
                                     actual_value.into_pointer_value()
                                 } else {
-                                    // Should always be pointer for Str type
+                                    println!("TRYPROP_DEBUG: actual_value is NOT pointer, using ok_value_ptr");
                                     ok_value_ptr
                                 };
 
+                                // The ok_value_ptr is DIRECTLY the C string pointer from make_ok_string()
+                                // It's a raw C string from string_to_c(), NOT a DooString with header
+                                // DO NOT add any offset - use the pointer directly!
+                                let data_ptr = json_str_ptr;
+
                                 // Use convert_json_string_to_type for proper typed parsing
+                                println!("TRYPROP_DEBUG: Calling convert_json_string_to_type for type={}", target_type);
                                 if let Some(parsed) =
-                                    self.convert_json_string_to_type(json_str_ptr, &target_type)
+                                    self.convert_json_string_to_type(data_ptr, &target_type)
                                 {
+                                    println!("TRYPROP_DEBUG: convert_json_string_to_type RETURNED a value for type={}", target_type);
                                     actual_value = parsed;
+                                    // For scalar types, actual_value is already correct (i32/f64 value)
+                                    // We DON'T create a special alloca or symbol here - the value
+                                    // goes directly into temp_values and gets used as-is.
+                                    // DO NOT create a scalar alloca - it causes type mismatch issues
+                                    // when LetDecl tries to load from it as ptr instead of i32.
 
                                     // Update tracking metadata for parsed result
                                     if target_type.starts_with("Array(")
@@ -7071,12 +7153,18 @@ impl<'ctx> CodeGen<'ctx> {
                         };
 
                         // Normalize struct types to "Struct(Name)" format
-                        let normalized_type =
-                            if is_struct_type && !type_to_store.contains("Struct(") {
-                                format!("Struct({})", type_to_store)
-                            } else {
-                                type_to_store
-                            };
+                        // But EXCLUDE scalar types (Int, Float, Bool) which should never be wrapped
+                        let is_scalar_type = type_to_store == "Int"
+                            || type_to_store == "Float"
+                            || type_to_store == "Bool";
+                        let normalized_type = if is_struct_type
+                            && !is_scalar_type
+                            && !type_to_store.contains("Struct(")
+                        {
+                            format!("Struct({})", type_to_store)
+                        } else {
+                            type_to_store
+                        };
                         self.variable_types
                             .insert(name.clone(), normalized_type.clone());
 
@@ -7088,8 +7176,10 @@ impl<'ctx> CodeGen<'ctx> {
                             self.heap_strings.insert(name.clone());
                         }
 
-                        // If this is a struct type, also track it for heap management
-                        if is_struct_type {
+                        // If this is a struct type (but NOT a scalar type), also track it for heap management
+                        // CRITICAL: Exclude scalar types (Int, Float, Bool) which should NOT be in heap_arrays
+                        // because heap_arrays causes resolve_value to load as ptr instead of i32/f64
+                        if is_struct_type && !is_scalar_type {
                             self.heap_arrays.insert(name.clone());
                         }
 
@@ -8498,6 +8588,39 @@ impl<'ctx> CodeGen<'ctx> {
                                     &format!("{}_field", canonical_field_name),
                                 )
                                 .unwrap();
+
+                            // DEBUG: Print the value being stored to struct field
+                            if value.is_int_value() {
+                                let printf_fn =
+                                    self.module.get_function("printf").unwrap_or_else(|| {
+                                        let printf_type = self.context.i32_type().fn_type(
+                                            &[self
+                                                .context
+                                                .ptr_type(inkwell::AddressSpace::default())
+                                                .into()],
+                                            true,
+                                        );
+                                        self.module.add_function("printf", printf_type, None)
+                                    });
+                                let fmt_str = self
+                                    .builder
+                                    .build_global_string_ptr(
+                                        &format!(
+                                            "DEBUG_STRUCT: Storing field '{}' value = %d\\n",
+                                            canonical_field_name
+                                        ),
+                                        "debug_struct_fmt",
+                                    )
+                                    .unwrap();
+                                self.builder
+                                    .build_call(
+                                        printf_fn,
+                                        &[fmt_str.as_pointer_value().into(), value.into()],
+                                        "",
+                                    )
+                                    .unwrap();
+                            }
+
                             self.builder.build_store(field_ptr, value).unwrap();
                         }
                     }

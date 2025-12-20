@@ -303,17 +303,18 @@ pub fn validate_decorator(
                     message: "default decorator requires exactly 1 argument".to_string(),
                 });
             }
-            // Argument can be any literal type
+            // Argument can be any literal type or enum variant
             match &decorator.args[0] {
                 AstNode::StringLiteral(_)
                 | AstNode::NumberLiteral(_)
                 | AstNode::FloatLiteral(_)
-                | AstNode::BoolLiteral(_) => {}
+                | AstNode::BoolLiteral(_)
+                | AstNode::EnumVariant { .. } => {}
                 _ => {
                     return Err(SemanticError::InvalidDecoratorArgs {
                         decorator: "default".to_string(),
                         field: field_name.to_string(),
-                        message: "default decorator argument must be a literal value".to_string(),
+                        message: "default decorator argument must be a literal or enum variant".to_string(),
                     });
                 }
             }

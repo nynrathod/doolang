@@ -51,6 +51,17 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
+        // Fallback: Populate enum_variants from enum_variant_order if missed (e.g. imports)
+        for (enum_name, variants) in &self.enum_variant_order {
+            if !self.enum_variants.contains_key(enum_name) {
+                let mut variant_list = Vec::new();
+                for (idx, (variant_name, _)) in variants.iter().enumerate() {
+                    variant_list.push((variant_name.clone(), idx as u32));
+                }
+                self.enum_variants.insert(enum_name.clone(), variant_list);
+            }
+        }
+
         for instr in &program.globals {
             if let MirInstr::StructDecl {
                 struct_name,
@@ -3284,16 +3295,12 @@ impl<'ctx> CodeGen<'ctx> {
     fn generate_function_exit_cleanup(&mut self) {
         // Call doo_db_shutdown() to cleanly terminate any database connections
         // This signals the Tokio runtime's spawned connection task to exit, preventing segfaults
-        let db_shutdown_fn = self
-            .module
-            .get_function("doo_db_shutdown")
-            .unwrap_or_else(|| {
-                let fn_type = self.context.void_type().fn_type(&[], false);
-                self.module.add_function("doo_db_shutdown", fn_type, None)
-            });
-        self.builder
-            .build_call(db_shutdown_fn, &[], "db_shutdown")
-            .unwrap();
+        // ONLY call if the function was already declared (i.e., Database was actually used)
+        if let Some(db_shutdown_fn) = self.module.get_function("doo_db_shutdown") {
+            self.builder
+                .build_call(db_shutdown_fn, &[], "db_shutdown")
+                .unwrap();
+        }
 
         // OWNERSHIP MODEL:
         // Only cleanup heap objects that:
@@ -3882,14 +3889,12 @@ impl<'ctx> CodeGen<'ctx> {
                     let fn_name = func.get_name().to_str().unwrap();
                     if fn_name == "main" {
                         // Call doo_db_shutdown to cleanly terminate database connections
-                        let db_shutdown_fn =
-                            self.module.get_function("doo_db_shutdown").unwrap_or_else(|| {
-                                let fn_type = self.context.void_type().fn_type(&[], false);
-                                self.module.add_function("doo_db_shutdown", fn_type, None)
-                            });
-                        self.builder
-                            .build_call(db_shutdown_fn, &[], "db_shutdown")
-                            .unwrap();
+                        // ONLY call if Database was actually used
+                        if let Some(db_shutdown_fn) = self.module.get_function("doo_db_shutdown") {
+                            self.builder
+                                .build_call(db_shutdown_fn, &[], "db_shutdown")
+                                .unwrap();
+                        }
 
                         // Call exit(0) for clean termination instead of returning
                         // This prevents segfaults from Tokio runtime shutdown issues

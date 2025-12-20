@@ -1481,3 +1481,138 @@ pub extern "C" fn doo_db_query_array(_db: *const c_char, sql: *const c_char) -> 
 pub extern "C" fn doo_db_cleanup_and_exit() {
     std::process::exit(0);
 }
+
+// ============================================================================
+// ARRAY SERIALIZATION FOR RAW PARAMS
+// ============================================================================
+
+// Array layout in memory:
+// [RC: 4 bytes][LEN: 4 bytes][DATA...]
+// The array_ptr passed from compiler points to DATA, not the header!
+// So we need to read RC at offset -8, LEN at offset -4
+
+#[no_mangle]
+pub extern "C" fn doo_db_serialize_array(
+    array_ptr: *const std::ffi::c_void,
+    elem_type: *const std::ffi::c_char,
+) -> *const std::ffi::c_char {
+    if array_ptr.is_null() || elem_type.is_null() {
+        return string_to_c("[]".to_string());
+    }
+
+    let elem_type_str = match c_to_string(elem_type) {
+        Ok(s) => s,
+        Err(_) => return string_to_c("[]".to_string()),
+    };
+
+    // Read length from offset -4 (4 bytes before data pointer)
+    let len = unsafe {
+        let len_ptr = (array_ptr as *const u8).offset(-4) as *const i32;
+        *len_ptr as usize
+    };
+
+    // The data starts at array_ptr
+    let raw_data = array_ptr as *const u8;
+
+    let mut json_arr = Vec::with_capacity(len);
+
+    // Safety limit to prevent massive loop on bad pointers
+    let safe_len = std::cmp::min(len, 10000);
+
+    for i in 0..safe_len {
+        match elem_type_str.as_str() {
+            "Int" | "Enum" => {
+                // Ints are i64 (actually i32 in Doo)
+                let val_ptr = unsafe { (raw_data as *const i32).add(i) };
+                let val = unsafe { *val_ptr };
+                json_arr.push(serde_json::Value::Number(val.into()));
+            }
+            "Float" => {
+                // Floats are f64
+                let val_ptr = unsafe { (raw_data as *const f64).add(i) };
+                let val = unsafe { *val_ptr };
+                let num = serde_json::Number::from_f64(val).unwrap_or(serde_json::Number::from(0));
+                json_arr.push(serde_json::Value::Number(num));
+            }
+            "Bool" => {
+                // Bools are i32 (per compiler implementation)
+                let val_ptr = unsafe { (raw_data as *const i32).add(i) };
+                let val = unsafe { *val_ptr };
+                json_arr.push(serde_json::Value::Bool(val != 0));
+            }
+            "Str" => {
+                // Elements are *const c_char (string pointers)
+                let ptr_ptr = unsafe { (raw_data as *const *const c_char).add(i) };
+                let str_ptr = unsafe { *ptr_ptr };
+
+                if str_ptr.is_null() {
+                    json_arr.push(serde_json::Value::Null);
+                } else {
+                    if let Ok(s) = unsafe { CStr::from_ptr(str_ptr).to_str() } {
+                        json_arr.push(serde_json::Value::String(s.to_string()));
+                    } else {
+                        let s = unsafe { CStr::from_ptr(str_ptr).to_string_lossy().to_string() };
+                        json_arr.push(serde_json::Value::String(s));
+                    }
+                }
+            }
+            _ => {
+                // Fallback for unknown types (e.g. unknown structs)
+                json_arr.push(serde_json::Value::Null);
+            }
+        }
+    }
+
+    let json_str = serde_json::Value::Array(json_arr).to_string();
+    string_to_c(json_str)
+}
+
+#[no_mangle]
+pub extern "C" fn doo_db_serialize_enum_array(
+    array_ptr: *const std::ffi::c_void,
+    variants: *const std::ffi::c_char,
+    stride: i32,
+) -> *const std::ffi::c_char {
+    if array_ptr.is_null() || variants.is_null() {
+        return string_to_c("[]".to_string());
+    }
+
+    let variants_str = match c_to_string(variants) {
+        Ok(s) => s,
+        Err(_) => "Int".to_string(), // Fallback?
+    };
+
+    let variant_names: Vec<&str> = variants_str.split(',').collect();
+
+    // Read length from offset -4 (4 bytes before data pointer)
+    let len = unsafe {
+        let len_ptr = (array_ptr as *const u8).offset(-4) as *const i32;
+        *len_ptr as usize
+    };
+
+    // The data starts at array_ptr
+    let raw_data = array_ptr as *const u8;
+
+    let mut json_arr = Vec::with_capacity(len);
+    let safe_len = std::cmp::min(len, 10000);
+
+    let stride_usize = if stride > 0 { stride as usize } else { 8 }; // Default 8 if 0?
+
+    for i in 0..safe_len {
+        let offset = i * stride_usize;
+        // Enum layout: { i32 tag, ... }
+        // We read first 4 bytes as i32 tag.
+        let tag_ptr = unsafe { raw_data.add(offset) as *const i32 };
+        let tag = unsafe { *tag_ptr } as usize;
+
+        if tag < variant_names.len() {
+            json_arr.push(serde_json::Value::String(variant_names[tag].to_string()));
+        } else {
+            // Invalid tag, push null or "Unknown"
+            json_arr.push(serde_json::Value::Null);
+        }
+    }
+
+    let json_str = serde_json::Value::Array(json_arr).to_string();
+    string_to_c(json_str)
+}

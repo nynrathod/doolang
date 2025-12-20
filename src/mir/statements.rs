@@ -235,6 +235,39 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             // Build MIR for the right-hand side expression.
             let value_tmp = build_expression(builder, value, block);
 
+            // CRITICAL: Propagate type annotation to TryPropagate instruction if present
+            // This enables proper JSON scalar extraction for db.rawWithParams() calls
+            // e.g., `let total: Int = db.rawWithParams(...)` needs Int type info in TryPropagate
+            if let Some(type_ann) = type_annotation {
+                // Find TryPropagate instruction with matching name and update its expected_ok_type
+                for instr in block.instrs.iter_mut() {
+                    if let MirInstr::TryPropagate {
+                        name,
+                        expected_ok_type,
+                        ..
+                    } = instr
+                    {
+                        if name == &value_tmp {
+                            // Convert TypeNode to string for expected_ok_type
+                            let type_str = match type_ann {
+                                crate::parser::ast::TypeNode::Int => "Int".to_string(),
+                                crate::parser::ast::TypeNode::Float => "Float".to_string(),
+                                crate::parser::ast::TypeNode::Bool => "Bool".to_string(),
+                                crate::parser::ast::TypeNode::String => "Str".to_string(),
+                                crate::parser::ast::TypeNode::TypeRef(n) => n.clone(),
+                                crate::parser::ast::TypeNode::Struct(n, _) => n.clone(),
+                                crate::parser::ast::TypeNode::Array(elem) => 
+                                    format!("Array({})", elem.format_type_string()),
+                                _ => type_ann.format_type_string(),
+                            };
+                            println!("LetDecl: Updated TryPropagate name={} with type={}", name, type_str); // DEBUG PRINT
+                            *expected_ok_type = Some(type_str);
+                            break;
+                        }
+                    }
+                }
+            }
+
             // CRITICAL FIX: If this is an empty array literal and we have a type annotation,
             // update the MirInstr::Array to use the correct element type from the annotation.
             // This ensures `let tasks: [Task] = []` creates an array with element_type="Task", not "Int".

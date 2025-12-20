@@ -183,6 +183,21 @@ struct DecoratorInfo {
     args: Vec<String>,
 }
 
+/// Built-in health check handler available at GET /health
+extern "C" fn health_handler(_req: *mut DooRequest) -> *mut DooResult {
+    let body = r#"{"status":"ok"}"#;
+    let response = Box::new(DooResponse {
+        status: 200,
+        body: string_to_c(body),
+        content_type: string_to_c("application/json"),
+    });
+
+    Box::into_raw(Box::new(DooResult {
+        tag: 0,
+        value: Box::into_raw(response) as *mut std::ffi::c_void,
+    }))
+}
+
 /// Route registry storing method -> router with handlers
 struct RouteRegistry {
     routes: HashMap<String, Router<Route>>,  // method -> router
@@ -197,7 +212,7 @@ struct RouteRegistry {
 
 impl RouteRegistry {
     fn new() -> Self {
-        Self {
+        let mut registry = Self {
             routes: HashMap::new(),
             handlers: HashMap::new(),
             handler_metadata: HashMap::new(),
@@ -205,7 +220,12 @@ impl RouteRegistry {
             middleware_handlers: HashMap::new(),
             groups: HashMap::new(),
             route_count: 0,
-        }
+        };
+
+        // Register built-in health check
+        registry.register("GET", "/health", health_handler);
+
+        registry
     }
 
     fn register(&mut self, method: &str, path: &str, handler_fn: DooHandlerFn) {
@@ -1419,9 +1439,17 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                                 CStr::from_ptr(real_body).to_string_lossy().to_string()
                             };
 
-                            // Check wrapping if needed
-                            let final_body = if raw_body != real_body && body_str.starts_with('[') {
-                                format!("{{\"data\":{}}}", body_str)
+                            // Wrap JSON arrays and objects in {"data": ...} envelope
+                            // This ensures RFC 7807 compliance for all JSON responses
+                            let final_body = if body_str.starts_with('[') || body_str.starts_with('{') {
+                                // Check if already wrapped in {"data": ...}
+                                if body_str.starts_with("{\"data\":") || body_str.starts_with("{\"data\" :") {
+                                    body_str
+                                } else {
+                                    format!("{{\"data\":{}}}", body_str)
+                                }
+                            } else if body_str.is_empty() {
+                                "{\"data\":null}".to_string()
                             } else {
                                 body_str
                             };
@@ -1517,10 +1545,22 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
         if parts.len() > 1 && !parts[0].is_empty() {
             string_to_c(parts[0])
         } else {
-            string_to_c("0.0.0.0")
+            // Default to 127.0.0.1 for local dev to avoid firewall popups
+            // Use 0.0.0.0 if DOO_ENV=production or configured explicitly
+            let is_prod = std::env::var("DOO_ENV").map(|v| v == "production").unwrap_or(false);
+            if is_prod {
+                string_to_c("0.0.0.0")
+            } else {
+                string_to_c("127.0.0.1")
+            }
         }
     } else {
-        string_to_c("0.0.0.0")
+        let is_prod = std::env::var("DOO_ENV").map(|v| v == "production").unwrap_or(false);
+        if is_prod {
+            string_to_c("0.0.0.0")
+        } else {
+            string_to_c("127.0.0.1")
+        }
     };
 
     // Allocate Server struct: { Port: i32, Host: *const c_char }
@@ -1549,13 +1589,20 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
 
     let startup_start = std::time::Instant::now();
 
-    let port = if server_ptr.is_null() {
-        3000 // Default port
+    let (port, host_str) = if server_ptr.is_null() {
+        (3000, "0.0.0.0".to_string())
     } else {
         unsafe {
             // Read the first i32 field (Port)
             let port_ptr = server_ptr as *const i32;
-            *port_ptr
+            let port = *port_ptr;
+
+            // Read Host (*const c_char) at offset 8
+            let host_ptr_ptr = (server_ptr as *const u8).add(8) as *const *const c_char;
+            let host_ptr = *host_ptr_ptr;
+            let host = c_to_string(host_ptr);
+            
+            (port, if host.is_empty() { "0.0.0.0".to_string() } else { host })
         }
     };
 
@@ -1564,7 +1611,17 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         Err(e) => return make_err_http(500, &format!("Failed to create tokio runtime: {}", e)),
     };
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port as u16));
+    // Parse IP address
+    let ip_addr: std::net::IpAddr = match host_str.parse() {
+        Ok(ip) => ip,
+        Err(_) => {
+            // Fallback to 0.0.0.0 if parse fails (e.g. "localhost" - though c_to_string likely returns IP)
+            // But usually we set 127.0.0.1 or 0.0.0.0 in server_new
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
+        }
+    };
+
+    let addr = SocketAddr::from((ip_addr, port as u16));
 
     // Print all registered routes and handler count
     let routes = get_routes();
@@ -6167,6 +6224,8 @@ pub extern "C" fn doo_http_auth_impl(
     let struct_name_str = c_to_string(struct_name);
     let metadata_json_str = c_to_string(metadata_json);
 
+    println!("doo_http_auth_impl called for struct: {}", struct_name_str);
+
     // Parse and store metadata
     let metadata: serde_json::Value = match serde_json::from_str(&metadata_json_str) {
         Ok(m) => m,
@@ -6194,6 +6253,91 @@ pub extern "C" fn doo_http_auth_impl(
                 unsafe { doo_db_result_free(create_result) };
             } else {
                 unsafe { doo_db_result_free(create_result) };
+            }
+        }
+    }
+
+    // Auto-migrate: Ensure all columns exist
+    if let Some(fields) = metadata.get("fields").and_then(|f| f.as_array()) {
+        for field in fields {
+            let field_obj = match field.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            let field_type = match field_obj.get("type").and_then(|t| t.as_str()) {
+                Some(t) => t,
+                None => "TEXT",
+            };
+
+            let decorators = field_obj
+                .get("decorators")
+                .and_then(|d| d.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut is_primary = false;
+            let mut is_auto = false;
+            let mut is_hash = false;
+
+            for decorator in &decorators {
+                if let Some(dec_obj) = decorator.as_object() {
+                    if let Some(dec_name) = dec_obj.get("name").and_then(|n| n.as_str()) {
+                        match dec_name {
+                            "primary" => is_primary = true,
+                            "auto" => is_auto = true,
+                            "hash" => is_hash = true,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Skip primary keys for migration (they must exist with table)
+            if is_primary {
+                continue;
+            }
+
+            let sql_type = if is_hash {
+                "VARCHAR(255)"
+            } else {
+                match field_type {
+                    "Int" => "INTEGER",
+                    "Float" => "REAL",
+                    "Bool" => "BOOLEAN",
+                    _ => "TEXT",
+                }
+            };
+
+            // Use lowercase column names for Postgres compatibility
+            let alter_sql = format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                table_name,
+                field_name.to_lowercase(),
+                sql_type
+            );
+
+            // DEBUG LOGGING
+            println!("Migrating schema: {}", alter_sql);
+
+            let sql_c = CString::new(alter_sql).unwrap();
+            let alter_result = unsafe { doo_db_create_table(std::ptr::null(), sql_c.as_ptr()) }; // usages existing execution function
+            
+            if !alter_result.is_null() {
+                if unsafe { doo_db_is_error(alter_result) } != 0 {
+                    let err_msg_ptr = unsafe { doo_db_get_error_message(alter_result) };
+                    if !err_msg_ptr.is_null() {
+                        let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
+                        println!("Migration error: {}", err_msg);
+                        unsafe { doo_db_free_string(err_msg_ptr) };
+                    }
+                }
+                unsafe { doo_db_result_free(alter_result) };
             }
         }
     }

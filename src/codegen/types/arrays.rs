@@ -14,6 +14,82 @@ impl<'ctx> CodeGen<'ctx> {
         self.generate_array_with_metadata_inner(name, elements, explicit_element_type)
     }
 
+
+
+    // Helper to convert Enum to String at runtime
+    fn convert_enum_to_string_generic(
+        &mut self,
+        val: BasicValueEnum<'ctx>,
+        type_str: &str,
+    ) -> BasicValueEnum<'ctx> {
+        // Strip Enum() wrapper
+        let enum_name = if type_str.starts_with("Enum(") && type_str.ends_with(")") {
+             &type_str[5..type_str.len() - 1]
+        } else {
+             type_str
+        };
+
+        // Get variants
+        let variants = if let Some(v) = self.enum_variants.get(enum_name) {
+             v.clone()
+        } else {
+             // Try stripping namespace (e.g. Models::Status -> Status)
+            let simple_name = if let Some(idx) = enum_name.rfind("::") {
+                &enum_name[idx + 2..]
+            } else {
+                enum_name
+            };
+            self.enum_variants.get(simple_name).cloned().unwrap_or_default()
+        };
+
+        if variants.is_empty() {
+             // Fallback: return "Unknown"
+             let s = self.builder.build_global_string_ptr("Unknown", "enum_unknown").unwrap();
+             return s.as_pointer_value().into();
+        }
+
+        // Extract tag from enum struct {i32, ptr}
+        let struct_val = val.into_struct_value();
+        let tag = self.builder.build_extract_value(struct_val, 0, "enum_tag").unwrap().into_int_value();
+
+        // Create switch
+        let current_block = self.builder.get_insert_block().unwrap();
+        let current_fn = current_block.get_parent().unwrap();
+        let merge_block = self.context.append_basic_block(current_fn, "enum_to_str_merge");
+        let default_block = self.context.append_basic_block(current_fn, "enum_to_str_default");
+
+        let mut cases = Vec::new();
+        let mut incoming: Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> = Vec::new();
+
+        for (name, idx) in &variants {
+            let case_block = self.context.append_basic_block(current_fn, &format!("case_{}", name));
+            cases.push((self.context.i32_type().const_int((*idx).into(), false), case_block));
+
+            self.builder.position_at_end(case_block);
+            let str_val = self.builder.build_global_string_ptr(name, &format!("enum_{}", name)).unwrap();
+            incoming.push((str_val.as_pointer_value().into(), case_block));
+            self.builder.build_unconditional_branch(merge_block).unwrap();
+        }
+
+        self.builder.position_at_end(current_block);
+        self.builder.build_switch(tag, default_block, &cases).unwrap();
+
+        // Default case
+        self.builder.position_at_end(default_block);
+        let default_str = self.builder.build_global_string_ptr("Unknown", "enum_unknown").unwrap();
+        incoming.push((default_str.as_pointer_value().into(), default_block));
+        self.builder.build_unconditional_branch(merge_block).unwrap();
+
+        // Merge
+        self.builder.position_at_end(merge_block);
+        let phi = self.builder.build_phi(self.context.ptr_type(AddressSpace::default()), "enum_str").unwrap();
+        for (val, block) in &incoming {
+             phi.add_incoming(&[(val, *block)]);
+        }
+
+        phi.as_basic_value()
+    }
+
     pub fn generate_array_with_metadata(
         &mut self,
         name: &str,
@@ -47,6 +123,54 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
+        // Check for mixed Enum types to handle auto-promotion to Array<Str>
+        let mut enum_types = std::collections::HashSet::new();
+        let mut has_enums = false;
+        let mut has_strings = false;
+        let mut has_others = false;
+
+        for el in &expanded_elements {
+            // Strategy 1: Check variable_types
+            if let Some(type_str) = self.variable_types.get(el) {
+                if type_str.starts_with("Enum(") {
+                    enum_types.insert(type_str.clone());
+                    has_enums = true;
+                } else if type_str == "Str" || type_str == "String" {
+                    has_strings = true;
+                } else if type_str != "Unknown" {
+                    has_others = true;
+                }
+            } else if el.starts_with('"') {
+                // String literal
+                has_strings = true;
+            } else if el.contains("::") {
+                // Strategy 2: Inline enum syntax like Priority::High or Status::Done
+                let parts: Vec<&str> = el.split("::").collect();
+                if let Some(enum_name) = parts.first() {
+                    let clean_name = enum_name.trim_start_matches('%');
+                    if self.enum_variants.contains_key(clean_name) {
+                        enum_types.insert(format!("Enum({})", clean_name));
+                        has_enums = true;
+                    }
+                }
+            } else {
+                // Strategy 3: Check if stripped element name matches an enum variant temp
+                let stripped = el.trim_start_matches('%');
+                if let Some(type_str) = self.variable_types.get(stripped) {
+                    if type_str.starts_with("Enum(") {
+                        enum_types.insert(type_str.clone());
+                        has_enums = true;
+                    }
+                }
+            }
+        }
+
+        // Force string array if we have ANY enums - for DB queries, enums must be strings
+        // This includes: single enum arrays, mixed enum arrays, or enums mixed with other types
+        let force_string_array = has_enums
+            || (has_enums && has_strings)
+            || (has_enums && has_others);
+
         let element_values: Vec<BasicValueEnum<'ctx>> = expanded_elements
             .iter()
             .map(|el| {
@@ -65,7 +189,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     self.context.i32_type().const_int(index as u64, false);
 
                                 // Get element type from metadata
-                                if let Some(meta) = self.array_metadata.get(array_name) {
+                                if let Some(meta) = self.array_metadata.get(array_name).cloned() {
                                     let elem_type = match meta.element_type.as_str() {
                                         "Int" => self.context.i32_type().as_basic_type_enum(),
                                         "Float" => self.context.f64_type().as_basic_type_enum(),
@@ -87,22 +211,66 @@ impl<'ctx> CodeGen<'ctx> {
                                             )
                                             .unwrap()
                                     };
-                                    let elem_val = self
+                                    let mut elem_val = self
                                         .builder
                                         .build_load(elem_type, elem_ptr, "spread_load")
                                         .unwrap();
+
+                                    // Handle forced string conversion for spread elements
+                                    if force_string_array {
+                                        let meta_type = meta.element_type.clone();
+                                        if meta_type.starts_with("Enum(") {
+                                             elem_val = self.convert_enum_to_string_generic(elem_val, &meta_type);
+                                        }
+                                    }
                                     return elem_val;
                                 }
                             }
                         }
                     }
                 }
-                self.resolve_value(el)
+
+                let val = self.resolve_value(el);
+
+                if force_string_array {
+                    // Strategy 1: Check variable_types directly
+                    if let Some(type_str) = self.variable_types.get(el).cloned() {
+                        if type_str.starts_with("Enum(") {
+                            return self.convert_enum_to_string_generic(val, &type_str);
+                        }
+                    }
+                    // Strategy 2: Check inline enum syntax
+                    else if el.contains("::") {
+                        let parts: Vec<&str> = el.split("::").collect();
+                        if let Some(enum_name) = parts.first() {
+                            let clean_name = enum_name.trim_start_matches('%');
+                            if self.enum_variants.contains_key(clean_name) {
+                                let type_str = format!("Enum({})", clean_name);
+                                return self.convert_enum_to_string_generic(val, &type_str);
+                            }
+                        }
+                    }
+                    // Strategy 3: Check with stripped % prefix
+                    else {
+                        let stripped = el.trim_start_matches('%');
+                        if let Some(type_str) = self.variable_types.get(stripped).cloned() {
+                            if type_str.starts_with("Enum(") {
+                                return self.convert_enum_to_string_generic(val, &type_str);
+                            }
+                        }
+                    }
+                }
+
+                val
             })
             .collect();
 
         // Allow empty arrays: use explicit type if provided, otherwise default to Int
-        let elem_type = if element_values.is_empty() {
+        let elem_type = if force_string_array {
+             self.context
+                .ptr_type(inkwell::AddressSpace::default())
+                .as_basic_type_enum()
+        } else if element_values.is_empty() {
             if let Some(et) = explicit_element_type {
                 // Map element type string to LLVM type
                 match et {

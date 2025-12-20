@@ -1,6 +1,6 @@
 use crate::codegen::core::CodeGen;
 
-use inkwell::values::BasicValueEnum;
+use inkwell::values::{BasicValue, BasicValueEnum};
 
 impl<'ctx> CodeGen<'ctx> {
     pub fn generate_method_call(
@@ -361,12 +361,294 @@ impl<'ctx> CodeGen<'ctx> {
             }
             let params_arg_raw = self.resolve_value(&args[1]);
             
+            // Check for Array type - must be serialized to JSON string for FFI
+            let params_var = &args[1];
+            let mut is_array = false;
+            let mut elem_type = "Int".to_string();
+
+            // Strategy 1: Direct lookup by variable name
+            if self.array_metadata.contains_key(params_var) || self.heap_arrays.contains(params_var) {
+                is_array = true;
+                if let Some(meta) = self.array_metadata.get(params_var) {
+                    elem_type = meta.element_type.clone();
+                } else if let Some(type_str) = self.variable_types.get(params_var) {
+                     if type_str.starts_with("Array(") && type_str.ends_with(")") {
+                         elem_type = type_str[6..type_str.len()-1].to_string();
+                     } else if type_str.starts_with("[") && type_str.ends_with("]") {
+                         elem_type = type_str[1..type_str.len()-1].to_string();
+                     }
+                }
+            } else if let Some(type_str) = self.variable_types.get(params_var) {
+                 if type_str.starts_with("Array(") || type_str.starts_with("[") || type_str == "Array" {
+                     is_array = true;
+                     if type_str.starts_with("Array(") && type_str.ends_with(")") {
+                         elem_type = type_str[6..type_str.len()-1].to_string();
+                     } else if type_str.starts_with("[") && type_str.ends_with("]") {
+                         elem_type = type_str[1..type_str.len()-1].to_string();
+                     }
+                 }
+            }
+            
+            // Strategy 2: Try with % prefix stripped
+            if !is_array {
+                let stripped = params_var.trim_start_matches('%');
+                if self.array_metadata.contains_key(stripped) || self.heap_arrays.contains(stripped) {
+                    is_array = true;
+                    if let Some(meta) = self.array_metadata.get(stripped) {
+                        elem_type = meta.element_type.clone();
+                    }
+                }
+            }
+            
+            // Strategy 3: Check _array suffix variations
+            if !is_array {
+                let with_suffix = format!("{}_array", params_var);
+                let stripped_with_suffix = format!("{}_array", params_var.trim_start_matches('%'));
+                if self.array_metadata.contains_key(&with_suffix) {
+                    is_array = true;
+                    if let Some(meta) = self.array_metadata.get(&with_suffix) {
+                        elem_type = meta.element_type.clone();
+                    }
+                } else if self.array_metadata.contains_key(&stripped_with_suffix) {
+                    is_array = true;
+                    if let Some(meta) = self.array_metadata.get(&stripped_with_suffix) {
+                        elem_type = meta.element_type.clone();
+                    }
+                }
+            }
+            
+            // Strategy 4: Check by resolved pointer - if it's in temp_values and is a pointer, likely an array
+            if !is_array && params_arg_raw.is_pointer_value() {
+                // Look through all array metadata to find any matching pointer
+                // This is a fallback for inline array literals
+                for (key, meta) in &self.array_metadata.clone() {
+                    if key.contains(params_var.trim_start_matches('%')) || params_var.contains(key.trim_start_matches('%')) {
+                        is_array = true;
+                        elem_type = meta.element_type.clone();
+                        break;
+                    }
+                }
+            }
+
+            if is_array && elem_type != "Int" && elem_type != "Float" && elem_type != "Bool" && elem_type != "Str" {
+                 // Check if it's a known Enum to handle variants
+                 if !self.enum_variants.contains_key(&elem_type) {
+                     // Try stripping namespace
+                     let mut found = false;
+                     
+                     // Handle Enum(Type) wrapper
+                     if elem_type.starts_with("Enum(") && elem_type.ends_with(")") {
+                         elem_type = elem_type[5..elem_type.len()-1].to_string();
+                         if self.enum_variants.contains_key(&elem_type) {
+                             found = true;
+                         }
+                     }
+
+                     if !found && elem_type.contains("::") {
+                         let parts: Vec<&str> = elem_type.split("::").collect();
+                         if let Some(last) = parts.last() {
+                              if self.enum_variants.contains_key(*last) {
+                                  elem_type = last.to_string();
+                                  found = true;
+                              }
+                         }
+                     }
+                     
+                     if !found {
+                         elem_type = "Enum".to_string();
+                     }
+                 }
+            }
+
             // Convert non-pointer types to string for FFI
             // The FFI function expects a string parameter (ptr type)
-            let params_arg = if params_arg_raw.is_int_value() {
-                // Convert Int to string using sprintf
+            let params_arg = if is_array {
+                 // Ensure we have a pointer to the array struct
+                 let array_ptr = if params_arg_raw.is_pointer_value() {
+                     params_arg_raw.into_pointer_value()
+                 } else {
+                     let alloca = self.builder.build_alloca(params_arg_raw.get_type(), "array_ptr_tmp").unwrap();
+                     self.builder.build_store(alloca, params_arg_raw).unwrap();
+                     alloca
+                 };
+
+                 let mut is_enum = false;
+                 let mut variants_str = String::new();
+                 
+                 if let Some(variants) = self.enum_variants.get(&elem_type) {
+                     is_enum = true;
+                     // Trim variants to avoid issues with parser including spaces
+                     variants_str = variants.iter().map(|(v, _)| v.as_str().trim()).collect::<Vec<&str>>().join(",");
+                 }
+
+                 if is_enum {
+                     let serialize_fn = self.module.get_function("doo_db_serialize_enum_array").unwrap_or_else(|| {
+                         let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                         let i32_type = self.context.i32_type();
+                         // (ptr, str_ptr, stride)
+                         let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i32_type.into()], false);
+                         self.module.add_function("doo_db_serialize_enum_array", fn_type, None)
+                     });
+                     
+                     let variants_arg = self.builder.build_global_string_ptr(&variants_str, &format!("{}_vars", elem_type)).unwrap();
+                     // Stride is 16 for Enum { i32, ptr }
+                     let stride_arg = self.context.i32_type().const_int(16, false); 
+                     
+                     self.builder.build_call(serialize_fn, &[array_ptr.into(), variants_arg.as_pointer_value().into(), stride_arg.into()], "json_params")
+                         .unwrap()
+                         .try_as_basic_value()
+                         .left()
+                         .unwrap()
+                 } else {
+                     let serialize_fn = self.module.get_function("doo_db_serialize_array").unwrap_or_else(|| {
+                         let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                         let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                         self.module.add_function("doo_db_serialize_array", fn_type, None)
+                     });
+                     
+                     let type_arg = self.builder.build_global_string_ptr(&elem_type, "arr_type").unwrap();
+                     self.builder.build_call(serialize_fn, &[array_ptr.into(), type_arg.as_pointer_value().into()], "serialized_params")
+                         .unwrap()
+                         .try_as_basic_value()
+                         .left()
+                         .unwrap()
+                 }
+            } else if params_arg_raw.is_struct_value() {
+                 let struct_val = params_arg_raw.into_struct_value();
+                 
+                 // Infer type name: variable_type or from syntax "Type::Val"
+                 let mut type_name = self.variable_types.get(params_var).map(|s| s.clone()).unwrap_or_default();
+                 
+                 // Handle Enum(Type) wrapper
+                 if type_name.starts_with("Enum(") && type_name.ends_with(")") {
+                     type_name = type_name[5..type_name.len()-1].to_string();
+                 }
+
+                 // Try to resolve namespace if not found
+                 if !self.enum_variants.contains_key(&type_name) && type_name.contains("::") {
+                     let parts: Vec<&str> = type_name.split("::").collect();
+                     if let Some(last) = parts.last() {
+                          if self.enum_variants.contains_key(*last) {
+                              type_name = last.to_string();
+                          }
+                     }
+                 }
+
+                 if type_name.is_empty() && params_var.contains("::") {
+                     // e.g. Status::Done -> Status
+                     let parts: Vec<&str> = params_var.split("::").collect();
+                     if parts.len() > 0 {
+                         type_name = parts[0].to_string();
+                     }
+                 }
+
+                 if let Some(variants) = self.enum_variants.get(&type_name) {
+                     // Generate Switch for Enum -> String Literal
+                     if struct_val.get_type().count_fields() >= 1 {
+                        let tag = self.builder.build_extract_value(struct_val, 0, "tag").unwrap().into_int_value();
+                        
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let target_fn = current_block.get_parent().unwrap();
+                        let merge_block = self.context.append_basic_block(target_fn, "enum_merge");
+                        let default_block = self.context.append_basic_block(target_fn, "enum_default");
+                        
+                        self.builder.position_at_end(default_block);
+                        // Wrap Unknown in JSON array just in case
+                        let unk_str = self.builder.build_global_string_ptr("[\"Unknown\"]", "str_unk").unwrap();
+                        self.builder.build_unconditional_branch(merge_block);
+                        
+                        let phi_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                        
+                        // We need to keep values alive to reference them
+                        let mut incoming_vals: Vec<inkwell::values::BasicValueEnum> = Vec::new();
+                        let mut incoming_blocks: Vec<inkwell::basic_block::BasicBlock> = Vec::new();
+                        let mut cases: Vec<(inkwell::values::IntValue, inkwell::basic_block::BasicBlock)> = Vec::new();
+                        
+                        incoming_vals.push(unk_str.as_pointer_value().as_basic_value_enum());
+                        incoming_blocks.push(default_block);
+
+                        for (i, variant_tuple) in variants.iter().enumerate() {
+                             let variant = &variant_tuple.0;
+                             let clean_variant = variant.trim();
+                             let case_block = self.context.append_basic_block(target_fn, &format!("case_{}", clean_variant));
+                             self.builder.position_at_end(case_block);
+                             // Wrap in JSON array [] to ensure FFI treats it as parameter list matching the user expectation "work without []"
+                             let json_val = format!("[\"{}\"]", clean_variant);
+                             let s_ptr = self.builder.build_global_string_ptr(&json_val, &format!("str_{}", clean_variant)).unwrap();
+                             self.builder.build_unconditional_branch(merge_block);
+                             
+                             cases.push((self.context.i32_type().const_int(i as u64, false), case_block));
+                             incoming_vals.push(s_ptr.as_pointer_value().as_basic_value_enum());
+                             incoming_blocks.push(case_block);
+                        }
+                        
+                        self.builder.position_at_end(current_block);
+                        self.builder.build_switch(tag, default_block, &cases);
+                        
+                        self.builder.position_at_end(merge_block);
+                        let phi = self.builder.build_phi(phi_type, "enum_str").unwrap();
+                        
+                        // Construct slice of references
+                        let incoming_refs: Vec<(&dyn inkwell::values::BasicValue, inkwell::basic_block::BasicBlock)> = 
+                            incoming_vals.iter().zip(incoming_blocks.iter())
+                            .map(|(v, b)| (v as &dyn inkwell::values::BasicValue, *b))
+                            .collect();
+                            
+                        phi.add_incoming(&incoming_refs);
+                        phi.as_basic_value()
+                     } else {
+                         params_arg_raw.into()
+                     }
+                 } else {
+                     // Fallback: struct but not known enum (or tag extraction for unknown enum)
+                     if struct_val.get_type().count_fields() >= 1 {
+                        let tag_extract = self.builder.build_extract_value(struct_val, 0, "enum_tag").unwrap();
+                        if tag_extract.is_int_value() {
+                            let int_val = tag_extract.into_int_value();
+                            self.convert_int_to_string_via_sprintf(int_val)
+                        } else {
+                            params_arg_raw.into()
+                        }
+                    } else {
+                        params_arg_raw.into()
+                    }
+                 }
+            } else if params_arg_raw.is_int_value() {
                 let int_val = params_arg_raw.into_int_value();
-                self.convert_int_to_string_via_sprintf(int_val)
+                
+                // Check for boolean type
+                let mut is_bool = int_val.get_type().get_bit_width() == 1; // i1 is definitly bool
+                if !is_bool {
+                    // Check explicit type name
+                    if let Some(type_str) = self.variable_types.get(params_var) {
+                        if type_str == "Bool" {
+                             is_bool = true;
+                        }
+                    } else if params_var == "true" || params_var == "false" {
+                        is_bool = true;
+                    }
+                }
+
+                if is_bool {
+                     // Convert to "true" or "false" string with JSON array wrap if needed? 
+                     // Libdoo_db should handle un-wrapped bools via fallback. 
+                     // But for consistency we can stick to raw strings for bools/ints as they worked.
+                     let true_str = self.builder.build_global_string_ptr("true", "str_true").unwrap();
+                     let false_str = self.builder.build_global_string_ptr("false", "str_false").unwrap();
+                     
+                     let is_true = if int_val.get_type().get_bit_width() == 1 {
+                         int_val
+                     } else {
+                         self.builder.build_int_compare(inkwell::IntPredicate::NE, int_val, self.context.i32_type().const_zero(), "is_true").unwrap()
+                     };
+                     
+                     self.builder.build_select(is_true, true_str.as_pointer_value(), false_str.as_pointer_value(), "bool_str")
+                         .unwrap()
+                         .into()
+                } else {
+                    // Convert Int to string using sprintf
+                    self.convert_int_to_string_via_sprintf(int_val)
+                }
             } else if params_arg_raw.is_float_value() {
                 // Convert Float to string using sprintf
                 let float_val = params_arg_raw.into_float_value();

@@ -149,6 +149,23 @@ pub fn build_let_decl(builder: &mut MirBuilder, node: &AstNode) -> Vec<MirInstr>
             }
         }
 
+        // CRITICAL FIX: Back-patch TryPropagate instructions with the type annotation
+        // This ensures efficient JSON parsing for db.raw() calls
+        if let Some(type_ann) = type_annotation {
+            let type_str = type_ann.format_type_string();
+            for instr in instrs.iter_mut() {
+                if let MirInstr::TryPropagate {
+                    expected_ok_type, ..
+                } = instr
+                {
+                    if expected_ok_type.is_none() {
+                        println!("MIR_DEBUG: Back-patching TryPropagate with type: {}", type_str);
+                        *expected_ok_type = Some(type_str.clone());
+                    }
+                }
+            }
+        }
+
         instrs
     } else {
         vec![]

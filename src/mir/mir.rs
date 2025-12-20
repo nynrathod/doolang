@@ -495,6 +495,7 @@ pub enum MirInstr {
         name: String,        // Destination for Ok value
         result: String,      // Result to check
         error_block: String, // Block to jump to if Err
+        expected_ok_type: Option<String>, // Type annotation from surrounding Let statement
     },
 
     /// Unwrap Result or panic with message

@@ -1885,3 +1885,234 @@ pub extern "C" fn dooruntime_validate_json_body(
     }
 }
 
+// ============================================================================
+// JSON SCALAR EXTRACTION FOR DB RESULTS
+// ============================================================================
+// These functions extract the first scalar value from SQL result sets
+// COUNT queries return: [{"count": 5}] or [{"COUNT(*)": 5}] or just a number
+// We extract the first value from the first row
+
+/// Extract the first integer value from a JSON result set
+/// Handles formats like: [{"count": 5}], [{"COUNT(*)": 5}], 5, "5"
+#[no_mangle]
+pub extern "C" fn json_extract_scalar_v2(json: *const libc::c_char) -> i32 {
+    if json.is_null() {
+        return 0;
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    let json_val: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => {
+            // Try parsing as simple integer string if JSON fails
+            return json_str.trim().parse::<i32>().unwrap_or(0);
+        }
+    };
+
+    extract_first_int_from_value(&json_val)
+}
+
+fn extract_first_int_from_value(json_val: &serde_json::Value) -> i32 {
+    // If it's a plain number, return it
+    if let Some(n) = json_val.as_i64() {
+        return n as i32;
+    }
+    if let Some(n) = json_val.as_u64() {
+        return n as i32;
+    }
+
+    // If it's an array, get first element
+    if let Some(arr) = json_val.as_array() {
+        if let Some(first) = arr.first() {
+            return extract_first_int_from_value(first);
+        }
+    }
+
+    // If it's an object, get first field value
+    if let Some(obj) = json_val.as_object() {
+        // Try common COUNT field names first
+        for key in ["count", "COUNT(*)", "COUNT", "sum", "SUM", "avg", "AVG"] {
+            if let Some(val) = obj.get(key) {
+                if let Some(n) = val.as_i64() {
+                    return n as i32;
+                }
+                if let Some(n) = val.as_u64() {
+                    return n as i32;
+                }
+            }
+        }
+        // Try first field
+        if let Some((_, val)) = obj.iter().next() {
+            if let Some(n) = val.as_i64() {
+                return n as i32;
+            }
+            if let Some(n) = val.as_u64() {
+                return n as i32;
+            }
+        }
+    }
+
+    0
+}
+
+/// Extract the first float value from a JSON result set
+#[no_mangle]
+pub extern "C" fn json_extract_first_float(json: *const libc::c_char) -> f64 {
+    if json.is_null() {
+        return 0.0;
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0.0,
+        }
+    };
+
+    let json_val: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => {
+            return json_str.trim().parse::<f64>().unwrap_or(0.0);
+        }
+    };
+
+    extract_first_float_from_value(&json_val)
+}
+
+fn extract_first_float_from_value(json_val: &serde_json::Value) -> f64 {
+    if let Some(n) = json_val.as_f64() {
+        return n;
+    }
+    if let Some(n) = json_val.as_i64() {
+        return n as f64;
+    }
+    if let Some(n) = json_val.as_u64() {
+        return n as f64;
+    }
+
+    if let Some(arr) = json_val.as_array() {
+        if let Some(first) = arr.first() {
+            return extract_first_float_from_value(first);
+        }
+    }
+
+    if let Some(obj) = json_val.as_object() {
+        if let Some((_, val)) = obj.iter().next() {
+            if let Some(n) = val.as_f64() {
+                return n;
+            }
+            if let Some(n) = val.as_i64() {
+                return n as f64;
+            }
+        }
+    }
+
+    0.0
+}
+
+/// Extract the first boolean value from a JSON result set
+#[no_mangle]
+pub extern "C" fn json_extract_first_bool(json: *const libc::c_char) -> i32 {
+    if json.is_null() {
+        return 0;
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+
+    let json_val: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => {
+            return if json_str.trim() == "true" { 1 } else { 0 };
+        }
+    };
+
+    extract_first_bool_from_value(&json_val)
+}
+
+fn extract_first_bool_from_value(json_val: &serde_json::Value) -> i32 {
+    if let Some(b) = json_val.as_bool() {
+        return if b { 1 } else { 0 };
+    }
+
+    if let Some(arr) = json_val.as_array() {
+        if let Some(first) = arr.first() {
+            return extract_first_bool_from_value(first);
+        }
+    }
+
+    if let Some(obj) = json_val.as_object() {
+        if let Some((_, val)) = obj.iter().next() {
+            if let Some(b) = val.as_bool() {
+                return if b { 1 } else { 0 };
+            }
+        }
+    }
+
+    0
+}
+
+/// Extract the first string value from a JSON result set
+#[no_mangle]
+pub extern "C" fn json_extract_first_str(json: *const libc::c_char) -> *mut libc::c_char {
+    if json.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let json_str = unsafe {
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let json_val: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => {
+            // Return the raw string
+            return CString::new(json_str)
+                .map(|c| c.into_raw())
+                .unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    extract_first_str_from_value(&json_val)
+}
+
+fn extract_first_str_from_value(json_val: &serde_json::Value) -> *mut libc::c_char {
+    if let Some(s) = json_val.as_str() {
+        return CString::new(s)
+            .map(|c| c.into_raw())
+            .unwrap_or(std::ptr::null_mut());
+    }
+
+    if let Some(arr) = json_val.as_array() {
+        if let Some(first) = arr.first() {
+            return extract_first_str_from_value(first);
+        }
+    }
+
+    if let Some(obj) = json_val.as_object() {
+        if let Some((_, val)) = obj.iter().next() {
+            if let Some(s) = val.as_str() {
+                return CString::new(s)
+                    .map(|c| c.into_raw())
+                    .unwrap_or(std::ptr::null_mut());
+            }
+        }
+    }
+
+    std::ptr::null_mut()
+}
+
+
