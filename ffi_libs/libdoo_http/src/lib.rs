@@ -514,30 +514,50 @@ fn c_to_string(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
 }
 
+
+// Helper for unified allocation matching libdoo_runtime
+unsafe fn unified_alloc<T>(value: T) -> *mut T {
+    extern "C" { fn dooruntime_malloc(size: usize) -> *mut u8; }
+    let ptr = dooruntime_malloc(std::mem::size_of::<T>()) as *mut T;
+    if !ptr.is_null() {
+        std::ptr::write(ptr, value);
+    }
+    ptr
+}
+
 fn make_ok_void() -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: std::ptr::null_mut(),
-    }))
+    unsafe {
+        unified_alloc(DooResult {
+            tag: 0,
+            value: std::ptr::null_mut(),
+        })
+    }
 }
 
 fn make_ok_string(s: &str) -> *mut DooResult {
     let c_str = CString::new(s).expect("CString conversion failed");
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: c_str.into_raw() as *mut std::ffi::c_void,
-    }))
+    unsafe {
+        unified_alloc(DooResult {
+            tag: 0,
+            value: c_str.into_raw() as *mut std::ffi::c_void,
+        })
+    }
 }
 
 fn make_err_http(status: u16, message: &str) -> *mut DooResult {
-    let error = Box::new(DooHttpError {
-        status: status as i32,
-        message: string_to_c(message),
-    });
-    Box::into_raw(Box::new(DooResult {
-        tag: 1,
-        value: Box::into_raw(error) as *mut std::ffi::c_void,
-    }))
+    unsafe {
+        // Allocate Error using unified allocator
+        let error = unified_alloc(DooHttpError {
+            status: status as i32,
+            message: string_to_c(message),
+        });
+        
+        // Allocate Result using unified allocator
+        unified_alloc(DooResult {
+            tag: 1,
+            value: error as *mut std::ffi::c_void,
+        })
+    }
 }
 
 // ============================================================================
@@ -1333,6 +1353,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     // Store current request path in thread-local storage for RFC 7807 errors
     set_current_request_path(&path);
+    eprintln!("DEBUG: Handling request {}", path);
 
     // Combine global and route-specific middleware
     let mut all_middleware = global_middleware.clone();
@@ -1369,35 +1390,41 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         first_middleware(req_ptr, Box::into_raw(next_for_first))
     } else {
         // No middleware, call handler directly
+        eprintln!("DEBUG: Calling handler");
         handler(req_ptr)
     };
+    eprintln!("DEBUG: Handler returned");
 
     // Process result
     let response = unsafe {
+        eprintln!("DEBUG: Processing response");
         if result.is_null() {
             Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Full::new(Bytes::from("Handler returned null")))
                 .unwrap()
         } else {
-            let result_box = Box::from_raw(result);
+            extern "C" { fn dooruntime_free(ptr: *mut u8); }
+            // Use manual copy and free to avoid allocator mismatch with Box
+            let result_val = std::ptr::read(result);
+            dooruntime_free(result as *mut u8);
 
-            if result_box.tag == 0 {
+            if result_val.tag == 0 {
                 // Success - value is DooResponse*
-                if result_box.value.is_null() {
+                if result_val.value.is_null() {
                     Response::builder()
                         .status(StatusCode::OK)
                         .body(Full::new(Bytes::from("")))
                         .unwrap()
                 } else {
                     // Check if value is DooResult (tag < 100) or DooResponse (status >= 100)
-                    let raw_val = result_box.value as *const c_char;
+                    let raw_val = result_val.value as *const c_char;
                     let real_val = unsafe { unwrap_potential_dooresult(raw_val) };
 
                     if real_val.is_null() {
                         // Error unwrap (tag != 0)
                         // It is a DooHttpError packed in DooResult
-                        let raw_ptr = result_box.value;
+                        let raw_ptr = result_val.value;
                         // Inspect tag again to be sure
                         let tag = unsafe { *(raw_ptr as *const i32) };
                         // Assuming it's a DooHttpError pointer in value (offset 8)
@@ -1448,14 +1475,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                                 .unwrap()
                         } else {
                             // DooResponse
-                            let response_ptr = result_box.value as *mut DooResponse;
-                            let response = Box::from_raw(response_ptr);
+                            let response_ptr = result_val.value as *mut DooResponse;
+                            // Use manual copy and free for response too
+                            let response_val = std::ptr::read(response_ptr);
+                            dooruntime_free(response_ptr as *mut u8);
 
-                            let status = StatusCode::from_u16(response.status as u16)
+                            let status = StatusCode::from_u16(response_val.status as u16)
                                 .unwrap_or(StatusCode::OK);
 
                             // Handling body from Response (could also be DooResult)
-                            let raw_body = response.body;
+                            let raw_body = response_val.body;
                             let real_body = unsafe { unwrap_potential_dooresult(raw_body) };
 
                             let body_str = if real_body.is_null() {
@@ -1479,10 +1508,10 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                                 body_str
                             };
 
-                            let content_type_str = if response.content_type.is_null() {
+                            let content_type_str = if response_val.content_type.is_null() {
                                 "application/json".to_string()
                             } else {
-                                CStr::from_ptr(response.content_type)
+                                CStr::from_ptr(response_val.content_type)
                                     .to_string_lossy()
                                     .to_string()
                             };
@@ -1497,8 +1526,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 }
             } else {
                 // Error - value is DooHttpError*
-                let error_ptr = result_box.value as *mut DooHttpError;
-                let error = Box::from_raw(error_ptr);
+                let error_ptr = result_val.value as *mut DooHttpError;
+                let error = std::ptr::read(error_ptr);
+                dooruntime_free(error_ptr as *mut u8);
 
                 let status = StatusCode::from_u16(error.status as u16)
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -3872,9 +3902,35 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         }
     };
 
-    // Determine source based on source_type:
+    // Get HTTP method for smart source detection
+    let method_str = if !request.method.is_null() {
+        unsafe { CStr::from_ptr(request.method).to_string_lossy().to_string().to_uppercase() }
+    } else {
+        "".to_string()
+    };
+    
+    // Smart source_type detection:
+    // For GET/DELETE with no body, automatically use query params
+    let effective_source_type = if source_type == 0 {
+        let has_body = if request.body.is_null() {
+            false
+        } else {
+            let body_str = unsafe { CStr::from_ptr(request.body).to_string_lossy().to_string() };
+            !body_str.is_empty()
+        };
+        
+        if !has_body && (method_str == "GET" || method_str == "DELETE") {
+            2 // Use query params for GET/DELETE without body
+        } else {
+            0 // Use body for POST/PUT/PATCH or when body exists
+        }
+    } else {
+        source_type
+    };
+
+    // Determine source based on effective_source_type:
     // 0 = body (JSON), 1 = path params, 2 = query params
-    let source_data: serde_json::Map<String, serde_json::Value> = match source_type {
+    let source_data: serde_json::Map<String, serde_json::Value> = match effective_source_type {
         0 => {
             // Parse body JSON
             if request.body.is_null() {
@@ -3950,6 +4006,11 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         "Unknown".to_string()
     };
 
+    // Special types that receive raw request pointer - skip validation/population
+    if struct_name == "Request" || struct_name == "DooRequest" || struct_name == "Unknown" {
+        return 0; // Handler receives request directly, no struct to populate
+    }
+
     // Check for missing required fields first
     let struct_layouts = &metadata.struct_layouts;
     if let Some(struct_layout) = struct_layouts.get(&struct_name) {
@@ -4003,7 +4064,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                 }
 
                 // Validate type conversion for path/query params
-                if source_type == 1 || source_type == 2 {
+                if effective_source_type == 1 || effective_source_type == 2 {
                     if let Some(value) = source_data.get(field_name) {
                         if let Some(value_str) = value.as_str() {
                             let type_valid = match field_type {
@@ -4015,7 +4076,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                             };
 
                             if !type_valid {
-                                let err = match source_type {
+                                let err = match effective_source_type {
                                     1 => {
                                         let param = ParameterError::new(field_name.to_string())
                                             .with_expected(field_type.to_string())
@@ -4063,7 +4124,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
 
     // Validate field types for JSON body (source_type == 0) using struct_fields
     // struct_fields has proper type names like Array(Str), Array(Int), Map(Str,Int) etc.
-    if source_type == 0 {
+    if effective_source_type == 0 {
         if let Some(fields_vec) = metadata.struct_fields.get(&struct_name) {
             let mut type_errors = std::collections::HashMap::new();
 
@@ -4171,7 +4232,9 @@ pub extern "C" fn doohttp_populate_struct_from_request(
     }
 
 
-    // Validate decorators
+    // Validate decorators - collect ALL errors across all fields
+    let mut all_validation_errors: std::collections::HashMap<String, FieldError> = std::collections::HashMap::new();
+    
     if let Some(field_decorators) = struct_decorators {
         for (field_name, decorators) in field_decorators {
             // decorators is Vec<DecoratorInfo>
@@ -4200,85 +4263,74 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                         _ => field_value.to_string(),
                     };
 
-                    for decorator in decorators {
-                        let decorators_json = serde_json::to_string(&vec![serde_json::json!({
-                            "name": decorator.name,
-                            "args": decorator.args
-                        })])
+                    let decorators_json = serde_json::to_string(decorators)
                         .unwrap_or_else(|_| "[]".to_string());
 
-                        let field_name_cstr = CString::new(field_name.as_str()).unwrap();
-                        let field_type_cstr = CString::new(field_type).unwrap();
-                        let value_cstr = CString::new(value_str.as_str()).unwrap();
-                        let decorators_cstr = CString::new(decorators_json).unwrap();
+                    let field_name_cstr = CString::new(field_name.as_str()).unwrap();
+                    let field_type_cstr = CString::new(field_type).unwrap();
+                    let value_cstr = CString::new(value_str.as_str()).unwrap();
+                    let decorators_cstr = CString::new(decorators_json.clone()).unwrap();
 
-                        extern "C" {
-                            fn dooruntime_validate_field(
-                                field_name: *const libc::c_char,
-                                field_type: *const libc::c_char,
-                                value: *const libc::c_char,
-                                decorators_json: *const libc::c_char,
-                            ) -> *const libc::c_char;
-                            fn dooruntime_get_last_validation_error() -> *mut libc::c_char;
-                            fn dooruntime_free_string(ptr: *mut libc::c_char);
-                        }
+                    extern "C" {
+                        fn dooruntime_validate_field(
+                            field_name: *const libc::c_char,
+                            field_type: *const libc::c_char,
+                            value: *const libc::c_char,
+                            decorators_json: *const libc::c_char,
+                        ) -> *const libc::c_char;
+                        fn dooruntime_get_last_validation_error() -> *mut libc::c_char;
+                        fn dooruntime_free_string(ptr: *mut libc::c_char);
+                        fn dooruntime_malloc(size: usize) -> *mut u8;
+                    }
 
-                        unsafe {
-                            let error_ptr = dooruntime_validate_field(
-                                field_name_cstr.as_ptr(),
-                                field_type_cstr.as_ptr(),
-                                value_cstr.as_ptr(),
-                                decorators_cstr.as_ptr(),
-                            );
+                    unsafe {
+                        let error_ptr = dooruntime_validate_field(
+                            field_name_cstr.as_ptr(),
+                            field_type_cstr.as_ptr(),
+                            value_cstr.as_ptr(),
+                            decorators_cstr.as_ptr(),
+                        );
 
-                            if !error_ptr.is_null() {
-                                let validation_error_json_ptr =
-                                    dooruntime_get_last_validation_error();
-                                if !validation_error_json_ptr.is_null() {
-                                    let error_json_str = CStr::from_ptr(validation_error_json_ptr)
-                                        .to_string_lossy()
-                                        .to_string();
-                                    if let Ok(error_json) =
-                                        serde_json::from_str::<serde_json::Value>(&error_json_str)
-                                    {
-                                        let rule = error_json
-                                            .get("rule")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        let message = error_json
-                                            .get("message")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("Validation failed");
+                        if !error_ptr.is_null() {
+                            let validation_error_json_ptr =
+                                dooruntime_get_last_validation_error();
+                            if !validation_error_json_ptr.is_null() {
+                                let error_json_str = CStr::from_ptr(validation_error_json_ptr)
+                                    .to_string_lossy()
+                                    .to_string();
+                                if let Ok(error_json) =
+                                    serde_json::from_str::<serde_json::Value>(&error_json_str)
+                                {
+                                    let rule = error_json
+                                        .get("rule")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let message = error_json
+                                        .get("message")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Validation failed");
 
-                                        let mut validation_errors =
-                                            std::collections::HashMap::new();
-                                        let field_error = FieldError::new(field_name.clone())
-                                            .with_rule(rule.to_string())
-                                            .with_value(value_str.clone())
-                                            .with_error(message.to_string());
-                                        validation_errors.insert(field_name.clone(), field_error);
-
-                                        dooruntime_free_string(validation_error_json_ptr);
-
-                                        // Validation failed - store error and return error code
-                                        let err = validation_failed_error(
-                                            path_str.clone(),
-                                            validation_errors,
-                                        );
-                                        set_last_error(
-                                            err.status_code() as i32,
-                                            err.to_json_string(),
-                                        );
-                                        return 422; // Unprocessable Entity
-                                    }
+                                    let field_error = FieldError::new(field_name.clone())
+                                        .with_rule(rule.to_string())
+                                        .with_value(value_str.clone())
+                                        .with_error(message.to_string());
+                                    all_validation_errors.insert(field_name.clone(), field_error);
                                 }
-                                dooruntime_free_string(error_ptr as *mut _);
+                                dooruntime_free_string(validation_error_json_ptr);
                             }
+                            dooruntime_free_string(error_ptr as *mut _);
                         }
                     }
                 }
             }
         }
+    }
+    
+    // If any validation errors were collected, return them all at once
+    if !all_validation_errors.is_empty() {
+        let err = validation_failed_error(path_str.clone(), all_validation_errors);
+        set_last_error(err.status_code() as i32, err.to_json_string());
+        return 422; // Unprocessable Entity
     }
 
     // Validation passed - populate struct dynamically using actual struct_layouts from metadata
@@ -4301,6 +4353,13 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         {
             if let Some(fields) = struct_layout.get("fields").and_then(|f| f.as_array()) {
                 let struct_ptr_u8 = struct_ptr as *mut u8;
+
+                // Zero-initialize the entire struct to prevent freeing garbage pointers
+                if let Some(total_size) = struct_layout.get("total_size").and_then(|v| v.as_u64()) {
+                    unsafe {
+                        std::ptr::write_bytes(struct_ptr_u8, 0, total_size as usize);
+                    }
+                }
 
                 // Populate each field using actual offset from metadata
                 for field in fields {
@@ -4326,6 +4385,8 @@ pub extern "C" fn doohttp_populate_struct_from_request(
 
                     if let Some(field_value) = source_data.get(field_name) {
                         unsafe {
+                            extern "C" { fn dooruntime_malloc(size: usize) -> *mut u8; }
+                            eprintln!("DEBUG: Populating field {} type {} offset {}", field_name, field_type, offset);
                             match field_type {
                                 "Str" => {
                                     // Handle both direct strings and strings that need parsing
@@ -4334,16 +4395,60 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     } else {
                                         ""
                                     };
-                                    let c_string = CString::new(s).unwrap();
-                                    let str_ptr = c_string.into_raw();
-                                    std::ptr::write(
-                                        struct_ptr_u8.add(offset) as *mut *const libc::c_char,
-                                        str_ptr,
-                                    );
+                                    
+                                    // Allocate string with RC header (RC:i32, Len:i32, Data...)
+                                    // Doo runtime expects pointers to be managed ref-counted strings
+                                    let len = s.len();
+                                    let total_size = len + 1 + 8; // data + null + header
+                                    // Align to 16 bytes to be safe
+                                    let alloc_size = (total_size + 15) & !15;
+                                    // Use unified allocator
+                                    let ptr = dooruntime_malloc(alloc_size);
+                                    
+                                    if !ptr.is_null() {
+                                        // Zero memory for safety
+                                        std::ptr::write_bytes(ptr, 0, alloc_size);
+                                        // Write RC = 1
+                                        *(ptr as *mut i32) = 1;
+                                        // Write Len = len
+                                        *(ptr.add(4) as *mut i32) = len as i32;
+                                        // Copy data to offset 8
+                                        let data_ptr = ptr.add(8);
+                                        std::ptr::copy_nonoverlapping(s.as_ptr(), data_ptr, len);
+                                        // Null terminate (calloc already zeroed, but be explicit)
+                                        *data_ptr.add(len) = 0;
+                                        
+                                        // Store DATA pointer (offset 8) in the struct
+                                        std::ptr::write(
+                                            struct_ptr_u8.add(offset) as *mut *const libc::c_char,
+                                            data_ptr as *const libc::c_char,
+                                        );
+                                    } else {
+                                        // Fallback
+                                        std::ptr::write(
+                                            struct_ptr_u8.add(offset) as *mut *const libc::c_char,
+                                            std::ptr::null(),
+                                        );
+                                    }
                                 }
                                 "Int" => {
-                                    // Only accept JSON numbers, reject strings
-                                    if let Some(num) = field_value.as_i64() {
+                                    // For path/query params (source_type 1 or 2), parse string
+                                    // For body params (source_type 0), require JSON number
+                                    let parsed_int = if effective_source_type == 1 || effective_source_type == 2 {
+                                        // Path/query: try to parse string value
+                                        if let Some(str_val) = field_value.as_str() {
+                                            str_val.parse::<i64>().ok()
+                                        } else if let Some(num) = field_value.as_i64() {
+                                            Some(num)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        // Body: require JSON number
+                                        field_value.as_i64()
+                                    };
+                                    
+                                    if let Some(num) = parsed_int {
                                         let n = num as i32;
                                         std::ptr::write(struct_ptr_u8.add(offset) as *mut i32, n);
                                     } else {
@@ -4403,14 +4508,32 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     }
                                 }
                                 "Float" => {
-                                    // Only accept JSON numbers, reject strings
-                                    if let Some(num) = field_value.as_f64() {
+                                    // For path/query params (source_type 1 or 2), parse string
+                                    // For body params (source_type 0), require JSON number
+                                    let parsed_float = if effective_source_type == 1 || effective_source_type == 2 {
+                                        // Path/query: try to parse string value
+                                        if let Some(str_val) = field_value.as_str() {
+                                            str_val.parse::<f64>().ok()
+                                        } else if let Some(num) = field_value.as_f64() {
+                                            Some(num)
+                                        } else if let Some(num) = field_value.as_i64() {
+                                            Some(num as f64)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        // Body: require JSON number
+                                        if let Some(num) = field_value.as_f64() {
+                                            Some(num)
+                                        } else if let Some(num) = field_value.as_i64() {
+                                            Some(num as f64)
+                                        } else {
+                                            None
+                                        }
+                                    };
+                                    
+                                    if let Some(num) = parsed_float {
                                         std::ptr::write(struct_ptr_u8.add(offset) as *mut f64, num);
-                                    } else if let Some(num) = field_value.as_i64() {
-                                        std::ptr::write(
-                                            struct_ptr_u8.add(offset) as *mut f64,
-                                            num as f64,
-                                        );
                                     } else {
                                         // Type mismatch - set error
                                         let actual_type = if field_value.is_string() {
@@ -4450,8 +4573,27 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     }
                                 }
                                 "Bool" => {
-                                    // Only accept JSON booleans, reject strings
-                                    if let Some(bool_val) = field_value.as_bool() {
+                                    // For path/query params (source_type 1 or 2), parse string
+                                    // For body params (source_type 0), require JSON boolean
+                                    let parsed_bool = if effective_source_type == 1 || effective_source_type == 2 {
+                                        // Path/query: try to parse string value
+                                        if let Some(str_val) = field_value.as_str() {
+                                            match str_val {
+                                                "true" => Some(true),
+                                                "false" => Some(false),
+                                                _ => None,
+                                            }
+                                        } else if let Some(bool_val) = field_value.as_bool() {
+                                            Some(bool_val)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        // Body: require JSON boolean
+                                        field_value.as_bool()
+                                    };
+                                    
+                                    if let Some(bool_val) = parsed_bool {
                                         std::ptr::write(
                                             struct_ptr_u8.add(offset) as *mut i32,
                                             if bool_val { 1 } else { 0 },

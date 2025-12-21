@@ -143,6 +143,21 @@ pub extern "C" fn dooruntime_free_string(ptr: *mut libc::c_char) {
     }
 }
 
+/// Allocate memory using the runtime's allocator (libc::malloc)
+/// This ensures compatibility between FFI libraries and JIT-compiled code
+#[no_mangle]
+pub extern "C" fn dooruntime_malloc(size: libc::size_t) -> *mut u8 {
+    unsafe { libc::malloc(size) as *mut u8 }
+}
+
+/// Free memory using the runtime's allocator (libc::free)
+#[no_mangle]
+pub extern "C" fn dooruntime_free(ptr: *mut u8) {
+    if !ptr.is_null() {
+        unsafe { libc::free(ptr as *mut libc::c_void) }
+    }
+}
+
 fn validate_field_decorators(
     field_name: &str,
     field_type: &str,

@@ -211,8 +211,20 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                 } else {
                     // Handler compiled as pointer but needs struct - allocate based on metadata
-                    // Use a generic allocation size (32 bytes should cover most structs)
-                    let struct_size = i32_type.const_int(32, false);
+                    // Get struct size from metadata, fallback to 256 bytes for safety
+                    let struct_type_name = self
+                        .function_param_types
+                        .get(&actual_func_name)
+                        .and_then(|types| types.first().cloned())
+                        .unwrap_or_default();
+                    
+                    let struct_size_bytes = self
+                        .struct_metadata
+                        .get(&struct_type_name)
+                        .map(|meta| meta.total_size)
+                        .unwrap_or(256); // Safe default for unknown structs
+                    
+                    let struct_size = i32_type.const_int(struct_size_bytes, false);
                     self.builder
                         .build_array_malloc(self.context.i8_type(), struct_size, "param_struct")
                         .unwrap()
@@ -486,8 +498,20 @@ impl<'ctx> CodeGen<'ctx> {
                             .build_alloca(param_type.into_struct_type(), &format!("param_{}", i))
                             .unwrap()
                     } else {
-                        // Handler compiled as pointer - allocate generic struct
-                        let struct_size = i32_type.const_int(64, false);
+                        // Handler compiled as pointer - allocate based on actual struct size
+                        let struct_type_name = self
+                            .function_param_types
+                            .get(&actual_func_name)
+                            .and_then(|types| types.get(i as usize).cloned())
+                            .unwrap_or_default();
+                        
+                        let struct_size_bytes = self
+                            .struct_metadata
+                            .get(&struct_type_name)
+                            .map(|meta| meta.total_size)
+                            .unwrap_or(256); // Safe default for unknown structs
+                        
+                        let struct_size = i32_type.const_int(struct_size_bytes, false);
                         self.builder
                             .build_array_malloc(
                                 self.context.i8_type(),
