@@ -1666,8 +1666,110 @@ pub extern "C" fn dooruntime_check_missing_fields(
     }
 }
 
+/// Helper function to validate a JSON value against an expected type
+/// Returns (is_valid, error_detail) where error_detail describes the mismatch
+fn validate_type(expected_type: &str, value: &serde_json::Value) -> (bool, Option<String>) {
+    match expected_type {
+        "Int" => {
+            if value.is_i64() || value.is_u64() {
+                (true, None)
+            } else {
+                (false, Some(format!("expected Int, got {}", json_type_name(value))))
+            }
+        }
+        "Float" => {
+            if value.is_f64() || value.is_i64() || value.is_u64() {
+                (true, None)
+            } else {
+                (false, Some(format!("expected Float, got {}", json_type_name(value))))
+            }
+        }
+        "Bool" => {
+            if value.is_boolean() {
+                (true, None)
+            } else {
+                (false, Some(format!("expected Bool, got {}", json_type_name(value))))
+            }
+        }
+        "Str" => {
+            if value.is_string() {
+                (true, None)
+            } else {
+                (false, Some(format!("expected Str, got {}", json_type_name(value))))
+            }
+        }
+        // Array types: [Str], [Int], [Float], [Bool]
+        ty if ty.starts_with('[') && ty.ends_with(']') => {
+            let inner_type = &ty[1..ty.len()-1];
+            if let Some(arr) = value.as_array() {
+                for (idx, elem) in arr.iter().enumerate() {
+                    let (elem_valid, elem_error) = validate_type(inner_type, elem);
+                    if !elem_valid {
+                        return (false, Some(format!(
+                            "array element at index {} has wrong type: {}",
+                            idx, elem_error.unwrap_or_default()
+                        )));
+                    }
+                }
+                (true, None)
+            } else {
+                (false, Some(format!("expected array, got {}", json_type_name(value))))
+            }
+        }
+        // Map types: {Str: Int}, {Str: Str}, etc.
+        ty if ty.starts_with('{') && ty.ends_with('}') && ty.contains(':') => {
+            let inner = &ty[1..ty.len()-1];
+            if let Some(colon_pos) = inner.find(':') {
+                let key_type = inner[..colon_pos].trim();
+                let value_type = inner[colon_pos+1..].trim();
+                
+                if let Some(obj) = value.as_object() {
+                    // Validate keys (should always be strings in JSON)
+                    if key_type != "Str" {
+                        // JSON only supports string keys, so non-Str key types can't be validated
+                        return (true, None);
+                    }
+                    
+                    // Validate values
+                    for (k, v) in obj {
+                        let (val_valid, val_error) = validate_type(value_type, v);
+                        if !val_valid {
+                            return (false, Some(format!(
+                                "map value for key '{}' has wrong type: {}",
+                                k, val_error.unwrap_or_default()
+                            )));
+                        }
+                    }
+                    (true, None)
+                } else {
+                    (false, Some(format!("expected object, got {}", json_type_name(value))))
+                }
+            } else {
+                (true, None) // Can't parse map type, skip validation
+            }
+        }
+        // Enum types and unknown - allow them through (enums are validated elsewhere)
+        _ => (true, None),
+    }
+}
+
+/// Get the JSON type name for error messages
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "Bool",
+        serde_json::Value::Number(n) => {
+            if n.is_f64() && n.as_i64().is_none() { "Float" } else { "Int" }
+        },
+        serde_json::Value::String(_) => "Str",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 /// Validate all field types in JSON body against expected types
 /// Returns JSON string with type mismatch errors, or null if all types correct
+
 /// field_types_json format: {"field_name": "Int", "email": "Str", ...}
 /// Returns: {"fields": {"field": {"expected": "Int", "received": "String", "value": "invalid"}}}
 #[no_mangle]
@@ -1710,42 +1812,20 @@ pub extern "C" fn dooruntime_validate_field_types(
             for (field_name, expected_type_val) in &field_types {
                 if let Some(expected_type) = expected_type_val.as_str() {
                     if let Some(field_value) = obj.get(field_name) {
-                        let is_valid = match expected_type {
-                            "Int" => field_value.is_i64() || field_value.is_u64(),
-                            "Float" => {
-                                field_value.is_f64()
-                                    || field_value.is_i64()
-                                    || field_value.is_u64()
-                            }
-                            "Bool" => field_value.is_boolean(),
-                            "Str" => field_value.is_string(),
-                            _ => true, // Unknown type, skip validation
-                        };
+                        let (is_valid, error_detail) = validate_type(expected_type, field_value);
 
                         if !is_valid {
-                            let actual_type = if field_value.is_string() {
-                                "String"
-                            } else if field_value.is_i64() || field_value.is_u64() {
-                                "Int"
-                            } else if field_value.is_f64() {
-                                "Float"
-                            } else if field_value.is_boolean() {
-                                "Bool"
-                            } else if field_value.is_array() {
-                                "Array"
-                            } else if field_value.is_object() {
-                                "Object"
-                            } else {
-                                "Unknown"
-                            };
-
                             let value_str = field_value.to_string();
                             let mut field_error = serde_json::Map::new();
                             field_error.insert("expected".to_string(), json!(expected_type));
-                            field_error.insert("received".to_string(), json!(actual_type));
+                            field_error.insert("received".to_string(), json!(json_type_name(field_value)));
                             field_error.insert("value".to_string(), json!(value_str));
+                            if let Some(detail) = error_detail {
+                                field_error.insert("detail".to_string(), json!(detail));
+                            }
                             type_errors.insert(field_name.clone(), json!(field_error));
                         }
+
                     }
                 }
             }

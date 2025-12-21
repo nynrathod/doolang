@@ -174,8 +174,10 @@ struct HandlerMetadata {
     #[allow(dead_code)]
     struct_fields: HashMap<String, Vec<Vec<String>>>,
     struct_layouts: serde_json::Value,
+    enum_variants: HashMap<String, Vec<String>>,  // enum_name -> [variant_names]
     return_type: String,
 }
+
 
 #[derive(Clone, Debug, Serialize)]
 struct DecoratorInfo {
@@ -665,13 +667,36 @@ pub extern "C" fn doo_http_register_handler_with_metadata(
                 })
                 .unwrap_or_default();
 
+            // Parse enum_variants: { "EnumName": ["Variant1", "Variant2"] }
+            let enum_variants = json
+                .get("enum_variants")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .map(|(k, v)| {
+                            let variants = v
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            (k.clone(), variants)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             let metadata = HandlerMetadata {
                 param_types,
                 struct_decorators,
                 struct_fields,
                 struct_layouts,
+                enum_variants,
                 return_type,
             };
+
             registry
                 .handler_metadata
                 .insert(handler_name.clone(), metadata);
@@ -2921,9 +2946,130 @@ pub extern "C" fn doohttp_error_rfc7807_bad_request_with_fields(
     string_to_c(&error_json)
 }
 
+/// Helper function to validate a JSON value against an expected Doo type
+/// Returns (is_valid, error_detail) where error_detail describes the mismatch
+fn validate_field_type(expected_type: &str, value: &serde_json::Value) -> (bool, Option<String>) {
+    match expected_type {
+        "Int" => {
+            if value.is_i64() || value.is_u64() {
+                (true, None)
+            } else {
+                (false, Some(format!("expected Int, got {}", get_json_type_name(value))))
+            }
+        }
+        "Float" => {
+            if value.is_f64() || value.is_i64() || value.is_u64() {
+                (true, None)
+            } else {
+                (false, Some(format!("expected Float, got {}", get_json_type_name(value))))
+            }
+        }
+        "Bool" => {
+            if value.is_boolean() {
+                (true, None)
+            } else {
+                (false, Some(format!("expected Bool, got {}", get_json_type_name(value))))
+            }
+        }
+        "Str" => {
+            if value.is_string() {
+                (true, None)
+            } else {
+                (false, Some(format!("expected Str, got {}", get_json_type_name(value))))
+            }
+        }
+        // Array types: [Str], [Int], [Float], [Bool]
+        ty if ty.starts_with('[') && ty.ends_with(']') => {
+            let inner_type = &ty[1..ty.len()-1];
+            if let Some(arr) = value.as_array() {
+                for (idx, elem) in arr.iter().enumerate() {
+                    let (elem_valid, elem_error) = validate_field_type(inner_type, elem);
+                    if !elem_valid {
+                        return (false, Some(format!(
+                            "array element at index {} has wrong type: {}",
+                            idx, elem_error.unwrap_or_default()
+                        )));
+                    }
+                }
+                (true, None)
+            } else {
+                (false, Some(format!("expected array, got {}", get_json_type_name(value))))
+            }
+        }
+        // Array types in compiler format: Array(Str), Array(Int), Array(Float), Array(Bool)
+        ty if ty.starts_with("Array(") && ty.ends_with(')') => {
+            let inner_type = &ty[6..ty.len()-1];  // Extract "Str" from "Array(Str)"
+            if let Some(arr) = value.as_array() {
+                for (idx, elem) in arr.iter().enumerate() {
+                    let (elem_valid, elem_error) = validate_field_type(inner_type, elem);
+                    if !elem_valid {
+                        return (false, Some(format!(
+                            "array element at index {} has wrong type: {}",
+                            idx, elem_error.unwrap_or_default()
+                        )));
+                    }
+                }
+                (true, None)
+            } else {
+                (false, Some(format!("expected array, got {}", get_json_type_name(value))))
+            }
+        }
+
+        // Map types: {Str: Int}, {Str: Str}, etc.
+        ty if ty.starts_with('{') && ty.ends_with('}') && ty.contains(':') => {
+            let inner = &ty[1..ty.len()-1];
+            if let Some(colon_pos) = inner.find(':') {
+                let key_type = inner[..colon_pos].trim();
+                let value_type = inner[colon_pos+1..].trim();
+                
+                if let Some(obj) = value.as_object() {
+                    // Validate keys (should always be strings in JSON)
+                    if key_type != "Str" {
+                        // JSON only supports string keys, so non-Str key types can't be validated
+                        return (true, None);
+                    }
+                    
+                    // Validate values
+                    for (k, v) in obj {
+                        let (val_valid, val_error) = validate_field_type(value_type, v);
+                        if !val_valid {
+                            return (false, Some(format!(
+                                "map value for key '{}' has wrong type: {}",
+                                k, val_error.unwrap_or_default()
+                            )));
+                        }
+                    }
+                    (true, None)
+                } else {
+                    (false, Some(format!("expected object, got {}", get_json_type_name(value))))
+                }
+            } else {
+                (true, None) // Can't parse map type, skip validation
+            }
+        }
+        // Enum types and unknown - allow them through (enums are validated elsewhere)
+        _ => (true, None),
+    }
+}
+
+/// Get the JSON type name for error messages
+fn get_json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "Bool",
+        serde_json::Value::Number(n) => {
+            if n.is_f64() && n.as_i64().is_none() { "Float" } else { "Int" }
+        },
+        serde_json::Value::String(_) => "Str",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 // ===== DECORATOR VALIDATION =====
 // Note: All validation logic is in libdoo_runtime via dooruntime_validate_field()
 // This keeps validation centralized and reusable across all FFI libs (http, db, auth)
+
 
 /// Format validation error from runtime into RFC 7807 DooResponse
 /// Takes validation error JSON from dooruntime_get_last_validation_error() and request path
@@ -3010,11 +3156,69 @@ pub extern "C" fn doohttp_validate_and_call_handler(
         }
     };
 
+    // Get struct_fields for type validation (before decorator validation)
+    let struct_fields = metadata
+        .get("struct_fields")
+        .and_then(|sf| sf.get(struct_name))
+        .and_then(|v| v.as_array());
+
+    // Validate field types including array element types
+    if let Some(fields_array) = struct_fields {
+        let mut type_errors = serde_json::Map::new();
+        
+        for field_def in fields_array {
+            if let Some(field_arr) = field_def.as_array() {
+                if field_arr.len() >= 2 {
+                    let field_name = field_arr[0].as_str().unwrap_or("");
+                    let expected_type = field_arr[1].as_str().unwrap_or("");
+                    
+                    if let Some(field_value) = body_obj.get(field_name) {
+                        // Validate type using helper function
+                        let (is_valid, error_detail) = validate_field_type(expected_type, field_value);
+                        
+                        if !is_valid {
+                            let mut field_error = serde_json::Map::new();
+                            field_error.insert("expected".to_string(), json!(expected_type));
+                            field_error.insert("received".to_string(), json!(get_json_type_name(field_value)));
+                            if let Some(detail) = error_detail {
+                                field_error.insert("detail".to_string(), json!(detail));
+                            }
+                            type_errors.insert(field_name.to_string(), json!(field_error));
+                        }
+                    }
+                }
+            }
+        }
+        
+        if !type_errors.is_empty() {
+            use error::*;
+            let mut err = bad_request("Type mismatch in request body".to_string(), path_str.clone());
+            for (field_name, error_info) in type_errors {
+                let error_obj = error_info.as_object().unwrap();
+                let detail = error_obj.get("detail").and_then(|d| d.as_str()).unwrap_or("");
+                err = err.with_field(field_name.clone(), FieldError {
+                    rule: None,
+                    message: field_name.clone(),
+                    value: None,
+                    expected: error_obj.get("expected").and_then(|e| e.as_str()).map(|s| s.to_string()),
+                    received: error_obj.get("received").and_then(|r| r.as_str()).map(|s| s.to_string()),
+                    error: Some(detail.to_string()),
+                });
+            }
+            return Box::into_raw(Box::new(DooResponse {
+                status: 400,
+                body: string_to_c(&err.to_json_string()),
+                content_type: string_to_c("application/json"),
+            }));
+        }
+    }
+
     // Get struct_decorators for validation
     let struct_decorators = metadata
         .get("struct_decorators")
         .and_then(|sd| sd.get(struct_name))
         .and_then(|v| v.as_object());
+
 
     if let Some(field_decorators) = struct_decorators {
         let mut validation_errors = std::collections::HashMap::new();
@@ -3466,6 +3670,7 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         unsafe {
             let field_ptr = (struct_ptr as *const u8).offset(offset);
 
+
             let field_value: serde_json::Value = match field_type {
                 "Int" => {
                     let val = *(field_ptr as *const i32);
@@ -3489,8 +3694,114 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                         serde_json::json!(rust_str)
                     }
                 }
-                _ => serde_json::json!(null),
+                ty if ty.starts_with("Array(") && ty.ends_with(')') => {
+                    // Array layout: [RC: 4 bytes][Length: 4 bytes][data...]
+                    // IMPORTANT: The stored pointer points to DATA (at offset +8 from header start)
+                    // So from the data pointer: RC is at -8, Length is at -4, Data is at 0
+                    let data_ptr = *(field_ptr as *const *const u8);
+                    if data_ptr.is_null() {
+                        serde_json::json!([])
+                    } else {
+                        // Read length from offset -4 (relative to data pointer)
+                        let len = *(data_ptr.offset(-4) as *const i32) as usize;
+                        let element_type = &ty[6..ty.len()-1];  // Extract "Str" from "Array(Str)"
+                        
+                        let mut arr: Vec<serde_json::Value> = Vec::new();
+                        match element_type {
+                            "Int" => {
+                                let data = data_ptr as *const i32;
+                                for i in 0..len {
+                                    arr.push(serde_json::json!(*data.add(i)));
+                                }
+                            }
+                            "Float" => {
+                                let data = data_ptr as *const f64;
+                                for i in 0..len {
+                                    arr.push(serde_json::json!(*data.add(i)));
+                                }
+                            }
+                            "Bool" => {
+                                let data = data_ptr as *const i32;
+                                for i in 0..len {
+                                    arr.push(serde_json::json!(*data.add(i) != 0));
+                                }
+                            }
+                            "Str" => {
+                                let data = data_ptr as *const *const libc::c_char;
+                                for i in 0..len {
+                                    let str_ptr = *data.add(i);
+                                    if str_ptr.is_null() {
+                                        arr.push(serde_json::json!(""));
+                                    } else {
+                                        let c_str = CStr::from_ptr(str_ptr);
+                                        arr.push(serde_json::json!(c_str.to_string_lossy().to_string()));
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Unknown element type, return empty array
+                            }
+                        }
+                        serde_json::Value::Array(arr)
+                    }
+                }
+                ty => {
+                    // Check if this is a nested struct
+                    if let Some(nested_layout_obj) = metadata.struct_layouts.get(ty).and_then(|v| v.as_object()) {
+                        // This is a nested struct - read pointer to child struct
+                        let nested_ptr = *(field_ptr as *const *const u8);
+                        if nested_ptr.is_null() {
+                            serde_json::json!(null)
+                        } else {
+                            // Recursively serialize nested struct
+                            if let Some(nested_fields) = nested_layout_obj.get("fields").and_then(|f| f.as_array()) {
+                                let mut nested_obj = serde_json::Map::new();
+                                for nested_field in nested_fields {
+                                    if let Some(nf_obj) = nested_field.as_object() {
+                                        let nf_name = nf_obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                        let nf_type = nf_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        let nf_offset = nf_obj.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as isize;
+                                        
+                                        let nf_ptr = (nested_ptr as *const u8).offset(nf_offset);
+                                        
+                                        let nf_value: serde_json::Value = match nf_type {
+                                            "Int" => {
+                                                let val = *(nf_ptr as *const i32);
+                                                serde_json::json!(val)
+                                            }
+                                            "Float" => {
+                                                let val = *(nf_ptr as *const f64);
+                                                serde_json::json!(val)
+                                            }
+                                            "Bool" => {
+                                                let val = *(nf_ptr as *const i32);
+                                                serde_json::json!(val != 0)
+                                            }
+                                            "Str" => {
+                                                let str_ptr = *(nf_ptr as *const *const libc::c_char);
+                                                if str_ptr.is_null() {
+                                                    serde_json::json!("")
+                                                } else {
+                                                    let c_str = CStr::from_ptr(str_ptr);
+                                                    serde_json::json!(c_str.to_string_lossy().to_string())
+                                                }
+                                            }
+                                            _ => serde_json::json!(null),
+                                        };
+                                        nested_obj.insert(nf_name.to_string(), nf_value);
+                                    }
+                                }
+                                serde_json::Value::Object(nested_obj)
+                            } else {
+                                serde_json::json!(null)
+                            }
+                        }
+                    } else {
+                        serde_json::json!(null)
+                    }
+                }
             };
+
 
             json_obj.insert(field_name.to_string(), field_value);
         }
@@ -3750,66 +4061,115 @@ pub extern "C" fn doohttp_populate_struct_from_request(
     // Validate fields with decorators - use metadata directly
     let struct_decorators = metadata.struct_decorators.get(&struct_name);
 
-    // Validate field types for JSON body (source_type == 0)
+    // Validate field types for JSON body (source_type == 0) using struct_fields
+    // struct_fields has proper type names like Array(Str), Array(Int), Map(Str,Int) etc.
     if source_type == 0 {
-        if let Some(struct_layout_obj) =
-            struct_layouts.get(&struct_name).and_then(|v| v.as_object())
-        {
-            if let Some(fields_array) = struct_layout_obj.get("fields").and_then(|f| f.as_array()) {
-                let mut type_errors = std::collections::HashMap::new();
+        if let Some(fields_vec) = metadata.struct_fields.get(&struct_name) {
+            let mut type_errors = std::collections::HashMap::new();
 
-                for field_info in fields_array {
-                    if let Some(field_obj) = field_info.as_object() {
-                        let field_name =
-                            field_obj.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                        let expected_type =
-                            field_obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            for field_def in fields_vec {
 
-                        if let Some(field_value) = source_data.get(field_name) {
-                            let type_matches = match expected_type {
-                                "Int" => field_value.is_i64() || field_value.is_u64(),
-                                "Float" => field_value.is_f64(),
-                                "Bool" => field_value.is_boolean(),
-                                "Str" => field_value.is_string(),
-                                _ => true, // Unknown types pass
-                            };
+                if field_def.len() >= 2 {
+                    let field_name = &field_def[0];
+                    let expected_type = &field_def[1];
+
+                    if let Some(field_value) = source_data.get(field_name) {
+                        // Check if this is an enum type - validate against allowed variants
+                        if let Some(allowed_variants) = metadata.enum_variants.get(expected_type.as_str()) {
+                            // This is an enum - value must be a string matching one of the variants
+                            if let Some(value_str) = field_value.as_str() {
+                                if !allowed_variants.contains(&value_str.to_string()) {
+                                    let field_err = FieldError::new(field_name.to_string())
+                                        .with_rule("invalid_enum_value".to_string())
+                                        .with_expected(format!("one of: {}", allowed_variants.join(", ")))
+                                        .with_received(value_str.to_string())
+                                        .with_value(value_str.to_string())
+                                        .with_error(format!(
+                                            "Invalid enum value '{}' for type {}. Allowed values: {:?}",
+                                            value_str, expected_type, allowed_variants
+                                        ));
+                                    type_errors.insert(field_name.to_string(), field_err);
+                                }
+                            } else {
+                                let field_err = FieldError::new(field_name.to_string())
+                                    .with_rule("type_mismatch".to_string())
+                                    .with_expected(expected_type.to_string())
+                                    .with_received(get_json_type_name(field_value).to_string())
+                                    .with_value(field_value.to_string())
+                                    .with_error(format!("Enum values must be strings, got {}", get_json_type_name(field_value)));
+                                type_errors.insert(field_name.to_string(), field_err);
+                            }
+                        } else if let Some(nested_struct_fields) = metadata.struct_fields.get(expected_type.as_str()) {
+                            // This is a nested struct - recursively validate its fields
+                            if let Some(nested_obj) = field_value.as_object() {
+                                for nested_field_def in nested_struct_fields {
+                                    if nested_field_def.len() >= 2 {
+                                        let nested_field_name = &nested_field_def[0];
+                                        let nested_expected_type = &nested_field_def[1];
+                                        
+                                        if let Some(nested_value) = nested_obj.get(nested_field_name) {
+                                            let (type_matches, error_detail) = validate_field_type(nested_expected_type, nested_value);
+                                            
+                                            if !type_matches {
+                                                let received_type = get_json_type_name(nested_value);
+                                                let error_msg = error_detail.unwrap_or_else(|| 
+                                                    format!("Expected type {}, received {}", nested_expected_type, received_type)
+                                                );
+                                                
+                                                let nested_field_path = format!("{}.{}", field_name, nested_field_name);
+                                                let field_err = FieldError::new(nested_field_path.clone())
+                                                    .with_rule("type_mismatch".to_string())
+                                                    .with_expected(nested_expected_type.to_string())
+                                                    .with_received(received_type.to_string())
+                                                    .with_value(nested_value.to_string())
+                                                    .with_error(error_msg);
+                                                type_errors.insert(nested_field_path, field_err);
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                let field_err = FieldError::new(field_name.to_string())
+                                    .with_rule("type_mismatch".to_string())
+                                    .with_expected(expected_type.to_string())
+                                    .with_received(get_json_type_name(field_value).to_string())
+                                    .with_value(field_value.to_string())
+                                    .with_error(format!("Expected nested struct {}, got {}", expected_type, get_json_type_name(field_value)));
+                                type_errors.insert(field_name.to_string(), field_err);
+                            }
+                        } else {
+                            // Use validate_field_type helper for primitives, arrays, and maps
+                            let (type_matches, error_detail) = validate_field_type(expected_type, field_value);
 
                             if !type_matches {
-                                let received_type = if field_value.is_string() {
-                                    "String"
-                                } else if field_value.is_i64() || field_value.is_u64() {
-                                    "Int"
-                                } else if field_value.is_f64() {
-                                    "Float"
-                                } else if field_value.is_boolean() {
-                                    "Bool"
-                                } else {
-                                    "Unknown"
-                                };
-
+                                let received_type = get_json_type_name(field_value);
+                                let error_msg = error_detail.unwrap_or_else(|| 
+                                    format!("Expected type {}, received {}", expected_type, received_type)
+                                );
+                                
                                 let field_err = FieldError::new(field_name.to_string())
                                     .with_rule("type_mismatch".to_string())
                                     .with_expected(expected_type.to_string())
                                     .with_received(received_type.to_string())
                                     .with_value(field_value.to_string())
-                                    .with_error(format!(
-                                        "Expected type {}, received {}",
-                                        expected_type, received_type
-                                    ));
+                                    .with_error(error_msg);
                                 type_errors.insert(field_name.to_string(), field_err);
                             }
                         }
                     }
-                }
 
-                if !type_errors.is_empty() {
-                    let err = type_mismatch_error(path_str.clone(), type_errors);
-                    set_last_error(err.status_code() as i32, err.to_json_string());
-                    return 400;
                 }
+            }
+
+
+            if !type_errors.is_empty() {
+                let err = type_mismatch_error(path_str.clone(), type_errors);
+                set_last_error(err.status_code() as i32, err.to_json_string());
+                return 400;
             }
         }
     }
+
 
     // Validate decorators
     if let Some(field_decorators) = struct_decorators {
@@ -4863,6 +5223,9 @@ unsafe fn validate_field_with_runtime(
     );
 
     if !result.is_null() {
+        // Free the result pointer returned by dooruntime_validate_field
+        dooruntime_free_string(result as *mut c_char);
+        
         // Validation failed - get error from runtime
         let error_ptr = dooruntime_get_last_validation_error();
         if !error_ptr.is_null() {

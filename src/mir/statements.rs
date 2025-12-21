@@ -256,11 +256,11 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                                 crate::parser::ast::TypeNode::String => "Str".to_string(),
                                 crate::parser::ast::TypeNode::TypeRef(n) => n.clone(),
                                 crate::parser::ast::TypeNode::Struct(n, _) => n.clone(),
-                                crate::parser::ast::TypeNode::Array(elem) => 
-                                    format!("Array({})", elem.format_type_string()),
+                                crate::parser::ast::TypeNode::Array(elem) => {
+                                    format!("Array({})", elem.format_type_string())
+                                }
                                 _ => type_ann.format_type_string(),
                             };
-                            println!("LetDecl: Updated TryPropagate name={} with type={}", name, type_str); // DEBUG PRINT
                             *expected_ok_type = Some(type_str);
                             break;
                         }

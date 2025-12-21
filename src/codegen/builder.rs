@@ -1547,10 +1547,30 @@ impl<'ctx> CodeGen<'ctx> {
         }
         json.push_str("},");
 
+        // enum_variants object (enum name -> list of variant names)
+        json.push_str("\"enum_variants\":{");
+        let mut first_enum = true;
+        for (enum_name, variants) in &self.enum_variants {
+            if !first_enum {
+                json.push(',');
+            }
+            first_enum = false;
+            json.push_str(&format!("\"{}\":[", enum_name));
+            for (i, (variant_name, _tag)) in variants.iter().enumerate() {
+                if i > 0 {
+                    json.push(',');
+                }
+                json.push_str(&format!("\"{}\"", variant_name));
+            }
+            json.push(']');
+        }
+        json.push_str("},");
+
         // return_type
         json.push_str(&format!("\"return_type\":\"{}\"", return_type));
 
         json.push('}');
+
 
         json
     }
@@ -7055,31 +7075,18 @@ impl<'ctx> CodeGen<'ctx> {
                         };
 
                         // AUTO-PARSE JSON if needed (db.raw() with typed return)
-                        println!(
-                            "TRYPROP_DEBUG: needs_json_parse={} expected_type={:?}",
-                            needs_json_parse, expected_type
-                        );
                         if needs_json_parse && expected_type.is_some() {
                             let target_type = expected_type.clone().unwrap();
-                            println!("TRYPROP_DEBUG: target_type={}", target_type);
-
                             // Parse JSON for all types except raw strings (Str/String)
                             // Scalar types (Int/Float/Bool) from db.rawWithParams need JSON parsing
                             // via atoi/atof in convert_json_string_to_type
                             if target_type != "Str" && target_type != "String" {
-                                println!(
-                                    "TRYPROP_DEBUG: Entering JSON parse path for type={}",
-                                    target_type
-                                );
-
                                 // The actual_value is a JSON string pointer
                                 // We need to parse it into the target type using convert_json_string_to_type()
 
                                 let json_str_ptr = if actual_value.is_pointer_value() {
-                                    println!("TRYPROP_DEBUG: actual_value is pointer");
                                     actual_value.into_pointer_value()
                                 } else {
-                                    println!("TRYPROP_DEBUG: actual_value is NOT pointer, using ok_value_ptr");
                                     ok_value_ptr
                                 };
 
@@ -7089,11 +7096,9 @@ impl<'ctx> CodeGen<'ctx> {
                                 let data_ptr = json_str_ptr;
 
                                 // Use convert_json_string_to_type for proper typed parsing
-                                println!("TRYPROP_DEBUG: Calling convert_json_string_to_type for type={}", target_type);
                                 if let Some(parsed) =
                                     self.convert_json_string_to_type(data_ptr, &target_type)
                                 {
-                                    println!("TRYPROP_DEBUG: convert_json_string_to_type RETURNED a value for type={}", target_type);
                                     actual_value = parsed;
                                     // For scalar types, actual_value is already correct (i32/f64 value)
                                     // We DON'T create a special alloca or symbol here - the value
