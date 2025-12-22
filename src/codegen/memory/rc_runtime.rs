@@ -12,6 +12,16 @@ impl<'ctx> CodeGen<'ctx> {
     /// Initializes the RC runtime by creating the incref and decref functions.
     /// These functions are stored in the CodeGen context for later use.
     pub fn init_rc_runtime(&mut self) {
+        // CRITICAL: Pre-declare malloc with i64 parameter FIRST
+        // This MUST happen before any inkwell build_malloc calls, which would
+        // otherwise declare malloc with i32 parameter, causing type mismatches.
+        if self.module.get_function("malloc").is_none() {
+            let i64_type = self.context.i64_type();
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let malloc_type = ptr_type.fn_type(&[i64_type.into()], false);
+            self.module.add_function("malloc", malloc_type, None);
+        }
+        
         self.incref_fn = Some(self.create_incref_function());
         self.decref_fn = Some(self.create_decref_function());
     }

@@ -8437,13 +8437,12 @@ impl<'ctx> CodeGen<'ctx> {
                 struct_name,
                 fields,
             } => {
-                // TODO: Validation disabled temporarily - validating wrong values (Request struct fields instead of UserInput)
-                // The issue: validation happens during StructInit for return values, not during input parsing
-                // Need to validate at JSON parse time, not at struct creation time
+                // Validate struct fields with decorators
+                // This validates @email, @min, @max, @enum constraints at runtime
                 // Clone to avoid borrow checker issues
                 let field_decorators_clone: Option<
                     std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
-                > = None; // Disabled: self.struct_field_decorators.get(struct_name).cloned();
+                > = self.struct_field_decorators.get(struct_name).cloned();
                 if let Some(field_decorators) = field_decorators_clone {
                     self.declare_runtime_validation_functions();
 
@@ -8595,10 +8594,16 @@ impl<'ctx> CodeGen<'ctx> {
                                 .build_conditional_branch(is_error, error_block, continue_block)
                                 .unwrap();
 
-                            // Error block: Store error in runtime (already done by dooruntime_validate_field)
-                            // Don't exit - let HTTP handler wrapper catch and format RFC 7807 response
-                            // For non-HTTP contexts, the wrapper will also check and can exit if needed
+                            // Error block: Print validation error and store in thread-local
+                            // This ensures validation errors are visible in non-HTTP contexts
                             self.builder.position_at_end(error_block);
+
+                            // Print the validation error so it's visible
+                            let printf_fn = self.get_or_declare_printf();
+                            let error_fmt = self.generate_string_literal_ptr("Validation error: %s\n");
+                            self.builder
+                                .build_call(printf_fn, &[error_fmt.into(), error_ptr.into()], "")
+                                .unwrap();
 
                             // Free error string returned by validation
                             let free_fn =
@@ -8607,9 +8612,7 @@ impl<'ctx> CodeGen<'ctx> {
                                 .build_call(free_fn, &[error_ptr.into()], "")
                                 .unwrap();
 
-                            // Don't exit - just continue to let the struct be created with potentially invalid data
-                            // The handler wrapper will check dooruntime_get_last_validation_error() and handle it
-                            // This allows HTTP handlers to return proper RFC 7807 error responses
+                            // Continue to let the struct be created (HTTP handlers will check the error)
                             self.builder
                                 .build_unconditional_branch(continue_block)
                                 .unwrap();

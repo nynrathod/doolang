@@ -299,7 +299,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Allocate buffer for the result (max 12 chars for i32: "-2147483648")
         let malloc_fn = self.get_or_declare_malloc_libc();
-        let buffer_size = self.context.i32_type().const_int(32, false);
+        let buffer_size = self.context.i64_type().const_int(32, false);
         let buffer_ptr = self
             .builder
             .build_call(malloc_fn, &[buffer_size.into()], "int_buf")
@@ -339,7 +339,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Allocate buffer for the result
         let malloc_fn = self.get_or_declare_malloc_libc();
-        let buffer_size = self.context.i32_type().const_int(32, false);
+        let buffer_size = self.context.i64_type().const_int(32, false);
         let buffer_ptr = self
             .builder
             .build_call(malloc_fn, &[buffer_size.into()], "float_buf")
@@ -381,15 +381,15 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Get or declare malloc function (internal for string conversion)
-    /// IMPORTANT: Must use i32 parameter type to match inkwell's build_array_malloc which
-    /// declares malloc with i32. Using i64 causes type mismatch errors.
+    /// IMPORTANT: Must use i64 parameter type to match size_t on 64-bit systems
+    /// and be consistent with other malloc declarations in the codebase.
     pub fn get_or_declare_malloc_libc(&self) -> FunctionValue<'ctx> {
         if let Some(func) = self.module.get_function("malloc") {
             return func;
         }
 
         let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
-        let malloc_type = i8_ptr_type.fn_type(&[self.context.i32_type().into()], false);
+        let malloc_type = i8_ptr_type.fn_type(&[self.context.i64_type().into()], false);
         self.module.add_function("malloc", malloc_type, None)
     }
 

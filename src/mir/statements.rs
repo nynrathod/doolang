@@ -970,18 +970,28 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     body_block.terminator = Some(MirInstr::Jump { label: loop_header });
                 }
 
+                // Save the current block before we modify it
+                let original_block = MirBlock {
+                    label: block.label.clone(),
+                    instrs: block.instrs.clone(),
+                    terminator: block.terminator.clone(),
+                };
+
                 if let Some(func) = builder.program.functions.last_mut() {
+                    func.blocks.push(original_block);
                     func.blocks.push(header_block);
                     func.blocks.push(body_block);
-                    func.blocks.push(MirBlock {
-                        label: loop_end,
-                        instrs: vec![],
-                        terminator: None,
-                    });
                 }
 
                 builder.exit_loop();
-                return; // stop further processing
+                
+                // CRITICAL FIX: Instead of returning early, update the current block
+                // to be the loop_end block so subsequent statements get appended there.
+                // This is the same pattern used by if/else blocks (line 846).
+                block.label = loop_end;
+                block.instrs.clear();
+                block.terminator = None;
+                return; // Return to prevent falling through to other loop types
             }
 
             // Check if this is a tuple pattern for map iteration
