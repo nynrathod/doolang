@@ -1963,8 +1963,12 @@ impl SemanticAnalyzer {
                             }));
                         }
                     }
-                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, _) => {
-                        if !self.function_table.contains_key(sym)
+                    crate::parser::ast::ImportItem::SymbolWithAlias(sym, alias) => {
+                        // For aliased imports, check if ALIAS exists (since functions are registered under alias)
+                        // Also check if original symbol exists in case it was registered differently
+                        if !self.function_table.contains_key(alias)
+                            && !self.function_table.contains_key(sym)
+                            && !self.symbol_table.contains_key(alias)
                             && !self.symbol_table.contains_key(sym)
                             && !self.struct_table.contains_key(sym)
                             && !self.enum_table.contains_key(sym)
