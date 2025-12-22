@@ -1,0 +1,49 @@
+// Custom handlers for task queries beyond basic CRUD
+// Demonstrates: When app.crud() isn't enough
+
+import std::Http::Server;
+import std::Database::{DatabaseError};
+import Models::{Task, Priority, Status};
+
+// GET /tasks/done - All completed tasks
+fn GetDone() -> [Task] ! DatabaseError {
+    let db = Database::get()?;
+    let result: [Task] = db.rawWithParams("SELECT * FROM tasks WHERE status = $1", Status::Done)?;
+    Ok result;
+}
+
+// GET /tasks/urgent - High priority, not done
+fn GetUrgent() -> [Task] ! DatabaseError {
+    let db = Database::get()?;
+    let result: [Task] = db.rawWithParams(
+        "SELECT * FROM tasks WHERE priority = $1 AND status != $2",
+        [Priority::High, Status::Done]
+    )?;
+    Ok result;
+}
+
+// GET /tasks/pending - Not completed
+fn GetPending() -> [Task] ! DatabaseError {
+    let db = Database::get()?;
+    let result: [Task] = db.rawWithParams("SELECT * FROM tasks WHERE status != $1", Status::Done)?;
+    Ok result;
+}
+
+// GET /tasks/count - Task statistics
+struct TaskStats {
+    Total: Int,
+    Pending: Int,
+    Done: Int,
+}
+
+fn GetStats() -> TaskStats ! DatabaseError {
+    let db = Database::get()?;
+    let total: Int = db.rawWithParams("SELECT COUNT(*) FROM tasks", [])?;
+    let done: Int = db.rawWithParams("SELECT COUNT(*) FROM tasks WHERE status = $1", [Status::Done])?;
+    let stats = TaskStats {
+        Total: total,
+        Pending: total - done,
+        Done: done,
+    };
+    Ok stats;
+}
