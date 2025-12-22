@@ -125,9 +125,13 @@ impl<'ctx> CodeGen<'ctx> {
                 .insert("FileError".to_string(), metadata);
         }
 
-        if !self.struct_metadata.contains_key("FileMetadata") {
+        // CRITICAL FIX: Always override FileMetadata struct metadata since imported structs
+        // don't preserve the i64 type information - they get all Int fields mapped to i32.
+        // The Rust FFI struct layout requires i64 for size/created/modified/accessed fields.
+        {
             // Create the canonical LLVM struct type
             // Bool fields are i32 (0 or 1), Int fields are i32, i64 for size/timestamps
+            // Note: LLVM non-packed structs automatically add alignment padding
             let llvm_field_types = vec![
                 self.context.i32_type().into(), // isFile (Bool as i32)
                 self.context.i32_type().into(), // isDir (Bool as i32)
@@ -142,16 +146,16 @@ impl<'ctx> CodeGen<'ctx> {
             self.canonical_struct_types
                 .insert("FileMetadata".to_string(), struct_type);
 
-            // Compute layout
+            // Compute layout - field names must match File.doo definition exactly (PascalCase)
             let field_names = vec![
-                "isFile".to_string(),
-                "isDir".to_string(),
-                "isSymlink".to_string(),
-                "size".to_string(),
-                "readonly".to_string(),
-                "created".to_string(),
-                "modified".to_string(),
-                "accessed".to_string(),
+                "IsFile".to_string(),
+                "IsDir".to_string(),
+                "IsSymlink".to_string(),
+                "Size".to_string(),
+                "Readonly".to_string(),
+                "Created".to_string(),
+                "Modified".to_string(),
+                "Accessed".to_string(),
             ];
             let field_types = vec![
                 "Bool".to_string(),

@@ -5707,7 +5707,8 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder.build_store(index_alloca, next_index).unwrap();
                         self.builder.build_unconditional_branch(loop_block).unwrap();
 
-                        // Not found: use index 0 as fallback (key not in map)
+                        // Not found: use index 0 as fallback (key not in map - for now just skip update)
+                        // TODO: Implement proper map resizing to add new keys
                         self.builder.position_at_end(not_found_block);
                         self.builder
                             .build_store(index_alloca, self.context.i32_type().const_int(0, false))
@@ -5722,8 +5723,169 @@ impl<'ctx> CodeGen<'ctx> {
                             .unwrap()
                             .into_int_value()
                     } else {
-                        // Non-string key: use directly as index
-                        key_val.into_int_value()
+                        // CRITICAL FIX: Non-string key (Int/Float/Bool): use linear search instead of key as index
+                        // Using key value as index causes heap overflow when key > map.length
+                        let searched_key = key_val;
+                        let map_length = map_metadata.length;
+
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let loop_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_int_search_loop");
+                        let check_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_int_check");
+                        let not_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_int_not_found");
+                        let continue_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_int_continue");
+
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let entry_block = current_fn.get_first_basic_block().unwrap();
+                        if let Some(terminator) = entry_block.get_terminator() {
+                            self.builder.position_before(&terminator);
+                        } else {
+                            self.builder.position_at_end(entry_block);
+                        }
+
+                        let index_alloca = self
+                            .builder
+                            .build_alloca(self.context.i32_type(), "mapset_int_search_index")
+                            .unwrap();
+
+                        self.builder.position_at_end(current_block);
+
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        // Loop condition check
+                        self.builder.position_at_end(loop_block);
+                        let current_index = self
+                            .builder
+                            .build_load(
+                                self.context.i32_type(),
+                                index_alloca,
+                                "mapset_int_current_index",
+                            )
+                            .unwrap()
+                            .into_int_value();
+                        let length_val =
+                            self.context.i32_type().const_int(map_length as u64, false);
+                        let is_in_bounds = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                current_index,
+                                length_val,
+                                "mapset_int_is_in_bounds",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(is_in_bounds, check_block, not_found_block)
+                            .unwrap();
+
+                        // Check if key matches
+                        self.builder.position_at_end(check_block);
+
+                        let pair_ptr = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    pair_type,
+                                    map_ptr,
+                                    &[current_index],
+                                    "mapset_int_pair_ptr",
+                                )
+                                .unwrap()
+                        };
+
+                        let stored_key_ptr = self
+                            .builder
+                            .build_struct_gep(pair_type, pair_ptr, 0, "mapset_int_stored_key_ptr")
+                            .unwrap();
+
+                        let stored_key_val = self
+                            .builder
+                            .build_load(key_type_llvm, stored_key_ptr, "mapset_int_stored_key")
+                            .unwrap();
+
+                        // Compare keys based on type
+                        let keys_match = if key_type_str == "Float" {
+                            self.builder
+                                .build_float_compare(
+                                    inkwell::FloatPredicate::OEQ,
+                                    stored_key_val.into_float_value(),
+                                    searched_key.into_float_value(),
+                                    "mapset_int_keys_match",
+                                )
+                                .unwrap()
+                        } else {
+                            // Int or Bool
+                            self.builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::EQ,
+                                    stored_key_val.into_int_value(),
+                                    searched_key.into_int_value(),
+                                    "mapset_int_keys_match",
+                                )
+                                .unwrap()
+                        };
+
+                        let match_found_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_int_match_found");
+                        let increment_block = self
+                            .context
+                            .append_basic_block(current_fn, "mapset_int_increment");
+                        self.builder
+                            .build_conditional_branch(keys_match, match_found_block, increment_block)
+                            .unwrap();
+
+                        // Found: save index and continue
+                        self.builder.position_at_end(match_found_block);
+                        self.builder
+                            .build_store(index_alloca, current_index)
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
+
+                        // Not found in loop: increment and continue
+                        self.builder.position_at_end(increment_block);
+                        let next_index = self
+                            .builder
+                            .build_int_add(
+                                current_index,
+                                self.context.i32_type().const_int(1, false),
+                                "mapset_int_next_index",
+                            )
+                            .unwrap();
+                        self.builder.build_store(index_alloca, next_index).unwrap();
+                        self.builder.build_unconditional_branch(loop_block).unwrap();
+
+                        // Not found: use index 0 as safe fallback (prevents crash, but skips update)
+                        // TODO: Implement proper map resizing to add new keys
+                        self.builder.position_at_end(not_found_block);
+                        self.builder
+                            .build_store(index_alloca, self.context.i32_type().const_int(0, false))
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
+
+                        self.builder.position_at_end(continue_block);
+                        self.builder
+                            .build_load(self.context.i32_type(), index_alloca, "mapset_int_final_index")
+                            .unwrap()
+                            .into_int_value()
                     };
 
                     // GEP to get pair pointer, then value field
@@ -6397,24 +6559,13 @@ impl<'ctx> CodeGen<'ctx> {
                     self.tuple_field_types
                         .insert(name.clone(), value_types.clone());
 
-                    // Allocate tuple on heap using malloc
-                    let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
-                        let malloc_type = self
-                            .context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .fn_type(&[self.context.i64_type().into()], false);
-                        self.module.add_function("malloc", malloc_type, None)
-                    });
-
-                    let tuple_size = tuple_type.size_of().unwrap();
+                    // CRITICAL FIX: Use build_malloc instead of manual malloc call
+                    // LLVM 15+ deprecated ptrtoint constant expressions, which size_of() uses
+                    // build_malloc handles this correctly by computing size at instruction level
                     let heap_ptr = self
                         .builder
-                        .build_call(malloc_fn, &[tuple_size.into()], "heap_tuple")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .left()
-                        .unwrap()
-                        .into_pointer_value();
+                        .build_malloc(tuple_type, "heap_tuple")
+                        .unwrap();
 
                     // Store tuple fields into heap memory
                     for (i, val) in value_vec.iter().enumerate() {
@@ -6525,13 +6676,44 @@ impl<'ctx> CodeGen<'ctx> {
                 } else if error_val.is_pointer_value() {
                     // Already a pointer - check if we need to copy to heap
                     // For now, assume string/array/map pointers are already heap-allocated
-                    // For enum pointers (stack-allocated), we need to copy to heap
+                    // For struct/enum pointers (stack-allocated), we need to copy to heap
                     let error_ptr = error_val.into_pointer_value();
 
-                    // Assume enum structs are {i32, ptr} - 2 field structs
-                    // Try to determine if this needs heap allocation based on variable type
-                    if error_type.contains("Error") || error_type.contains("enum") {
-                        // This is likely an enum - heap-allocate a copy
+                    // CRITICAL FIX: Check if this is a known struct type first
+                    // Extract struct name from error_type (handle both "Struct(Name)" and "Name" formats)
+                    let struct_name = if error_type.starts_with("Struct(") && error_type.ends_with(")") {
+                        Some(&error_type[7..error_type.len() - 1])
+                    } else if self.struct_metadata.contains_key(&error_type) {
+                        Some(error_type.as_str())
+                    } else {
+                        None
+                    };
+
+                    if let Some(name) = struct_name {
+                        // This is a known struct type - use its actual LLVM type
+                        if let Some(struct_type) = self.canonical_struct_types.get(name).cloned() {
+                            let struct_heap = self
+                                .builder
+                                .build_malloc(struct_type, "error_struct_heap")
+                                .unwrap();
+
+                            // Load the struct from stack
+                            let struct_val = self
+                                .builder
+                                .build_load(struct_type, error_ptr, "struct_val")
+                                .unwrap();
+
+                            // Store it on the heap
+                            self.builder.build_store(struct_heap, struct_val).unwrap();
+
+                            // Return the heap pointer
+                            struct_heap
+                        } else {
+                            // Fallback: struct type not found in canonical types, use pointer as-is
+                            error_ptr
+                        }
+                    } else if error_type.contains("enum") {
+                        // This is an enum - heap-allocate with generic enum struct
                         let enum_struct_type = self
                             .context
                             .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
@@ -7917,17 +8099,19 @@ impl<'ctx> CodeGen<'ctx> {
                             };
 
                         // Convert pointer back to the actual error type
-                        if err_type.contains("Str") || err_type.contains("String") {
+                        // CRITICAL: Check struct types FIRST before primitive types
+                        // This prevents struct names like "StrError" from matching "contains(\"Str\")"
+                        if is_struct_error {
+                            // Struct errors are pointers - keep them as pointers!
+                            err_value_ptr.into()
+                        } else if err_type == "Str" || err_type == "String" {
                             // String errors: err_value_ptr IS the C string pointer (void* cast)
                             // The FFI stores the string pointer directly as void*, not pointer-to-pointer
                             err_value_ptr.into()
-                        } else if err_type.contains("Array") || err_type.contains("Map") {
+                        } else if err_type.starts_with("Array") || err_type.starts_with("Map") {
                             // Array and Map errors are pointers
                             err_value_ptr.into()
-                        } else if is_struct_error {
-                            // Struct errors are pointers - keep them as pointers!
-                            err_value_ptr.into()
-                        } else if err_type.contains("Int") {
+                        } else if err_type == "Int" {
                             // Int errors: convert pointer to int
                             let i64_val = self
                                 .builder
@@ -7941,7 +8125,7 @@ impl<'ctx> CodeGen<'ctx> {
                                 .build_int_truncate(i64_val, self.context.i32_type(), "ptr_to_i32")
                                 .unwrap()
                                 .into()
-                        } else if err_type.contains("Float") {
+                        } else if err_type == "Float" {
                             // Float errors: convert pointer to float
                             let i64_val = self
                                 .builder
@@ -7967,7 +8151,7 @@ impl<'ctx> CodeGen<'ctx> {
                             self.builder
                                 .build_load(self.context.f64_type(), f64_ptr, "f64_val")
                                 .unwrap()
-                        } else if err_type.contains("Bool") {
+                        } else if err_type == "Bool" {
                             // Bool errors: convert pointer to i32, then compare to 0 to get bool
                             let i64_val = self
                                 .builder
@@ -8618,37 +8802,6 @@ impl<'ctx> CodeGen<'ctx> {
                                 )
                                 .unwrap();
 
-                            // DEBUG: Print the value being stored to struct field
-                            if value.is_int_value() {
-                                let printf_fn =
-                                    self.module.get_function("printf").unwrap_or_else(|| {
-                                        let printf_type = self.context.i32_type().fn_type(
-                                            &[self
-                                                .context
-                                                .ptr_type(inkwell::AddressSpace::default())
-                                                .into()],
-                                            true,
-                                        );
-                                        self.module.add_function("printf", printf_type, None)
-                                    });
-                                let fmt_str = self
-                                    .builder
-                                    .build_global_string_ptr(
-                                        &format!(
-                                            "DEBUG_STRUCT: Storing field '{}' value = %d\\n",
-                                            canonical_field_name
-                                        ),
-                                        "debug_struct_fmt",
-                                    )
-                                    .unwrap();
-                                self.builder
-                                    .build_call(
-                                        printf_fn,
-                                        &[fmt_str.as_pointer_value().into(), value.into()],
-                                        "",
-                                    )
-                                    .unwrap();
-                            }
 
                             self.builder.build_store(field_ptr, value).unwrap();
                         }
@@ -8908,11 +9061,29 @@ impl<'ctx> CodeGen<'ctx> {
                     return Some(result_val);
                 }
 
-                // Get the struct type from variable_types
+                // Get the struct type from variable_types first, then fallback to struct_instance_types
                 let struct_type_str = self
                     .variable_types
                     .get(struct_instance)
                     .cloned()
+                    .and_then(|s| {
+                        // If it's "Unknown" or primitive, try struct_instance_types instead
+                        if s == "Unknown" || s == "Int" || s == "Float" || s == "Bool" || s == "Str" {
+                            None
+                        } else {
+                            Some(s)
+                        }
+                    })
+                    .or_else(|| {
+                        // CRITICAL FIX: Check struct_instance_types for error structs
+                        // ManualErrorExtract stores struct names there
+                        self.struct_instance_types.get(struct_instance).map(|s| format!("Struct({})", s))
+                    })
+                    .or_else(|| {
+                        // Also try without % prefix
+                        let clean_name = struct_instance.trim_start_matches('%');
+                        self.struct_instance_types.get(clean_name).map(|s| format!("Struct({})", s))
+                    })
                     .unwrap_or_else(|| "Unknown".to_string());
 
                 // Extract struct name from type string "Struct(StructName)" or just "StructName"

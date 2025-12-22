@@ -121,22 +121,35 @@ impl<'ctx> CodeGen<'ctx> {
         let map_type = pair_type.array_type(entries.len() as u32);
 
         // HEAP ALLOCATE with RC header (4 bytes) + length field (4 bytes) = 8 bytes header
+        // Use build_malloc for the map_type to get proper size, then allocate extra for header
+        
+        // CRITICAL FIX: Use inkwell's build_malloc which properly handles struct size calculation
+        // inkwell generates the correct getelementptr-based size calculation instead of ptrtoint
+        // This resolves LLVM 15+ deprecation of ptrtoint constant expressions
+        
+        // First, allocate memory for map data using build_malloc
+        let map_data_ptr = self.builder.build_malloc(map_type, "map_data_alloc").unwrap();
+        
+        // Now allocate the full structure with header using manual malloc
+        // Header is 8 bytes: RC (4) + Length (4)
         let malloc_fn = self.get_or_declare_malloc();
-        let map_size = map_type.size_of().unwrap();
-        let header_size = self.context.i64_type().const_int(8, false); // RC (4) + Length (4)
-        let total_size = self
-            .builder
-            .build_int_add(header_size, map_size, "total_size")
-            .unwrap();
-
-        let heap_ptr = self
-            .builder
-            .build_call(malloc_fn, &[total_size.into()], "heap_map")
-            .unwrap()
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
+        
+        // Create a header + data struct type for proper size calculation
+        let header_type = self.context.struct_type(
+            &[self.context.i32_type().into(), self.context.i32_type().into()],
+            false,
+        );
+        let full_struct_type = self.context.struct_type(
+            &[header_type.into(), map_type.into()],
+            false,
+        );
+        
+        // Use build_malloc on the full struct to get proper size
+        let heap_ptr = self.builder.build_malloc(full_struct_type, "heap_map").unwrap();
+        
+        // Free the temporary map_data_ptr allocation (we only used it as a workaround)
+        let free_fn = self.get_or_declare_free();
+        self.builder.build_call(free_fn, &[map_data_ptr.into()], "").unwrap();
 
         // Store RC = 1 at offset 0
         let rc_ptr = self

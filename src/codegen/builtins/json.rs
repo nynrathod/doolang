@@ -1911,37 +1911,6 @@ impl<'ctx> CodeGen<'ctx> {
         json_str_ptr: inkwell::values::PointerValue<'ctx>,
         expected_type: &str,
     ) -> Option<BasicValueEnum<'ctx>> {
-        // Debug print expected type
-        let printf_type = self.context.i32_type().fn_type(
-            &[self
-                .context
-                .ptr_type(inkwell::AddressSpace::default())
-                .into()],
-            true,
-        );
-        let printf = self
-            .module
-            .get_function("printf")
-            .unwrap_or_else(|| self.module.add_function("printf", printf_type, None));
-        let debug_fmt = self
-            .builder
-            .build_global_string_ptr("DEBUG_JSON: convert type='%s'\n", "debug_fmt")
-            .unwrap();
-        let type_str = self
-            .builder
-            .build_global_string_ptr(expected_type, "type_str")
-            .unwrap();
-        self.builder
-            .build_call(
-                printf,
-                &[
-                    debug_fmt.as_pointer_value().into(),
-                    type_str.as_pointer_value().into(),
-                ],
-                "",
-            )
-            .unwrap();
-
         // For primitives from db.rawWithParams, the JSON is a result set like [{"count": 5}]
         // We need to use our json_extract_first_* functions to extract the scalar value
 
@@ -1952,11 +1921,7 @@ impl<'ctx> CodeGen<'ctx> {
             expected_type
         };
 
-        // COMPILE-TIME DEBUG
-        println!(
-            "CODEGEN: convert_json_string_to_type called for type='{}' clean='{}'",
-            expected_type, clean_type
-        );
+
 
         if clean_type == "Int" {
             // Call json_extract_scalar_v2 to extract integer from JSON result set
