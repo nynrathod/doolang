@@ -1,0 +1,150 @@
+import std::Http::{Server, Request, Response, Next};
+
+enum AuthError {
+    Unauthorized,
+    Forbidden,
+}
+
+struct ApiResponse {
+    Message: Str,
+    UserId: Int,
+}
+
+struct StatusResponse {
+    Status: Str,
+}
+
+fn AuthMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    let token = req.header("Authorization");
+
+    if token == "" {
+        print("❌ AuthMiddleware: No token provided");
+        return Err AuthError::Unauthorized;
+    }
+
+    if token != "Bearer valid-token" {
+        print("❌ AuthMiddleware: Invalid token");
+        return Err AuthError::Unauthorized;
+    }
+
+    print("✓ AuthMiddleware: Token valid, continuing...");
+    Ok next.call();
+}
+
+fn AdminMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    let role = req.header("X-Role");
+
+    if role != "admin" {
+        print("❌ AdminMiddleware: Not admin role");
+        return Err AuthError::Forbidden;
+    }
+
+    print("✓ AdminMiddleware: Admin role confirmed");
+    Ok next.call();
+}
+
+fn ApiLogMiddleware(req: Request, next: Next) -> Response {
+    print("→ API: " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← API: Response returned");
+    return res;
+}
+
+fn AdminLogMiddleware(req: Request, next: Next) -> Response {
+    print("→ ADMIN: " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← ADMIN: Response returned");
+    return res;
+}
+
+fn GlobalLogMiddleware(req: Request, next: Next) -> Response {
+    print("→ GLOBAL: " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← GLOBAL: Response returned");
+    return res;
+}
+
+fn GetPublicStatus() -> StatusResponse {
+    print("📍 Handler: GetPublicStatus");
+    return StatusResponse {
+        Status: "ok",
+    };
+}
+
+fn GetPublicHealth() -> StatusResponse {
+    print("📍 Handler: GetPublicHealth");
+    return StatusResponse {
+        Status: "healthy",
+    };
+}
+
+fn GetApiProfile() -> ApiResponse {
+    print("📍 Handler: GetApiProfile");
+    return ApiResponse {
+        Message: "User profile",
+        UserId: 123,
+    };
+}
+
+fn PostApiUsers() -> ApiResponse {
+    print("📍 Handler: PostApiUsers");
+    return ApiResponse {
+        Message: "User created",
+        UserId: 456,
+    };
+}
+
+fn GetApiPosts() -> ApiResponse {
+    print("📍 Handler: GetApiPosts");
+    return ApiResponse {
+        Message: "All posts",
+        UserId: 123,
+    };
+}
+
+fn GetAdminDashboard() -> ApiResponse {
+    print("📍 Handler: GetAdminDashboard");
+    return ApiResponse {
+        Message: "Admin dashboard",
+        UserId: 1,
+    };
+}
+
+fn GetAdminUsers() -> ApiResponse {
+    print("📍 Handler: GetAdminUsers");
+    return ApiResponse {
+        Message: "All users",
+        UserId: 1,
+    };
+}
+
+fn DeleteAdminUser(id: Int) -> StatusResponse {
+    print("📍 Handler: DeleteAdminUser - ID: " + id);
+    return StatusResponse {
+        Status: "deleted",
+    };
+}
+
+fn main() {
+    let app = Server::new(":3112");
+
+    app.use(GlobalLogMiddleware);
+
+    app.get("/status", GetPublicStatus);
+    app.get("/health", GetPublicHealth);
+
+    app.group("/api", AuthMiddleware, ApiLogMiddleware, {
+        get("/profile", GetApiProfile),
+        post("/users", PostApiUsers),
+        get("/posts", GetApiPosts),
+    });
+
+    app.group("/admin", AuthMiddleware, AdminMiddleware, AdminLogMiddleware, {
+        get("/dashboard", GetAdminDashboard),
+        get("/users", GetAdminUsers),
+        delete("/users/:id", DeleteAdminUser),
+    });
+
+
+    app.start();
+}

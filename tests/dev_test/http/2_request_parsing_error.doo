@@ -1,0 +1,101 @@
+import std::Http::{Server};
+
+struct SignupInput {
+    email: Str,
+    password: Str,
+}
+
+struct UpdateInput {
+    name: Str,
+    age: Int,
+}
+
+struct PrimitivesInput {
+    s: Str,
+    i: Int,
+    f: Float,
+    b: Bool,
+}
+
+struct ArrayInput {
+    tags: [Str],
+    nums: [Int],
+}
+
+
+enum Role { User, Admin }
+
+struct EnumInput {
+    role: Role,
+    id: Int,
+}
+
+struct MapInput {
+    meta: {Str: Str},
+    flags: {Str: Bool},
+}
+
+struct InnerStruct {
+    x: Int,
+    y: Str,
+}
+
+struct NestedInput {
+    inner: InnerStruct,
+    list: [Int],
+}
+
+fn signupHandler(input: SignupInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "signup", email: input.email });
+    return "signup response";
+}
+
+fn updateHandler(input: UpdateInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "update", name: input.name, age: input.age });
+    return "update response";
+}
+
+fn primitivesHandler(input: PrimitivesInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "primitives", value: input });
+    return "primitives response";
+}
+
+fn arrayHandler(input: ArrayInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "array", tags: input.tags, nums: input.nums });
+    return "array response";
+}
+
+fn enumHandler(input: EnumInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "enum", role: input.role, id: input.id });
+    return "enum response";
+}
+
+fn mapHandler(input: MapInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "map", meta: input.meta, flags: input.flags });
+    return "map response";
+}
+
+fn pingHandler() -> Str {
+    // return JSON.stringify({ ok: true, route: "ping" });
+    return "ping response";
+}
+
+fn nestedHandler(input: NestedInput) -> Str {
+    return "nested response";
+}
+
+fn main() {
+    let app = Server::new(":3102");
+
+    app.post("/api/users/signup", signupHandler);
+    app.put("/api/users/update", updateHandler);
+
+    app.post("/api/test/primitives", primitivesHandler);
+    app.post("/api/test/arrays", arrayHandler);
+    app.post("/api/test/enum", enumHandler);
+    app.post("/api/test/map", mapHandler);
+    app.put("/api/test/nested", nestedHandler);
+
+    app.start();
+}
+

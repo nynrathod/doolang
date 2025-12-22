@@ -1,0 +1,50 @@
+import std::Http::{Server};
+
+struct Address {
+    city: Str,
+    zip: Int,
+}
+
+struct SignupInput {
+    email: Str,
+    age: Int,
+    active: Bool,
+    score: Float,
+
+    address: Address,
+
+    tagsStr: [Str],
+    tagsInt: [Int],
+    tagsBool: [Bool],
+    tagsFloat: [Float],
+}
+
+fn signupHandler(input: SignupInput) -> Str {
+    return "Signup OK: " + input.email;
+}
+
+fn getInfoHandler() -> SignupInput {
+    return SignupInput {
+        email: "test@example.com",
+        age: 25,
+        active: true,
+        score: 98.5,
+        address: Address {
+            city: "Test City",
+            zip: 12345,
+        },
+        tagsStr: ["tag1", "tag2"],
+        tagsInt: [1, 2, 3],
+        tagsBool: [true, false],
+        tagsFloat: [1.1, 2.2],
+    };
+}
+
+fn main() {
+    let app = Server::new(":3103");
+
+    app.post("/api/users/signup", signupHandler);
+    app.get("/api/users/info", getInfoHandler);
+
+    app.start();
+}

@@ -1,0 +1,63 @@
+import std::Http::Server;
+import std::Database;
+import std::Auth::jwt;
+
+struct User {
+    id: Int @primary @auto,
+    Email: Str @unique,
+    Password: Str @hash,
+    Name: Str,
+    Role: Str,
+}
+
+struct Product {
+    id: Int @primary @auto,
+    name: Str,
+    price: Int,
+    description: Str,
+}
+
+struct ProfileResponse {
+    id: Int,
+    email: Str,
+    name: Str,
+    role: Str,
+}
+
+struct MessageResponse {
+    message: Str,
+}
+
+fn GetProfile(req: Request) -> ProfileResponse {
+    print("📍 Handler: GetProfile");
+
+    return ProfileResponse {
+        id: 1,
+        email: "user@example.com",
+        name: "Test User",
+        role: "user",
+    };
+}
+
+// Public handler (no auth required)
+fn GetPublicInfo() -> MessageResponse {
+    print("📍 Handler: GetPublicInfo");
+    return MessageResponse {
+        message: "This is public information",
+    };
+}
+
+fn main() {
+    let db = Database::postgres()?;
+
+    let app = Server::new(":3100");
+
+    app.auth("/signup", "/login", User, db);
+
+    app.crud("/products", Product, db);
+
+    app.get("/profile", jwt(), GetProfile);
+    app.get("/public", GetPublicInfo);
+
+    app.start();
+}

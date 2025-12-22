@@ -1,0 +1,22 @@
+import std::Http::Server;
+
+struct IntParam { id: Int }
+struct StrParam { id: Str }
+struct BoolParam { id: Bool }
+struct FloatParam { id: Float }
+
+fn intHandler(p: IntParam) -> Str => "hello + ${p.id}";
+fn strHandler(p: StrParam) -> Str => "hello + ${p.id}";
+fn boolHandler(p: BoolParam) -> Str => "hello + ${p.id}";
+fn floatHandler(p: FloatParam) -> Str => "hello + ${p.id}";
+
+fn main() {
+    let app = Server::new(":3106");
+
+    app.get("/api/users/int", intHandler);
+    app.get("/api/users/str", strHandler);
+    app.get("/api/users/bool", boolHandler);
+    app.get("/api/users/float", floatHandler);
+
+    app.start();
+}

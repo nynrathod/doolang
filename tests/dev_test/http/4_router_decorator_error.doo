@@ -1,0 +1,31 @@
+import std::Http::Server;
+
+struct UserInput {
+    Email: Str @email,                       // Must be valid email
+    Age: Int @min(18),                       // Must be Int, >= 18
+    Score: Int @max(100),                    // Must be Int, <= 100
+    Username: Str @min(3) @max(50),          // Must be Str, length between 3 and 50
+    Rank: Int @min(1) @max(5),               // Must be Int, between 1 and 5
+    Role: Str @enum(user|admin|moderator),   // Must be one of these values
+    Name: Str,                               // String field
+}
+
+fn createUser(input: UserInput) -> UserInput {
+    return UserInput {
+        Email: input.Email,
+        Age: input.Age,
+        Score: input.Score,
+        Username: input.Username,
+        Rank: input.Rank,
+        Role: input.Role,
+        Name: input.Name
+    };
+}
+
+fn main() {
+    let app = Server::new(":3104");
+
+    app.post("/api/users/create", createUser);
+
+    app.start();
+}

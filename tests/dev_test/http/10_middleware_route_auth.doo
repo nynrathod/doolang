@@ -1,0 +1,90 @@
+import std::Http::{Server, Request, Response, Next};
+
+enum AuthError {
+    Unauthorized,
+    Forbidden,
+}
+
+struct ApiResponse {
+    Message: Str,
+    UserId: Int,
+}
+
+fn AuthMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    print("🔍 AuthMiddleware: START");
+    let token = req.header("Authorization");
+    print("🔍 AuthMiddleware: Got token:", token);
+
+    if token == "" {
+        print("❌ AuthMiddleware: No token provided - returning Unauthorized");
+        return Err AuthError::Unauthorized;
+    }
+
+    if token != "Bearer valid-token" {
+        print("❌ AuthMiddleware: Invalid token - returning Unauthorized");
+        return Err AuthError::Unauthorized;
+    }
+
+    print("✓ AuthMiddleware: Token valid, calling next...");
+    let response = next.call();
+    print("✓ AuthMiddleware: Got response from next, returning Ok");
+    return Ok response;
+}
+
+fn AdminMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    print("🔍 AdminMiddleware: START");
+    let role = req.header("X-Role");
+    print("🔍 AdminMiddleware: Got role:", role);
+
+    if role != "admin" {
+        print("❌ AdminMiddleware: Not admin role - returning Forbidden");
+        return Err AuthError::Forbidden;
+    }
+
+    print("✓ AdminMiddleware: Admin role confirmed, calling next...");
+    let response = next.call();
+    print("✓ AdminMiddleware: Got response from next, returning Ok");
+    return Ok response;
+}
+
+fn LogMiddleware(req: Request, next: Next) -> Response {
+    print("→ " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← Status: " + res.Status);
+    return res;
+}
+
+fn GetPublic() -> ApiResponse {
+    print("📍 Handler: GetPublic");
+    return ApiResponse {
+        Message: "Public data",
+        UserId: 0,
+    };
+}
+
+fn GetProfile() -> ApiResponse {
+    print("📍 Handler: GetProfile");
+    return ApiResponse {
+        Message: "User profile",
+        UserId: 123,
+    };
+}
+
+fn GetAdmin() -> ApiResponse {
+    print("📍 Handler: GetAdmin");
+    return ApiResponse {
+        Message: "Admin data",
+        UserId: 1,
+    };
+}
+
+fn main() {
+    let app = Server::new(":3111");
+
+    app.use(LogMiddleware);
+    app.get("/public", GetPublic);
+    app.get("/profile", AuthMiddleware, GetProfile);
+    app.get("/admin", AuthMiddleware, AdminMiddleware, GetAdmin);
+
+    app.start();
+}

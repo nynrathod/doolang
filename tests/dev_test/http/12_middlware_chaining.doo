@@ -1,0 +1,74 @@
+import std::Http::{Server, Request, Response, Next};
+
+enum AuthError {
+    Unauthorized,
+    Forbidden,
+}
+
+struct ApiResponse {
+    Message: Str,
+    Value: Int,
+}
+
+fn LogMiddleware(req: Request, next: Next) -> Response {
+    print("reqdata: " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← Status: " + res.Status);
+    return res;
+}
+
+fn TimingMiddleware(req: Request, next: Next) -> Response {
+    print("⏱ Start timing");
+    let res = next.call();
+    print("⏱ End timing");
+    return res;
+}
+
+fn CorsMiddleware(req: Request, next: Next) -> Response {
+    print("✓ CORS middleware");
+    let res = next.call();
+    return res;
+}
+
+fn AuthMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    let token = req.header("Authorization");
+
+    if token == "" {
+        print("❌ Auth failed: no token");
+        return Err AuthError::Unauthorized;
+    }
+
+    if token != "Bearer valid-token" {
+        print("❌ Auth failed: invalid token");
+        return Err AuthError::Unauthorized;
+    }
+
+    print("✓ Auth passed");
+    Ok next.call();
+}
+
+fn GetStatus() -> ApiResponse {
+    print("📍 Handler: GetStatus");
+    return ApiResponse {
+        Message: "API is running",
+        Value: 100,
+    };
+}
+
+fn GetProtected() -> ApiResponse {
+    print("📍 Handler: GetProtected");
+    return ApiResponse {
+        Message: "Protected resource",
+        Value: 200,
+    };
+}
+
+fn main() {
+    let app = Server::new(":3109")
+        .use(LogMiddleware, TimingMiddleware, CorsMiddleware);
+
+    app.get("/status", GetStatus);
+    app.get("/protected", AuthMiddleware, GetProtected);
+
+    app.start();
+}

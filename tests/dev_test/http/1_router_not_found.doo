@@ -1,0 +1,13 @@
+import std::Http::Server;
+
+fn getUserHandler() -> Str {
+    return "User found!";
+}
+
+fn main() {
+    let app = Server::new(":3101");
+
+    app.get("/users", getUserHandler);
+
+    app.start();
+}

@@ -1,0 +1,85 @@
+import std::Http::{Server, Request, Response};
+import std::Database::{postgres};
+import std::Auth::{jwt};
+
+struct User {
+    id: Int @primary @auto,
+    Email: Str @unique,
+    Password: Str @hash,
+    Name: Str,
+    Role: Str,
+}
+
+struct ProfileResponse {
+    id: Int,
+    email: Str,
+    name: Str,
+}
+
+struct MessageResponse {
+    message: Str,
+}
+
+fn GetProfile(req: Request) -> ProfileResponse {
+    print("📍 Handler: GetProfile (JWT protected)");
+    return ProfileResponse {
+        id: 1,
+        email: "user@example.com",
+        name: "John Doe",
+    };
+}
+
+fn PostUpdateProfile(req: Request) -> MessageResponse {
+    print("📍 Handler: PostUpdateProfile (JWT protected)");
+    return MessageResponse {
+        message: "Profile updated successfully",
+    };
+}
+
+fn GetApiProfile(req: Request) -> ProfileResponse {
+    print("📍 Handler: GetApiProfile (API group, JWT)");
+    return ProfileResponse {
+        id: 2,
+        email: "api@example.com",
+        name: "API User",
+    };
+}
+
+fn PostApiCreate(req: Request) -> MessageResponse {
+    print("📍 Handler: PostApiCreate (API group, JWT)");
+    return MessageResponse {
+        message: "Resource created",
+    };
+}
+
+fn GetApiList(req: Request) -> MessageResponse {
+    print("📍 Handler: GetApiList (API group, JWT)");
+    return MessageResponse {
+        message: "All resources retrieved",
+    };
+}
+
+fn GetPublicInfo() -> MessageResponse {
+    print("📍 Handler: GetPublicInfo (public, no JWT)");
+    return MessageResponse {
+        message: "Public information",
+    };
+}
+
+fn main() {
+    let db = postgres()?;
+
+    let app = Server::new(":3108");
+
+    app.auth("/signup", "/login", User, db);
+    app.get("/public", GetPublicInfo);
+    app.get("/profile", jwt(), GetProfile);
+    app.post("/profile", jwt(), PostUpdateProfile);
+    app.group("/api", jwt(), {
+        get("/profile", GetApiProfile),
+        post("/create", PostApiCreate),
+        get("/list", GetApiList),
+    });
+
+    app.start();
+}
