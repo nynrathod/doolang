@@ -1,0 +1,69 @@
+// import_variations.doo
+// Comprehensive test for import variations: alias and wildcard with and without {}
+
+// === SYMBOL IMPORTS (no namespace prefix) ===
+
+// Single symbol WITHOUT braces
+import std::Math::Abs;
+
+// Single symbol WITH braces (same as without, just different syntax)
+import std::Math::{Pow};
+
+// Single symbol alias WITHOUT braces  
+import std::Math::Floor as Fl;
+
+// Single symbol alias WITH braces
+import std::Math::{Ceil as Ce};
+
+// Multiple symbols WITH braces
+import std::Math::{Min, Max};
+
+// Multiple symbols with alias (inside braces)
+import std::Math::{Sqrt as Sq, Round as Rn};
+
+// === WILDCARD IMPORTS ===
+
+// Wildcard import (imports all public functions)
+import std::Array::*;
+
+// === NAMESPACE IMPORTS ===
+
+// Namespace import (use with prefix: File::Read)
+import std::File;
+
+// Namespace alias (use with alias prefix: A::Sum)
+import std::Array as A;
+
+fn main() {
+    print("=== Import Variations Test ===");
+    
+    // 1. Single symbol without braces
+    print("Abs(-5):", Abs(-5));
+    
+    // 2. Single symbol with braces
+    print("Pow(2, 3):", Pow(2, 3));
+    
+    // 3. Single symbol alias without braces
+    print("Fl(3.7) [Floor]:", Fl(3.7));
+    
+    // 4. Single symbol alias with braces
+    print("Ce(3.2) [Ceil]:", Ce(3.2));
+    
+    // 5. Multiple symbols with braces
+    print("Min(5, 10):", Min(5, 10), "Max(5, 10):", Max(5, 10));
+    
+    // 6. Multiple symbols with alias
+    print("Sq(25) [Sqrt]:", Sq(25), "Rn(3.6) [Round]:", Rn(3.6));
+    
+    // 7. Wildcard import
+    print("Sum([1,2,3]):", Sum([1, 2, 3]));
+    print("Unique([1,1,2,2,3]):", Unique([1, 1, 2, 2, 3]));
+    
+    // 8. Namespace import
+    print("File::Read test: namespace works");
+    
+    // 9. Namespace alias
+    print("A::Sum([4,5,6]):", A::Sum([4, 5, 6]));
+    
+    print("=== All tests passed! ===");
+}

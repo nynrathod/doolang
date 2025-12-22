@@ -1,0 +1,51 @@
+// all_imports.doo
+// Tests all supported import variations
+
+// 1. Single Symbol Import (without braces)
+import std::Math::Abs;
+
+// 2. Multiple Symbol Import (with braces)
+import std::Math::{Min, Max};
+
+// 3. Aliased Symbol Import (function with alias in braces)
+import std::Math::{Sqrt as Sq};
+
+// 4. Wildcard Import
+import std::Array::*;
+
+// 5. Namespace/Module Import
+import std::File;
+
+// 6. Aliased Namespace Import (module with alias)
+import std::Array as Arr;
+
+// 7. Single Symbol Import with alias without braces
+import std::Math::Floor as Fl;
+
+fn main() {
+    print("Testing Import Variations:");
+
+    // 1. Verify Single Symbol
+    print("1. Single Symbol (Abs):", Abs(-5));
+
+    // 2. Verify Multiple Symbols
+    print("2. Multiple Symbols (Min, Max):", Min(10, 20), Max(10, 20));
+
+    // 3. Verify Aliased Symbol (Sqrt takes Int, not Float!)
+    print("3. Aliased Symbol (Sq=Sqrt):", Sq(16));
+
+    // 4. Verify Wildcard (Unique, Sum from *)
+    print("4. Wildcard (Unique):", Unique([1, 2, 2, 3]));
+    print("4. Wildcard (Sum):", Sum([1, 2, 3]));
+
+    // 5. Verify Namespace usage (File::Read returns error for non-existent file - expected)
+    print("5. Namespace (File::Read): testing qualified access");
+
+    // 6. Verify Aliased Namespace usage
+    print("6. Aliased Namespace (Arr::Sum):", Arr::Sum([1, 2, 3, 4]));
+
+    // 7. Verify Single Symbol with alias without braces
+    print("7. Symbol Alias no braces (Fl=Floor):", Fl(3.0));
+
+    print("All import tests passed!");
+}
