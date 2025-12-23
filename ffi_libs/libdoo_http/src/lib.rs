@@ -515,49 +515,36 @@ fn c_to_string(ptr: *const c_char) -> String {
 }
 
 
-// Helper for unified allocation matching libdoo_runtime
-unsafe fn unified_alloc<T>(value: T) -> *mut T {
-    extern "C" { fn dooruntime_malloc(size: usize) -> *mut u8; }
-    let ptr = dooruntime_malloc(std::mem::size_of::<T>()) as *mut T;
-    if !ptr.is_null() {
-        std::ptr::write(ptr, value);
-    }
-    ptr
-}
-
+// Helper for unified allocation - use Rust's allocator to match Box::from_raw
+// Previously used libc::malloc which caused heap corruption on macOS when
+// combined with Box::from_raw (allocator mismatch)
 fn make_ok_void() -> *mut DooResult {
-    unsafe {
-        unified_alloc(DooResult {
-            tag: 0,
-            value: std::ptr::null_mut(),
-        })
-    }
+    Box::into_raw(Box::new(DooResult {
+        tag: 0,
+        value: std::ptr::null_mut(),
+    }))
 }
 
 fn make_ok_string(s: &str) -> *mut DooResult {
     let c_str = CString::new(s).expect("CString conversion failed");
-    unsafe {
-        unified_alloc(DooResult {
-            tag: 0,
-            value: c_str.into_raw() as *mut std::ffi::c_void,
-        })
-    }
+    Box::into_raw(Box::new(DooResult {
+        tag: 0,
+        value: c_str.into_raw() as *mut std::ffi::c_void,
+    }))
 }
 
 fn make_err_http(status: u16, message: &str) -> *mut DooResult {
-    unsafe {
-        // Allocate Error using unified allocator
-        let error = unified_alloc(DooHttpError {
-            status: status as i32,
-            message: string_to_c(message),
-        });
-        
-        // Allocate Result using unified allocator
-        unified_alloc(DooResult {
-            tag: 1,
-            value: error as *mut std::ffi::c_void,
-        })
-    }
+    // Allocate Error using Rust allocator
+    let error = Box::into_raw(Box::new(DooHttpError {
+        status: status as i32,
+        message: string_to_c(message),
+    }));
+    
+    // Allocate Result using Rust allocator
+    Box::into_raw(Box::new(DooResult {
+        tag: 1,
+        value: error as *mut std::ffi::c_void,
+    }))
 }
 
 // ============================================================================
@@ -1404,10 +1391,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 .body(Full::new(Bytes::from("Handler returned null")))
                 .unwrap()
         } else {
-            extern "C" { fn dooruntime_free(ptr: *mut u8); }
-            // Use manual copy and free to avoid allocator mismatch with Box
-            let result_val = std::ptr::read(result);
-            dooruntime_free(result as *mut u8);
+            // Use Box::from_raw to properly deallocate Box-allocated memory
+            let result_box = Box::from_raw(result);
+            let result_val = DooResult { tag: result_box.tag, value: result_box.value };
 
             if result_val.tag == 0 {
                 // Success - value is DooResponse*
@@ -1476,9 +1462,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         } else {
                             // DooResponse
                             let response_ptr = result_val.value as *mut DooResponse;
-                            // Use manual copy and free for response too
-                            let response_val = std::ptr::read(response_ptr);
-                            dooruntime_free(response_ptr as *mut u8);
+                            // Use Box::from_raw to properly deallocate Box-allocated memory
+                            let response_box = Box::from_raw(response_ptr);
+                            let response_val = DooResponse { status: response_box.status, body: response_box.body, content_type: response_box.content_type };
 
                             let status = StatusCode::from_u16(response_val.status as u16)
                                 .unwrap_or(StatusCode::OK);
@@ -1527,8 +1513,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             } else {
                 // Error - value is DooHttpError*
                 let error_ptr = result_val.value as *mut DooHttpError;
-                let error = std::ptr::read(error_ptr);
-                dooruntime_free(error_ptr as *mut u8);
+                // Use Box::from_raw to properly deallocate Box-allocated memory
+                let error_box = Box::from_raw(error_ptr);
+                let error = DooHttpError { status: error_box.status, message: error_box.message };
 
                 let status = StatusCode::from_u16(error.status as u16)
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -1661,6 +1648,7 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         }
     };
 
+    // Create tokio runtime (multi-threaded for better performance)
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => return make_err_http(500, &format!("Failed to create tokio runtime: {}", e)),
