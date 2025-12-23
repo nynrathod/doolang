@@ -283,6 +283,7 @@ fn main() {
 
     app.get("/api/feed",  GetFeed);
     app.get("/api/user/:authorId/posts", GetUserPosts);
+    app.get("/api/user/posts", jwt(), GetMyPosts);
     app.get("/api/public/feed",  GetFeed);
 
     app.start();
