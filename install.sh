@@ -117,11 +117,27 @@ download_and_extract() {
     mkdir -p "$BIN_DIR"
     
     # Extract zip file
-    if command -v unzip &> /dev/null; then
-        unzip -q -o "$ZIP_FILE" -d "$TEMP_DIR/extracted"
-    else
-        error "unzip not found. Please install unzip: sudo apt install unzip (Linux) or brew install unzip (macOS)"
+    if ! command -v unzip &> /dev/null; then
+        info "unzip not found. Attempting to install..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y unzip
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y unzip
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y unzip
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -S --noconfirm unzip
+        elif command -v apk &> /dev/null; then
+            sudo apk add unzip
+        elif command -v brew &> /dev/null; then
+            brew install unzip
+        else
+            error "Could not automatically install unzip. Please install it manually: sudo apt install unzip"
+        fi
     fi
+
+    # Run unzip
+    unzip -q -o "$ZIP_FILE" -d "$TEMP_DIR/extracted"
 
     # Find and copy all files to bin directory
     # Handle various folder structures: look for doo binary in the extracted content
