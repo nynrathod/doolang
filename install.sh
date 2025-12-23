@@ -269,7 +269,7 @@ verify_installation() {
 
 # Anonymous install tracking via PostHog (no private data, fire-and-forget)
 # Get your API key from: https://app.posthog.com → Project Settings
-POSTHOG_API_KEY="phc_REPLACE_WITH_YOUR_KEY"
+POSTHOG_API_KEY="phc_AdLC9AceWDZJEy04XZKnXIGwG3voUoMwyOpXTOebUet"
 POSTHOG_HOST="https://us.i.posthog.com"
 
 send_analytics() {

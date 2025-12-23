@@ -52,7 +52,7 @@ function Write-Error-Custom {
 function Get-LatestVersion {
     # TEST MODE: Use specific version instead of latest
     # Write-Info "Fetching latest version..."
-    
+
     try {
         # $releaseUrl = "https://api.github.com/repos/$GithubRepo/releases/latest"
         # $response = Invoke-RestMethod -Uri $releaseUrl -Method Get -Headers @{ "User-Agent" = "Doo-Installer" }
@@ -60,7 +60,7 @@ function Get-LatestVersion {
 
         # For testing:
         $script:Version = "v0.3.0-pre"
-        
+
         $script:VersionNum = $Version -replace '^v', ''
         Write-Info "Using version: $Version"
     }
@@ -73,34 +73,34 @@ function Download-AndExtract {
     $downloadUrl = "https://github.com/$GithubRepo/releases/download/$Version/doo-windows-$VersionNum.zip"
     $tempDir = Join-Path $env:TEMP "doo-install-$(Get-Random)"
     $zipFile = Join-Path $tempDir "doo.zip"
-    
+
     Write-Info "Downloading from: $downloadUrl"
-    
+
     try {
         # Create temp directory
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-        
+
         # Download
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile -UseBasicParsing
-        
+
         Write-Info "Extracting files..."
-        
+
         # Create installation directory
         if (Test-Path $BinDir) {
             Remove-Item -Path $BinDir -Recurse -Force
         }
         New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-        
+
         # Extract zip
         $extractDir = Join-Path $tempDir "extracted"
         Expand-Archive -Path $zipFile -DestinationPath $extractDir -Force
-        
+
         # Find and copy all files to bin directory
         # Handle various folder structures: look for doo.exe in the extracted content
         $extractedItems = Get-ChildItem -Path $extractDir
         $dooExeFound = $false
-        
+
         # Check if doo.exe is directly in extracted dir
         if (Test-Path (Join-Path $extractDir "doo.exe")) {
             Copy-Item -Path "$extractDir\*" -Destination $BinDir -Recurse -Force
@@ -119,7 +119,7 @@ function Download-AndExtract {
                 }
             }
         }
-        
+
         if (-not $dooExeFound) {
             # Fallback: just copy everything from first subdirectory
             $firstDir = $extractedItems | Where-Object { $_.PSIsContainer } | Select-Object -First 1
@@ -130,10 +130,10 @@ function Download-AndExtract {
                 Copy-Item -Path "$extractDir\*" -Destination $BinDir -Recurse -Force
             }
         }
-        
+
         # Cleanup
         Remove-Item -Path $tempDir -Recurse -Force
-        
+
         Write-Success "Files extracted to $BinDir"
     }
     catch {
@@ -143,9 +143,9 @@ function Download-AndExtract {
 
 function Setup-Path {
     Write-Info "Setting up PATH..."
-    
+
     $currentPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
-    
+
     if ($currentPath -like "*$BinDir*") {
         Write-Info "PATH already contains $BinDir"
     }
@@ -159,18 +159,18 @@ function Setup-Path {
             Write-Error-Custom "Failed to update PATH. Error: $_"
         }
     }
-    
+
     # Update current session PATH
     $env:Path = $env:Path + ";" + $BinDir
 }
 
 function Check-Dependencies {
     Write-Info "Checking dependencies..."
-    
+
     # Check for clang or MSVC
     $hasClang = $null -ne (Get-Command clang -ErrorAction SilentlyContinue)
     $hasMSVC = Test-Path "C:\Program Files\Microsoft Visual Studio"
-    
+
     if (-not $hasClang -and -not $hasMSVC) {
         Write-Warning-Custom "No C compiler found. Doo may require clang or MSVC for linking."
         Write-Host ""
@@ -186,9 +186,9 @@ function Check-Dependencies {
 
 function Verify-Installation {
     Write-Info "Verifying installation..."
-    
+
     $dooExe = Join-Path $BinDir "doo.exe"
-    
+
     if (Test-Path $dooExe) {
         Write-Success "Doo installed successfully!"
         Write-Host ""
@@ -197,7 +197,7 @@ function Verify-Installation {
         Write-Host "  Binary location: " -NoNewline
         Write-Host "$dooExe" -ForegroundColor Cyan
         Write-Host ""
-        
+
         # Check if doo is accessible
         $dooCmd = Get-Command doo -ErrorAction SilentlyContinue
         if ($dooCmd) {
@@ -228,13 +228,13 @@ function Verify-Installation {
 
 function Refresh-Environment {
     Write-Info "Refreshing environment variables..."
-    
+
     # Refresh PATH for current session
     $env:Path = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine) + ";" + [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
 }
 # Anonymous install tracking via PostHog (no private data, fire-and-forget)
 # Get your API key from: https://app.posthog.com → Project Settings
-$PosthogApiKey = "phc_REPLACE_WITH_YOUR_KEY"
+$PosthogApiKey = "phc_AdLC9AceWDZJEy04XZKnXIGwG3voUoMwyOpXTOebUet"
 $PosthogHost = "https://us.i.posthog.com"
 
 function Send-Analytics {
@@ -242,14 +242,14 @@ function Send-Analytics {
     if ($PosthogApiKey -like "*REPLACE*") {
         return
     }
-    
+
     try {
         # Generate anonymous ID from computer name hash
         $hashInput = "$env:COMPUTERNAME-windows"
         $hasher = [System.Security.Cryptography.MD5]::Create()
         $hashBytes = $hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($hashInput))
         $anonId = "doo_" + [BitConverter]::ToString($hashBytes).Replace("-", "").Substring(0, 16).ToLower()
-        
+
         $body = @{
             api_key = $PosthogApiKey
             event = "install_complete"
@@ -259,7 +259,7 @@ function Send-Analytics {
                 doo_version = $Version
             }
         } | ConvertTo-Json -Compress -Depth 3
-        
+
         # Fire-and-forget using Start-Job (runs in background)
         Start-Job -ScriptBlock {
             param($body, $host_url)
