@@ -402,6 +402,7 @@ fn run_init(name_arg: Option<String>, template_arg: Option<String>) -> i32 {
 
     // Track project creation (fire-and-forget, anonymous)
     analytics::track_project_created(template.name);
+    analytics::flush(); // Wait for event to send
 
     0
 }
@@ -683,6 +684,8 @@ fn deploy_flyio(verbose: bool) -> i32 {
         if !install_flyctl() {
             println!("{}Fly CLI installation failed", ERROR);
             println!("  Install manually: https://fly.io/docs/flyctl/install/");
+            analytics::track_deploy_error("flyio", "cli_install_failed");
+            analytics::flush();
             return 1;
         }
         println!("{}Fly CLI installed", CHECK);
@@ -706,6 +709,8 @@ fn deploy_flyio(verbose: bool) -> i32 {
 
         if status.is_err() || !status.unwrap().success() {
             println!("{}Authentication failed", ERROR);
+            analytics::track_deploy_error("flyio", "auth_failed");
+            analytics::flush();
             return 1;
         }
     }
@@ -731,6 +736,8 @@ fn deploy_flyio(verbose: bool) -> i32 {
             _ => {
                 println!("{}Failed to create Fly app", ERROR);
                 println!("  Try: flyctl launch --no-deploy");
+                analytics::track_deploy_error("flyio", "app_creation_failed");
+                analytics::flush();
                 return 1;
             }
         }
@@ -815,6 +822,7 @@ fn deploy_flyio(verbose: bool) -> i32 {
 
             // Track deploy success
             analytics::track_deploy_success("flyio", duration.as_millis() as u64);
+            analytics::flush();
 
             0
         }
@@ -828,6 +836,7 @@ fn deploy_flyio(verbose: bool) -> i32 {
 
             // Track deploy error
             analytics::track_deploy_error("flyio", "build_failed");
+            analytics::flush();
 
             1
         }
@@ -838,6 +847,7 @@ fn deploy_flyio(verbose: bool) -> i32 {
 
             // Track deploy error
             analytics::track_deploy_error("flyio", "network_error");
+            analytics::flush();
 
             1
         }
@@ -1120,6 +1130,8 @@ fn deploy_railway(verbose: bool) -> i32 {
         if !install_railway() {
             println!("{}Railway CLI installation failed", ERROR);
             println!("  Install manually: npm i -g @railway/cli");
+            analytics::track_deploy_error("railway", "cli_install_failed");
+            analytics::flush();
             return 1;
         }
         println!("{}Railway CLI installed", CHECK);
@@ -1167,6 +1179,8 @@ fn deploy_railway(verbose: bool) -> i32 {
 
             if browserless_status.is_err() || !browserless_status.unwrap().success() {
                 println!("{}Authentication failed", ERROR);
+                analytics::track_deploy_error("railway", "auth_failed");
+                analytics::flush();
                 return 1;
             }
         }
@@ -1209,6 +1223,8 @@ fn deploy_railway(verbose: bool) -> i32 {
             _ => {
                 println!("{}Failed to create Railway project", ERROR);
                 println!("  Manage billing: https://railway.app/account/billing");
+                analytics::track_deploy_error("railway", "project_creation_failed");
+                analytics::flush();
                 return 1;
             }
         }
@@ -1283,6 +1299,7 @@ fn deploy_railway(verbose: bool) -> i32 {
 
             // Track deploy success
             analytics::track_deploy_success("railway", duration.as_millis() as u64);
+            analytics::flush();
 
             0
         }
@@ -1296,6 +1313,7 @@ fn deploy_railway(verbose: bool) -> i32 {
 
             // Track deploy error
             analytics::track_deploy_error("railway", "build_failed");
+            analytics::flush();
 
             1
         }
@@ -1306,6 +1324,7 @@ fn deploy_railway(verbose: bool) -> i32 {
 
             // Track deploy error
             analytics::track_deploy_error("railway", "network_error");
+            analytics::flush();
 
             1
         }

@@ -100,6 +100,14 @@ pub fn track_event(event: &str, properties: HashMap<&str, String>) {
     });
 }
 
+/// Wait for pending analytics events to complete
+/// Call this before the program exits to ensure events are sent
+pub fn flush() {
+    // Give background threads time to complete their HTTP requests
+    // Using 1 second to handle slow connections (PostHog timeout is 2s)
+    thread::sleep(Duration::from_millis(1000));
+}
+
 /// Track a simple event with just OS and version
 pub fn track_simple(event: &str) {
     track_event(event, HashMap::new());
