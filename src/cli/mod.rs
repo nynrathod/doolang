@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod templates;
 
 use clap::{Parser, Subcommand};
@@ -398,6 +399,10 @@ fn run_init(name_arg: Option<String>, template_arg: Option<String>) -> i32 {
     println!("👉 Run the project:");
     println!("   cd {}", name);
     println!("   doo run");
+
+    // Track project creation (fire-and-forget, anonymous)
+    analytics::track_project_created(template.name);
+
     0
 }
 
@@ -668,6 +673,9 @@ fn prompt_env_vars_for_production() -> Vec<(String, String)> {
 }
 
 fn deploy_flyio(verbose: bool) -> i32 {
+    // Track deployment attempt (fire-and-forget, anonymous)
+    analytics::track_deploy_attempt("flyio");
+
     // Check and install flyctl
     if !check_flyctl_installed() {
         println!("→ Installing Fly CLI...");
@@ -805,6 +813,9 @@ fn deploy_flyio(verbose: bool) -> i32 {
             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             println!();
 
+            // Track deploy success
+            analytics::track_deploy_success("flyio", duration.as_millis() as u64);
+
             0
         }
         Ok(_) => {
@@ -814,12 +825,20 @@ fn deploy_flyio(verbose: bool) -> i32 {
             println!("  • Run with --verbose to see full logs");
             println!("  • Check logs: flyctl logs");
             println!("  • Build locally: docker build .");
+
+            // Track deploy error
+            analytics::track_deploy_error("flyio", "build_failed");
+
             1
         }
         Err(e) => {
             println!("\r{}Deployment error: {}", ERROR, e);
             println!();
             println!("  Check your network connection and try again.");
+
+            // Track deploy error
+            analytics::track_deploy_error("flyio", "network_error");
+
             1
         }
     }
@@ -1091,6 +1110,9 @@ fn install_railway() -> bool {
 }
 
 fn deploy_railway(verbose: bool) -> i32 {
+    // Track deployment attempt (fire-and-forget, anonymous)
+    analytics::track_deploy_attempt("railway");
+
     // Check and install Railway CLI
     if !check_railway_installed() {
         println!("→ Installing Railway CLI...");
@@ -1259,6 +1281,9 @@ fn deploy_railway(verbose: bool) -> i32 {
             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             println!();
 
+            // Track deploy success
+            analytics::track_deploy_success("railway", duration.as_millis() as u64);
+
             0
         }
         Ok(_) => {
@@ -1268,12 +1293,20 @@ fn deploy_railway(verbose: bool) -> i32 {
             println!("  • Run with --verbose to see full logs");
             println!("  • Check logs: railway logs");
             println!("  • Build locally: docker build .");
+
+            // Track deploy error
+            analytics::track_deploy_error("railway", "build_failed");
+
             1
         }
         Err(e) => {
             println!("\r{}Deployment error: {}", ERROR, e);
             println!();
             println!("  Check your network connection and try again.");
+
+            // Track deploy error
+            analytics::track_deploy_error("railway", "network_error");
+
             1
         }
     }

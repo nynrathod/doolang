@@ -227,6 +227,43 @@ function Refresh-Environment {
     # Refresh PATH for current session
     $env:Path = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine) + ";" + [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
 }
+# Anonymous install tracking via PostHog (no private data, fire-and-forget)
+# Get your API key from: https://app.posthog.com → Project Settings
+$PosthogApiKey = "phc_REPLACE_WITH_YOUR_KEY"
+$PosthogHost = "https://us.i.posthog.com"
+
+function Send-Analytics {
+    # Skip if API key not configured
+    if ($PosthogApiKey -like "*REPLACE*") {
+        return
+    }
+    
+    try {
+        # Generate anonymous ID from computer name hash
+        $hashInput = "$env:COMPUTERNAME-windows"
+        $hasher = [System.Security.Cryptography.MD5]::Create()
+        $hashBytes = $hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($hashInput))
+        $anonId = "doo_" + [BitConverter]::ToString($hashBytes).Replace("-", "").Substring(0, 16).ToLower()
+        
+        $body = @{
+            api_key = $PosthogApiKey
+            event = "install_complete"
+            distinct_id = $anonId
+            properties = @{
+                '$os' = "windows"
+                doo_version = $Version
+            }
+        } | ConvertTo-Json -Compress -Depth 3
+        
+        # Fire-and-forget using Start-Job (runs in background)
+        Start-Job -ScriptBlock {
+            param($body, $host_url)
+            try {
+                Invoke-RestMethod -Uri "$host_url/capture/" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 2 -ErrorAction SilentlyContinue | Out-Null
+            } catch {}
+        } -ArgumentList $body, $PosthogHost | Out-Null
+    } catch {}
+}
 
 # Main installation flow
 function Main {
@@ -237,6 +274,7 @@ function Main {
     Refresh-Environment
     Check-Dependencies
     Verify-Installation
+    Send-Analytics
 }
 
 Main

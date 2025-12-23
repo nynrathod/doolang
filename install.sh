@@ -263,6 +263,35 @@ verify_installation() {
     fi
 }
 
+# Anonymous install tracking via PostHog (no private data, fire-and-forget)
+# Get your API key from: https://app.posthog.com → Project Settings
+POSTHOG_API_KEY="phc_REPLACE_WITH_YOUR_KEY"
+POSTHOG_HOST="https://us.i.posthog.com"
+
+send_analytics() {
+    # Skip if API key not configured
+    if [[ "$POSTHOG_API_KEY" == *"REPLACE"* ]]; then
+        return
+    fi
+    
+    # Generate anonymous ID from hostname hash
+    ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5sum | cut -c1-16)"
+    
+    (curl -s -X POST "$POSTHOG_HOST/capture/" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"api_key\": \"$POSTHOG_API_KEY\",
+            \"event\": \"install_complete\",
+            \"distinct_id\": \"$ANON_ID\",
+            \"properties\": {
+                \"\$os\": \"$PLATFORM\",
+                \"doo_version\": \"$VERSION\"
+            }
+        }" \
+        --max-time 2 \
+        >/dev/null 2>&1 || true) &
+}
+
 # Main installation flow
 main() {
     print_banner
@@ -272,6 +301,7 @@ main() {
     setup_path
     check_dependencies
     verify_installation
+    send_analytics
 }
 
 main
