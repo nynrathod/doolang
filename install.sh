@@ -73,24 +73,28 @@ detect_platform() {
 
 # Get latest release version from GitHub API
 get_latest_version() {
-    info "Fetching latest version..."
+    # TEST MODE: Use specific version instead of latest
+    # info "Fetching latest version..."
     
-    if command -v curl &> /dev/null; then
-        VERSION=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    elif command -v wget &> /dev/null; then
-        VERSION=$(wget -qO- "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    else
-        error "Neither curl nor wget found. Please install one of them."
-    fi
+    # if command -v curl &> /dev/null; then
+    #     VERSION=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    # elif command -v wget &> /dev/null; then
+    #     VERSION=$(wget -qO- "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    # else
+    #     error "Neither curl nor wget found. Please install one of them."
+    # fi
 
-    if [ -z "$VERSION" ]; then
-        error "Failed to fetch latest version. Check your internet connection."
-    fi
+    # if [ -z "$VERSION" ]; then
+    #     error "Failed to fetch latest version. Check your internet connection."
+    # fi
+    
+    # For testing:
+    VERSION="v0.3.0-pre"
 
     # Remove 'v' prefix if present for the download URL
     VERSION_NUM="${VERSION#v}"
     
-    info "Latest version: $VERSION"
+    info "Using version: $VERSION"
 }
 
 # Download and extract the release

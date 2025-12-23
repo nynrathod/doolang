@@ -50,17 +50,22 @@ function Write-Error-Custom {
 }
 
 function Get-LatestVersion {
-    Write-Info "Fetching latest version..."
+    # TEST MODE: Use specific version instead of latest
+    # Write-Info "Fetching latest version..."
     
     try {
-        $releaseUrl = "https://api.github.com/repos/$GithubRepo/releases/latest"
-        $response = Invoke-RestMethod -Uri $releaseUrl -Method Get -Headers @{ "User-Agent" = "Doo-Installer" }
-        $script:Version = $response.tag_name
+        # $releaseUrl = "https://api.github.com/repos/$GithubRepo/releases/latest"
+        # $response = Invoke-RestMethod -Uri $releaseUrl -Method Get -Headers @{ "User-Agent" = "Doo-Installer" }
+        # $script:Version = $response.tag_name
+
+        # For testing:
+        $script:Version = "v0.3.0-pre"
+        
         $script:VersionNum = $Version -replace '^v', ''
-        Write-Info "Latest version: $Version"
+        Write-Info "Using version: $Version"
     }
     catch {
-        Write-Error-Custom "Failed to fetch latest version. Check your internet connection. Error: $_"
+        Write-Error-Custom "Failed to set version. Error: $_"
     }
 }
 
