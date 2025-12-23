@@ -21,7 +21,7 @@ panic = "abort"        # Smaller panic handler
 
 [package]
 name = "doo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 default-run = "doo"
 
