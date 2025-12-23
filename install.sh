@@ -294,8 +294,12 @@ send_analytics() {
         return
     fi
     
-    # Generate anonymous ID from hostname hash
-    ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5sum | cut -c1-16)"
+    # Generate anonymous ID from hostname hash (use md5 on macOS, md5sum on Linux)
+    if [ "$PLATFORM" = "mac" ]; then
+        ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5 | cut -c1-16)"
+    else
+        ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5sum | cut -c1-16)"
+    fi
     
     (curl -s -X POST "$POSTHOG_HOST/capture/" \
         -H "Content-Type: application/json" \
