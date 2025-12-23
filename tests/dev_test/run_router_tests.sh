@@ -4,8 +4,6 @@
 # Auto-discovers and runs all tests in database/ and http/ directories
 # =============================================================================
 
-set -e
-
 # Get script directory and source common utilities
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -18,7 +16,7 @@ PASSED_TESTS=0
 FAILED_TESTS=0
 
 # Files to exclude from test discovery
-EXCLUDED_FILES="run_all_tests.sh|run_http_tests.sh|common.sh|create_scripts|fix_all|pretty.sh"
+EXCLUDED_FILES="run_all_tests.sh|run_http_tests.sh|run_router_tests.sh|common.sh|create_scripts|fix_all|pretty.sh"
 
 run_test() {
     local script="$1"
@@ -36,8 +34,21 @@ run_test() {
     # Run script from its own directory
     local script_dir="$(dirname "$script")"
     local script_name="$(basename "$script")"
+    local exit_code=0
 
-    if timeout 90 bash -c "cd \"$script_dir\" && bash \"$script_name\""; then
+    # Run the test - simple direct execution for both platforms
+    # Each test script sources common.sh independently
+    if [[ "$(uname)" == "Darwin" ]]; then
+        # macOS: Run directly (no timeout to avoid buffering)
+        bash -c "cd \"$script_dir\" && bash \"$script_name\""
+        exit_code=$?
+    else
+        # Linux/WSL - use timeout
+        timeout 90 bash -c "cd \"$script_dir\" && bash \"$script_name\""
+        exit_code=$?
+    fi
+
+    if [ "$exit_code" -eq 0 ]; then
         PASSED_TESTS=$((PASSED_TESTS + 1))
         echo "✅ $name passed"
     else
@@ -45,8 +56,8 @@ run_test() {
         echo "❌ $name failed or timed out"
     fi
 
-    # Small pause for cleanup
-    sleep 0.2
+    # Pause for cleanup
+    sleep 0.3
 }
 
 # =============================================================================

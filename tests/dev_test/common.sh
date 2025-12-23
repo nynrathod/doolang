@@ -41,13 +41,14 @@ wait_for_health() {
 kill_port() {
     local port="$1"
     
-    # Try lsof first
+    # Use lsof (works on both macOS and Linux)
     if command -v lsof >/dev/null 2>&1; then
         lsof -ti :"$port" 2>/dev/null | xargs kill -9 2>/dev/null || true
+        return
     fi
     
-    # Also try fuser as backup
-    if command -v fuser >/dev/null 2>&1; then
+    # Fallback: Try fuser on Linux only (macOS fuser has different syntax)
+    if [[ "$(uname)" == "Linux" ]] && command -v fuser >/dev/null 2>&1; then
         fuser -k "$port/tcp" 2>/dev/null || true
     fi
 }
@@ -78,6 +79,7 @@ start_server() {
         return 1
     fi
     
+    
     return 0
 }
 
@@ -107,16 +109,20 @@ setup_trap() {
 # =============================================================================
 # pretty_json - Pretty print JSON (or raw if jq unavailable)
 # Usage: echo '{"foo":"bar"}' | pretty_json
+# IMPORTANT: We buffer all input first to avoid macOS pipe timing issues
+# where jq starts reading before curl finishes writing
 # =============================================================================
 pretty_json() {
+    local input
+    input=$(cat)  # Buffer all input first
+    
+    if [ -z "$input" ]; then
+        return
+    fi
+    
     if command -v jq >/dev/null 2>&1; then
-        local input=$(cat)
-        if echo "$input" | jq . >/dev/null 2>&1; then
-            echo "$input" | jq .
-        else
-            echo "$input"
-        fi
+        echo "$input" | jq . 2>/dev/null || echo "$input"
     else
-        cat
+        echo "$input"
     fi
 }

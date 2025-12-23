@@ -36,19 +36,27 @@ echo ""
 # --------------------------------------------------
 
 echo "Signup"
-curl -s -X POST http://127.0.0.1:$PORT/signup \
+SIGNUP_RESP=$(curl -s -X POST http://127.0.0.1:$PORT/signup \
   -H "Content-Type: application/json" \
-  -d "{\"Email\":\"$EMAIL\",\"Password\":\"p\",\"Name\":\"Jwt\",\"Role\":\"user\"}" \
-  | pretty_json
+  -d "{\"Email\":\"$EMAIL\",\"Password\":\"testpass123\",\"Name\":\"Jwt\",\"Role\":\"user\"}")
+
+echo "$SIGNUP_RESP" | pretty_json
 echo ""
 
-echo "Login"
-RESP=$(curl -s -X POST http://127.0.0.1:$PORT/login \
-  -H "Content-Type: application/json" \
-  -d '{"Email":"jwt@t.com","Password":"p"}')
+# Extract token from signup response (more reliable)
+TOKEN=$(echo "$SIGNUP_RESP" | grep -o '"token":"[^"]*"' | head -1 | sed 's/"token":"//;s/"$//')
 
-echo "$RESP" | pretty_json
-TOKEN=$(echo "$RESP" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+echo "Login"
+LOGIN_RESP=$(curl -s -X POST http://127.0.0.1:$PORT/login \
+  -H "Content-Type: application/json" \
+  -d "{\"Email\":\"$EMAIL\",\"Password\":\"testpass123\"}")
+
+echo "$LOGIN_RESP" | pretty_json
+
+# If signup token extraction failed, try from login
+if [ -z "$TOKEN" ]; then
+  TOKEN=$(echo "$LOGIN_RESP" | grep -o '"token":"[^"]*"' | head -1 | sed 's/"token":"//;s/"$//')
+fi
 echo ""
 
 # --------------------------------------------------
