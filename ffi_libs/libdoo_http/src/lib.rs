@@ -1736,11 +1736,11 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         println!("Info Server Online");
         println!("-------------------------------------------");
         println!("• Boot Time:            {} ms", boot_time_ms);
-        println!("• Listening on:         http://0.0.0.0:{}", port);
+        println!("• Listening on:         http://{}:{}", addr.ip(), port);
         println!("• Handlers Loaded:      {}", total_routes);
         println!("• Process ID:           {}", std::process::id());
         println!("-------------------------------------------");
-        println!("🚀 Server Started on http://0.0.0.0:{}\n", port);
+        println!("🚀 Server Started on http://{}:{}\n", addr.ip(), port);
 
         loop {
             let (stream, _) = match listener.accept().await {

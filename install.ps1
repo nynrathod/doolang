@@ -18,7 +18,7 @@ function Write-Banner {
     Write-Host " |  _ \  ___   ___  " -ForegroundColor Cyan
     Write-Host " | | | |/ _ \ / _ \ " -ForegroundColor Cyan
     Write-Host " | |_| | (_) | (_) |" -ForegroundColor Cyan
-    Write-Host " |____/ \___/ \___/ " -ForegroundColor Cyan
+    Write-Host " |____/ \___/ \___/          Doo $script:Version" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Doo Programming Language Installer" -ForegroundColor White
     Write-Host ""
@@ -269,8 +269,8 @@ function Send-Analytics {
 
 # Main installation flow
 function Main {
-    Write-Banner
     Get-LatestVersion
+    Write-Banner
     Download-AndExtract
     Setup-Path
     Refresh-Environment

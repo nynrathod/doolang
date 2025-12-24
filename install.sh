@@ -28,7 +28,7 @@ print_banner() {
     echo " |  _ \  ___   ___  "
     echo " | | | |/ _ \ / _ \ "
     echo " | |_| | (_) | (_) |"
-    echo " |____/ \___/ \___/ "
+    echo " |____/ \___/ \___/          Doo $VERSION"
     echo -e "${NC}"
     echo -e "${BOLD}Doo Programming Language Installer${NC}"
     echo ""
@@ -315,9 +315,9 @@ send_analytics() {
 
 # Main installation flow
 main() {
-    print_banner
     detect_platform
     get_latest_version
+    print_banner
     download_and_extract
     setup_path
     check_dependencies
