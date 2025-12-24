@@ -23,9 +23,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY . .
 
-# Install doo compiler (prerelease)
-RUN DOO_TAG=v0.3.0-pre && \
-    DOO_VERSION=0.3.0 && \
+# Install doo compiler (latest)
+RUN DOO_TAG=$(curl -fsSL https://api.github.com/repos/nynrathod/doolang/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') && \
+    DOO_VERSION=${DOO_TAG#v} && \
     mkdir -p ~/.doo/bin ~/.doo/bin/std && \
     curl -fsSL \
       https://github.com/nynrathod/doolang/releases/download/${DOO_TAG}/doo-linux-${DOO_VERSION}.zip \

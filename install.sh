@@ -75,25 +75,22 @@ detect_platform() {
 get_latest_version() {
     # TEST MODE: Use specific version instead of latest
     # info "Fetching latest version..."
-    
-    # if command -v curl &> /dev/null; then
-    #     VERSION=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    # elif command -v wget &> /dev/null; then
-    #     VERSION=$(wget -qO- "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    # else
-    #     error "Neither curl nor wget found. Please install one of them."
-    # fi
 
-    # if [ -z "$VERSION" ]; then
-    #     error "Failed to fetch latest version. Check your internet connection."
-    # fi
-    
-    # For testing:
-    VERSION="v0.3.0-pre"
+    if command -v curl &> /dev/null; then
+        VERSION=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    elif command -v wget &> /dev/null; then
+        VERSION=$(wget -qO- "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    else
+        error "Neither curl nor wget found. Please install one of them."
+    fi
+
+    if [ -z "$VERSION" ]; then
+        error "Failed to fetch latest version. Check your internet connection."
+    fi
 
     # Remove 'v' prefix if present for the download URL
     VERSION_NUM="${VERSION#v}"
-    
+
     info "Using version: $VERSION"
 }
 
@@ -104,7 +101,7 @@ download_and_extract() {
     ZIP_FILE="$TEMP_DIR/doo.zip"
 
     info "Downloading from: $DOWNLOAD_URL"
-    
+
     if command -v curl &> /dev/null; then
         curl -fsSL "$DOWNLOAD_URL" -o "$ZIP_FILE" || error "Download failed. Please check if the release exists for your platform."
     elif command -v wget &> /dev/null; then
@@ -112,10 +109,10 @@ download_and_extract() {
     fi
 
     info "Extracting files..."
-    
+
     # Create installation directory
     mkdir -p "$BIN_DIR"
-    
+
     # Extract zip file
     if ! command -v unzip &> /dev/null; then
         info "unzip not found. Attempting to install..."
@@ -142,7 +139,7 @@ download_and_extract() {
     # Find and copy all files to bin directory
     # Handle various folder structures: look for doo binary in the extracted content
     DOO_FOUND=false
-    
+
     # Check if doo is directly in extracted dir
     if [ -f "$TEMP_DIR/extracted/doo" ]; then
         cp -r "$TEMP_DIR/extracted"/* "$BIN_DIR/"
@@ -157,7 +154,7 @@ download_and_extract() {
             fi
         done
     fi
-    
+
     # Fallback: just copy everything from first subdirectory
     if [ "$DOO_FOUND" = false ]; then
         first_dir=$(find "$TEMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -170,24 +167,24 @@ download_and_extract() {
 
     # Make the binary executable
     chmod +x "$BIN_DIR/doo"
-    
+
     # Also chmod any .so files
     find "$BIN_DIR" -name "*.so" -exec chmod +x {} \; 2>/dev/null || true
     find "$BIN_DIR" -name "*.dylib" -exec chmod +x {} \; 2>/dev/null || true
 
     # Cleanup
     rm -rf "$TEMP_DIR"
-    
+
     success "Files extracted to $BIN_DIR"
 }
 
 # Setup PATH
 setup_path() {
     info "Setting up PATH..."
-    
+
     SHELL_NAME=$(basename "$SHELL")
     PROFILE_FILE=""
-    
+
     case "$SHELL_NAME" in
         bash)
             if [ -f "$HOME/.bash_profile" ]; then
@@ -214,11 +211,11 @@ setup_path() {
         info "PATH already contains $BIN_DIR"
     else
         EXPORT_LINE="export PATH=\"\$PATH:$BIN_DIR\""
-        
+
         if [ "$SHELL_NAME" = "fish" ]; then
             EXPORT_LINE="set -gx PATH \$PATH $BIN_DIR"
         fi
-        
+
         # Check if the line already exists in the profile file
         if [ -f "$PROFILE_FILE" ] && grep -q "$BIN_DIR" "$PROFILE_FILE"; then
             info "PATH already configured in $PROFILE_FILE"
@@ -229,7 +226,7 @@ setup_path() {
             success "Added PATH to $PROFILE_FILE"
         fi
     fi
-    
+
     # Export for current session
     export PATH="$PATH:$BIN_DIR"
 }
@@ -237,7 +234,7 @@ setup_path() {
 # Install clang if needed (for linking)
 check_dependencies() {
     info "Checking dependencies..."
-    
+
     if ! command -v clang &> /dev/null; then
         warn "clang is not installed. Doo requires clang for linking."
         echo ""
@@ -256,7 +253,7 @@ check_dependencies() {
 # Verify installation
 verify_installation() {
     info "Verifying installation..."
-    
+
     if [ -f "$BIN_DIR/doo" ]; then
         success "Doo installed successfully!"
         echo ""
@@ -264,7 +261,7 @@ verify_installation() {
         echo ""
         echo -e "  Binary location: ${CYAN}$BIN_DIR/doo${NC}"
         echo ""
-        
+
         # Check if doo is accessible
         if command -v doo &> /dev/null; then
             echo -e "${GREEN}✓${NC} doo command is available in current session"
@@ -293,14 +290,14 @@ send_analytics() {
     if [[ "$POSTHOG_API_KEY" == *"REPLACE"* ]]; then
         return
     fi
-    
+
     # Generate anonymous ID from hostname hash (use md5 on macOS, md5sum on Linux)
     if [ "$PLATFORM" = "mac" ]; then
         ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5 | cut -c1-16)"
     else
         ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5sum | cut -c1-16)"
     fi
-    
+
     (curl -s -X POST "$POSTHOG_HOST/capture/" \
         -H "Content-Type: application/json" \
         -d "{

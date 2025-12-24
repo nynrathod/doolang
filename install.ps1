@@ -54,12 +54,9 @@ function Get-LatestVersion {
     # Write-Info "Fetching latest version..."
 
     try {
-        # $releaseUrl = "https://api.github.com/repos/$GithubRepo/releases/latest"
-        # $response = Invoke-RestMethod -Uri $releaseUrl -Method Get -Headers @{ "User-Agent" = "Doo-Installer" }
-        # $script:Version = $response.tag_name
-
-        # For testing:
-        $script:Version = "v0.3.0-pre"
+        $releaseUrl = "https://api.github.com/repos/$GithubRepo/releases/latest"
+        $response = Invoke-RestMethod -Uri $releaseUrl -Method Get -Headers @{ "User-Agent" = "Doo-Installer" }
+        $script:Version = $response.tag_name
 
         $script:VersionNum = $Version -replace '^v', ''
         Write-Info "Using version: $Version"
