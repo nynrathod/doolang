@@ -1,4 +1,4 @@
-# Doo Programming Language
+# Doo - Ship Production APIs in Minutes, Not Days
 
 [![Rust](https://img.shields.io/badge/Made%20with-Rust-orange)](https://www.rust-lang.org/)
 [![LLVM](https://img.shields.io/badge/LLVM-blueviolet)](https://llvm.org/)
@@ -6,223 +6,247 @@
 
 Doo is a statically-typed, compiled programming language built in Rust + LLVM, designed for building production APIs quickly and safely. It uses automatic memory management via reference counting.
 
-> **Want to contribute? See [CONTRIBUTING.md](CONTRIBUTING.md)**
->
-> **For testing and development, see [TEST.md](TEST.md)**
+**Stop wrestling with boilerplate. Write type-safe APIs and deploy with one command.**
 
-## 🚀 Features
+```rust
+// main.doo - Your entire API
+import std::Http::Server;
+import std::Database;
 
-- **Static Type System**: Compile-time type checking with type inference
-- **Automatic Memory Management**: Reference counting for data types
-- **Data Types**: Integers, Float, Strings, Booleans, Arrays, Maps, and Tuples
-- **Native Compilation**: Compiles to standalone executables using clang/lld
+struct User {
+    id: Int @primary @auto,
+    email: Str @email @unique,
+    password: Str @hash,
+}
+
+fn main() {
+    let db = Database::postgres()?;
+    let app = Server::new(":3000");
+    
+    // Authentication via JWT
+    app.auth("/signup", "/login", User, db);
+    
+    // Full CRUD 
+    // GET, POST, GET/:id, PUT/:id, DELETE/:id
+    app.crud("/users", User, db);
+    
+    app.start();
+}
+```
+
+**Run it:**
+```bash
+doo run  # Compiles to native + starts server
+```
+
+> **Want to contribute?** See [CONTRIBUTING.md](CONTRIBUTING.md)  
+> **For testing and development:** See [TEST.md](TEST.md)
+
+---
+
+## Why Doo?
+
+| Traditional Stack | Doo |
+|------------------|-----|
+| 500+ lines of boilerplate | 15 lines of code |
+| 3 config files | Zero config |
+| Manual validation | Auto-validated decorators |
+| Separate deployment setup | One command deploy |
+| Type mismatches at runtime | Compile-time safety |
+
+---
+
+
+---
 
 ## 🔧 Installation
 
-**Download the latest `doo` binary from the [Releases](https://github.com/nynrathod/doolang/releases) page as per your operating system.**
-
-Your downloaded file will usually be saved in your Downloads folder. Please rename file(you will get in format doo-[os-name]-x.x.x) to **doo**. Unzip the downloaded file.
-
-Then, follow the steps below for your operating system:
-
-### Windows
-
+### Windows (PowerShell)
 ```powershell
-# Move doo.exe to a folder (e.g., D:\doo\) and add to PATH
-[Environment]::SetEnvironmentVariable("Path", $env:Path + ";D:\doo", [EnvironmentVariableTarget]::User)
+irm https://raw.githubusercontent.com/nynrathod/doolang/main/install.ps1 | iex
 ```
 
 ### Linux / macOS
-
-```sh
-# Install clang (required for linking)
-# Linux: sudo apt install clang
-# macOS: xcode-select --install
-
-chmod +x ~/Downloads/doo
-mv ~/Downloads/doo ~/.local/bin/
-echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.bashrc && source ~/.bashrc
+```bash
+curl -fsSL https://raw.githubusercontent.com/nynrathod/doolang/main/install.sh | bash
 ```
 
+### Verify Installation
+```bash
+doo --help
 ```
-Note: `~/.bashrc` for Linux bash, `~/.bash_profile` for macOS bash
-```
-
-- **For zsh (Linux or macOS):**
-  `sh
-echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.zshrc
-source ~/.zshrc
-`
-
-**Verify:** `doo --help`
 
 ---
 
 ## 🎯 Quick Start
 
-Create your first Doo program:
-
-```rust
-// main.doo
-fn main() {
-    let message: Str = "Hello, doo!";
-    print(message);
-}
-```
-
-Place your `main.doo` file in a project directory and run:
-
+### Starter Template
 ```bash
-# Compile and run your program
+doo init --template starter starter-api
+cd starter-api
 doo run
 ```
 
-That's it! Your program compiles to a native executable and runs immediately.
-
-## 🌐 Language Overview
-
-### Variables
-
-```rust
-let name = "Doo";           // Type inferred
-let age: Int = 25;          // Explicit type
-let mut count = 0;          // Mutable
+### Blog Template
+```bash
+doo init --template blog blog-api  # Blog posts + comments API
+cd blog-api
+doo run
 ```
 
-### 📊 Data Types
+Visit `http://localhost:3000` - your API is live.
 
-| Type     | Example     |
-| -------- | ----------- |
-| `Int`    | `42`        |
-| `Float`  | `3.14`      |
-| `Str`    | `"hello"`   |
-| `Bool`   | `true`      |
-| `[T]`    | `[1, 2, 3]` |
-| `{K: V}` | `{"a": 1}`  |
+---
 
-### Functions
+## 📖 Real-World Example
+
+Complete task management API with auth, CRUD, and custom queries:
 
 ```rust
-fn Add(a: Int, b: Int) -> Int {
-    return a + b;
-}
-```
+import std::Http::Server;
+import std::Database;
 
-### Structs & Methods
+enum Status { Todo, InProgress, Done }
+enum Priority { Low, Medium, High }
 
-```rust
 struct User {
-    name: Str,
-    age: Int,
+    id: Int @primary @auto,
+    email: Str @email @unique,
+    password: Str @hash @min(8),
 }
 
-fn User.isAdult(self) -> Bool {
-    return self.age >= 18;
+struct Task {
+    id: Int @primary @auto,
+    title: Str @min(1) @max(200),
+    status: Status @default(Status::Todo),
+    priority: Priority @default(Priority::Medium),
+    user_id: Int @foreign(User),
+}
+
+fn GetUrgent() -> [Task] ! DatabaseError {
+    let db = Database::get()?;
+    let result: [Task] = db.rawWithParams(
+        "SELECT * FROM tasks WHERE priority = $1 AND status != $2",
+        [Priority::High, Status::Done]
+    )?;
+    Ok result;
 }
 
 fn main() {
-    let user = User { name: "Alice", age: 25 };
-    print(user.isAdult());  // true
+    let db = Database::postgres()?;
+    let app = Server::new(":3000");
+    
+    app.auth("/signup", "/login", User, db);
+    app.crud("/tasks", Task, db);
+    app.get("/tasks/urgent", GetUrgent);
+    
+    app.start();
 }
 ```
 
-### Enums
+**That's it.** 40 lines for a production-ready API with:
+- ✓ User authentication & JWT
+- ✓ Password hashing
+- ✓ Email validation
+- ✓ Full CRUD operations
+- ✓ Custom business logic
+- ✓ Type-safe database queries
 
+---
+
+## 🌐 Language Essentials
+
+### Variables & Types
 ```rust
-enum Status { Active, Pending, Done }
-
-let s = Status::Active;
+let name = "Alice";         // Type inferred
+let age: Int = 25;          // Explicit
+let mut count = 0;          // Mutable
 ```
 
-### Loops
-
+### Structs & Validation
 ```rust
-// Range
-for i in 0..5 { print(i); }
-
-// Array with index
-for idx, val in [10, 20, 30] { print(idx, val); }
-
-// Map
-for key, val in {"a": 1, "b": 2} { print(key, val); }
+struct User {
+    id: Int @primary @auto,
+    email: Str @email @unique,
+    password: Str @hash @min(8) @max(20),
+    age: Int @min(18),
+}
 ```
 
 ### Error Handling
-
 ```rust
 fn divide(a: Int, b: Int) -> Int ! Str {
     if b == 0 { Err "division by zero"; }
     Ok a / b;
 }
 
-fn main() {
+let result = divide(10, 2)?;  // Auto-propagate errors
+```
 
-    // Single line auto error propagation via ?
-    let result, err = divide(10, 2)?;
-
-    // or
-    // Manual handling
-    // let result, err = divide(10, 2);
-    // if err != nil {
-    //     print("Error:", err);
-    // } else {
-    //     print("Result:", result);
-    // }
+### HTTP Routes
+```rust
+fn GetUser(id: Int) -> User ! DatabaseError {
+    let db = Database::get()?;
+    Ok db.query("SELECT * FROM users WHERE id = $1", id)?;
 }
+
+app.get("/users/:id", GetUser);
 ```
 
-### JSON
-
-```rust
-let data = {"name": "Doo", "version": 1};
-let json = JSON.stringify(data);
-let parsed: {Str: Int} = JSON.parse(json);
-```
-
-### 📦 Modules
-
-```rust
-myproject/
-├── main.doo
-└── utils/
-    └── Math.doo
-```
-
-```rust
-// utils/Math.doo
-fn Add(a: Int, b: Int) -> Int { return a + b; }
-
-// main.doo
-import utils::Math::Add;
-
-fn main() {
-    print(Add(2, 3));
-}
-```
+**Full language guide:** See [`examples/`](examples/) folder for complete tutorials
 
 ---
 
-## 📂 Examples
+## 📦 Examples
 
-See the [`examples/`](examples/) folder for complete projects:
+- **[tasks_api](examples/tasks_api/)** - Complete CRUD + Auth + Custom queries
+- **[calculator](examples/calculator/)** - Error handling patterns
+- **[clean_code](examples/clean_code/)** - Service layers & validation
 
-- See the **[`examples folder`](doo/examples)** for practical sample projects;
-- Explore all features raw implementation in the **[`dev_test`](doo/tests/dev_test)**
+**More examples:** [examples/](examples/)
+
+---
+
+## 💬 Community & Support
+
+- **GitHub Discussions**: Ask questions, share projects
+- **Issues**: Bug reports and feature requests
+- **Contributing**: We welcome PRs! See [CONTRIBUTING.md](CONTRIBUTING.md)
+
+---
+
+✓ HTTP server + routing  
+✓ PostgreSQL with type-safe queries  
+✓ JWT authentication + password hashing  
+✓ Auto-CRUD generation
+✓ Compile-time validation  
+
+## What's Next
+
+We're focused on adoption first. Next features will be driven by real developer needs:
+- More cloud providers + zero-config hosting 
+- Multi-database support (MySQL, SQLite etc)
+- WebSocket, concurrency, async and many more
+
+**Want to influence the roadmap?** [Open a discussion →](https://github.com/nynrathod/doolang/discussions)
+
+
+---
 
 ## 📜 License
 
 This project is licensed under the MIT License
 
+---
+
 ## 🙏 Acknowledgments
 
 - **LLVM Project**: For the powerful backend infrastructure
 - **Rust Community**: For inspiration and excellent tooling
-- **Programming Language Design Community**: For theoretical foundations
 
 ---
 
-**Happy coding with Doo! 🚀**
+**Ready to ship faster?** `doo init starter` ← Start here
 
-> **Want to contribute? See [CONTRIBUTING.md](CONTRIBUTING.md)**
->
-> **For testing and development, see [TEST.md](TEST.md)**
+> **Want to contribute?** See [CONTRIBUTING.md](CONTRIBUTING.md)  
+> **For testing and development:** See [TEST.md](TEST.md)
