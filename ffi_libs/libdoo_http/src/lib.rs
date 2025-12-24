@@ -440,11 +440,15 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
             }));
         }
 
-        let result_box = Box::from_raw(result);
+        // CRITICAL: Result is allocated by LLVM's malloc, NOT Rust's Box.
+        // Read fields directly to avoid allocator mismatch and heap corruption.
+        let result_ref = &*result;
+        let result_tag = result_ref.tag;
+        let result_value = result_ref.value;
 
-        if result_box.tag == 0 {
+        if result_tag == 0 {
             // Success - extract response body
-            if result_box.value.is_null() {
+            if result_value.is_null() {
                 Box::into_raw(Box::new(DooResponse {
                     status: 200,
                     body: string_to_c(""),
@@ -452,12 +456,12 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
                 }))
             } else {
                 // Use helper to potential unwrap DooResult nesting
-                let raw_val = result_box.value as *const c_char;
-                let real_val = unsafe { unwrap_potential_dooresult(raw_val) };
+                let raw_val = result_value as *const c_char;
+                let real_val = unwrap_potential_dooresult(raw_val);
 
                 // If it looks like JSON (starts with { or [), wrap it in a response
                 let first_char = if !real_val.is_null() {
-                    unsafe { *real_val }
+                    *real_val
                 } else {
                     0
                 };
@@ -473,15 +477,14 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
                     }))
                 } else {
                     // Assume it's already a DooResponse pointer
-                    // Note: If real_val != raw_val, it means we unwrapped a DooResult in the else path
-                    // which shouldn't happen for DooResponse (as status 200 != tag 0 usually)
-                    let response_ptr = result_box.value as *mut DooResponse;
+                    let response_ptr = result_value as *mut DooResponse;
                     response_ptr // Return the response pointer directly
                 }
             }
         } else {
             // Error - convert to error response
-            let error_ptr = result_box.value as *mut DooHttpError;
+            // Error is also LLVM-allocated, read directly
+            let error_ptr = result_value as *const DooHttpError;
             if error_ptr.is_null() {
                 Box::into_raw(Box::new(DooResponse {
                     status: 500,
@@ -489,10 +492,10 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
                     content_type: string_to_c("application/json"),
                 }))
             } else {
-                let error = Box::from_raw(error_ptr);
+                let error_ref = &*error_ptr;
                 Box::into_raw(Box::new(DooResponse {
-                    status: error.status,
-                    body: error.message,
+                    status: error_ref.status,
+                    body: error_ref.message,
                     content_type: string_to_c("application/json"),
                 }))
             }
@@ -500,11 +503,37 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
     }
 }
 
-// Helper to convert Rust String to C string
+// Helper to convert Rust String to C string compatible with Doo runtime (RC header)
 fn string_to_c(s: &str) -> *const c_char {
-    CString::new(s)
-        .expect("Failed to create CString")
-        .into_raw()
+    extern "C" {
+        fn dooruntime_malloc(size: usize) -> *mut u8;
+    }
+
+    unsafe {
+        let len = s.len();
+        let total_size = len + 1 + 8; // data + null + header
+        let alloc_size = (total_size + 15) & !15; // Align 16
+
+        let ptr = dooruntime_malloc(alloc_size);
+
+        if ptr.is_null() {
+            eprintln!("CRITICAL: Failed to allocate memory for string_to_c");
+            return std::ptr::null();
+        }
+
+        // Zero memory
+        std::ptr::write_bytes(ptr, 0, alloc_size);
+
+        // Header
+        *(ptr as *mut i32) = 1; // RC = 1
+        *(ptr.add(4) as *mut i32) = len as i32; // Len
+
+        let data_ptr = ptr.add(8);
+        std::ptr::copy_nonoverlapping(s.as_ptr(), data_ptr, len);
+        *data_ptr.add(len) = 0; // Null terminate
+
+        data_ptr as *const c_char
+    }
 }
 
 fn c_to_string(ptr: *const c_char) -> String {
@@ -526,10 +555,9 @@ fn make_ok_void() -> *mut DooResult {
 }
 
 fn make_ok_string(s: &str) -> *mut DooResult {
-    let c_str = CString::new(s).expect("CString conversion failed");
     Box::into_raw(Box::new(DooResult {
         tag: 0,
-        value: c_str.into_raw() as *mut std::ffi::c_void,
+        value: string_to_c(s) as *mut std::ffi::c_void,
     }))
 }
 
@@ -1374,43 +1402,47 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             current_index: 1,
         });
 
+        eprintln!("DEBUG: Calling middleware for {}", path);
         first_middleware(req_ptr, Box::into_raw(next_for_first))
     } else {
         // No middleware, call handler directly
-        eprintln!("DEBUG: Calling handler");
+        eprintln!("DEBUG: Calling handler for {}", path);
         handler(req_ptr)
     };
-    eprintln!("DEBUG: Handler returned");
+    eprintln!("DEBUG: Handler/middleware returned for {}", path);
 
     // Process result
     let response = unsafe {
-        eprintln!("DEBUG: Processing response");
+        eprintln!("DEBUG: Processing response for {}", path);
         if result.is_null() {
             Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Full::new(Bytes::from("Handler returned null")))
                 .unwrap()
         } else {
-            // Use Box::from_raw to properly deallocate Box-allocated memory
-            let result_box = Box::from_raw(result);
-            let result_val = DooResult { tag: result_box.tag, value: result_box.value };
+            // CRITICAL: Result is allocated by LLVM's malloc, NOT Rust's Box.
+            // We must read the fields directly and use libc::free for cleanup,
+            // otherwise we get allocator mismatch and heap corruption.
+            let result_ref = &*result;
+            let result_tag = result_ref.tag;
+            let result_value = result_ref.value;
 
-            if result_val.tag == 0 {
+            if result_tag == 0 {
                 // Success - value is DooResponse*
-                if result_val.value.is_null() {
+                if result_value.is_null() {
                     Response::builder()
                         .status(StatusCode::OK)
                         .body(Full::new(Bytes::from("")))
                         .unwrap()
                 } else {
                     // Check if value is DooResult (tag < 100) or DooResponse (status >= 100)
-                    let raw_val = result_val.value as *const c_char;
-                    let real_val = unsafe { unwrap_potential_dooresult(raw_val) };
+                    let raw_val = result_value as *const c_char;
+                    let real_val = unwrap_potential_dooresult(raw_val);
 
                     if real_val.is_null() {
                         // Error unwrap (tag != 0)
                         // It is a DooHttpError packed in DooResult
-                        let raw_ptr = result_val.value;
+                        let raw_ptr = result_value;
                         // Inspect tag again to be sure
                         let tag = unsafe { *(raw_ptr as *const i32) };
                         // Assuming it's a DooHttpError pointer in value (offset 8)
@@ -1461,17 +1493,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                                 .unwrap()
                         } else {
                             // DooResponse
-                            let response_ptr = result_val.value as *mut DooResponse;
-                            // Use Box::from_raw to properly deallocate Box-allocated memory
-                            let response_box = Box::from_raw(response_ptr);
-                            let response_val = DooResponse { status: response_box.status, body: response_box.body, content_type: response_box.content_type };
+                            // Response is also allocated by LLVM malloc - read directly, don't use Box
+                            let response_ptr = result_value as *const DooResponse;
+                            let response_ref = &*response_ptr;
 
-                            let status = StatusCode::from_u16(response_val.status as u16)
+                            let status = StatusCode::from_u16(response_ref.status as u16)
                                 .unwrap_or(StatusCode::OK);
 
                             // Handling body from Response (could also be DooResult)
-                            let raw_body = response_val.body;
-                            let real_body = unsafe { unwrap_potential_dooresult(raw_body) };
+                            let raw_body = response_ref.body;
+                            let real_body = unwrap_potential_dooresult(raw_body);
 
                             let body_str = if real_body.is_null() {
                                 String::new()
@@ -1494,10 +1525,10 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                                 body_str
                             };
 
-                            let content_type_str = if response_val.content_type.is_null() {
+                            let content_type_str = if response_ref.content_type.is_null() {
                                 "application/json".to_string()
                             } else {
-                                CStr::from_ptr(response_val.content_type)
+                                CStr::from_ptr(response_ref.content_type)
                                     .to_string_lossy()
                                     .to_string()
                             };
@@ -1512,17 +1543,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 }
             } else {
                 // Error - value is DooHttpError*
-                let error_ptr = result_val.value as *mut DooHttpError;
-                // Use Box::from_raw to properly deallocate Box-allocated memory
-                let error_box = Box::from_raw(error_ptr);
-                let error = DooHttpError { status: error_box.status, message: error_box.message };
+                // Error is also allocated by LLVM malloc - read directly, don't use Box
+                let error_ptr = result_value as *const DooHttpError;
+                let error_ref = &*error_ptr;
 
-                let status = StatusCode::from_u16(error.status as u16)
+                let status = StatusCode::from_u16(error_ref.status as u16)
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                let message = if error.message.is_null() {
+                let message = if error_ref.message.is_null() {
                     "Unknown error".to_string()
                 } else {
-                    CStr::from_ptr(error.message).to_string_lossy().to_string()
+                    CStr::from_ptr(error_ref.message).to_string_lossy().to_string()
                 };
 
                 // Check if message is already RFC 7807 JSON (starts with {"type": or {"detail":)
@@ -1555,6 +1585,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         "[Doo] {} | {} | {:>3}ms | {} {}",
         timestamp, status_code, duration_ms, method, path
     );
+
+    // TODO: Request cleanup removed temporarily to debug memory corruption
+    // The request was allocated in this same function using Box::into_raw,
+    // so Box::from_raw cleanup should be valid. But we need to verify.
+    // doo_http_free_request(req_ptr);
 
     Ok(response)
 }

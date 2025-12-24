@@ -127,22 +127,32 @@ fn try_expand_route_group(node: &AstNode) -> Option<Vec<AstNode>> {
                 // Convert handler identifier to string literal
                 let handler_str = convert_handler_to_string(handler_expr);
 
-                // Create the method call with middleware:
-                // object.method(full_path, middleware1, middleware2, ..., handler)
-                let mut method_args = vec![full_path];
+                if middleware_args.is_empty() {
+                    // No middleware - simple route: app.get(path, handler)
+                    AstNode::MethodCall {
+                        object: Box::new(object.as_ref().clone()),
+                        method: http_method,
+                        args: vec![full_path, handler_str],
+                    }
+                } else {
+                    // With middleware - directly output final format: app.getWithMiddleware(path, "mw1,mw2", handler)
+                    // This prevents double-processing by transform_route_group_in_node
+                    let mut middleware_names = Vec::new();
+                    for middleware in middleware_args {
+                        let mw_name = extract_identifier_name(middleware);
+                        middleware_names.push(mw_name);
+                    }
+                    let middleware_str = middleware_names.join(",");
 
-                // Add all group middleware
-                for middleware in middleware_args {
-                    method_args.push(middleware.clone());
-                }
-
-                // Add the handler as the last argument
-                method_args.push(handler_str);
-
-                AstNode::MethodCall {
-                    object: Box::new(object.as_ref().clone()),
-                    method: http_method,
-                    args: method_args,
+                    AstNode::MethodCall {
+                        object: Box::new(object.as_ref().clone()),
+                        method: format!("{}WithMiddleware", http_method),
+                        args: vec![
+                            full_path,
+                            AstNode::StringLiteral(middleware_str),
+                            handler_str,
+                        ],
+                    }
                 }
             })
             .collect();
@@ -237,14 +247,24 @@ fn create_path_concat(prefix: &AstNode, path: &AstNode) -> AstNode {
 /// If the handler is an identifier (function name), convert it to a string literal.
 /// For closures, they will be transformed to functions first by transform_inline_closures.
 fn convert_handler_to_string(handler: AstNode) -> AstNode {
-    match handler {
-        AstNode::Identifier(name) => AstNode::StringLiteral(name),
+    match &handler {
+        AstNode::Identifier(name) => AstNode::StringLiteral(name.clone()),
+        // Handle function calls like jwt()
+        AstNode::FunctionCall { func, args } => {
+            if let AstNode::Identifier(func_name) = func.as_ref() {
+                if func_name == "jwt" && args.is_empty() {
+                    return AstNode::StringLiteral("jwt".to_string());
+                }
+            }
+            eprintln!("Warning: Unexpected function call in handler/middleware position");
+            handler
+        }
         // Closures should have been transformed already, but handle them gracefully
         AstNode::Closure { .. } => {
             eprintln!("Warning: Untransformed closure found in handler position");
             handler
         }
-        other => other,
+        _ => handler,
     }
 }
 
