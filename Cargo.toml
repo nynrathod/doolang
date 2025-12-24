@@ -19,24 +19,28 @@ codegen-units = 1      # Better optimization
 strip = true           # Strip symbols
 panic = "abort"        # Smaller panic handler
 
-[package]
-name = "doo"
+[workspace.package]
 version = "0.3.0"
 edition = "2021"
+
+[package]
+name = "doo"
+version.workspace = true
+edition.workspace = true
 default-run = "doo"
 
 [dependencies]
 inkwell = { version = "0.6.0", features = ["llvm18-1"] }
 llvm-sys = "=181.2.0"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5.53", features = ["derive"] }
 regex = "1"
-bumpalo = "3.19.0"
+bumpalo = "3.19.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 dialoguer = "0.12"
-console = "0.15"
-ctrlc = "3.4"
-ureq = { version = "2.10", features = ["json"] }
+console = "0.16"
+ctrlc = "3.5"
+ureq = { version = "3.1", features = ["json"] }
 
 
 [lib]

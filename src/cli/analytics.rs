@@ -173,13 +173,18 @@ fn send_to_posthog(
         "properties": props,
         "timestamp": chrono_timestamp(),
     });
-
     // Send HTTP POST to PostHog
     let url = format!("{}/capture/", POSTHOG_HOST);
 
-    let result = ureq::post(&url)
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
-        .set("Content-Type", "application/json")
+    // Build agent with timeout
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(TIMEOUT_SECS)))
+        .build()
+        .new_agent();
+
+    let result = agent
+        .post(&url)
+        .header("Content-Type", "application/json")
         .send_json(&payload);
 
     match result {
