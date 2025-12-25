@@ -174,10 +174,9 @@ struct HandlerMetadata {
     #[allow(dead_code)]
     struct_fields: HashMap<String, Vec<Vec<String>>>,
     struct_layouts: serde_json::Value,
-    enum_variants: HashMap<String, Vec<String>>,  // enum_name -> [variant_names]
+    enum_variants: HashMap<String, Vec<String>>, // enum_name -> [variant_names]
     return_type: String,
 }
-
 
 #[derive(Clone, Debug, Serialize)]
 struct DecoratorInfo {
@@ -460,11 +459,7 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
                 let real_val = unwrap_potential_dooresult(raw_val);
 
                 // If it looks like JSON (starts with { or [), wrap it in a response
-                let first_char = if !real_val.is_null() {
-                    *real_val
-                } else {
-                    0
-                };
+                let first_char = if !real_val.is_null() { *real_val } else { 0 };
 
                 if first_char == b'{' as i8 || first_char == b'[' as i8 {
                     // It's a JSON string - wrap it in DooResponse
@@ -543,7 +538,6 @@ fn c_to_string(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
 }
 
-
 // Helper for unified allocation - use Rust's allocator to match Box::from_raw
 // Previously used libc::malloc which caused heap corruption on macOS when
 // combined with Box::from_raw (allocator mismatch)
@@ -567,7 +561,7 @@ fn make_err_http(status: u16, message: &str) -> *mut DooResult {
         status: status as i32,
         message: string_to_c(message),
     }));
-    
+
     // Allocate Result using Rust allocator
     Box::into_raw(Box::new(DooResult {
         tag: 1,
@@ -1368,7 +1362,6 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     // Store current request path in thread-local storage for RFC 7807 errors
     set_current_request_path(&path);
-    eprintln!("DEBUG: Handling request {}", path);
 
     // Combine global and route-specific middleware
     let mut all_middleware = global_middleware.clone();
@@ -1402,18 +1395,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             current_index: 1,
         });
 
-        eprintln!("DEBUG: Calling middleware for {}", path);
         first_middleware(req_ptr, Box::into_raw(next_for_first))
     } else {
         // No middleware, call handler directly
-        eprintln!("DEBUG: Calling handler for {}", path);
         handler(req_ptr)
     };
-    eprintln!("DEBUG: Handler/middleware returned for {}", path);
-
     // Process result
     let response = unsafe {
-        eprintln!("DEBUG: Processing response for {}", path);
         if result.is_null() {
             Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -1512,18 +1500,21 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
                             // Wrap JSON arrays and objects in {"data": ...} envelope
                             // This ensures RFC 7807 compliance for all JSON responses
-                            let final_body = if body_str.starts_with('[') || body_str.starts_with('{') {
-                                // Check if already wrapped in {"data": ...}
-                                if body_str.starts_with("{\"data\":") || body_str.starts_with("{\"data\" :") {
-                                    body_str
+                            let final_body =
+                                if body_str.starts_with('[') || body_str.starts_with('{') {
+                                    // Check if already wrapped in {"data": ...}
+                                    if body_str.starts_with("{\"data\":")
+                                        || body_str.starts_with("{\"data\" :")
+                                    {
+                                        body_str
+                                    } else {
+                                        format!("{{\"data\":{}}}", body_str)
+                                    }
+                                } else if body_str.is_empty() {
+                                    "{\"data\":null}".to_string()
                                 } else {
-                                    format!("{{\"data\":{}}}", body_str)
-                                }
-                            } else if body_str.is_empty() {
-                                "{\"data\":null}".to_string()
-                            } else {
-                                body_str
-                            };
+                                    body_str
+                                };
 
                             let content_type_str = if response_ref.content_type.is_null() {
                                 "application/json".to_string()
@@ -1552,7 +1543,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 let message = if error_ref.message.is_null() {
                     "Unknown error".to_string()
                 } else {
-                    CStr::from_ptr(error_ref.message).to_string_lossy().to_string()
+                    CStr::from_ptr(error_ref.message)
+                        .to_string_lossy()
+                        .to_string()
                 };
 
                 // Check if message is already RFC 7807 JSON (starts with {"type": or {"detail":)
@@ -1624,7 +1617,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
         } else {
             // Default to 127.0.0.1 for local dev to avoid firewall popups
             // Use 0.0.0.0 if DOO_ENV=production or configured explicitly
-            let is_prod = std::env::var("DOO_ENV").map(|v| v == "production").unwrap_or(false);
+            let is_prod = std::env::var("DOO_ENV")
+                .map(|v| v == "production")
+                .unwrap_or(false);
             if is_prod {
                 string_to_c("0.0.0.0")
             } else {
@@ -1632,7 +1627,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
             }
         }
     } else {
-        let is_prod = std::env::var("DOO_ENV").map(|v| v == "production").unwrap_or(false);
+        let is_prod = std::env::var("DOO_ENV")
+            .map(|v| v == "production")
+            .unwrap_or(false);
         if is_prod {
             string_to_c("0.0.0.0")
         } else {
@@ -1678,8 +1675,15 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
             let host_ptr_ptr = (server_ptr as *const u8).add(8) as *const *const c_char;
             let host_ptr = *host_ptr_ptr;
             let host = c_to_string(host_ptr);
-            
-            (port, if host.is_empty() { "0.0.0.0".to_string() } else { host })
+
+            (
+                port,
+                if host.is_empty() {
+                    "0.0.0.0".to_string()
+                } else {
+                    host
+                },
+            )
         }
     };
 
@@ -1723,16 +1727,28 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         let boot_time_ms = startup_start.elapsed().as_millis();
 
         init_timestamp_updater();
-        
+
         // Run database migrations (create tables) at startup
         let created_tables = run_migrations();
         if !created_tables.is_empty() {
-            println!("✓ Migration success: created tables: {}", created_tables.join(", "));
+            println!(
+                "✓ Migration success: created tables: {}",
+                created_tables.join(", ")
+            );
         } else {
             // Check if we have registered tables (they already exist)
-            let has_tables = get_auth_metadata().lock().map(|m| !m.is_empty()).unwrap_or(false)
-                || get_crud_metadata().lock().map(|m| !m.is_empty()).unwrap_or(false)
-                || get_table_metadata().lock().map(|m| !m.is_empty()).unwrap_or(false);
+            let has_tables = get_auth_metadata()
+                .lock()
+                .map(|m| !m.is_empty())
+                .unwrap_or(false)
+                || get_crud_metadata()
+                    .lock()
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(false)
+                || get_table_metadata()
+                    .lock()
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(false);
             if has_tables {
                 println!("✓ Migration success: all tables already exist");
             }
@@ -3021,94 +3037,130 @@ fn validate_field_type(expected_type: &str, value: &serde_json::Value) -> (bool,
             if value.is_i64() || value.is_u64() {
                 (true, None)
             } else {
-                (false, Some(format!("expected Int, got {}", get_json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected Int, got {}", get_json_type_name(value))),
+                )
             }
         }
         "Float" => {
             if value.is_f64() || value.is_i64() || value.is_u64() {
                 (true, None)
             } else {
-                (false, Some(format!("expected Float, got {}", get_json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected Float, got {}", get_json_type_name(value))),
+                )
             }
         }
         "Bool" => {
             if value.is_boolean() {
                 (true, None)
             } else {
-                (false, Some(format!("expected Bool, got {}", get_json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected Bool, got {}", get_json_type_name(value))),
+                )
             }
         }
         "Str" => {
             if value.is_string() {
                 (true, None)
             } else {
-                (false, Some(format!("expected Str, got {}", get_json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected Str, got {}", get_json_type_name(value))),
+                )
             }
         }
         // Array types: [Str], [Int], [Float], [Bool]
         ty if ty.starts_with('[') && ty.ends_with(']') => {
-            let inner_type = &ty[1..ty.len()-1];
+            let inner_type = &ty[1..ty.len() - 1];
             if let Some(arr) = value.as_array() {
                 for (idx, elem) in arr.iter().enumerate() {
                     let (elem_valid, elem_error) = validate_field_type(inner_type, elem);
                     if !elem_valid {
-                        return (false, Some(format!(
-                            "array element at index {} has wrong type: {}",
-                            idx, elem_error.unwrap_or_default()
-                        )));
+                        return (
+                            false,
+                            Some(format!(
+                                "array element at index {} has wrong type: {}",
+                                idx,
+                                elem_error.unwrap_or_default()
+                            )),
+                        );
                     }
                 }
                 (true, None)
             } else {
-                (false, Some(format!("expected array, got {}", get_json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected array, got {}", get_json_type_name(value))),
+                )
             }
         }
         // Array types in compiler format: Array(Str), Array(Int), Array(Float), Array(Bool)
         ty if ty.starts_with("Array(") && ty.ends_with(')') => {
-            let inner_type = &ty[6..ty.len()-1];  // Extract "Str" from "Array(Str)"
+            let inner_type = &ty[6..ty.len() - 1]; // Extract "Str" from "Array(Str)"
             if let Some(arr) = value.as_array() {
                 for (idx, elem) in arr.iter().enumerate() {
                     let (elem_valid, elem_error) = validate_field_type(inner_type, elem);
                     if !elem_valid {
-                        return (false, Some(format!(
-                            "array element at index {} has wrong type: {}",
-                            idx, elem_error.unwrap_or_default()
-                        )));
+                        return (
+                            false,
+                            Some(format!(
+                                "array element at index {} has wrong type: {}",
+                                idx,
+                                elem_error.unwrap_or_default()
+                            )),
+                        );
                     }
                 }
                 (true, None)
             } else {
-                (false, Some(format!("expected array, got {}", get_json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected array, got {}", get_json_type_name(value))),
+                )
             }
         }
 
         // Map types: {Str: Int}, {Str: Str}, etc.
         ty if ty.starts_with('{') && ty.ends_with('}') && ty.contains(':') => {
-            let inner = &ty[1..ty.len()-1];
+            let inner = &ty[1..ty.len() - 1];
             if let Some(colon_pos) = inner.find(':') {
                 let key_type = inner[..colon_pos].trim();
-                let value_type = inner[colon_pos+1..].trim();
-                
+                let value_type = inner[colon_pos + 1..].trim();
+
                 if let Some(obj) = value.as_object() {
                     // Validate keys (should always be strings in JSON)
                     if key_type != "Str" {
                         // JSON only supports string keys, so non-Str key types can't be validated
                         return (true, None);
                     }
-                    
+
                     // Validate values
                     for (k, v) in obj {
                         let (val_valid, val_error) = validate_field_type(value_type, v);
                         if !val_valid {
-                            return (false, Some(format!(
-                                "map value for key '{}' has wrong type: {}",
-                                k, val_error.unwrap_or_default()
-                            )));
+                            return (
+                                false,
+                                Some(format!(
+                                    "map value for key '{}' has wrong type: {}",
+                                    k,
+                                    val_error.unwrap_or_default()
+                                )),
+                            );
                         }
                     }
                     (true, None)
                 } else {
-                    (false, Some(format!("expected object, got {}", get_json_type_name(value))))
+                    (
+                        false,
+                        Some(format!(
+                            "expected object, got {}",
+                            get_json_type_name(value)
+                        )),
+                    )
                 }
             } else {
                 (true, None) // Can't parse map type, skip validation
@@ -3125,8 +3177,12 @@ fn get_json_type_name(value: &serde_json::Value) -> &'static str {
         serde_json::Value::Null => "null",
         serde_json::Value::Bool(_) => "Bool",
         serde_json::Value::Number(n) => {
-            if n.is_f64() && n.as_i64().is_none() { "Float" } else { "Int" }
-        },
+            if n.is_f64() && n.as_i64().is_none() {
+                "Float"
+            } else {
+                "Int"
+            }
+        }
         serde_json::Value::String(_) => "Str",
         serde_json::Value::Array(_) => "array",
         serde_json::Value::Object(_) => "object",
@@ -3136,7 +3192,6 @@ fn get_json_type_name(value: &serde_json::Value) -> &'static str {
 // ===== DECORATOR VALIDATION =====
 // Note: All validation logic is in libdoo_runtime via dooruntime_validate_field()
 // This keeps validation centralized and reusable across all FFI libs (http, db, auth)
-
 
 /// Format validation error from runtime into RFC 7807 DooResponse
 /// Takes validation error JSON from dooruntime_get_last_validation_error() and request path
@@ -3232,21 +3287,25 @@ pub extern "C" fn doohttp_validate_and_call_handler(
     // Validate field types including array element types
     if let Some(fields_array) = struct_fields {
         let mut type_errors = serde_json::Map::new();
-        
+
         for field_def in fields_array {
             if let Some(field_arr) = field_def.as_array() {
                 if field_arr.len() >= 2 {
                     let field_name = field_arr[0].as_str().unwrap_or("");
                     let expected_type = field_arr[1].as_str().unwrap_or("");
-                    
+
                     if let Some(field_value) = body_obj.get(field_name) {
                         // Validate type using helper function
-                        let (is_valid, error_detail) = validate_field_type(expected_type, field_value);
-                        
+                        let (is_valid, error_detail) =
+                            validate_field_type(expected_type, field_value);
+
                         if !is_valid {
                             let mut field_error = serde_json::Map::new();
                             field_error.insert("expected".to_string(), json!(expected_type));
-                            field_error.insert("received".to_string(), json!(get_json_type_name(field_value)));
+                            field_error.insert(
+                                "received".to_string(),
+                                json!(get_json_type_name(field_value)),
+                            );
                             if let Some(detail) = error_detail {
                                 field_error.insert("detail".to_string(), json!(detail));
                             }
@@ -3256,21 +3315,36 @@ pub extern "C" fn doohttp_validate_and_call_handler(
                 }
             }
         }
-        
+
         if !type_errors.is_empty() {
             use error::*;
-            let mut err = bad_request("Type mismatch in request body".to_string(), path_str.clone());
+            let mut err = bad_request(
+                "Type mismatch in request body".to_string(),
+                path_str.clone(),
+            );
             for (field_name, error_info) in type_errors {
                 let error_obj = error_info.as_object().unwrap();
-                let detail = error_obj.get("detail").and_then(|d| d.as_str()).unwrap_or("");
-                err = err.with_field(field_name.clone(), FieldError {
-                    rule: None,
-                    message: field_name.clone(),
-                    value: None,
-                    expected: error_obj.get("expected").and_then(|e| e.as_str()).map(|s| s.to_string()),
-                    received: error_obj.get("received").and_then(|r| r.as_str()).map(|s| s.to_string()),
-                    error: Some(detail.to_string()),
-                });
+                let detail = error_obj
+                    .get("detail")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("");
+                err = err.with_field(
+                    field_name.clone(),
+                    FieldError {
+                        rule: None,
+                        message: field_name.clone(),
+                        value: None,
+                        expected: error_obj
+                            .get("expected")
+                            .and_then(|e| e.as_str())
+                            .map(|s| s.to_string()),
+                        received: error_obj
+                            .get("received")
+                            .and_then(|r| r.as_str())
+                            .map(|s| s.to_string()),
+                        error: Some(detail.to_string()),
+                    },
+                );
             }
             return Box::into_raw(Box::new(DooResponse {
                 status: 400,
@@ -3285,7 +3359,6 @@ pub extern "C" fn doohttp_validate_and_call_handler(
         .get("struct_decorators")
         .and_then(|sd| sd.get(struct_name))
         .and_then(|v| v.as_object());
-
 
     if let Some(field_decorators) = struct_decorators {
         let mut validation_errors = std::collections::HashMap::new();
@@ -3737,7 +3810,6 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         unsafe {
             let field_ptr = (struct_ptr as *const u8).offset(offset);
 
-
             let field_value: serde_json::Value = match field_type {
                 "Int" => {
                     let val = *(field_ptr as *const i32);
@@ -3771,8 +3843,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                     } else {
                         // Read length from offset -4 (relative to data pointer)
                         let len = *(data_ptr.offset(-4) as *const i32) as usize;
-                        let element_type = &ty[6..ty.len()-1];  // Extract "Str" from "Array(Str)"
-                        
+                        let element_type = &ty[6..ty.len() - 1]; // Extract "Str" from "Array(Str)"
+
                         let mut arr: Vec<serde_json::Value> = Vec::new();
                         match element_type {
                             "Int" => {
@@ -3801,7 +3873,9 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                                         arr.push(serde_json::json!(""));
                                     } else {
                                         let c_str = CStr::from_ptr(str_ptr);
-                                        arr.push(serde_json::json!(c_str.to_string_lossy().to_string()));
+                                        arr.push(serde_json::json!(c_str
+                                            .to_string_lossy()
+                                            .to_string()));
                                     }
                                 }
                             }
@@ -3814,23 +3888,37 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                 }
                 ty => {
                     // Check if this is a nested struct
-                    if let Some(nested_layout_obj) = metadata.struct_layouts.get(ty).and_then(|v| v.as_object()) {
+                    if let Some(nested_layout_obj) =
+                        metadata.struct_layouts.get(ty).and_then(|v| v.as_object())
+                    {
                         // This is a nested struct - read pointer to child struct
                         let nested_ptr = *(field_ptr as *const *const u8);
                         if nested_ptr.is_null() {
                             serde_json::json!(null)
                         } else {
                             // Recursively serialize nested struct
-                            if let Some(nested_fields) = nested_layout_obj.get("fields").and_then(|f| f.as_array()) {
+                            if let Some(nested_fields) =
+                                nested_layout_obj.get("fields").and_then(|f| f.as_array())
+                            {
                                 let mut nested_obj = serde_json::Map::new();
                                 for nested_field in nested_fields {
                                     if let Some(nf_obj) = nested_field.as_object() {
-                                        let nf_name = nf_obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                        let nf_type = nf_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                                        let nf_offset = nf_obj.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as isize;
-                                        
+                                        let nf_name = nf_obj
+                                            .get("name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let nf_type = nf_obj
+                                            .get("type")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let nf_offset = nf_obj
+                                            .get("offset")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0)
+                                            as isize;
+
                                         let nf_ptr = (nested_ptr as *const u8).offset(nf_offset);
-                                        
+
                                         let nf_value: serde_json::Value = match nf_type {
                                             "Int" => {
                                                 let val = *(nf_ptr as *const i32);
@@ -3845,12 +3933,15 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                                                 serde_json::json!(val != 0)
                                             }
                                             "Str" => {
-                                                let str_ptr = *(nf_ptr as *const *const libc::c_char);
+                                                let str_ptr =
+                                                    *(nf_ptr as *const *const libc::c_char);
                                                 if str_ptr.is_null() {
                                                     serde_json::json!("")
                                                 } else {
                                                     let c_str = CStr::from_ptr(str_ptr);
-                                                    serde_json::json!(c_str.to_string_lossy().to_string())
+                                                    serde_json::json!(c_str
+                                                        .to_string_lossy()
+                                                        .to_string())
                                                 }
                                             }
                                             _ => serde_json::json!(null),
@@ -3868,7 +3959,6 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                     }
                 }
             };
-
 
             json_obj.insert(field_name.to_string(), field_value);
         }
@@ -3941,11 +4031,16 @@ pub extern "C" fn doohttp_populate_struct_from_request(
 
     // Get HTTP method for smart source detection
     let method_str = if !request.method.is_null() {
-        unsafe { CStr::from_ptr(request.method).to_string_lossy().to_string().to_uppercase() }
+        unsafe {
+            CStr::from_ptr(request.method)
+                .to_string_lossy()
+                .to_string()
+                .to_uppercase()
+        }
     } else {
         "".to_string()
     };
-    
+
     // Smart source_type detection:
     // For GET/DELETE with no body, automatically use query params
     let effective_source_type = if source_type == 0 {
@@ -3955,7 +4050,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             let body_str = unsafe { CStr::from_ptr(request.body).to_string_lossy().to_string() };
             !body_str.is_empty()
         };
-        
+
         if !has_body && (method_str == "GET" || method_str == "DELETE") {
             2 // Use query params for GET/DELETE without body
         } else {
@@ -4166,14 +4261,15 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             let mut type_errors = std::collections::HashMap::new();
 
             for field_def in fields_vec {
-
                 if field_def.len() >= 2 {
                     let field_name = &field_def[0];
                     let expected_type = &field_def[1];
 
                     if let Some(field_value) = source_data.get(field_name) {
                         // Check if this is an enum type - validate against allowed variants
-                        if let Some(allowed_variants) = metadata.enum_variants.get(expected_type.as_str()) {
+                        if let Some(allowed_variants) =
+                            metadata.enum_variants.get(expected_type.as_str())
+                        {
                             // This is an enum - value must be a string matching one of the variants
                             if let Some(value_str) = field_value.as_str() {
                                 if !allowed_variants.contains(&value_str.to_string()) {
@@ -4194,33 +4290,51 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     .with_expected(expected_type.to_string())
                                     .with_received(get_json_type_name(field_value).to_string())
                                     .with_value(field_value.to_string())
-                                    .with_error(format!("Enum values must be strings, got {}", get_json_type_name(field_value)));
+                                    .with_error(format!(
+                                        "Enum values must be strings, got {}",
+                                        get_json_type_name(field_value)
+                                    ));
                                 type_errors.insert(field_name.to_string(), field_err);
                             }
-                        } else if let Some(nested_struct_fields) = metadata.struct_fields.get(expected_type.as_str()) {
+                        } else if let Some(nested_struct_fields) =
+                            metadata.struct_fields.get(expected_type.as_str())
+                        {
                             // This is a nested struct - recursively validate its fields
                             if let Some(nested_obj) = field_value.as_object() {
                                 for nested_field_def in nested_struct_fields {
                                     if nested_field_def.len() >= 2 {
                                         let nested_field_name = &nested_field_def[0];
                                         let nested_expected_type = &nested_field_def[1];
-                                        
-                                        if let Some(nested_value) = nested_obj.get(nested_field_name) {
-                                            let (type_matches, error_detail) = validate_field_type(nested_expected_type, nested_value);
-                                            
+
+                                        if let Some(nested_value) =
+                                            nested_obj.get(nested_field_name)
+                                        {
+                                            let (type_matches, error_detail) = validate_field_type(
+                                                nested_expected_type,
+                                                nested_value,
+                                            );
+
                                             if !type_matches {
-                                                let received_type = get_json_type_name(nested_value);
-                                                let error_msg = error_detail.unwrap_or_else(|| 
-                                                    format!("Expected type {}, received {}", nested_expected_type, received_type)
-                                                );
-                                                
-                                                let nested_field_path = format!("{}.{}", field_name, nested_field_name);
-                                                let field_err = FieldError::new(nested_field_path.clone())
-                                                    .with_rule("type_mismatch".to_string())
-                                                    .with_expected(nested_expected_type.to_string())
-                                                    .with_received(received_type.to_string())
-                                                    .with_value(nested_value.to_string())
-                                                    .with_error(error_msg);
+                                                let received_type =
+                                                    get_json_type_name(nested_value);
+                                                let error_msg = error_detail.unwrap_or_else(|| {
+                                                    format!(
+                                                        "Expected type {}, received {}",
+                                                        nested_expected_type, received_type
+                                                    )
+                                                });
+
+                                                let nested_field_path =
+                                                    format!("{}.{}", field_name, nested_field_name);
+                                                let field_err =
+                                                    FieldError::new(nested_field_path.clone())
+                                                        .with_rule("type_mismatch".to_string())
+                                                        .with_expected(
+                                                            nested_expected_type.to_string(),
+                                                        )
+                                                        .with_received(received_type.to_string())
+                                                        .with_value(nested_value.to_string())
+                                                        .with_error(error_msg);
                                                 type_errors.insert(nested_field_path, field_err);
                                             }
                                         }
@@ -4232,19 +4346,27 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     .with_expected(expected_type.to_string())
                                     .with_received(get_json_type_name(field_value).to_string())
                                     .with_value(field_value.to_string())
-                                    .with_error(format!("Expected nested struct {}, got {}", expected_type, get_json_type_name(field_value)));
+                                    .with_error(format!(
+                                        "Expected nested struct {}, got {}",
+                                        expected_type,
+                                        get_json_type_name(field_value)
+                                    ));
                                 type_errors.insert(field_name.to_string(), field_err);
                             }
                         } else {
                             // Use validate_field_type helper for primitives, arrays, and maps
-                            let (type_matches, error_detail) = validate_field_type(expected_type, field_value);
+                            let (type_matches, error_detail) =
+                                validate_field_type(expected_type, field_value);
 
                             if !type_matches {
                                 let received_type = get_json_type_name(field_value);
-                                let error_msg = error_detail.unwrap_or_else(|| 
-                                    format!("Expected type {}, received {}", expected_type, received_type)
-                                );
-                                
+                                let error_msg = error_detail.unwrap_or_else(|| {
+                                    format!(
+                                        "Expected type {}, received {}",
+                                        expected_type, received_type
+                                    )
+                                });
+
                                 let field_err = FieldError::new(field_name.to_string())
                                     .with_rule("type_mismatch".to_string())
                                     .with_expected(expected_type.to_string())
@@ -4255,10 +4377,8 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                             }
                         }
                     }
-
                 }
             }
-
 
             if !type_errors.is_empty() {
                 let err = type_mismatch_error(path_str.clone(), type_errors);
@@ -4268,10 +4388,10 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         }
     }
 
-
     // Validate decorators - collect ALL errors across all fields
-    let mut all_validation_errors: std::collections::HashMap<String, FieldError> = std::collections::HashMap::new();
-    
+    let mut all_validation_errors: std::collections::HashMap<String, FieldError> =
+        std::collections::HashMap::new();
+
     if let Some(field_decorators) = struct_decorators {
         for (field_name, decorators) in field_decorators {
             // decorators is Vec<DecoratorInfo>
@@ -4300,8 +4420,8 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                         _ => field_value.to_string(),
                     };
 
-                    let decorators_json = serde_json::to_string(decorators)
-                        .unwrap_or_else(|_| "[]".to_string());
+                    let decorators_json =
+                        serde_json::to_string(decorators).unwrap_or_else(|_| "[]".to_string());
 
                     let field_name_cstr = CString::new(field_name.as_str()).unwrap();
                     let field_type_cstr = CString::new(field_type).unwrap();
@@ -4329,8 +4449,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                         );
 
                         if !error_ptr.is_null() {
-                            let validation_error_json_ptr =
-                                dooruntime_get_last_validation_error();
+                            let validation_error_json_ptr = dooruntime_get_last_validation_error();
                             if !validation_error_json_ptr.is_null() {
                                 let error_json_str = CStr::from_ptr(validation_error_json_ptr)
                                     .to_string_lossy()
@@ -4362,7 +4481,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             }
         }
     }
-    
+
     // If any validation errors were collected, return them all at once
     if !all_validation_errors.is_empty() {
         let err = validation_failed_error(path_str.clone(), all_validation_errors);
@@ -4422,8 +4541,9 @@ pub extern "C" fn doohttp_populate_struct_from_request(
 
                     if let Some(field_value) = source_data.get(field_name) {
                         unsafe {
-                            extern "C" { fn dooruntime_malloc(size: usize) -> *mut u8; }
-                            eprintln!("DEBUG: Populating field {} type {} offset {}", field_name, field_type, offset);
+                            extern "C" {
+                                fn dooruntime_malloc(size: usize) -> *mut u8;
+                            }
                             match field_type {
                                 "Str" => {
                                     // Handle both direct strings and strings that need parsing
@@ -4432,16 +4552,16 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     } else {
                                         ""
                                     };
-                                    
+
                                     // Allocate string with RC header (RC:i32, Len:i32, Data...)
                                     // Doo runtime expects pointers to be managed ref-counted strings
                                     let len = s.len();
                                     let total_size = len + 1 + 8; // data + null + header
-                                    // Align to 16 bytes to be safe
+                                                                  // Align to 16 bytes to be safe
                                     let alloc_size = (total_size + 15) & !15;
                                     // Use unified allocator
                                     let ptr = dooruntime_malloc(alloc_size);
-                                    
+
                                     if !ptr.is_null() {
                                         // Zero memory for safety
                                         std::ptr::write_bytes(ptr, 0, alloc_size);
@@ -4454,7 +4574,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                         std::ptr::copy_nonoverlapping(s.as_ptr(), data_ptr, len);
                                         // Null terminate (calloc already zeroed, but be explicit)
                                         *data_ptr.add(len) = 0;
-                                        
+
                                         // Store DATA pointer (offset 8) in the struct
                                         std::ptr::write(
                                             struct_ptr_u8.add(offset) as *mut *const libc::c_char,
@@ -4471,7 +4591,9 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 "Int" => {
                                     // For path/query params (source_type 1 or 2), parse string
                                     // For body params (source_type 0), require JSON number
-                                    let parsed_int = if effective_source_type == 1 || effective_source_type == 2 {
+                                    let parsed_int = if effective_source_type == 1
+                                        || effective_source_type == 2
+                                    {
                                         // Path/query: try to parse string value
                                         if let Some(str_val) = field_value.as_str() {
                                             str_val.parse::<i64>().ok()
@@ -4484,7 +4606,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                         // Body: require JSON number
                                         field_value.as_i64()
                                     };
-                                    
+
                                     if let Some(num) = parsed_int {
                                         let n = num as i32;
                                         std::ptr::write(struct_ptr_u8.add(offset) as *mut i32, n);
@@ -4547,7 +4669,9 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 "Float" => {
                                     // For path/query params (source_type 1 or 2), parse string
                                     // For body params (source_type 0), require JSON number
-                                    let parsed_float = if effective_source_type == 1 || effective_source_type == 2 {
+                                    let parsed_float = if effective_source_type == 1
+                                        || effective_source_type == 2
+                                    {
                                         // Path/query: try to parse string value
                                         if let Some(str_val) = field_value.as_str() {
                                             str_val.parse::<f64>().ok()
@@ -4568,7 +4692,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                             None
                                         }
                                     };
-                                    
+
                                     if let Some(num) = parsed_float {
                                         std::ptr::write(struct_ptr_u8.add(offset) as *mut f64, num);
                                     } else {
@@ -4612,7 +4736,9 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 "Bool" => {
                                     // For path/query params (source_type 1 or 2), parse string
                                     // For body params (source_type 0), require JSON boolean
-                                    let parsed_bool = if effective_source_type == 1 || effective_source_type == 2 {
+                                    let parsed_bool = if effective_source_type == 1
+                                        || effective_source_type == 2
+                                    {
                                         // Path/query: try to parse string value
                                         if let Some(str_val) = field_value.as_str() {
                                             match str_val {
@@ -4629,7 +4755,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                         // Body: require JSON boolean
                                         field_value.as_bool()
                                     };
-                                    
+
                                     if let Some(bool_val) = parsed_bool {
                                         std::ptr::write(
                                             struct_ptr_u8.add(offset) as *mut i32,
@@ -5059,14 +5185,18 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                                 .as_object()
                                 .and_then(|o| o.get("name"))
                                 .and_then(|n| n.as_str());
-                            dec_name == Some("auto") || dec_name == Some("default") || dec_name == Some("foreign")
+                            dec_name == Some("auto")
+                                || dec_name == Some("default")
+                                || dec_name == Some("foreign")
                         })
                     } else {
                         false
                     };
 
                     // If field is required (no @auto, no @default, no @foreign) and missing from request
-                    if !has_auto_or_default_or_foreign && !obj.contains_key(&field_name.to_lowercase()) {
+                    if !has_auto_or_default_or_foreign
+                        && !obj.contains_key(&field_name.to_lowercase())
+                    {
                         missing_fields.push(field_name.to_string());
                     }
                 }
@@ -5416,7 +5546,7 @@ unsafe fn validate_field_with_runtime(
     if !result.is_null() {
         // Free the result pointer returned by dooruntime_validate_field
         dooruntime_free_string(result as *mut c_char);
-        
+
         // Validation failed - get error from runtime
         let error_ptr = dooruntime_get_last_validation_error();
         if !error_ptr.is_null() {
@@ -5443,10 +5573,10 @@ unsafe fn validate_field_with_runtime(
                 let received = err_obj.get("received").and_then(|r| r.as_str());
 
                 let mut field_err = error::FieldError::new(field.to_string())
-                        .with_rule(rule.to_string())
-                        .with_error(message.to_string())
-                        .with_value(value.to_string());
-                
+                    .with_rule(rule.to_string())
+                    .with_error(message.to_string())
+                    .with_value(value.to_string());
+
                 if let Some(exp) = expected {
                     field_err = field_err.with_expected(exp.to_string());
                 }
@@ -5881,14 +6011,18 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                                 .as_object()
                                 .and_then(|o| o.get("name"))
                                 .and_then(|n| n.as_str());
-                            dec_name == Some("auto") || dec_name == Some("default") || dec_name == Some("foreign")
+                            dec_name == Some("auto")
+                                || dec_name == Some("default")
+                                || dec_name == Some("foreign")
                         })
                     } else {
                         false
                     };
 
                     // If field is required (no @auto, no @default, no @foreign) and missing from request
-                    if !has_auto_or_default_or_foreign && !obj.contains_key(&field_name.to_lowercase()) {
+                    if !has_auto_or_default_or_foreign
+                        && !obj.contains_key(&field_name.to_lowercase())
+                    {
                         missing_fields.push(field_name.to_string());
                     }
                 }
@@ -5962,48 +6096,83 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 // Extract decorators JSON
                 let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
                 let decs_json = if let Some(d) = decorators {
-                     json!(d)
+                    json!(d)
                 } else {
-                     json!([])
+                    json!([])
                 };
-                
+
                 let val_str = if let Some(s) = value.as_str() {
                     s.to_string()
                 } else {
                     value.to_string()
                 };
 
-                match unsafe { validate_field_with_runtime(field_name, field_type, &val_str, decs_json.as_array().unwrap(), path.clone()) } {
-                    Ok(_) => {},
-                    Err((_, msg_json)) => { // Ignore status, we'll force 400/422 at the end
-                         // Parse msg_json to get the fields map
-                         if let Ok(err_obj) = serde_json::from_str::<serde_json::Value>(&msg_json) {
-                             if let Some(fields) = err_obj.get("fields").and_then(|f| f.as_object()) {
-                                 for (k, v) in fields {
-                                     // Convert Value to FieldError
-                                     let field_err = error::FieldError::new(
-                                         v.get("message").and_then(|s| s.as_str()).unwrap_or("Validation failed").to_string()
-                                     )
-                                     .with_rule(v.get("rule").and_then(|s| s.as_str()).unwrap_or("validation").to_string())
-                                     .with_value(v.get("value").and_then(|s| s.as_str()).unwrap_or("").to_string());
-                                     
-                                     let field_err = if let Some(exp) = v.get("expected").and_then(|s| s.as_str()) {
-                                         field_err.with_expected(exp.to_string())
-                                     } else { field_err };
+                match unsafe {
+                    validate_field_with_runtime(
+                        field_name,
+                        field_type,
+                        &val_str,
+                        decs_json.as_array().unwrap(),
+                        path.clone(),
+                    )
+                } {
+                    Ok(_) => {}
+                    Err((_, msg_json)) => {
+                        // Ignore status, we'll force 400/422 at the end
+                        // Parse msg_json to get the fields map
+                        if let Ok(err_obj) = serde_json::from_str::<serde_json::Value>(&msg_json) {
+                            if let Some(fields) = err_obj.get("fields").and_then(|f| f.as_object())
+                            {
+                                for (k, v) in fields {
+                                    // Convert Value to FieldError
+                                    let field_err = error::FieldError::new(
+                                        v.get("message")
+                                            .and_then(|s| s.as_str())
+                                            .unwrap_or("Validation failed")
+                                            .to_string(),
+                                    )
+                                    .with_rule(
+                                        v.get("rule")
+                                            .and_then(|s| s.as_str())
+                                            .unwrap_or("validation")
+                                            .to_string(),
+                                    )
+                                    .with_value(
+                                        v.get("value")
+                                            .and_then(|s| s.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    );
 
-                                     let field_err = if let Some(rec) = v.get("received").and_then(|s| s.as_str()) {
-                                         field_err.with_received(rec.to_string())
-                                     } else { field_err };
+                                    let field_err = if let Some(exp) =
+                                        v.get("expected").and_then(|s| s.as_str())
+                                    {
+                                        field_err.with_expected(exp.to_string())
+                                    } else {
+                                        field_err
+                                    };
 
-                                     let field_err = if let Some(err) = v.get("error").and_then(|s| s.as_str()) {
-                                         field_err.with_error(err.to_string())
-                                     } else { field_err };
-                                     
-                                     all_errors.insert(k.clone(), field_err);
-                                 }
-                             }
-                         }
-                         continue; // Skip valid field insertion if validation failed
+                                    let field_err = if let Some(rec) =
+                                        v.get("received").and_then(|s| s.as_str())
+                                    {
+                                        field_err.with_received(rec.to_string())
+                                    } else {
+                                        field_err
+                                    };
+
+                                    let field_err = if let Some(err) =
+                                        v.get("error").and_then(|s| s.as_str())
+                                    {
+                                        field_err.with_error(err.to_string())
+                                    } else {
+                                        field_err
+                                    };
+
+                                    all_errors.insert(k.clone(), field_err);
+                                }
+                            }
+                        }
+                        continue; // Skip valid field insertion if validation failed
                     }
                 }
 
@@ -6014,14 +6183,14 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
             } else {
                 // Check if field has @foreign or @default decorator
                 let mut is_handled = false;
-                
+
                 if let Some(decs) = decorators {
                     // 1. Check for @foreign targeting Auth model to inject auth_user_id
                     if let Some(foreign_dec) = decs.iter().find(|d| {
-                         d.as_object()
-                          .and_then(|o| o.get("name"))
-                          .and_then(|n| n.as_str())
-                          == Some("foreign")
+                        d.as_object()
+                            .and_then(|o| o.get("name"))
+                            .and_then(|n| n.as_str())
+                            == Some("foreign")
                     }) {
                         // Check if we have an authenticated user ID available
                         let params_ptr = req.params as *const HashMap<String, String>;
@@ -6030,32 +6199,40 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                         } else {
                             None
                         };
-                        
+
                         if let Some(user_id) = auth_user_id_opt {
                             // Get foreign target name from args
                             if let Some(dec_obj) = foreign_dec.as_object() {
-                                if let Some(target) = dec_obj.get("args").and_then(|a| a.as_array()).and_then(|a| a.first()).and_then(|v| v.as_str()) {
+                                if let Some(target) = dec_obj
+                                    .get("args")
+                                    .and_then(|a| a.as_array())
+                                    .and_then(|a| a.first())
+                                    .and_then(|v| v.as_str())
+                                {
                                     // Verify target matches an Auth struct (generic check)
                                     let auth_meta = get_auth_metadata().lock().unwrap();
                                     let is_auth_target = auth_meta.contains_key(target);
                                     drop(auth_meta);
-                                    
+
                                     if is_auth_target {
-                                         field_names.push(field_name.to_lowercase());
-                                         placeholders.push(format!("${}", param_idx));
-                                         
-                                         // Auto-convert to number if possible (for Int/Float fields)
-                                         // But safely fallback to string
-                                         let val = if let Ok(uid_int) = user_id.parse::<i64>() {
-                                             serde_json::Value::Number(serde_json::Number::from(uid_int))
-                                         } else {
-                                             serde_json::Value::String(user_id.clone())
-                                         };
-                                         
-                                         response_additions.insert(field_name.to_string(), val.clone());
-                                         values_json.push(val);
-                                         param_idx += 1;
-                                         is_handled = true;
+                                        field_names.push(field_name.to_lowercase());
+                                        placeholders.push(format!("${}", param_idx));
+
+                                        // Auto-convert to number if possible (for Int/Float fields)
+                                        // But safely fallback to string
+                                        let val = if let Ok(uid_int) = user_id.parse::<i64>() {
+                                            serde_json::Value::Number(serde_json::Number::from(
+                                                uid_int,
+                                            ))
+                                        } else {
+                                            serde_json::Value::String(user_id.clone())
+                                        };
+
+                                        response_additions
+                                            .insert(field_name.to_string(), val.clone());
+                                        values_json.push(val);
+                                        param_idx += 1;
+                                        is_handled = true;
                                     }
                                 }
                             }
@@ -6081,14 +6258,14 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                                 } else {
                                     default_value
                                 };
-                                
+
                                 field_names.push(field_name.to_lowercase());
                                 placeholders.push(format!("${}", param_idx));
-                                
+
                                 let val = serde_json::Value::String(clean_val.to_string());
                                 response_additions.insert(field_name.to_string(), val.clone());
                                 values_json.push(val);
-                                
+
                                 param_idx += 1;
                                 is_handled = true;
                             }
@@ -6097,7 +6274,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 }
             }
         }
-        
+
         if !all_errors.is_empty() {
             let instance = get_current_request_path();
             let err = error::validation_failed_error(instance, all_errors);
@@ -6153,7 +6330,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
         // Build response with created resource
         let mut resource_obj = obj.clone();
         resource_obj.insert("id".to_string(), json!(user_id));
-        
+
         // Add auto-populated fields to response
         for (k, v) in response_additions {
             resource_obj.insert(k, v);
@@ -6674,17 +6851,17 @@ fn create_error_result(status: i32, message: &str) -> *mut DooResult {
 /// Returns list of table names that were created
 fn run_migrations() -> Vec<String> {
     let mut created_tables = Vec::new();
-    
+
     // Collect all table metadata (auth, crud, and @table decorated)
     let mut all_tables: Vec<(String, serde_json::Value)> = Vec::new();
-    
+
     // Get auth tables
     if let Ok(auth_map) = get_auth_metadata().lock() {
         for (struct_name, meta) in auth_map.iter() {
             all_tables.push((meta.table_name.clone(), meta.metadata.clone()));
         }
     }
-    
+
     // Get crud tables
     if let Ok(crud_map) = get_crud_metadata().lock() {
         for (struct_name, meta) in crud_map.iter() {
@@ -6694,7 +6871,7 @@ fn run_migrations() -> Vec<String> {
             }
         }
     }
-    
+
     // Get @table decorated structs
     if let Ok(table_map) = get_table_metadata().lock() {
         for (struct_name, meta) in table_map.iter() {
@@ -6703,15 +6880,15 @@ fn run_migrations() -> Vec<String> {
             }
         }
     }
-    
+
     // Create tables in order (auth/user tables first for foreign key deps)
     for (table_name, metadata) in &all_tables {
         let create_sql = build_create_table_sql(table_name, metadata);
-        
+
         if !create_sql.is_empty() {
             let sql_c = CString::new(create_sql.clone()).unwrap();
             let create_result = unsafe { doo_db_create_table(std::ptr::null(), sql_c.as_ptr()) };
-            
+
             if !create_result.is_null() {
                 if unsafe { doo_db_is_error(create_result) } != 0 {
                     let err_msg_ptr = unsafe { doo_db_get_error_message(create_result) };
@@ -6730,16 +6907,16 @@ fn run_migrations() -> Vec<String> {
                 }
             }
         }
-        
+
         // GENERIC SCHEMA MIGRATION: Ensure all columns exist (even if table already existed)
         migrate_table_columns(table_name, metadata);
     }
-    
+
     // Add foreign key constraints after all tables created
     for (table_name, metadata) in &all_tables {
         add_foreign_key_constraints(table_name, metadata);
     }
-    
+
     created_tables
 }
 
@@ -6803,16 +6980,20 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
                                         };
                                         default_val = Some(clean_val.to_string());
                                     }
-                                } 
-                                // Handle numeric default
-                                else if let Some(val_int) = args.first().and_then(|a| a.as_i64()) {
-                                    default_val = Some(val_int.to_string());
                                 }
-                                else if let Some(val_float) = args.first().and_then(|a| a.as_f64()) {
+                                // Handle numeric default
+                                else if let Some(val_int) = args.first().and_then(|a| a.as_i64())
+                                {
+                                    default_val = Some(val_int.to_string());
+                                } else if let Some(val_float) =
+                                    args.first().and_then(|a| a.as_f64())
+                                {
                                     default_val = Some(val_float.to_string());
                                 }
                                 // Handle boolean default
-                                else if let Some(val_bool) = args.first().and_then(|a| a.as_bool()) {
+                                else if let Some(val_bool) =
+                                    args.first().and_then(|a| a.as_bool())
+                                {
                                     default_val = Some(val_bool.to_string());
                                 }
                             }
@@ -6854,9 +7035,13 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
         // DEFAULT must come before constraints
         if let Some(def_val) = default_val {
             // Check if we need quotes (for text/enum types)
-            let needs_quotes = field_type == "Str" || field_type == "String" || 
-                              (!matches!(field_type, "Int" | "Float" | "Bool") && !def_val.chars().all(|c| c.is_numeric() || c == '.') && def_val != "true" && def_val != "false");
-            
+            let needs_quotes = field_type == "Str"
+                || field_type == "String"
+                || (!matches!(field_type, "Int" | "Float" | "Bool")
+                    && !def_val.chars().all(|c| c.is_numeric() || c == '.')
+                    && def_val != "true"
+                    && def_val != "false");
+
             if needs_quotes {
                 column_def.push_str(&format!(" DEFAULT '{}'", def_val));
             } else {
@@ -6934,8 +7119,9 @@ fn add_foreign_key_constraints(table_name: &str, metadata: &serde_json::Value) {
                         if let Some(args) = dec_obj.get("args").and_then(|a| a.as_array()) {
                             if let Some(ref_struct) = args.first().and_then(|a| a.as_str()) {
                                 let ref_table = ref_struct.to_lowercase() + "s";
-                                let constraint_name = format!("fk_{}_{}", table_name, field_name.to_lowercase());
-                                
+                                let constraint_name =
+                                    format!("fk_{}_{}", table_name, field_name.to_lowercase());
+
                                 // Use ALTER TABLE to add foreign key constraint
                                 // Use IF NOT EXISTS pattern via DO block for idempotency
                                 // Use ALTER TABLE directly and handle "already exists" error
@@ -6947,18 +7133,25 @@ fn add_foreign_key_constraints(table_name: &str, metadata: &serde_json::Value) {
                                     field_name.to_lowercase(),
                                     ref_table
                                 );
-                                
+
                                 let sql_c = CString::new(alter_sql).unwrap();
-                                let result = unsafe { doo_db_execute(std::ptr::null(), sql_c.as_ptr()) };
-                                
+                                let result =
+                                    unsafe { doo_db_execute(std::ptr::null(), sql_c.as_ptr()) };
+
                                 if !result.is_null() {
                                     if unsafe { doo_db_is_error(result) } != 0 {
                                         // Log error but don't fail - FK might already exist or ref table not ready
-                                        let err_msg_ptr = unsafe { doo_db_get_error_message(result) };
+                                        let err_msg_ptr =
+                                            unsafe { doo_db_get_error_message(result) };
                                         if !err_msg_ptr.is_null() {
-                                            let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
+                                            let err_msg = unsafe {
+                                                CStr::from_ptr(err_msg_ptr).to_string_lossy()
+                                            };
                                             if !err_msg.contains("already exists") {
-                                                eprintln!("FK constraint warning for {}.{}: {}", table_name, field_name, err_msg);
+                                                eprintln!(
+                                                    "FK constraint warning for {}.{}: {}",
+                                                    table_name, field_name, err_msg
+                                                );
                                             }
                                             unsafe { doo_db_free_string(err_msg_ptr) };
                                         }
@@ -7085,7 +7278,7 @@ extern "C" fn jwt_middleware_handler(
         if res.value != std::ptr::null_mut() {
             let json_ptr = res.value as *const c_char;
             let json_str = CStr::from_ptr(json_ptr).to_string_lossy();
-            
+
             // Parse payload
             if let Ok(claims) = serde_json::from_str::<serde_json::Value>(&json_str) {
                 // Get sub (subject/userId)
@@ -7408,22 +7601,26 @@ fn migrate_table_columns(table_name: &str, metadata: &serde_json::Value) {
             Some(n) => n,
             None => continue,
         };
-        
+
         let field_type = match field_obj.get("type").and_then(|t| t.as_str()) {
             Some(t) => t,
             None => "TEXT",
         };
-        
+
         let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
 
         let mut is_auto = false;
         let mut is_hash = false;
-        
+
         if let Some(decs) = decorators {
             for dec in decs {
                 if let Some(name) = dec.get("name").and_then(|n| n.as_str()) {
-                    if name == "auto" { is_auto = true; }
-                    if name == "hash" { is_hash = true; }
+                    if name == "auto" {
+                        is_auto = true;
+                    }
+                    if name == "hash" {
+                        is_hash = true;
+                    }
                 }
             }
         }
@@ -7431,8 +7628,14 @@ fn migrate_table_columns(table_name: &str, metadata: &serde_json::Value) {
         let sql_type = if is_hash {
             "VARCHAR(255)"
         } else {
-             match field_type {
-                "Int" => if is_auto { "SERIAL" } else { "INTEGER" },
+            match field_type {
+                "Int" => {
+                    if is_auto {
+                        "SERIAL"
+                    } else {
+                        "INTEGER"
+                    }
+                }
                 "Float" => "REAL",
                 "Bool" => "BOOLEAN",
                 _ => "TEXT",
@@ -7443,17 +7646,19 @@ fn migrate_table_columns(table_name: &str, metadata: &serde_json::Value) {
         // Note: IF NOT EXISTS available in Postgres 9.6+.
         // Postgres syntax: ADD COLUMN [IF NOT EXISTS] name type
         let alter_sql = format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}", 
-            table_name, 
-            field_name.to_lowercase(), 
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+            table_name,
+            field_name.to_lowercase(),
             sql_type
         );
-        
+
         let sql_c = CString::new(alter_sql).unwrap();
         // Execute and ignore result (success or already exists)
         unsafe {
-             let res = doo_db_create_table(std::ptr::null(), sql_c.as_ptr());
-             if !res.is_null() { doo_db_result_free(res); }
+            let res = doo_db_create_table(std::ptr::null(), sql_c.as_ptr());
+            if !res.is_null() {
+                doo_db_result_free(res);
+            }
         }
     }
 }

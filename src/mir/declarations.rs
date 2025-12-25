@@ -159,7 +159,6 @@ pub fn build_let_decl(builder: &mut MirBuilder, node: &AstNode) -> Vec<MirInstr>
                 } = instr
                 {
                     if expected_ok_type.is_none() {
-                        println!("MIR_DEBUG: Back-patching TryPropagate with type: {}", type_str);
                         *expected_ok_type = Some(type_str.clone());
                     }
                 }

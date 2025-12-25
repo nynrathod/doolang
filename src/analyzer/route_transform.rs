@@ -256,14 +256,10 @@ fn convert_handler_to_string(handler: AstNode) -> AstNode {
                     return AstNode::StringLiteral("jwt".to_string());
                 }
             }
-            eprintln!("Warning: Unexpected function call in handler/middleware position");
             handler
         }
         // Closures should have been transformed already, but handle them gracefully
-        AstNode::Closure { .. } => {
-            eprintln!("Warning: Untransformed closure found in handler position");
-            handler
-        }
+        AstNode::Closure { .. } => handler,
         _ => handler,
     }
 }
@@ -281,13 +277,9 @@ fn extract_identifier_name(node: &AstNode) -> String {
                     return "jwt".to_string();
                 }
             }
-            eprintln!("Warning: Expected identifier or string, got function call");
             "unknown".to_string()
         }
-        _ => {
-            eprintln!("Warning: Expected identifier or string, got other node type");
-            "unknown".to_string()
-        }
+        _ => "unknown".to_string(),
     }
 }
 
