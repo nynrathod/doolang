@@ -262,18 +262,17 @@ verify_installation() {
         echo -e "  Binary location: ${CYAN}$BIN_DIR/doo${NC}"
         echo ""
 
-        # Check if doo is accessible
-        if command -v doo &> /dev/null; then
-            echo -e "${GREEN}✓${NC} doo command is available in current session"
-            echo ""
-            echo -e "  Run ${CYAN}doo --help${NC} to get started"
-        else
-            echo -e "${YELLOW}!${NC} To use doo in this terminal session, run:"
-            echo ""
-            echo -e "  ${CYAN}source $PROFILE_FILE${NC}"
-            echo ""
-            echo -e "  Or open a new terminal window."
-        fi
+        # Check if doo is accessible (it will be in this subshell, but not the parent)
+        # We purposely don't check 'command -v doo' to claim it's available, 
+        # because even if it is available HERE, it won't be available in the parent shell.
+        
+        echo -e "${GREEN}✓${NC} Doo installed successfully"
+        echo ""
+        echo -e "To start using doo, please restart your terminal or run:"
+        echo ""
+        echo -e "  ${CYAN}source $PROFILE_FILE${NC}"
+        echo ""
+        echo -e "Then run ${CYAN}doo --help${NC} to get started"
         echo ""
     else
         error "Installation verification failed. Binary not found."
