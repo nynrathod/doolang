@@ -8438,7 +8438,7 @@ impl<'ctx> CodeGen<'ctx> {
                 fields,
             } => {
                 // Validate struct fields with decorators
-                // This validates @email, @min, @max, @enum constraints at runtime
+                // This validates @email, @min, @max, @foreign constraints at runtime
                 // Clone to avoid borrow checker issues
                 let field_decorators_clone: Option<
                     std::collections::HashMap<String, Vec<(String, Vec<String>)>>,

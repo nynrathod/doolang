@@ -21,11 +21,12 @@ impl<'ctx> CodeGen<'ctx> {
         // Store the global instructions for later use (e.g., initialization).
         self.globals = program.globals.clone();
 
-        // Copy enum_table, enum_variant_order, struct_table, and struct_field_decorators from MirProgram for type metadata access
+        // Copy enum_table, enum_variant_order, struct_table, struct_field_decorators, and struct_decorators from MirProgram for type metadata access
         self.enum_table = program.enum_table.clone();
         self.enum_variant_order = program.enum_variant_order.clone();
         self.struct_table = program.struct_table.clone();
         self.struct_field_decorators = program.struct_field_decorators.clone();
+        self.struct_decorators = program.struct_decorators.clone();
 
         // --- PRE-PROCESSING ---
         // CRITICAL: Scan for struct declarations FIRST to populate metadata and create canonical types
@@ -267,6 +268,58 @@ impl<'ctx> CodeGen<'ctx> {
                     && return_type.map(|s| s.as_str()) == Some("Response")
                 {
                     self.register_middleware_function(&func.name, func.error_type.as_deref());
+                }
+            }
+        }
+
+        // --- @TABLE REGISTRATION ---
+        // Generate FFI calls for structs decorated with @table
+        // This registers tables for creation at server startup via run_migrations()
+        let table_structs: Vec<String> = self.struct_decorators
+            .iter()
+            .filter(|(_, decorators)| decorators.iter().any(|(name, _)| name == "table"))
+            .map(|(struct_name, _)| struct_name.clone())
+            .collect();
+
+        if !table_structs.is_empty() {
+            // Create a temporary init function for @table registrations
+            let void_type = self.context.void_type();
+            let fn_type = void_type.fn_type(&[], false);
+            let init_fn = self.module.add_function("__doo_table_init", fn_type, None);
+            let entry_block = self.context.append_basic_block(init_fn, "entry");
+            self.builder.position_at_end(entry_block);
+
+            for struct_name in table_structs {
+                // Get struct metadata
+                if let Some(metadata) = self.struct_metadata.get(&struct_name).cloned() {
+                    let decorators = self.struct_field_decorators
+                        .get(&struct_name)
+                        .cloned()
+                        .unwrap_or_default();
+
+                    // Build metadata JSON
+                    let metadata_json = self.build_metadata_json(&struct_name, &metadata, &decorators);
+
+                    // Generate FFI call
+                    self.generate_table_ffi_call(&struct_name, &metadata_json);
+                }
+            }
+
+            // Add return
+            self.builder.build_return(None).unwrap();
+
+            // Inject call to __doo_table_init into main function explicitly
+            // This is more reliable than llvm.global_ctors on some platforms
+            if let Some(main_fn) = self.module.get_function("main") {
+                if let Some(entry_block) = main_fn.get_first_basic_block() {
+                    // Position at start of main to ensure tables are registered before any DB ops
+                    if let Some(first_instr) = entry_block.get_first_instruction() {
+                        self.builder.position_before(&first_instr);
+                    } else {
+                        self.builder.position_at_end(entry_block);
+                    }
+                    
+                    self.builder.build_call(init_fn, &[], "").unwrap();
                 }
             }
         }

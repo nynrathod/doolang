@@ -131,7 +131,7 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Build metadata JSON for struct
-    fn build_metadata_json(
+    pub fn build_metadata_json(
         &self,
         struct_name: &str,
         metadata: &crate::codegen::core::StructMetadata,
@@ -356,6 +356,56 @@ impl<'ctx> CodeGen<'ctx> {
                     metadata_str.as_pointer_value().into(),
                 ],
                 "crud_call",
+            )
+            .unwrap();
+    }
+
+    /// Generate FFI call to doo_http_table_impl for @table decorated structs
+    /// Called during struct pre-scan when a @table decorator is detected
+    pub fn generate_table_ffi_call(
+        &mut self,
+        struct_name: &str,
+        metadata_json: &str,
+    ) {
+        use inkwell::AddressSpace;
+
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        // Declare doo_http_table_impl FFI function
+        let table_fn = self
+            .module
+            .get_function("doo_http_table_impl")
+            .unwrap_or_else(|| {
+                let fn_type = ptr_type.fn_type(
+                    &[
+                        ptr_type.into(), // struct_name
+                        ptr_type.into(), // metadata_json
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("doo_http_table_impl", fn_type, None)
+            });
+
+        // Create string constants
+        let struct_name_str = self
+            .builder
+            .build_global_string_ptr(struct_name, "table_struct_name")
+            .unwrap();
+        let metadata_str = self
+            .builder
+            .build_global_string_ptr(metadata_json, "table_metadata")
+            .unwrap();
+
+        // Call FFI - ignore result
+        self.builder
+            .build_call(
+                table_fn,
+                &[
+                    struct_name_str.as_pointer_value().into(),
+                    metadata_str.as_pointer_value().into(),
+                ],
+                "table_call",
             )
             .unwrap();
     }

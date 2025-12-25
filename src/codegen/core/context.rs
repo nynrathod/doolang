@@ -149,6 +149,7 @@ pub struct CodeGen<'ctx> {
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
     pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
+    pub struct_decorators: HashMap<String, Vec<(String, Vec<String>)>>, // Struct-level decorators: struct_name -> [(decorator_name, [args])]
 
     // Current function context
     pub current_function_name: Option<String>, // Track the name of the function being currently generated
@@ -233,6 +234,7 @@ impl<'ctx> CodeGen<'ctx> {
             enum_variant_order: HashMap::new(),
             struct_table: HashMap::new(),
             struct_field_decorators: HashMap::new(),
+            struct_decorators: HashMap::new(),
             current_function_name: None,
             current_error_type: None,
             closure_bodies: HashMap::new(),
