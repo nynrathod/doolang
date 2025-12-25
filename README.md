@@ -22,56 +22,54 @@ struct User {
 fn main() {
     let db = Database::postgres()?;
     let app = Server::new(":3000");
-    
+
     // Authentication via JWT
     app.auth("/signup", "/login", User, db);
-    
-    // Full CRUD 
+
+    // Full CRUD
     // GET, POST, GET/:id, PUT/:id, DELETE/:id
     app.crud("/users", User, db);
-    
+
     app.start();
 }
 ```
 
 **Run it:**
+
 ```bash
 doo run  # Compiles to native + starts server
 ```
-
-> **Want to contribute?** See [CONTRIBUTING.md](CONTRIBUTING.md)  
-> **For testing and development:** See [TEST.md](TEST.md)
 
 ---
 
 ## Why Doo?
 
-| Traditional Stack | Doo |
-|------------------|-----|
-| 500+ lines of boilerplate | 15 lines of code |
-| 3 config files | Zero config |
-| Manual validation | Auto-validated decorators |
-| Separate deployment setup | One command deploy |
-| Type mismatches at runtime | Compile-time safety |
-
----
-
+| Traditional Stack          | Doo                       |
+| -------------------------- | ------------------------- |
+| 500+ lines of boilerplate  | 15 lines of code          |
+| 3 config files             | Zero config               |
+| Manual validation          | Auto-validated decorators |
+| Separate deployment setup  | One command deploy        |
+| Type mismatches at runtime | Compile-time safety       |
 
 ---
 
 ## 🔧 Installation
 
 ### Windows (PowerShell)
+
 ```powershell
 irm https://raw.githubusercontent.com/nynrathod/doolang/main/install.ps1 | iex
 ```
 
 ### Linux / macOS
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nynrathod/doolang/main/install.sh | bash
 ```
 
 ### Verify Installation
+
 ```bash
 doo --help
 ```
@@ -81,6 +79,7 @@ doo --help
 ## 🎯 Quick Start
 
 ### Starter Template
+
 ```bash
 doo init --template starter starter-api
 cd starter-api
@@ -88,6 +87,7 @@ doo run
 ```
 
 ### Blog Template
+
 ```bash
 doo init --template blog blog-api  # Blog posts + comments API
 cd blog-api
@@ -120,7 +120,7 @@ struct Task {
     title: Str @min(1) @max(200),
     status: Status @default(Status::Todo),
     priority: Priority @default(Priority::Medium),
-    user_id: Int @foreign(User),
+    userId: Int @foreign(User),
 }
 
 fn GetUrgent() -> [Task] ! DatabaseError {
@@ -135,28 +135,31 @@ fn GetUrgent() -> [Task] ! DatabaseError {
 fn main() {
     let db = Database::postgres()?;
     let app = Server::new(":3000");
-    
+
     app.auth("/signup", "/login", User, db);
     app.crud("/tasks", Task, db);
     app.get("/tasks/urgent", GetUrgent);
-    
+
     app.start();
 }
 ```
 
 **That's it.** 40 lines for a production-ready API with:
-- ✓ User authentication & JWT
+
+- ✓ User authentication with JWT
 - ✓ Password hashing
-- ✓ Email validation
+- ✓ Struct validation
 - ✓ Full CRUD operations
 - ✓ Custom business logic
-- ✓ Type-safe database queries
+- ✓ Auto error propagation
+- ✓ Auto migrate table on startup
 
 ---
 
 ## 🌐 Language Essentials
 
 ### Variables & Types
+
 ```rust
 let name = "Alice";         // Type inferred
 let age: Int = 25;          // Explicit
@@ -164,6 +167,7 @@ let mut count = 0;          // Mutable
 ```
 
 ### Structs & Validation
+
 ```rust
 struct User {
     id: Int @primary @auto,
@@ -171,9 +175,16 @@ struct User {
     password: Str @hash @min(8) @max(20),
     age: Int @min(18),
 }
+
+// Automatically create table on startup
+struct AuditLog @table {
+    id: Int @primary @auto,
+    action: Str
+}
 ```
 
 ### Error Handling
+
 ```rust
 fn divide(a: Int, b: Int) -> Int ! Str {
     if b == 0 { Err "division by zero"; }
@@ -184,6 +195,7 @@ let result = divide(10, 2)?;  // Auto-propagate errors
 ```
 
 ### HTTP Routes
+
 ```rust
 fn GetUser(id: Int) -> User ! DatabaseError {
     let db = Database::get()?;
@@ -215,21 +227,15 @@ app.get("/users/:id", GetUser);
 
 ---
 
-✓ HTTP server + routing  
-✓ PostgreSQL with type-safe queries  
-✓ JWT authentication + password hashing  
-✓ Auto-CRUD generation
-✓ Compile-time validation  
-
 ## What's Next
 
 We're focused on adoption first. Next features will be driven by real developer needs:
-- More cloud providers + zero-config hosting 
+
+- More cloud providers + zero-config hosting
 - Multi-database support (MySQL, SQLite etc)
 - WebSocket, concurrency, async and many more
 
 **Want to influence the roadmap?** [Open a discussion →](https://github.com/nynrathod/doolang/discussions)
-
 
 ---
 
