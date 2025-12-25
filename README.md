@@ -166,6 +166,15 @@ let age: Int = 25;          // Explicit
 let mut count = 0;          // Mutable
 ```
 
+| Type     | Example     |
+| -------- | ----------- |
+| `Int`    | `42`        |
+| `Float`  | `3.14`      |
+| `Str`    | `"hello"`   |
+| `Bool`   | `true`      |
+| `[T]`    | `[1, 2, 3]` |
+| `{K: V}` | `{"a": 1}`  |
+
 ### Structs & Validation
 
 ```rust
