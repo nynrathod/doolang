@@ -7147,12 +7147,6 @@ fn add_foreign_key_constraints(table_name: &str, metadata: &serde_json::Value) {
                                             let err_msg = unsafe {
                                                 CStr::from_ptr(err_msg_ptr).to_string_lossy()
                                             };
-                                            if !err_msg.contains("already exists") {
-                                                eprintln!(
-                                                    "FK constraint warning for {}.{}: {}",
-                                                    table_name, field_name, err_msg
-                                                );
-                                            }
                                             unsafe { doo_db_free_string(err_msg_ptr) };
                                         }
                                     }
@@ -7335,8 +7329,6 @@ pub extern "C" fn doo_http_auth_impl(
     let login_path_str = c_to_string(login_path);
     let struct_name_str = c_to_string(struct_name);
     let metadata_json_str = c_to_string(metadata_json);
-
-    println!("doo_http_auth_impl called for struct: {}", struct_name_str);
 
     // Parse and store metadata
     let metadata: serde_json::Value = match serde_json::from_str(&metadata_json_str) {
