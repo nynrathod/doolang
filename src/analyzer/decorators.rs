@@ -1,6 +1,6 @@
 //! Decorator validation for struct fields
 //!
-//! Validates decorators like @email, @min, @max, @enum, @unique, @primary, @autoIncrement
+//! Validates decorators like @email, @min, @max, @unique, @primary, @autoIncrement, @foreign
 //! Ensures proper type compatibility and argument validation.
 
 use super::types::SemanticError;
@@ -12,7 +12,7 @@ pub enum DecoratorKind {
     Email,         // @email - only on Str
     Min,           // @min(n) - Str (length), Int/Float (value)
     Max,           // @max(n) - Str (length), Int/Float (value)
-    Enum,          // @enum("a", "b") - only on Str
+    Foreign,       // @foreign(StructName) - only on Int (foreign key reference)
     Unique,        // @unique - any type (for DB)
     Primary,       // @primary - any type (for DB)
     AutoIncrement, // @autoIncrement - only on Int
@@ -30,7 +30,7 @@ impl DecoratorKind {
             "email" => DecoratorKind::Email,
             "min" => DecoratorKind::Min,
             "max" => DecoratorKind::Max,
-            "enum" => DecoratorKind::Enum,
+            "foreign" => DecoratorKind::Foreign,
             "unique" => DecoratorKind::Unique,
             "primary" => DecoratorKind::Primary,
             "autoIncrement" => DecoratorKind::AutoIncrement,
@@ -167,32 +167,33 @@ pub fn validate_decorator(
             }
         }
 
-        DecoratorKind::Enum => {
-            // @enum("a", "b") only valid on Str
-            if !is_string_type(field_type) {
+        DecoratorKind::Foreign => {
+            // @foreign(StructName) only valid on Int
+            if !is_int_type(field_type) {
                 return Err(SemanticError::InvalidDecoratorType {
-                    decorator: "enum".to_string(),
+                    decorator: "foreign".to_string(),
                     field: field_name.to_string(),
                     struct_name: struct_name.to_string(),
-                    expected_type: "Str".to_string(),
+                    expected_type: "Int".to_string(),
                     found_type: field_type.to_string(),
                 });
             }
-            // Must have at least 1 string argument
-            if decorator.args.is_empty() {
+            // Must have exactly 1 identifier argument (the referenced struct name)
+            if decorator.args.len() != 1 {
                 return Err(SemanticError::InvalidDecoratorArgs {
-                    decorator: "enum".to_string(),
+                    decorator: "foreign".to_string(),
                     field: field_name.to_string(),
-                    message: "enum decorator requires at least 1 string argument".to_string(),
+                    message: "foreign decorator requires exactly 1 argument: the referenced struct name".to_string(),
                 });
             }
-            // All arguments must be strings
-            for arg in &decorator.args {
-                if !matches!(arg, AstNode::StringLiteral(_)) {
+            // Argument must be an identifier (struct name)
+            match &decorator.args[0] {
+                AstNode::Identifier(_) => {}
+                _ => {
                     return Err(SemanticError::InvalidDecoratorArgs {
-                        decorator: "enum".to_string(),
+                        decorator: "foreign".to_string(),
                         field: field_name.to_string(),
-                        message: "enum decorator arguments must be string literals".to_string(),
+                        message: "foreign decorator argument must be a struct name".to_string(),
                     });
                 }
             }

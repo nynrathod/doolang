@@ -51,6 +51,7 @@ impl MirBuilder {
                 struct_table: HashMap::new(),
                 enum_variant_order: HashMap::new(),
                 struct_field_decorators: HashMap::new(),
+                struct_decorators: HashMap::new(),
             },
             tmp_counter: 1,
             block_counter: 0,
@@ -176,6 +177,7 @@ impl MirBuilder {
                     name,
                     fields,
                     is_public,
+                    decorators,
                 } => {
                     // Extract field names and types from the StructField metadata
                     let field_names: Vec<String> =
@@ -203,6 +205,8 @@ impl MirBuilder {
                                             AstNode::NumberLiteral(n) => n.to_string(),
                                             AstNode::FloatLiteral(f) => f.to_string(),
                                             AstNode::BoolLiteral(b) => b.to_string(),
+                                            AstNode::Identifier(id) => id.clone(),
+                                            AstNode::EnumVariant { enum_name, variant, .. } => format!("{}::{}", enum_name, variant),
                                             _ => String::new(),
                                         })
                                         .collect();
@@ -218,6 +222,31 @@ impl MirBuilder {
                         self.program
                             .struct_field_decorators
                             .insert(name.clone(), field_decorators_map);
+                    }
+
+                    // Extract struct-level decorators (e.g., @table)
+                    if !decorators.is_empty() {
+                        let struct_decs: Vec<(String, Vec<String>)> = decorators
+                            .iter()
+                            .map(|dec| {
+                                let args: Vec<String> = dec
+                                    .args
+                                    .iter()
+                                    .map(|arg| match arg {
+                                        AstNode::StringLiteral(s) => s.clone(),
+                                        AstNode::NumberLiteral(n) => n.to_string(),
+                                        AstNode::FloatLiteral(f) => f.to_string(),
+                                        AstNode::BoolLiteral(b) => b.to_string(),
+                                        AstNode::Identifier(id) => id.clone(),
+                                        _ => String::new(),
+                                    })
+                                    .collect();
+                                (dec.name.clone(), args)
+                            })
+                            .collect();
+                        self.program
+                            .struct_decorators
+                            .insert(name.clone(), struct_decs);
                     }
 
                     // Emit StructDecl with complete type information

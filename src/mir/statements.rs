@@ -696,6 +696,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             name,
             fields,
             is_public,
+            decorators: _, // Struct-level decorators handled in builder.rs
         } => {
             // Struct declarations are type definitions only.
             // Extract field names and types for the StructDecl instruction.

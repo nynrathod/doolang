@@ -201,6 +201,7 @@ pub enum AstNode {
         name: String,
         fields: Vec<StructField>,
         is_public: bool, // Determined by PascalCase vs camelCase
+        decorators: Vec<Decorator>, // Struct-level decorators like @table
     },
     EnumDecl {
         name: String,

@@ -14,6 +14,7 @@ pub struct MirProgram {
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
     pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
+    pub struct_decorators: HashMap<String, Vec<(String, Vec<String>)>>, // Struct-level decorators: struct_name -> [(decorator_name, [args])]
 }
 
 impl MirProgram {

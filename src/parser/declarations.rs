@@ -302,11 +302,20 @@ impl<'a> Parser<'a> {
 
     /// Struct decl with full support for decorators, optional fields, default values
     /// Example: `struct User { email: Str @email @unique, age: Int?, Role: Str = "user" }`
+    /// Example: `struct AuditLog @table { id: Int @primary @auto, action: Str }`
     pub fn parse_struct_decl(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::Struct)?; // consume 'struct'
 
         let struct_name = self.expect_ident()?; // Parse struct name
         let is_public = crate::parser::ast::TypeNode::is_public_name(&struct_name);
+
+        // Parse struct-level decorators (e.g., @table) before the opening brace
+        let mut decorators = Vec::new();
+        while self.peek_is(TokenType::At) {
+            self.advance(); // consume '@'
+            let decorator = self.parse_decorator()?;
+            decorators.push(decorator);
+        }
 
         self.expect(TokenType::OpenBrace)?; // `{`
 
@@ -330,6 +339,7 @@ impl<'a> Parser<'a> {
             name: struct_name,
             fields,
             is_public,
+            decorators,
         })
     }
 
@@ -389,11 +399,10 @@ impl<'a> Parser<'a> {
     pub fn parse_decorator(&mut self) -> ParseResult<crate::parser::ast::Decorator> {
         use crate::parser::ast::Decorator;
 
-        // Allow keywords as decorator names (e.g., @enum)
+        // Allow keywords as decorator names (e.g., @default, @foreign)
         let decorator_name = match self.advance() {
             Some(tok) => match tok.kind {
                 TokenType::Identifier => tok.value.to_string(),
-                TokenType::Enum => "enum".to_string(),
                 // Add other keywords if needed in the future
                 _ => {
                     return Err(ParseError::UnexpectedTokenAt {
@@ -410,48 +419,11 @@ impl<'a> Parser<'a> {
         let args = if self.peek_is(TokenType::OpenParen) {
             self.advance(); // consume '('
 
-            // Special handling for @enum(value1|value2|value3) syntax
-            if decorator_name == "enum" {
-                // Parse pipe-separated identifiers as individual string arguments
-                let mut enum_values = Vec::new();
-
-                loop {
-                    // Expect identifier
-                    let value = self.expect_ident()?;
-                    enum_values.push(AstNode::StringLiteral(value));
-
-                    // Check for pipe or close paren
-                    if self.peek_is(TokenType::Or) {
-                        self.advance(); // consume '|'
-                        continue;
-                    } else if self.peek_is(TokenType::CloseParen) {
-                        break;
-                    } else {
-                        let line = if let Some(tok) = self.peek() {
-                            tok.line
-                        } else {
-                            0
-                        };
-                        return Err(ParseError::UnexpectedTokenAt {
-                            msg: format!(
-                                "Expected '|' or ')' in enum decorator, got {:?}",
-                                self.peek()
-                            ),
-                            line,
-                            col: 0,
-                        });
-                    }
-                }
-
-                self.expect(TokenType::CloseParen)?;
-                enum_values
-            } else {
-                // Standard comma-separated expressions for other decorators
-                let args =
-                    self.parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
-                self.expect(TokenType::CloseParen)?;
-                args
-            }
+            // Standard comma-separated expressions for all decorators
+            let args =
+                self.parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
+            self.expect(TokenType::CloseParen)?;
+            args
         } else {
             Vec::new()
         };

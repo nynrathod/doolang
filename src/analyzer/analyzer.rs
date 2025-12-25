@@ -178,6 +178,7 @@ impl SemanticAnalyzer {
                     name,
                     fields,
                     is_public,
+                    decorators: _, // Struct-level decorators handled elsewhere
                 } => {
                     if self.struct_table.contains_key(name) {
                         self.collected_errors
@@ -210,11 +211,16 @@ impl SemanticAnalyzer {
                                     let args: Vec<String> = d
                                         .args
                                         .iter()
-                                        .map(|arg| match arg {
-                                            AstNode::StringLiteral(s) => s.clone(),
-                                            AstNode::NumberLiteral(n) => n.to_string(),
-                                            AstNode::FloatLiteral(f) => f.to_string(),
-                                            _ => String::new(),
+                                        .filter_map(|arg| match arg {
+                                            AstNode::StringLiteral(s) => Some(s.clone()),
+                                            AstNode::NumberLiteral(n) => Some(n.to_string()),
+                                            AstNode::FloatLiteral(f) => Some(f.to_string()),
+                                            AstNode::BoolLiteral(b) => Some(b.to_string()),
+                                            AstNode::Identifier(id) => Some(id.clone()),
+                                            AstNode::EnumVariant { enum_name, variant, .. } => {
+                                                Some(format!("{}::{}", enum_name, variant))
+                                            }
+                                            _ => None, // Skip unknown types instead of empty string
                                         })
                                         .collect();
                                     (d.name.clone(), args)
@@ -1563,6 +1569,7 @@ impl SemanticAnalyzer {
                     name,
                     is_public,
                     fields,
+                    decorators: _, // Struct-level decorators
                 } => {
                     // Only import public structs (PascalCase - starts with uppercase)
                     if *is_public {

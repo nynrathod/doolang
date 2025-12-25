@@ -763,6 +763,7 @@ impl SemanticAnalyzer {
             name,
             fields,
             is_public,
+            ..
         } = node
         {
             // Prevent redeclaration of struct names.
@@ -807,6 +808,11 @@ impl SemanticAnalyzer {
                                     AstNode::StringLiteral(s) => s.clone(),
                                     AstNode::NumberLiteral(n) => n.to_string(),
                                     AstNode::FloatLiteral(f) => f.to_string(),
+                                    AstNode::BoolLiteral(b) => b.to_string(),
+                                    AstNode::Identifier(id) => id.clone(),
+                                    AstNode::EnumVariant { enum_name, variant, .. } => {
+                                        format!("{}::{}", enum_name, variant)
+                                    }
                                     _ => String::new(),
                                 })
                                 .collect();
