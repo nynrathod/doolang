@@ -1576,9 +1576,6 @@ fn download_and_upgrade(
     fs::create_dir_all(&backup_dir)
         .map_err(|e| format!("Failed to create backup directory: {}", e))?;
 
-    // Known release files to update (only replace these, not user files)
-    let release_files = get_release_file_patterns();
-
     // Backup and replace files
     for entry in
         fs::read_dir(&source_dir).map_err(|e| format!("Failed to read source directory: {}", e))?
@@ -1589,7 +1586,7 @@ fn download_and_upgrade(
         let dest_path = install_dir.join(&file_name);
 
         // Only update release files, skip unknown files
-        if !is_release_file(&file_name_str, &release_files) && !entry.path().is_dir() {
+        if !is_release_file(&file_name_str) && !entry.path().is_dir() {
             continue;
         }
 
@@ -1669,34 +1666,15 @@ fn find_doo_in_extracted(extract_dir: &Path) -> Result<PathBuf, String> {
     Err("Could not find extracted files".to_string())
 }
 
-/// Get list of known release file patterns
-fn get_release_file_patterns() -> Vec<&'static str> {
-    vec![
-        "doo",
-        "doo.exe",
-        "doo.dll",
-        "doo.dll.exp",
-        "doo.dll.lib",
-        "doo_file.dll",
-        "doo_file.dll.exp",
-        "doo_file.dll.lib",
-        "libdoo.so",
-        "libdoo.dylib",
-        "libdoo_file.so",
-        "libdoo_file.dylib",
-        "std", // std library folder
-    ]
-}
-
-/// Check if a file matches release file patterns
-fn is_release_file(file_name: &str, patterns: &[&str]) -> bool {
-    for pattern in patterns {
-        if file_name == *pattern || file_name.starts_with("doo") || file_name.starts_with("libdoo")
-        {
-            return true;
-        }
-    }
-    file_name == "std"
+/// Check if a file matches release file patterns (dynamic, no hardcoded list)
+/// Matches: doo*, libdoo*, std folder
+fn is_release_file(file_name: &str) -> bool {
+    // Match any file starting with "doo" (doo.exe, doo.dll, doo_http.dll, doo_db.so, etc.)
+    // Match any file starting with "libdoo" (libdoo.so, libdoo_http.dylib, etc.)
+    // Match the "std" folder
+    file_name.starts_with("doo")
+        || file_name.starts_with("libdoo")
+        || file_name == "std"
 }
 
 /// Recursively copy a directory
