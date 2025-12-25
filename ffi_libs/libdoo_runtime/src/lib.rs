@@ -20,6 +20,8 @@ pub struct ValidationError {
     pub rule: String,
     pub message: String,
     pub value: String,
+    pub expected: Option<String>,
+    pub received: Option<String>,
 }
 
 /// Thread-local storage for the last validation error (for HTTP context)
@@ -114,13 +116,15 @@ pub extern "C" fn dooruntime_validate_field(
     // Validate each decorator
     match validate_field_decorators(&field_name_str, &field_type_str, &value_str, &decorators) {
         Ok(_) => std::ptr::null(), // No error
-        Err((err_msg, rule, message)) => {
+        Err((err_msg, rule, message, expected, received)) => {
             // Store structured error for HTTP context
             let validation_error = ValidationError {
                 field_name: field_name_str.clone(),
                 rule,
                 message: message.clone(),
                 value: value_str.clone(),
+                expected, 
+                received,
             };
             set_validation_error(validation_error);
 
@@ -163,7 +167,7 @@ fn validate_field_decorators(
     field_type: &str,
     value: &str,
     decorators: &[FieldDecorator],
-) -> Result<(), (String, String, String)> {
+) -> Result<(), (String, String, String, Option<String>, Option<String>)> {
     for decorator in decorators {
         match decorator.name.as_str() {
             "email" => {
@@ -175,6 +179,8 @@ fn validate_field_decorators(
                         ),
                         "email".to_string(),
                         "Email decorator requires String type".to_string(),
+                        None,
+                        None,
                     ));
                 }
                 // Email validation: must contain @ and . with chars before/after @
@@ -187,6 +193,8 @@ fn validate_field_decorators(
                         ),
                         "email".to_string(),
                         "Invalid email format".to_string(),
+                        None,
+                        None,
                     ));
                 }
             }
@@ -205,6 +213,8 @@ fn validate_field_decorators(
                                     ),
                                     format!("min:{}", min_len),
                                     format!("Must be at least {} characters", min_len),
+                                    None,
+                                    None,
                                 ));
                             }
                         }
@@ -220,6 +230,8 @@ fn validate_field_decorators(
                                         ),
                                         format!("min:{}", min_val),
                                         format!("Must be at least {}", min_val),
+                                        None,
+                                        None,
                                     ));
                                 }
                             }
@@ -236,6 +248,8 @@ fn validate_field_decorators(
                                         ),
                                         format!("min:{}", min_val),
                                         format!("Must be at least {}", min_val),
+                                        None,
+                                        None,
                                     ));
                                 }
                             }
@@ -258,6 +272,8 @@ fn validate_field_decorators(
                                     ),
                                     format!("max:{}", max_len),
                                     format!("Maximum {} characters allowed", max_len),
+                                    None,
+                                    None,
                                 ));
                             }
                         }
@@ -273,6 +289,8 @@ fn validate_field_decorators(
                                         ),
                                         format!("max:{}", max_val),
                                         format!("Maximum {} allowed", max_val),
+                                        None,
+                                        None,
                                     ));
                                 }
                             }
@@ -289,6 +307,8 @@ fn validate_field_decorators(
                                         ),
                                         format!("max:{}", max_val),
                                         format!("Maximum {} allowed", max_val),
+                                        None,
+                                        None,
                                     ));
                                 }
                             }
@@ -297,27 +317,23 @@ fn validate_field_decorators(
                 }
             }
             "enum" => {
-                if field_type != "Str" {
-                    return Err((
-                        format!(
-                            "Field '{}' has @enum decorator but type is {}, expected Str",
-                            field_name, field_type
-                        ),
-                        "enum".to_string(),
-                        "Enum decorator requires String type".to_string(),
-                    ));
-                }
+                // Allow any type as long as value is string-like representation
+                // if field_type != "Str" { ... } // Removed strict check to support Enums
+                
                 // Check if value is in the allowed enum list
                 if !decorator.args.contains(&value.to_string()) {
+                    let expected_str = format!("one of: {}", decorator.args.join(", "));
                     return Err((
                         format!(
-                            "Field '{}': '{}' is not a valid option. Must be one of: {}",
-                            field_name,
+                            "Invalid enum value '{}' for field '{}'. Allowed values: {:?}",
                             value,
-                            decorator.args.join(", ")
+                            field_name,
+                            decorator.args
                         ),
-                        format!("enum({})", decorator.args.join("|")),
-                        format!("Must be one of: {}", decorator.args.join(", ")),
+                        "invalid_enum_value".to_string(), // Rule name as requested
+                        format!("Invalid enum value '{}'", value), // Message
+                        Some(expected_str), // Expected
+                        Some(value.to_string()), // Received
                     ));
                 }
             }
@@ -327,6 +343,8 @@ fn validate_field_decorators(
                         format!("Field '{}' is required and cannot be empty", field_name),
                         "required".to_string(),
                         "This field is required".to_string(),
+                        None,
+                        None,
                     ));
                 }
             }

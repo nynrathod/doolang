@@ -5439,14 +5439,23 @@ unsafe fn validate_field_with_runtime(
                     .and_then(|m| m.as_str())
                     .unwrap_or("Validation failed");
 
-                let mut fields = std::collections::HashMap::new();
-                fields.insert(
-                    field.to_string(),
-                    error::FieldError::new(field.to_string())
+                let expected = err_obj.get("expected").and_then(|e| e.as_str());
+                let received = err_obj.get("received").and_then(|r| r.as_str());
+
+                let mut field_err = error::FieldError::new(field.to_string())
                         .with_rule(rule.to_string())
                         .with_error(message.to_string())
-                        .with_value(value.to_string()),
-                );
+                        .with_value(value.to_string());
+                
+                if let Some(exp) = expected {
+                    field_err = field_err.with_expected(exp.to_string());
+                }
+                if let Some(rec) = received {
+                    field_err = field_err.with_received(rec.to_string());
+                }
+
+                let mut fields = std::collections::HashMap::new();
+                fields.insert(field.to_string(), field_err);
 
                 let err = error::validation_failed_error(instance, fields);
                 return Err((400, err.to_json_string()));
@@ -5910,6 +5919,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
         let mut values_json = Vec::new();
         let mut response_additions = HashMap::new();
         let mut param_idx = 1;
+        let mut all_errors: HashMap<String, error::FieldError> = HashMap::new();
 
         for field in fields.iter() {
             let field_obj = match field.as_object() {
@@ -5944,6 +5954,59 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 .or_else(|| obj.get(field_name));
 
             if let Some(value) = value {
+                // Ensure field_type is extracted or passed
+                let field_type = match field_obj.get("type").and_then(|t| t.as_str()) {
+                    Some(t) => t,
+                    None => "Str",
+                };
+                // Extract decorators JSON
+                let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
+                let decs_json = if let Some(d) = decorators {
+                     json!(d)
+                } else {
+                     json!([])
+                };
+                
+                let val_str = if let Some(s) = value.as_str() {
+                    s.to_string()
+                } else {
+                    value.to_string()
+                };
+
+                match unsafe { validate_field_with_runtime(field_name, field_type, &val_str, decs_json.as_array().unwrap(), path.clone()) } {
+                    Ok(_) => {},
+                    Err((_, msg_json)) => { // Ignore status, we'll force 400/422 at the end
+                         // Parse msg_json to get the fields map
+                         if let Ok(err_obj) = serde_json::from_str::<serde_json::Value>(&msg_json) {
+                             if let Some(fields) = err_obj.get("fields").and_then(|f| f.as_object()) {
+                                 for (k, v) in fields {
+                                     // Convert Value to FieldError
+                                     let field_err = error::FieldError::new(
+                                         v.get("message").and_then(|s| s.as_str()).unwrap_or("Validation failed").to_string()
+                                     )
+                                     .with_rule(v.get("rule").and_then(|s| s.as_str()).unwrap_or("validation").to_string())
+                                     .with_value(v.get("value").and_then(|s| s.as_str()).unwrap_or("").to_string());
+                                     
+                                     let field_err = if let Some(exp) = v.get("expected").and_then(|s| s.as_str()) {
+                                         field_err.with_expected(exp.to_string())
+                                     } else { field_err };
+
+                                     let field_err = if let Some(rec) = v.get("received").and_then(|s| s.as_str()) {
+                                         field_err.with_received(rec.to_string())
+                                     } else { field_err };
+
+                                     let field_err = if let Some(err) = v.get("error").and_then(|s| s.as_str()) {
+                                         field_err.with_error(err.to_string())
+                                     } else { field_err };
+                                     
+                                     all_errors.insert(k.clone(), field_err);
+                                 }
+                             }
+                         }
+                         continue; // Skip valid field insertion if validation failed
+                    }
+                }
+
                 field_names.push(field_name.to_lowercase());
                 placeholders.push(format!("${}", param_idx));
                 values_json.push(value.clone());
@@ -6035,6 +6098,12 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
             }
         }
         
+        if !all_errors.is_empty() {
+            let instance = get_current_request_path();
+            let err = error::validation_failed_error(instance, all_errors);
+            return create_json_result(422, &err.to_json_string());
+        }
+
         if field_names.is_empty() {
             return create_error_result(400, "No valid fields provided");
         }
@@ -6661,6 +6730,9 @@ fn run_migrations() -> Vec<String> {
                 }
             }
         }
+        
+        // GENERIC SCHEMA MIGRATION: Ensure all columns exist (even if table already existed)
+        migrate_table_columns(table_name, metadata);
     }
     
     // Add foreign key constraints after all tables created
@@ -7316,4 +7388,72 @@ pub extern "C" fn doohttp_middleware_error_to_rfc7807(
         status,
         message: string_to_c(&error_json),
     }))
+}
+
+// Helper to ensure columns exist (ALTER TABLE ADD COLUMN)
+// Called by run_migrations to ensure even existing tables have new columns
+fn migrate_table_columns(table_name: &str, metadata: &serde_json::Value) {
+    let fields = match metadata.get("fields").and_then(|f| f.as_array()) {
+        Some(f) => f,
+        None => return,
+    };
+
+    for field in fields {
+        let field_obj = match field.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        
+        let field_type = match field_obj.get("type").and_then(|t| t.as_str()) {
+            Some(t) => t,
+            None => "TEXT",
+        };
+        
+        let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
+
+        let mut is_auto = false;
+        let mut is_hash = false;
+        
+        if let Some(decs) = decorators {
+            for dec in decs {
+                if let Some(name) = dec.get("name").and_then(|n| n.as_str()) {
+                    if name == "auto" { is_auto = true; }
+                    if name == "hash" { is_hash = true; }
+                }
+            }
+        }
+
+        let sql_type = if is_hash {
+            "VARCHAR(255)"
+        } else {
+             match field_type {
+                "Int" => if is_auto { "SERIAL" } else { "INTEGER" },
+                "Float" => "REAL",
+                "Bool" => "BOOLEAN",
+                _ => "TEXT",
+            }
+        };
+
+        // ALTER TABLE table ADD COLUMN IF NOT EXISTS col type
+        // Note: IF NOT EXISTS available in Postgres 9.6+.
+        // Postgres syntax: ADD COLUMN [IF NOT EXISTS] name type
+        let alter_sql = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}", 
+            table_name, 
+            field_name.to_lowercase(), 
+            sql_type
+        );
+        
+        let sql_c = CString::new(alter_sql).unwrap();
+        // Execute and ignore result (success or already exists)
+        unsafe {
+             let res = doo_db_create_table(std::ptr::null(), sql_c.as_ptr());
+             if !res.is_null() { doo_db_result_free(res); }
+        }
+    }
 }

@@ -144,6 +144,19 @@ impl<'ctx> CodeGen<'ctx> {
             let field_decorators = decorators.get(field_name).cloned().unwrap_or_default();
 
             let mut decorator_array = Vec::new();
+
+            // Check if field type is an Enum and inject @enum decorator automatically
+            if let Some(variants) = self.enum_variants.get(field_type) {
+                let variant_names: Vec<String> = variants.iter().map(|(name, _)| name.clone()).collect();
+                let args_json: Vec<String> = variant_names
+                    .iter()
+                    .map(|arg| format!("\"{}\"", arg))
+                    .collect();
+                decorator_array.push(format!(
+                    "{{\"name\":\"enum\",\"args\":[{}]}}",
+                    args_json.join(",")
+                ));
+            }
             for (dec_name, dec_args) in field_decorators {
                 let args_json: Vec<String> = dec_args
                     .iter()
@@ -182,6 +195,19 @@ impl<'ctx> CodeGen<'ctx> {
             let field_decorators = decorators.get(field_name).cloned().unwrap_or_default();
 
             let mut decorator_array = Vec::new();
+
+            // Check if field type is an Enum and inject @enum decorator automatically
+            if let Some(variants) = self.enum_variants.get(field_type) {
+                let variant_names: Vec<String> = variants.iter().map(|(name, _)| name.clone()).collect();
+                let args_json: Vec<String> = variant_names
+                    .iter()
+                    .map(|arg| format!("\"{}\"", arg))
+                    .collect();
+                decorator_array.push(format!(
+                    "{{\"name\":\"enum\",\"args\":[{}]}}",
+                    args_json.join(",")
+                ));
+            }
             for (dec_name, dec_args) in field_decorators {
                 let args_json: Vec<String> = dec_args
                     .iter()
