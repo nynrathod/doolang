@@ -48,6 +48,7 @@ RUN mkdir -p /app/lib
 COPY --from=builder /app/app .
 COPY --from=builder /root/.doo/bin/*.so /app/lib/
 ENV LD_LIBRARY_PATH=/app/lib:/app
+ENV DOO_ENV=production
 EXPOSE 3000
 CMD ["./app"]
 "#;
