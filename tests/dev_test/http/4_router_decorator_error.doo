@@ -1,12 +1,18 @@
 import std::Http::Server;
 
+enum UserRole {
+    User,
+    Admin,
+    Moderator,
+}
+
 struct UserInput {
     Email: Str @email,                       // Must be valid email
     Age: Int @min(18),                       // Must be Int, >= 18
     Score: Int @max(100),                    // Must be Int, <= 100
     Username: Str @min(3) @max(50),          // Must be Str, length between 3 and 50
     Rank: Int @min(1) @max(5),               // Must be Int, between 1 and 5
-    Role: Str @enum(user|admin|moderator),   // Must be one of these values
+    Role: UserRole,   // Must be one of these values
     Name: Str,                               // String field
 }
 

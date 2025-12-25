@@ -3,6 +3,12 @@
 // Tests invalid cases for each supported decorator in struct validation
 //
 
+enum UserRole {
+    User,
+    Admin,
+    Moderator,
+}
+
 struct DecoratorTest {
     // @email: invalid email string
     EmailStr: Str @email,                // Should fail: not a valid email
@@ -11,7 +17,7 @@ struct DecoratorTest {
     // @max: value above maximum
     Score: Int @max(100),                // Should fail: value > 100
     // @enum: value not in enum
-    Role: Str @enum(user|admin|moderator), // Should fail: value not in enum
+    Role: UserRole, // Should fail: value not in enum
     Name: Str,
 }
 
