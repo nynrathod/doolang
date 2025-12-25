@@ -1723,6 +1723,20 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         let boot_time_ms = startup_start.elapsed().as_millis();
 
         init_timestamp_updater();
+        
+        // Run database migrations (create tables) at startup
+        let created_tables = run_migrations();
+        if !created_tables.is_empty() {
+            println!("✓ Migration success: created tables: {}", created_tables.join(", "));
+        } else {
+            // Check if we have registered tables (they already exist)
+            let has_tables = get_auth_metadata().lock().map(|m| !m.is_empty()).unwrap_or(false)
+                || get_crud_metadata().lock().map(|m| !m.is_empty()).unwrap_or(false)
+                || get_table_metadata().lock().map(|m| !m.is_empty()).unwrap_or(false);
+            if has_tables {
+                println!("✓ Migration success: all tables already exist");
+            }
+        }
 
         // Print banner AFTER bind so boot_time_ms is meaningful
         // Cyan color ANSI escape code: \x1b[36m ... \x1b[0m
@@ -4735,8 +4749,16 @@ struct CrudMetadata {
     base_path: String,
 }
 
+// TableMetadata for @table decorator structs
+#[derive(Clone, Debug)]
+struct TableMetadata {
+    table_name: String,
+    metadata: serde_json::Value,
+}
+
 static AUTH_METADATA: OnceLock<Mutex<HashMap<String, AuthMetadata>>> = OnceLock::new();
 static CRUD_METADATA: OnceLock<Mutex<HashMap<String, CrudMetadata>>> = OnceLock::new();
+static TABLE_METADATA: OnceLock<Mutex<HashMap<String, TableMetadata>>> = OnceLock::new();
 
 fn get_auth_metadata() -> &'static Mutex<HashMap<String, AuthMetadata>> {
     AUTH_METADATA.get_or_init(|| Mutex::new(HashMap::new()))
@@ -4744,6 +4766,10 @@ fn get_auth_metadata() -> &'static Mutex<HashMap<String, AuthMetadata>> {
 
 fn get_crud_metadata() -> &'static Mutex<HashMap<String, CrudMetadata>> {
     CRUD_METADATA.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_table_metadata() -> &'static Mutex<HashMap<String, TableMetadata>> {
+    TABLE_METADATA.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 // ============================================================================
@@ -5027,20 +5053,20 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                 if let Some(field_name) = field_obj.get("name").and_then(|n| n.as_str()) {
                     // Check if field has @auto or @default decorator
                     let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
-                    let has_auto_or_default = if let Some(decs) = decorators {
+                    let has_auto_or_default_or_foreign = if let Some(decs) = decorators {
                         decs.iter().any(|d| {
                             let dec_name = d
                                 .as_object()
                                 .and_then(|o| o.get("name"))
                                 .and_then(|n| n.as_str());
-                            dec_name == Some("auto") || dec_name == Some("default")
+                            dec_name == Some("auto") || dec_name == Some("default") || dec_name == Some("foreign")
                         })
                     } else {
                         false
                     };
 
-                    // If field is required (no @auto, no @default) and missing from request
-                    if !has_auto_or_default && !obj.contains_key(&field_name.to_lowercase()) {
+                    // If field is required (no @auto, no @default, no @foreign) and missing from request
+                    if !has_auto_or_default_or_foreign && !obj.contains_key(&field_name.to_lowercase()) {
                         missing_fields.push(field_name.to_string());
                     }
                 }
@@ -5840,20 +5866,20 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 if let Some(field_name) = field_obj.get("name").and_then(|n| n.as_str()) {
                     // Check if field has @auto or @default decorator
                     let decorators = field_obj.get("decorators").and_then(|d| d.as_array());
-                    let has_auto_or_default = if let Some(decs) = decorators {
+                    let has_auto_or_default_or_foreign = if let Some(decs) = decorators {
                         decs.iter().any(|d| {
                             let dec_name = d
                                 .as_object()
                                 .and_then(|o| o.get("name"))
                                 .and_then(|n| n.as_str());
-                            dec_name == Some("auto") || dec_name == Some("default")
+                            dec_name == Some("auto") || dec_name == Some("default") || dec_name == Some("foreign")
                         })
                     } else {
                         false
                     };
 
-                    // If field is required (no @auto, no @default) and missing from request
-                    if !has_auto_or_default && !obj.contains_key(&field_name.to_lowercase()) {
+                    // If field is required (no @auto, no @default, no @foreign) and missing from request
+                    if !has_auto_or_default_or_foreign && !obj.contains_key(&field_name.to_lowercase()) {
                         missing_fields.push(field_name.to_string());
                     }
                 }
@@ -5882,6 +5908,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
         let mut field_names = Vec::new();
         let mut placeholders = Vec::new();
         let mut values_json = Vec::new();
+        let mut response_additions = HashMap::new();
         let mut param_idx = 1;
 
         for field in fields.iter() {
@@ -5922,27 +5949,92 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 values_json.push(value.clone());
                 param_idx += 1;
             } else {
-                // Check if field has @default decorator
+                // Check if field has @foreign or @default decorator
+                let mut is_handled = false;
+                
                 if let Some(decs) = decorators {
-                    if let Some(default_value) = decs.iter().find_map(|d| {
-                        let dec_obj = d.as_object()?;
-                        if dec_obj.get("name")?.as_str()? == "default" {
-                            let args = dec_obj.get("args")?.as_array()?;
-                            args.first()?.as_str()
+                    // 1. Check for @foreign targeting Auth model to inject auth_user_id
+                    if let Some(foreign_dec) = decs.iter().find(|d| {
+                         d.as_object()
+                          .and_then(|o| o.get("name"))
+                          .and_then(|n| n.as_str())
+                          == Some("foreign")
+                    }) {
+                        // Check if we have an authenticated user ID available
+                        let params_ptr = req.params as *const HashMap<String, String>;
+                        let auth_user_id_opt = if !params_ptr.is_null() {
+                            (&*params_ptr).get("auth_user_id")
                         } else {
                             None
+                        };
+                        
+                        if let Some(user_id) = auth_user_id_opt {
+                            // Get foreign target name from args
+                            if let Some(dec_obj) = foreign_dec.as_object() {
+                                if let Some(target) = dec_obj.get("args").and_then(|a| a.as_array()).and_then(|a| a.first()).and_then(|v| v.as_str()) {
+                                    // Verify target matches an Auth struct (generic check)
+                                    let auth_meta = get_auth_metadata().lock().unwrap();
+                                    let is_auth_target = auth_meta.contains_key(target);
+                                    drop(auth_meta);
+                                    
+                                    if is_auth_target {
+                                         field_names.push(field_name.to_lowercase());
+                                         placeholders.push(format!("${}", param_idx));
+                                         
+                                         // Auto-convert to number if possible (for Int/Float fields)
+                                         // But safely fallback to string
+                                         let val = if let Ok(uid_int) = user_id.parse::<i64>() {
+                                             serde_json::Value::Number(serde_json::Number::from(uid_int))
+                                         } else {
+                                             serde_json::Value::String(user_id.clone())
+                                         };
+                                         
+                                         response_additions.insert(field_name.to_string(), val.clone());
+                                         values_json.push(val);
+                                         param_idx += 1;
+                                         is_handled = true;
+                                    }
+                                }
+                            }
                         }
-                    }) {
-                        // Apply default value
-                        field_names.push(field_name.to_lowercase());
-                        placeholders.push(format!("${}", param_idx));
-                        values_json.push(serde_json::Value::String(default_value.to_string()));
-                        param_idx += 1;
+                    }
+
+                    // 2. If not handled by foreign auto-population, check for @default
+                    if !is_handled {
+                        if let Some(default_value) = decs.iter().find_map(|d| {
+                            let dec_obj = d.as_object()?;
+                            if dec_obj.get("name")?.as_str()? == "default" {
+                                let args = dec_obj.get("args")?.as_array()?;
+                                args.first()?.as_str()
+                            } else {
+                                None
+                            }
+                        }) {
+                            // Apply default value (skip empty strings)
+                            if !default_value.is_empty() {
+                                // Handle Enum syntax like Status::Todo -> Todo
+                                let clean_val = if default_value.contains("::") {
+                                    default_value.split("::").last().unwrap_or(default_value)
+                                } else {
+                                    default_value
+                                };
+                                
+                                field_names.push(field_name.to_lowercase());
+                                placeholders.push(format!("${}", param_idx));
+                                
+                                let val = serde_json::Value::String(clean_val.to_string());
+                                response_additions.insert(field_name.to_string(), val.clone());
+                                values_json.push(val);
+                                
+                                param_idx += 1;
+                                is_handled = true;
+                            }
+                        }
                     }
                 }
             }
         }
-
+        
         if field_names.is_empty() {
             return create_error_result(400, "No valid fields provided");
         }
@@ -5992,6 +6084,11 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
         // Build response with created resource
         let mut resource_obj = obj.clone();
         resource_obj.insert("id".to_string(), json!(user_id));
+        
+        // Add auto-populated fields to response
+        for (k, v) in response_additions {
+            resource_obj.insert(k, v);
+        }
 
         create_json_result(201, &serde_json::to_string(&resource_obj).unwrap())
     }
@@ -6500,6 +6597,80 @@ fn create_error_result(status: i32, message: &str) -> *mut DooResult {
     create_json_result(status, &error_json)
 }
 
+// ============================================================================
+// Migration - Create all tables at startup
+// ============================================================================
+
+/// Run all table migrations at server startup
+/// Returns list of table names that were created
+fn run_migrations() -> Vec<String> {
+    let mut created_tables = Vec::new();
+    
+    // Collect all table metadata (auth, crud, and @table decorated)
+    let mut all_tables: Vec<(String, serde_json::Value)> = Vec::new();
+    
+    // Get auth tables
+    if let Ok(auth_map) = get_auth_metadata().lock() {
+        for (struct_name, meta) in auth_map.iter() {
+            all_tables.push((meta.table_name.clone(), meta.metadata.clone()));
+        }
+    }
+    
+    // Get crud tables
+    if let Ok(crud_map) = get_crud_metadata().lock() {
+        for (struct_name, meta) in crud_map.iter() {
+            // Skip if already added (auth table might be shared)
+            if !all_tables.iter().any(|(name, _)| name == &meta.table_name) {
+                all_tables.push((meta.table_name.clone(), meta.metadata.clone()));
+            }
+        }
+    }
+    
+    // Get @table decorated structs
+    if let Ok(table_map) = get_table_metadata().lock() {
+        for (struct_name, meta) in table_map.iter() {
+            if !all_tables.iter().any(|(name, _)| name == &meta.table_name) {
+                all_tables.push((meta.table_name.clone(), meta.metadata.clone()));
+            }
+        }
+    }
+    
+    // Create tables in order (auth/user tables first for foreign key deps)
+    for (table_name, metadata) in &all_tables {
+        let create_sql = build_create_table_sql(table_name, metadata);
+        
+        if !create_sql.is_empty() {
+            let sql_c = CString::new(create_sql.clone()).unwrap();
+            let create_result = unsafe { doo_db_create_table(std::ptr::null(), sql_c.as_ptr()) };
+            
+            if !create_result.is_null() {
+                if unsafe { doo_db_is_error(create_result) } != 0 {
+                    let err_msg_ptr = unsafe { doo_db_get_error_message(create_result) };
+                    if !err_msg_ptr.is_null() {
+                        let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
+                        // Don't log "already exists" as error
+                        if !err_msg.contains("already exists") {
+                            eprintln!("Migration error for {}: {}", table_name, err_msg);
+                        }
+                        unsafe { doo_db_free_string(err_msg_ptr) };
+                    }
+                    unsafe { doo_db_result_free(create_result) };
+                } else {
+                    created_tables.push(table_name.clone());
+                    unsafe { doo_db_result_free(create_result) };
+                }
+            }
+        }
+    }
+    
+    // Add foreign key constraints after all tables created
+    for (table_name, metadata) in &all_tables {
+        add_foreign_key_constraints(table_name, metadata);
+    }
+    
+    created_tables
+}
+
 // Helper to build CREATE TABLE SQL from metadata
 fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> String {
     let fields = match metadata.get("fields").and_then(|f| f.as_array()) {
@@ -6535,6 +6706,8 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
         let mut is_auto = false;
         let mut is_unique = false;
         let mut is_hash = false;
+        let mut foreign_ref: Option<String> = None;
+        let mut default_val: Option<String> = None;
 
         for decorator in &decorators {
             if let Some(dec_obj) = decorator.as_object() {
@@ -6544,6 +6717,42 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
                         "auto" => is_auto = true,
                         "unique" => is_unique = true,
                         "hash" => is_hash = true,
+                        "default" => {
+                            if let Some(args) = dec_obj.get("args").and_then(|a| a.as_array()) {
+                                // Try to get string argument first
+                                if let Some(val_str) = args.first().and_then(|a| a.as_str()) {
+                                    // Skip empty strings
+                                    if !val_str.is_empty() {
+                                        // Handle Enum syntax like Status::Todo -> Todo
+                                        let clean_val = if val_str.contains("::") {
+                                            val_str.split("::").last().unwrap_or(val_str)
+                                        } else {
+                                            val_str
+                                        };
+                                        default_val = Some(clean_val.to_string());
+                                    }
+                                } 
+                                // Handle numeric default
+                                else if let Some(val_int) = args.first().and_then(|a| a.as_i64()) {
+                                    default_val = Some(val_int.to_string());
+                                }
+                                else if let Some(val_float) = args.first().and_then(|a| a.as_f64()) {
+                                    default_val = Some(val_float.to_string());
+                                }
+                                // Handle boolean default
+                                else if let Some(val_bool) = args.first().and_then(|a| a.as_bool()) {
+                                    default_val = Some(val_bool.to_string());
+                                }
+                            }
+                        }
+                        "foreign" => {
+                            // Extract referenced struct name from decorator args
+                            if let Some(args) = dec_obj.get("args").and_then(|a| a.as_array()) {
+                                if let Some(ref_struct) = args.first().and_then(|a| a.as_str()) {
+                                    foreign_ref = Some(ref_struct.to_string());
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -6570,6 +6779,19 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
         // Use lowercase column names for Postgres compatibility
         let mut column_def = format!("{} {}", field_name.to_lowercase(), sql_type);
 
+        // DEFAULT must come before constraints
+        if let Some(def_val) = default_val {
+            // Check if we need quotes (for text/enum types)
+            let needs_quotes = field_type == "Str" || field_type == "String" || 
+                              (!matches!(field_type, "Int" | "Float" | "Bool") && !def_val.chars().all(|c| c.is_numeric() || c == '.') && def_val != "true" && def_val != "false");
+            
+            if needs_quotes {
+                column_def.push_str(&format!(" DEFAULT '{}'", def_val));
+            } else {
+                column_def.push_str(&format!(" DEFAULT {}", def_val));
+            }
+        }
+
         if is_primary {
             column_def.push_str(" PRIMARY KEY");
         }
@@ -6595,11 +6817,89 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
         columns.push(column_def);
     }
 
+    // NOTE: Foreign key constraints are NOT added to CREATE TABLE
+    // They will be added separately via ALTER TABLE after table creation
+    // This avoids issues with transaction isolation where the referenced table
+    // might not be visible yet during CREATE TABLE
+
     format!(
         "CREATE TABLE IF NOT EXISTS {} ({})",
         table_name,
         columns.join(", ")
     )
+}
+
+// Helper to add foreign key constraints via ALTER TABLE
+// This is called after table creation to avoid transaction isolation issues
+fn add_foreign_key_constraints(table_name: &str, metadata: &serde_json::Value) {
+    let fields = match metadata.get("fields").and_then(|f| f.as_array()) {
+        Some(f) => f,
+        None => return,
+    };
+
+    for field in fields {
+        let field_obj = match field.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let decorators = field_obj
+            .get("decorators")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        // Check for @foreign decorator
+        for decorator in &decorators {
+            if let Some(dec_obj) = decorator.as_object() {
+                if let Some(dec_name) = dec_obj.get("name").and_then(|n| n.as_str()) {
+                    if dec_name == "foreign" {
+                        if let Some(args) = dec_obj.get("args").and_then(|a| a.as_array()) {
+                            if let Some(ref_struct) = args.first().and_then(|a| a.as_str()) {
+                                let ref_table = ref_struct.to_lowercase() + "s";
+                                let constraint_name = format!("fk_{}_{}", table_name, field_name.to_lowercase());
+                                
+                                // Use ALTER TABLE to add foreign key constraint
+                                // Use IF NOT EXISTS pattern via DO block for idempotency
+                                // Use ALTER TABLE directly and handle "already exists" error
+                                // This avoids PG-specific DO $$ syntax which can cause parsing errors
+                                let alter_sql = format!(
+                                    "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} (id) ON DELETE CASCADE",
+                                    table_name,
+                                    constraint_name,
+                                    field_name.to_lowercase(),
+                                    ref_table
+                                );
+                                
+                                let sql_c = CString::new(alter_sql).unwrap();
+                                let result = unsafe { doo_db_execute(std::ptr::null(), sql_c.as_ptr()) };
+                                
+                                if !result.is_null() {
+                                    if unsafe { doo_db_is_error(result) } != 0 {
+                                        // Log error but don't fail - FK might already exist or ref table not ready
+                                        let err_msg_ptr = unsafe { doo_db_get_error_message(result) };
+                                        if !err_msg_ptr.is_null() {
+                                            let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
+                                            if !err_msg.contains("already exists") {
+                                                eprintln!("FK constraint warning for {}.{}: {}", table_name, field_name, err_msg);
+                                            }
+                                            unsafe { doo_db_free_string(err_msg_ptr) };
+                                        }
+                                    }
+                                    unsafe { doo_db_result_free(result) };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -6708,7 +7008,26 @@ extern "C" fn jwt_middleware_handler(
             return make_err_http(401, &error_json);
         }
 
-        // Token is valid, free the result and continue to next middleware/handler
+        // Token is valid - extract payload and inject into request params
+        let res = &*(verify_result as *mut DooResult);
+        if res.value != std::ptr::null_mut() {
+            let json_ptr = res.value as *const c_char;
+            let json_str = CStr::from_ptr(json_ptr).to_string_lossy();
+            
+            // Parse payload
+            if let Ok(claims) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                // Get sub (subject/userId)
+                if let Some(sub) = claims.get("sub").and_then(|s| s.as_str()) {
+                    // Inject into params map
+                    let params_ptr = req.params as *mut HashMap<String, String>;
+                    if !params_ptr.is_null() {
+                        (*params_ptr).insert("auth_user_id".to_string(), sub.to_string());
+                    }
+                }
+            }
+        }
+
+        // Free the result and continue to next middleware/handler
         doo_auth_free_result(verify_result);
 
         // Call next middleware/handler in chain
@@ -6764,112 +7083,7 @@ pub extern "C" fn doo_http_auth_impl(
 
     let table_name = struct_name_str.to_lowercase() + "s";
 
-    // Create table from metadata
-    let create_sql = build_create_table_sql(&table_name, &metadata);
-
-    if !create_sql.is_empty() {
-        let sql_c = CString::new(create_sql.clone()).unwrap();
-        let create_result = unsafe { doo_db_create_table(std::ptr::null(), sql_c.as_ptr()) };
-
-        if !create_result.is_null() {
-            if unsafe { doo_db_is_error(create_result) } != 0 {
-                let err_msg_ptr = unsafe { doo_db_get_error_message(create_result) };
-                if !err_msg_ptr.is_null() {
-                    let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
-                    unsafe { doo_db_free_string(err_msg_ptr) };
-                }
-                unsafe { doo_db_result_free(create_result) };
-            } else {
-                unsafe { doo_db_result_free(create_result) };
-            }
-        }
-    }
-
-    // Auto-migrate: Ensure all columns exist
-    if let Some(fields) = metadata.get("fields").and_then(|f| f.as_array()) {
-        for field in fields {
-            let field_obj = match field.as_object() {
-                Some(o) => o,
-                None => continue,
-            };
-
-            let field_name = match field_obj.get("name").and_then(|n| n.as_str()) {
-                Some(n) => n,
-                None => continue,
-            };
-
-            let field_type = match field_obj.get("type").and_then(|t| t.as_str()) {
-                Some(t) => t,
-                None => "TEXT",
-            };
-
-            let decorators = field_obj
-                .get("decorators")
-                .and_then(|d| d.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            let mut is_primary = false;
-            let mut is_auto = false;
-            let mut is_hash = false;
-
-            for decorator in &decorators {
-                if let Some(dec_obj) = decorator.as_object() {
-                    if let Some(dec_name) = dec_obj.get("name").and_then(|n| n.as_str()) {
-                        match dec_name {
-                            "primary" => is_primary = true,
-                            "auto" => is_auto = true,
-                            "hash" => is_hash = true,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            // Skip primary keys for migration (they must exist with table)
-            if is_primary {
-                continue;
-            }
-
-            let sql_type = if is_hash {
-                "VARCHAR(255)"
-            } else {
-                match field_type {
-                    "Int" => "INTEGER",
-                    "Float" => "REAL",
-                    "Bool" => "BOOLEAN",
-                    _ => "TEXT",
-                }
-            };
-
-            // Use lowercase column names for Postgres compatibility
-            let alter_sql = format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
-                table_name,
-                field_name.to_lowercase(),
-                sql_type
-            );
-
-            // DEBUG LOGGING
-            println!("Migrating schema: {}", alter_sql);
-
-            let sql_c = CString::new(alter_sql).unwrap();
-            let alter_result = unsafe { doo_db_create_table(std::ptr::null(), sql_c.as_ptr()) }; // usages existing execution function
-            
-            if !alter_result.is_null() {
-                if unsafe { doo_db_is_error(alter_result) } != 0 {
-                    let err_msg_ptr = unsafe { doo_db_get_error_message(alter_result) };
-                    if !err_msg_ptr.is_null() {
-                        let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
-                        println!("Migration error: {}", err_msg);
-                        unsafe { doo_db_free_string(err_msg_ptr) };
-                    }
-                }
-                unsafe { doo_db_result_free(alter_result) };
-            }
-        }
-    }
-
+    // Store metadata - table will be created at server startup via run_migrations()
     get_auth_metadata().lock().unwrap().insert(
         struct_name_str.clone(),
         AuthMetadata {
@@ -6922,26 +7136,13 @@ pub extern "C" fn doo_http_crud_impl(
         }
     };
 
-    let table_name = struct_name_str.to_lowercase() + "s";
+    let table_name = metadata
+        .get("table_name")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| struct_name_str.to_lowercase() + "s");
 
-    // Create table from metadata
-    let create_sql = build_create_table_sql(&table_name, &metadata);
-    let sql_c = CString::new(create_sql.clone()).unwrap();
-    let create_result = unsafe { doo_db_create_table(std::ptr::null(), sql_c.as_ptr()) };
-
-    if !create_result.is_null() {
-        if unsafe { doo_db_is_error(create_result) } != 0 {
-            let err_msg_ptr = unsafe { doo_db_get_error_message(create_result) };
-            if !err_msg_ptr.is_null() {
-                let err_msg = unsafe { CStr::from_ptr(err_msg_ptr).to_string_lossy() };
-                unsafe { doo_db_free_string(err_msg_ptr) };
-            }
-            unsafe { doo_db_result_free(create_result) };
-        } else {
-            unsafe { doo_db_result_free(create_result) };
-        }
-    }
-
+    // Store metadata - table will be created at server startup via run_migrations()
     get_crud_metadata().lock().unwrap().insert(
         struct_name_str.clone(),
         CrudMetadata {
@@ -6994,6 +7195,39 @@ pub extern "C" fn doo_http_crud_impl(
     println!("  PUT {} (update)", id_path);
     println!("  DELETE {} (delete)", id_path);
 
+    make_ok_void()
+}
+
+/// Register a table for automatic creation at startup (for @table decorator)
+/// Called by compiler for structs with @table decorator
+#[no_mangle]
+pub extern "C" fn doo_http_table_impl(
+    struct_name: *const c_char,
+    metadata_json: *const c_char,
+) -> *mut DooResult {
+    let struct_name_str = c_to_string(struct_name);
+    let metadata_json_str = c_to_string(metadata_json);
+
+    // Parse metadata
+    let metadata: serde_json::Value = match serde_json::from_str(&metadata_json_str) {
+        Ok(m) => m,
+        Err(e) => {
+            return make_err_http(400, &format!("Invalid metadata: {}", e));
+        }
+    };
+
+    let table_name = struct_name_str.to_lowercase() + "s";
+
+    // Store metadata - table will be created at server startup via run_migrations()
+    get_table_metadata().lock().unwrap().insert(
+        struct_name_str.clone(),
+        TableMetadata {
+            table_name: table_name.clone(),
+            metadata: metadata.clone(),
+        },
+    );
+
+    println!("✓ Table registered for migration: {}", table_name);
     make_ok_void()
 }
 
