@@ -12,6 +12,16 @@ impl<'ctx> CodeGen<'ctx> {
     /// Initializes the RC runtime by creating the incref and decref functions.
     /// These functions are stored in the CodeGen context for later use.
     pub fn init_rc_runtime(&mut self) {
+        // CRITICAL: Pre-declare malloc with i64 parameter FIRST
+        // This MUST happen before any inkwell build_malloc calls, which would
+        // otherwise declare malloc with i32 parameter, causing type mismatches.
+        if self.module.get_function("malloc").is_none() {
+            let i64_type = self.context.i64_type();
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let malloc_type = ptr_type.fn_type(&[i64_type.into()], false);
+            self.module.add_function("malloc", malloc_type, None);
+        }
+        
         self.incref_fn = Some(self.create_incref_function());
         self.decref_fn = Some(self.create_decref_function());
     }
@@ -238,7 +248,7 @@ impl<'ctx> CodeGen<'ctx> {
     /// Returns the LLVM FunctionValue for free.
     pub fn get_or_declare_free(&self) -> FunctionValue<'ctx> {
         // Check if the function is already declared
-        if let Some(func) = self.module.get_function("free") {
+        if let Some(func) = self.module.get_function("dooruntime_free") {
             return func;
         }
 
@@ -247,7 +257,7 @@ impl<'ctx> CodeGen<'ctx> {
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(&[i8_ptr.into()], false);
 
-        self.module.add_function("free", fn_type, None)
+        self.module.add_function("dooruntime_free", fn_type, None)
     }
 
     /// Retrieves the LLVM function for allocating memory (malloc).
@@ -255,16 +265,17 @@ impl<'ctx> CodeGen<'ctx> {
     /// Returns the LLVM FunctionValue for malloc.
     pub fn get_or_declare_malloc(&self) -> FunctionValue<'ctx> {
         // Check if the function is already declared
-        if let Some(func) = self.module.get_function("malloc") {
+        if let Some(func) = self.module.get_function("dooruntime_malloc") {
             return func;
         }
 
         // Declare the function: i8*(i64)
+        // using i64 for size_t assuming 64-bit target
         let i64_type = self.context.i64_type();
         let i8_ptr = self.context.ptr_type(AddressSpace::default());
         let fn_type = i8_ptr.fn_type(&[i64_type.into()], false);
 
-        self.module.add_function("malloc", fn_type, None)
+        self.module.add_function("dooruntime_malloc", fn_type, None)
     }
 
     /// Retrieves the LLVM function for copying memory (memcpy).

@@ -1,0 +1,76 @@
+// Database module for Doo
+// Supports PostgreSQL with raw SQL queries that return JSON
+//
+// Usage:
+//   import std::Database;
+//
+//   struct User {
+//       id: Int @primary @auto,
+//       email: Str @unique,
+//       password: Str @hash,
+//   }
+//
+//   fn main() {
+//       let db = Database::postgres()?;
+//       let users = db.raw("SELECT * FROM users")?;
+//       // users is JSON array that auto-deserializes to [User] based on return type
+//   }
+
+// === Structs ===
+
+// Database connection handle
+struct Database {
+    ConnectionType: Str,
+    Connected: Bool,
+}
+
+// Database error struct
+struct DatabaseError {
+    Code: Int,
+    Message: Str,
+}
+
+// === Database Constructor ===
+
+// Connect to PostgreSQL database
+// Automatically reads DATABASE_URL from environment
+@ffi("doo_db")
+@extern("doo_db_connect_postgres")
+fn Database.postgres() -> Database ! DatabaseError {}
+
+// Get global database instance (after postgres() was called)
+// Allows handlers to access database without explicit parameter passing
+@ffi("doo_db")
+@extern("doo_db_get_global")
+fn Database.get() -> Database ! DatabaseError {}
+
+// === Raw SQL Methods ===
+
+// Execute raw SQL query
+// SELECT queries return JSON array: [{"id": 1, "name": "John"}, ...]
+// INSERT/UPDATE/DELETE return empty string
+// Automatically deserializes to [StructName] based on function return type
+@ffi("doo_db")
+@extern("doo_db_raw")
+fn Database.raw(self, sql: Str) -> Str ! DatabaseError {}
+
+// Execute raw SQL with parameters (safe from SQL injection)
+// Use $1, $2, $3... placeholders in SQL
+// Params can be: Str, Int, Float, Bool, [Str], [Int], {Str: Str}, or struct
+// Example: db.rawWithParams("SELECT * FROM users WHERE id = $1", "123")
+// Example: db.rawWithParams("SELECT * FROM posts WHERE id = ANY($1)", [1, 2, 3])
+@ffi("doo_db")
+@extern("doo_db_raw_param")
+fn Database.rawWithParams(self, sql: Str, params: Str) -> Str ! DatabaseError {}
+
+// === Helper Functions ===
+
+// Free database result
+@ffi("doo_db")
+@extern("doo_db_free_result")
+fn freeDbResult(ptr: Int) {}
+
+// Free string from database
+@ffi("doo_db")
+@extern("doo_db_free_string")
+fn freeDbString(ptr: Int) {}

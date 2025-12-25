@@ -73,18 +73,28 @@ impl<'a> Parser<'a> {
                         });
                     }
                 } else if self.peek_is(TokenType::As) {
-                    // Namespace aliased import: import std::Array as Arr;
-                    // Add the module name to the path first
-                    path.push(ident_str.clone());
+                    // Handle 'as' keyword for aliasing
                     self.advance(); // consume 'as'
                     let alias_tok = self.expect(TokenType::Identifier)?;
                     let alias = alias_tok.value.to_string();
                     self.expect(TokenType::Semi)?;
-                    // Use SymbolWithAlias where symbol is module name and alias is the alias
-                    return Ok(AstNode::Import {
-                        path,
-                        items: vec![ImportItem::SymbolWithAlias(ident_str, alias)],
-                    });
+                    
+                    if path.len() >= 2 {
+                        // Symbol aliased import: import std::Http::Server as S;
+                        // path = ["std", "Http"], items = [SymbolWithAlias("Server", "S")]
+                        return Ok(AstNode::Import {
+                            path,
+                            items: vec![ImportItem::SymbolWithAlias(ident_str, alias)],
+                        });
+                    } else {
+                        // Namespace aliased import: import std::Array as Arr;
+                        // path = ["std", "Array"], items = [SymbolWithAlias("Array", "Arr")]
+                        path.push(ident_str.clone());
+                        return Ok(AstNode::Import {
+                            path,
+                            items: vec![ImportItem::SymbolWithAlias(ident_str, alias)],
+                        });
+                    }
                 } else {
                     return Err(ParseError::UnexpectedTokenAt {
                         msg: "Expected ;, as, or :: after identifier in import".to_string(),

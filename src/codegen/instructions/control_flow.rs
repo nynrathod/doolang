@@ -54,6 +54,14 @@ impl<'ctx> CodeGen<'ctx> {
             .cloned()
             .or_else(|| self.function_param_types.get(func).cloned());
 
+        // Check if this is an FFI function call
+        let is_ffi_call = self
+            .function_aliases
+            .values()
+            .any(|v| v == &actual_func_name)
+            || self.function_aliases.contains_key(func)
+            || callee.get_linkage() == inkwell::module::Linkage::External;
+
         // Process arguments, converting JSON.parse results to expected types
         let arg_values: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = args
             .iter()
@@ -82,8 +90,186 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }
                 }
-                // Otherwise, use the value as-is
-                self.resolve_value(arg).into()
+
+                // Get the resolved value
+                let mut val = self.resolve_value(arg);
+
+                // SPECIAL HANDLING: For Next struct, reconstruct pointer from two Int fields
+                // Next struct has two Int fields (HandlerPtrLow, HandlerPtrHigh) that store a 64-bit pointer
+                // When calling FFI function doo_http_next_call, we need to reconstruct the pointer
+                if is_ffi_call && actual_func_name == "doo_http_next_call" && i == 0 {
+                    // Check if this is a Next struct instance
+                    let is_next_struct = self
+                        .struct_instance_types
+                        .get(arg)
+                        .map(|t| t == "Next")
+                        .unwrap_or(false)
+                        || self
+                            .variable_types
+                            .get(arg)
+                            .map(|t| t == "Next")
+                            .unwrap_or(false);
+
+                    if is_next_struct && val.is_struct_value() {
+                        // This is a Next struct - extract the two Int fields and reconstruct pointer
+                        let next_struct = val.into_struct_value();
+
+                        // Extract HandlerPtrLow (field 0)
+                        let low_bits = self
+                            .builder
+                            .build_extract_value(next_struct, 0, "ptr_low")
+                            .unwrap()
+                            .into_int_value();
+
+                        // Extract HandlerPtrHigh (field 1)
+                        let high_bits = self
+                            .builder
+                            .build_extract_value(next_struct, 1, "ptr_high")
+                            .unwrap()
+                            .into_int_value();
+
+                        // Reconstruct 64-bit pointer
+                        let i64_type = self.context.i64_type();
+
+                        // Zero-extend low bits to 64 bits
+                        let low_i64 = self
+                            .builder
+                            .build_int_z_extend(low_bits, i64_type, "low_i64")
+                            .unwrap();
+
+                        // Zero-extend high bits to 64 bits and shift left by 32
+                        let high_i64 = self
+                            .builder
+                            .build_int_z_extend(high_bits, i64_type, "high_i64")
+                            .unwrap();
+                        let high_shifted = self
+                            .builder
+                            .build_left_shift(
+                                high_i64,
+                                i64_type.const_int(32, false),
+                                "high_shifted",
+                            )
+                            .unwrap();
+
+                        // Combine: (high << 32) | low
+                        let combined = self
+                            .builder
+                            .build_or(high_shifted, low_i64, "combined_ptr")
+                            .unwrap();
+
+                        // Convert to pointer
+                        let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let reconstructed_ptr = self
+                            .builder
+                            .build_int_to_ptr(combined, ptr_type, "reconstructed_next_ptr")
+                            .unwrap();
+
+                        val = reconstructed_ptr.into();
+                    } else if !val.is_struct_value() {
+                        // val might already be a pointer if it was loaded from memory
+                        // In that case, we need to load the struct first, then extract fields
+                        if val.is_pointer_value() {
+                            let next_ptr = val.into_pointer_value();
+
+                            // Check if we can get the Next struct type
+                            if let Some(next_struct_type) = self.get_struct_type_if_exists("Next") {
+                                // Load the struct from memory
+                                let next_struct_val = self
+                                    .builder
+                                    .build_load(next_struct_type, next_ptr, "next_struct_load")
+                                    .unwrap();
+
+                                if next_struct_val.is_struct_value() {
+                                    let next_struct = next_struct_val.into_struct_value();
+
+                                    // Extract HandlerPtrLow (field 0)
+                                    let low_bits = self
+                                        .builder
+                                        .build_extract_value(next_struct, 0, "ptr_low")
+                                        .unwrap()
+                                        .into_int_value();
+
+                                    // Extract HandlerPtrHigh (field 1)
+                                    let high_bits = self
+                                        .builder
+                                        .build_extract_value(next_struct, 1, "ptr_high")
+                                        .unwrap()
+                                        .into_int_value();
+
+                                    // Reconstruct 64-bit pointer
+                                    let i64_type = self.context.i64_type();
+
+                                    // Zero-extend low bits to 64 bits
+                                    let low_i64 = self
+                                        .builder
+                                        .build_int_z_extend(low_bits, i64_type, "low_i64")
+                                        .unwrap();
+
+                                    // Zero-extend high bits to 64 bits and shift left by 32
+                                    let high_i64 = self
+                                        .builder
+                                        .build_int_z_extend(high_bits, i64_type, "high_i64")
+                                        .unwrap();
+                                    let high_shifted = self
+                                        .builder
+                                        .build_left_shift(
+                                            high_i64,
+                                            i64_type.const_int(32, false),
+                                            "high_shifted",
+                                        )
+                                        .unwrap();
+
+                                    // Combine: (high << 32) | low
+                                    let combined = self
+                                        .builder
+                                        .build_or(high_shifted, low_i64, "combined_ptr")
+                                        .unwrap();
+
+                                    // Convert to pointer
+                                    let ptr_type =
+                                        self.context.ptr_type(inkwell::AddressSpace::default());
+                                    let reconstructed_ptr = self
+                                        .builder
+                                        .build_int_to_ptr(
+                                            combined,
+                                            ptr_type,
+                                            "reconstructed_next_ptr",
+                                        )
+                                        .unwrap();
+
+                                    val = reconstructed_ptr.into();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // CRITICAL FIX: For FFI calls, if this is a HEAP-ALLOCATED Doo string (has RC header),
+                // we need to skip the header to get the C string pointer
+                // Heap strings: [RC: 4 bytes][Length: 4 bytes][string data + null]
+                // String literals/constants: [string data + null] (no header)
+                // C strings expect: pointer to [string data + null]
+                if is_ffi_call {
+                    // Only skip header for heap-allocated strings, NOT for string literals/constants
+                    let is_heap_string = self.heap_strings.contains(arg);
+
+                    if is_heap_string && val.is_pointer_value() {
+                        let doo_str_ptr = val.into_pointer_value();
+                        // Skip RC header (4 bytes) + length field (4 bytes) = 8 bytes total
+                        let c_str_ptr = unsafe {
+                            self.builder.build_in_bounds_gep(
+                                self.context.i8_type(),
+                                doo_str_ptr,
+                                &[self.context.i32_type().const_int(8, false)],
+                                "c_str_ptr",
+                            )
+                        }
+                        .unwrap();
+                        val = c_str_ptr.into();
+                    }
+                }
+
+                val.into()
             })
             .collect();
 

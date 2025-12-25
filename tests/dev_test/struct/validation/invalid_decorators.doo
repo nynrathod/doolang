@@ -1,0 +1,36 @@
+//
+// invalid_decorators.doo
+// Tests invalid cases for each supported decorator in struct validation
+//
+
+enum UserRole {
+    User,
+    Admin,
+    Moderator,
+}
+
+struct DecoratorTest {
+    // @email: invalid email string
+    EmailStr: Str @email,                // Should fail: not a valid email
+    // @min: value below minimum
+    Age: Int @min(18),                   // Should fail: value < 18
+    // @max: value above maximum
+    Score: Int @max(100),                // Should fail: value > 100
+    // @enum: value not in enum
+    Role: UserRole, // Should fail: value not in enum
+    Name: Str,
+}
+
+fn main() {
+    // Each field intentionally violates its decorator constraint
+    let test = DecoratorTest {
+        EmailStr: "not-an-email",        // Invalid email format (no @ and .)
+        Age: 16,                         // Below @min(18)
+        Score: 150,                      // Above @max(100)
+        Role: "guest",                   // Not in @enum
+        Name: "John",
+    };
+
+    print("Testing invalid decorator cases...");
+    print("Expect validation errors for each field.");
+}

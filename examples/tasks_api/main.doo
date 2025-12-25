@@ -1,0 +1,31 @@
+// 🔥 Doo - The fastest way to build and deploy production APIs
+// Run: doo run | Deploy: doo deploy
+// Learn more at: https://github.com/nynrathod/doolang
+
+// Tasks API - Bridging static code → production API
+// See examples/tasks/ for the pure Doo version
+// This adds HTTP + Database to the same domain model
+
+import std::Http::Server;
+import std::Database;
+import Models::Task;
+import Handlers::{GetDone, GetUrgent, GetPending, GetStats};
+
+fn main() {
+    let db = Database::postgres()?;
+    let app = Server::new(":3000");
+
+    // Authentication via JWT
+    app.auth("/api/auth/signup", "/api/auth/login", User, db);
+    // Standard CRUD (80% of your endpoints)
+    // GET, POST, GET/:id, PUT/:id, DELETE/:id
+    app.crud("/tasks", Task, db);
+
+    // Custom queries (when CRUD isn't enough)
+    app.get("/tasks/done", GetDone);
+    app.get("/tasks/urgent", GetUrgent);
+    app.get("/tasks/pending", GetPending);
+    app.get("/tasks/stats", GetStats);
+
+    app.start();
+}

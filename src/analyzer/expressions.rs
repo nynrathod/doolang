@@ -995,8 +995,44 @@ impl SemanticAnalyzer {
             AstNode::StructLiteral { name, fields } => {
                 // Check if struct type exists
                 if let Some(struct_fields) = self.struct_table.get(name) {
-                    // Check if this is an imported struct - if so, check field visibility
+                    // IMPORTANT: Check if struct is accessible
+                    // For imported structs, they must be in symbol_table or outer scopes to be instantiated
+                    // This enforces proper import semantics (namespace imports don't expose structs directly)
+                    // Local structs (declared in current module) are always accessible via struct_table
                     let is_imported = self.imported_struct_names.contains(name);
+
+                    if is_imported {
+                        // Check if struct is accessible in current scope or any outer scope
+                        let mut is_accessible = self.symbol_table.contains_key(name);
+
+                        // Check outer_symbol_table (for nested function scopes)
+                        if !is_accessible {
+                            if let Some(outer) = &self.outer_symbol_table {
+                                is_accessible = outer.contains_key(name);
+                            }
+                        }
+
+                        // Check scope_stack (for nested block scopes)
+                        if !is_accessible {
+                            for scope in self.scope_stack.iter().rev() {
+                                if scope.contains_key(name) {
+                                    is_accessible = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if !is_accessible {
+                            return Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: format!(
+                                    "Struct '{}' is not accessible. Did you import it? (Use 'import module::{}' to import directly)",
+                                    name, name
+                                ),
+                            }));
+                        }
+                    }
+
+                    // Check field visibility for imported structs
 
                     // Verify all required fields are provided
                     for (field_name, _field_type) in struct_fields {
@@ -1294,10 +1330,55 @@ impl SemanticAnalyzer {
                             Ok(ret_ty.clone())
                         }
                     } else {
-                        // Neither enum nor function found
-                        Err(SemanticError::UndeclaredVariable(NamedError {
-                            name: format!("Undefined enum type or function '{}'", qualified_name),
-                        }))
+                        // Check if it's a static method call
+                        // Methods are stored as Type::method in function_table
+                        // But also check Type.method for compatibility
+                        let method_name_colon = format!("{}::{}", enum_name, variant);
+                        let method_name_dot = format!("{}.{}", enum_name, variant);
+
+                        if let Some((_param_types, ret_ty, err_ty)) = self
+                            .function_table
+                            .get(&method_name_colon)
+                            .or_else(|| self.function_table.get(&method_name_dot))
+                        {
+                            // It's a static method - type check all arguments
+                            for arg in payload {
+                                self.infer_type(arg)?;
+                            }
+
+                            // If the function has an error type, wrap the return type in Result
+                            if let Some(error_type) = err_ty {
+                                Ok(TypeNode::Result(
+                                    Box::new(ret_ty.clone()),
+                                    Box::new(error_type.clone()),
+                                ))
+                            } else {
+                                Ok(ret_ty.clone())
+                            }
+                        } else {
+                            // Neither enum, function, nor static method found
+                            // Check if the type exists (to give better error message)
+                            let error_msg = if self.struct_table.contains_key(enum_name) {
+                                format!(
+                                    "Undefined method '{}' for type '{}'. Did you forget to import it explicitly?",
+                                    variant, enum_name
+                                )
+                            } else if self.enum_table.contains_key(enum_name) {
+                                format!(
+                                    "Undefined enum variant '{}::{}'. Check available variants for enum '{}'",
+                                    enum_name, variant, enum_name
+                                )
+                            } else {
+                                format!(
+                                    "Undefined function or type '{}'. Did you forget to import '{}' explicitly?",
+                                    qualified_name, enum_name
+                                )
+                            };
+
+                            Err(SemanticError::UndeclaredVariable(NamedError {
+                                name: error_msg,
+                            }))
+                        }
                     }
                 }
             }
@@ -1386,6 +1467,8 @@ impl SemanticAnalyzer {
                     method_table: self.method_table.clone(),
                     struct_field_visibility: self.struct_field_visibility.clone(),
                     imported_struct_names: self.imported_struct_names.clone(),
+                    struct_field_decorators: self.struct_field_decorators.clone(),
+                    ffi_metadata: self.ffi_metadata.clone(),
                     function_aliases: self.function_aliases.clone(),
                     loop_depth: self.loop_depth,
                     scope_stack: self.scope_stack.clone(),
@@ -1503,6 +1586,7 @@ impl SemanticAnalyzer {
                 params,
                 body,
                 return_type,
+                error_type: _, // Lambda error type not checked here
             } => {
                 // If explicit return type is provided, use it
                 if let Some(ret_type) = return_type {
@@ -1595,6 +1679,7 @@ impl SemanticAnalyzer {
                 params,
                 body,
                 return_type,
+                error_type: _, // Lambda error type not checked here
             } => {
                 // If explicit return type is provided, use it
                 if let Some(ret_type) = return_type {
@@ -1689,6 +1774,8 @@ impl SemanticAnalyzer {
             method_table: self.method_table.clone(),
             struct_field_visibility: self.struct_field_visibility.clone(),
             imported_struct_names: self.imported_struct_names.clone(),
+            struct_field_decorators: self.struct_field_decorators.clone(),
+            ffi_metadata: self.ffi_metadata.clone(),
             outer_symbol_table: self.outer_symbol_table.clone(),
             project_root: self.project_root.clone(),
             imported_modules: self.imported_modules.clone(),
@@ -1712,7 +1799,40 @@ impl SemanticAnalyzer {
         method: &str,
         args: &[AstNode],
     ) -> Result<TypeNode, SemanticError> {
-        // First check if this is a custom user-defined method
+        // Special handling for Database methods - override stdlib return types
+        // Check this BEFORE method_table lookup to allow polymorphic JSON deserialization
+        match object_type {
+            TypeNode::TypeRef(name) | TypeNode::Struct(name, _) if name == "Database" => {
+                match method {
+                    "raw" => {
+                        if args.len() != 1 {
+                            return Err(SemanticError::FunctionArgumentMismatch {
+                                name: "Database.raw".to_string(),
+                                expected: 1,
+                                found: args.len(),
+                            });
+                        }
+                        return Ok(TypeNode::Any);
+                    }
+                    "rawWithParams" => {
+                        if args.len() != 2 {
+                            return Err(SemanticError::FunctionArgumentMismatch {
+                                name: "Database.rawWithParams".to_string(),
+                                expected: 2,
+                                found: args.len(),
+                            });
+                        }
+                        return Ok(TypeNode::Any);
+                    }
+                    _ => {
+                        // Fall through to normal method lookup for other Database methods
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Now check if this is a custom user-defined method
         let type_name = match object_type {
             TypeNode::Int => "Int",
             TypeNode::Float => "Float",
@@ -2284,6 +2404,7 @@ impl SemanticAnalyzer {
                     correct_type: None,
                 }),
             },
+
             TypeNode::Builtin(name) if name == "JSON" => match method {
                 "parse" => {
                     if args.len() != 1 {

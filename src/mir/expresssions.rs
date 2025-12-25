@@ -792,6 +792,7 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             params,
             body,
             return_type,
+            error_type: _,
         } => {
             let closure_name = builder.next_tmp();
 
@@ -1110,6 +1111,7 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                 name: unwrapped_tmp.clone(),
                 result: result_tmp.clone(),
                 error_block: String::new(), // Will be handled by codegen
+                expected_ok_type: None, // Filled in by Let statement processing if type annotation exists
             });
 
             // The unwrapped value has the Ok type of the Result

@@ -105,6 +105,7 @@ fn main() {
     let mut count: Int = 0;
     for {
         if count < 5 {
+            print("yes");
             break;
         }
         print("  count:", count);

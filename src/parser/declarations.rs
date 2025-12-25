@@ -137,19 +137,36 @@ impl<'a> Parser<'a> {
         // Parse function parameters until ')' is found
         // Track if we've seen the first parameter (for methods)
         let mut is_first_param = true;
+        let mut is_static_method = false;
+
         let params = self.parse_comma_separated_strict(
             |p| {
                 let param_name = p.expect_ident()?;
 
-                // Special case: first parameter in methods doesn't need type annotation (receiver)
+                // Special case: first parameter in methods
                 if is_first_param && receiver_type.is_some() {
                     is_first_param = false;
-                    // Receiver parameter - no type annotation needed, type is inferred from receiver
-                    return Ok((param_name, None));
+
+                    // Check if this is 'self' (instance method) or a typed parameter (static method)
+                    if let Some(tok) = p.peek() {
+                        if tok.kind == TokenType::Colon {
+                            // This is a static method - first param has type annotation
+                            is_static_method = true;
+                            p.advance(); // consume ':'
+                            let param_type = Some(p.parse_type_annotation()?);
+                            return Ok((param_name, param_type));
+                        } else {
+                            // This is 'self' - instance method, no type annotation needed
+                            return Ok((param_name, None));
+                        }
+                    } else {
+                        // No colon, assume it's 'self'
+                        return Ok((param_name, None));
+                    }
                 }
                 is_first_param = false;
 
-                // Enforce mandatory type annotation for each parameter (except receiver)
+                // Enforce mandatory type annotation for each parameter (except receiver 'self')
                 let tok = p.peek().ok_or(ParseError::EndOfInput)?;
                 if tok.kind != TokenType::Colon {
                     return Err(ParseError::UnexpectedTokenAt {
@@ -252,7 +269,12 @@ impl<'a> Parser<'a> {
                 error_type,
                 body: body_block,
                 decorators,
-                receiver_type,
+                receiver_type: if is_static_method {
+                    None
+                } else {
+                    receiver_type.clone()
+                },
+                associated_type: receiver_type,
                 is_expression: true,
             });
         }
@@ -268,18 +290,32 @@ impl<'a> Parser<'a> {
             error_type,
             body: body_block,
             decorators,
-            receiver_type,
+            receiver_type: if is_static_method {
+                None
+            } else {
+                receiver_type.clone()
+            },
+            associated_type: receiver_type,
             is_expression: false,
         })
     }
 
     /// Struct decl with full support for decorators, optional fields, default values
     /// Example: `struct User { email: Str @email @unique, age: Int?, Role: Str = "user" }`
+    /// Example: `struct AuditLog @table { id: Int @primary @auto, action: Str }`
     pub fn parse_struct_decl(&mut self) -> ParseResult<AstNode> {
         self.expect(TokenType::Struct)?; // consume 'struct'
 
         let struct_name = self.expect_ident()?; // Parse struct name
         let is_public = crate::parser::ast::TypeNode::is_public_name(&struct_name);
+
+        // Parse struct-level decorators (e.g., @table) before the opening brace
+        let mut decorators = Vec::new();
+        while self.peek_is(TokenType::At) {
+            self.advance(); // consume '@'
+            let decorator = self.parse_decorator()?;
+            decorators.push(decorator);
+        }
 
         self.expect(TokenType::OpenBrace)?; // `{`
 
@@ -303,6 +339,7 @@ impl<'a> Parser<'a> {
             name: struct_name,
             fields,
             is_public,
+            decorators,
         })
     }
 
@@ -358,15 +395,31 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse a decorator like @email or @min(8) or @hash
+    /// Parse a decorator like @email or @min(8) or @hash or @enum
     pub fn parse_decorator(&mut self) -> ParseResult<crate::parser::ast::Decorator> {
         use crate::parser::ast::Decorator;
 
-        let decorator_name = self.expect_ident()?;
+        // Allow keywords as decorator names (e.g., @default, @foreign)
+        let decorator_name = match self.advance() {
+            Some(tok) => match tok.kind {
+                TokenType::Identifier => tok.value.to_string(),
+                // Add other keywords if needed in the future
+                _ => {
+                    return Err(ParseError::UnexpectedTokenAt {
+                        msg: format!("Expected Identifier, got {:?} ({:?})", tok.kind, tok.value),
+                        line: tok.line,
+                        col: tok.col,
+                    })
+                }
+            },
+            None => return Err(ParseError::EndOfInput),
+        };
 
         // Check for arguments
         let args = if self.peek_is(TokenType::OpenParen) {
             self.advance(); // consume '('
+
+            // Standard comma-separated expressions for all decorators
             let args =
                 self.parse_comma_separated(|p| p.parse_expression(), TokenType::CloseParen)?;
             self.expect(TokenType::CloseParen)?;

@@ -174,6 +174,25 @@ pub enum SemanticError {
     UnexpectedReturnWithReturnType {
         function: String,
     },
+
+    // Decorator validation errors
+    InvalidDecoratorType {
+        decorator: String,
+        field: String,
+        struct_name: String,
+        expected_type: String,
+        found_type: String,
+    },
+    InvalidDecoratorArgs {
+        decorator: String,
+        field: String,
+        message: String,
+    },
+    UnknownDecorator {
+        decorator: String,
+        field: String,
+        struct_name: String,
+    },
 }
 
 impl fmt::Display for TypeNode {
@@ -300,6 +319,11 @@ impl SemanticError {
             SemanticError::MissingOkInFunctionWithReturnType { .. } => "E0802",
             SemanticError::MissingErrInFunctionWithErrorType { .. } => "E0803",
             SemanticError::UnexpectedReturnWithReturnType { .. } => "E0804",
+
+            // Decorator validation
+            SemanticError::InvalidDecoratorType { .. } => "E0901",
+            SemanticError::InvalidDecoratorArgs { .. } => "E0902",
+            SemanticError::UnknownDecorator { .. } => "E0903",
         }
     }
 }
@@ -620,6 +644,34 @@ impl fmt::Display for SemanticError {
                 "error[{}]: function '{}' declares a return type but uses bare 'Return' statement. Functions with return types MUST use 'Ok' expression instead. Use 'Ok value;' instead of 'return value;'",
                 self.code(),
                 function
+            ),
+
+            // Decorator validation errors
+            E::InvalidDecoratorType { decorator, field, struct_name, expected_type, found_type } => write!(
+                f,
+                "error[{}]: @{} decorator on field '{}' in struct '{}' requires type {}, found {}",
+                self.code(),
+                decorator,
+                field,
+                struct_name,
+                expected_type,
+                found_type
+            ),
+            E::InvalidDecoratorArgs { decorator, field, message } => write!(
+                f,
+                "error[{}]: @{} decorator on field '{}': {}",
+                self.code(),
+                decorator,
+                field,
+                message
+            ),
+            E::UnknownDecorator { decorator, field, struct_name } => write!(
+                f,
+                "error[{}]: unknown decorator @{} on field '{}' in struct '{}'. Valid decorators: @email, @required, @min, @max, @foreign, @unique, @primary, @autoIncrement, @auto, @hash, @default",
+                self.code(),
+                decorator,
+                field,
+                struct_name
             ),
         }
     }

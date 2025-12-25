@@ -43,6 +43,29 @@ pub fn parse_tuple_types(type_str: &str) -> Vec<String> {
 }
 
 impl<'ctx> CodeGen<'ctx> {
+    /// Helper method to get struct type by name from canonical_struct_types
+    pub fn get_struct_type(&self, struct_name: &str) -> inkwell::types::StructType<'ctx> {
+        self.canonical_struct_types
+            .get(struct_name)
+            .cloned()
+            .unwrap_or_else(|| {
+                // Fallback: create empty struct type if not found
+                eprintln!(
+                    "Warning: Struct type '{}' not found in canonical_struct_types",
+                    struct_name
+                );
+                self.context.struct_type(&[], false)
+            })
+    }
+
+    /// Helper method to get struct type by name, returning Option instead of panicking
+    pub fn get_struct_type_if_exists(
+        &self,
+        struct_name: &str,
+    ) -> Option<inkwell::types::StructType<'ctx>> {
+        self.canonical_struct_types.get(struct_name).cloned()
+    }
+
     /// Resolves a variable or constant name to its pointer (for arrays/maps).
     /// Used when we need the actual pointer, not the loaded value.
     pub fn resolve_pointer(&self, name: &str) -> PointerValue<'ctx> {
@@ -85,12 +108,19 @@ impl<'ctx> CodeGen<'ctx> {
             // If this variable has a symbol (cross-block), prefer loading from symbol
             // because temp_values contains a value from one specific block that doesn't
             // dominate all uses in other blocks
-            if (is_loop_var || is_heap_map || has_symbol) && self.symbols.contains_key(name) {
+            // CRITICAL FIX: For scalar types (Int, Float, Bool), we MUST load from symbol
+            // because temp_values contains the alloca pointer, not the scalar value itself
+            let is_scalar_with_symbol = self.symbols.contains_key(name)
+                && self.variable_types.get(name).map(|t| matches!(t.as_str(), "Int" | "Float" | "Bool" | "Struct(Int)" | "Struct(Float)" | "Struct(Bool)")).unwrap_or(false);
+            
+            if (is_loop_var || is_heap_map || has_symbol || is_scalar_with_symbol) && self.symbols.contains_key(name) {
                 // Fall through to symbol lookup below
             } else {
                 return *val;
             }
         }
+
+
 
         if let Some(sym) = self.symbols.get(name) {
             // Special handling for array/map/struct variables - they should always be pointers
@@ -106,10 +136,18 @@ impl<'ctx> CodeGen<'ctx> {
             // Check if this is a Result type - it should NOT be treated as a struct
             let is_result_type = var_type.map(|t| t == "Result").unwrap_or(false);
 
-            let is_struct = var_type
+            // Check for scalar wrapper types (e.g., Struct(Int) from db.rawWithParams)
+            // These should NOT be treated as structs - they need scalar loading
+            let is_scalar_wrapper = var_type.map(|t| {
+                matches!(t.as_str(), "Struct(Int)" | "Struct(Float)" | "Struct(Bool)")
+            }).unwrap_or(false);
+
+            let is_struct = !is_scalar_wrapper && (var_type
                 .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
                 .unwrap_or(false)
-                || self.struct_instance_types.contains_key(name);
+                || self.struct_instance_types.contains_key(name));
+            
+
 
             // Check if this is an enum by looking at variable_types
             let is_enum = var_type
@@ -138,22 +176,45 @@ impl<'ctx> CodeGen<'ctx> {
                 self.context
                     .ptr_type(inkwell::AddressSpace::default())
                     .into()
+            } else if is_scalar_wrapper {
+                // CRITICAL: Scalar wrapper types (Struct(Int), Struct(Float), Struct(Bool)) should be loaded
+                // as their underlying scalar type, NOT as pointers. This check MUST come before is_string.
+                use inkwell::types::BasicTypeEnum;
+                let type_str = var_type.unwrap();
+                if type_str == "Struct(Int)"  {
+                    BasicTypeEnum::IntType(self.context.i32_type())
+                } else if type_str == "Struct(Float)" {
+                    BasicTypeEnum::FloatType(self.context.f64_type())
+                } else {
+                    BasicTypeEnum::IntType(self.context.i32_type())  // Struct(Bool)
+                }
             } else if is_string {
                 // String values are pointers
                 self.context
                     .ptr_type(inkwell::AddressSpace::default())
                     .into()
             } else if let Some(type_str) = var_type {
-                // Use variable_types to determine correct load type
-                match type_str.as_str() {
-                    "Int" => self.context.i32_type().into(),
-                    "Float" => self.context.f64_type().into(),
-                    "Bool" => self.context.i32_type().into(),
-                    "Str" => self
-                        .context
-                        .ptr_type(inkwell::AddressSpace::default())
-                        .into(),
-                    _ => sym.ty,
+                // SPECIAL CASE: Handle scalar values wrapped in Struct() (e.g. from Result unwrapping)
+                // This prevents them from being loaded as pointers.
+                use inkwell::types::BasicTypeEnum;
+                if type_str == "Struct(Int)" || type_str == "Int" {
+                    BasicTypeEnum::IntType(self.context.i32_type())
+                } else if type_str == "Struct(Float)" || type_str == "Float" {
+                    BasicTypeEnum::FloatType(self.context.f64_type())
+                } else if type_str == "Struct(Bool)" || type_str == "Bool" {
+                    BasicTypeEnum::IntType(self.context.i32_type())
+                } else {
+                    // Use variable_types to determine correct load type
+                    match type_str.as_str() {
+                        "Int" => self.context.i32_type().into(),
+                        "Float" => self.context.f64_type().into(),
+                        "Bool" => self.context.i32_type().into(),
+                        "Str" => self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into(),
+                        _ => sym.ty,
+                    }
                 }
             } else {
                 sym.ty
@@ -320,6 +381,8 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// Get or declare malloc function (internal for string conversion)
+    /// IMPORTANT: Must use i64 parameter type to match size_t on 64-bit systems
+    /// and be consistent with other malloc declarations in the codebase.
     pub fn get_or_declare_malloc_libc(&self) -> FunctionValue<'ctx> {
         if let Some(func) = self.module.get_function("malloc") {
             return func;
@@ -328,5 +391,18 @@ impl<'ctx> CodeGen<'ctx> {
         let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
         let malloc_type = i8_ptr_type.fn_type(&[self.context.i64_type().into()], false);
         self.module.add_function("malloc", malloc_type, None)
+    }
+
+    /// Get or declare exit function
+    pub fn get_or_declare_exit(&self) -> FunctionValue<'ctx> {
+        if let Some(func) = self.module.get_function("exit") {
+            return func;
+        }
+
+        let exit_type = self
+            .context
+            .void_type()
+            .fn_type(&[self.context.i32_type().into()], false);
+        self.module.add_function("exit", exit_type, None)
     }
 }

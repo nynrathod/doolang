@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::raw::c_char;
 use std::path::Path;
 
@@ -472,6 +472,135 @@ fn parse_json_string_array(inner: &str) -> Vec<String> {
     }
 
     result
+}
+
+/// Parse JSON array of objects into array of struct pointers
+/// This is a simplified implementation that returns the JSON string pointer array
+/// Each object in the JSON array is kept as a JSON string for now
+/// Format: [RC: 4][Length: 4][ptr1, ptr2, ...]
+#[no_mangle]
+pub extern "C" fn json_parse_struct_array(json_str: *const c_char) -> *mut *mut c_char {
+    if json_str.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let c_str = CStr::from_ptr(json_str);
+        let rust_str = match c_str.to_str() {
+            Ok(s) => s.trim(),
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        // Parse as JSON array
+        let trimmed = rust_str.trim();
+        if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+            // Not an array, return empty
+            let ptr = malloc(16);
+            if ptr.is_null() {
+                return std::ptr::null_mut();
+            }
+            *(ptr as *mut i32) = 1; // RC
+            *(ptr.add(4) as *mut i32) = 0; // Length
+            return ptr.add(8) as *mut *mut c_char;
+        }
+
+        let inner = &trimmed[1..trimmed.len() - 1].trim();
+
+        if inner.is_empty() {
+            // Empty array
+            let ptr = malloc(16);
+            if ptr.is_null() {
+                return std::ptr::null_mut();
+            }
+            *(ptr as *mut i32) = 1; // RC
+            *(ptr.add(4) as *mut i32) = 0; // Length
+            return ptr.add(8) as *mut *mut c_char;
+        }
+
+        // Parse array of objects: [{...}, {...}]
+        let mut objects = Vec::new();
+        let mut depth = 0;
+        let mut current_obj = String::new();
+        let mut in_string = false;
+        let mut escape_next = false;
+
+        for ch in inner.chars() {
+            if escape_next {
+                current_obj.push(ch);
+                escape_next = false;
+                continue;
+            }
+
+            match ch {
+                '\\' if in_string => {
+                    escape_next = true;
+                    current_obj.push(ch);
+                }
+                '"' => {
+                    in_string = !in_string;
+                    current_obj.push(ch);
+                }
+                '{' if !in_string => {
+                    depth += 1;
+                    current_obj.push(ch);
+                }
+                '}' if !in_string => {
+                    current_obj.push(ch);
+                    depth -= 1;
+                    if depth == 0 {
+                        // Complete object
+                        objects.push(current_obj.trim().to_string());
+                        current_obj.clear();
+                    }
+                }
+                ',' if !in_string && depth == 0 => {
+                    // Skip commas between objects
+                }
+                _ => {
+                    current_obj.push(ch);
+                }
+            }
+        }
+
+        // If there's remaining content, add it
+        if !current_obj.trim().is_empty() {
+            objects.push(current_obj.trim().to_string());
+        }
+
+        // Allocate array with RC header
+        let data_size = objects.len() * std::mem::size_of::<*mut c_char>();
+        let total_size = 8 + data_size;
+        let ptr = malloc(total_size.max(16));
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        *(ptr as *mut i32) = 1; // RC
+        *(ptr.add(4) as *mut i32) = objects.len() as i32; // Length
+
+        let data_ptr = ptr.add(8) as *mut *mut c_char;
+
+        // For each object, create a heap string with RC header
+        for (i, obj_str) in objects.iter().enumerate() {
+            let obj_bytes = obj_str.as_bytes();
+            let obj_total = 8 + obj_bytes.len() + 1;
+            let obj_ptr = malloc(obj_total);
+            if obj_ptr.is_null() {
+                continue;
+            }
+
+            *(obj_ptr as *mut i32) = 1; // RC
+            *(obj_ptr.add(4) as *mut i32) = obj_bytes.len() as i32; // Length
+
+            let obj_data = obj_ptr.add(8);
+            std::ptr::copy_nonoverlapping(obj_bytes.as_ptr(), obj_data, obj_bytes.len());
+            *obj_data.add(obj_bytes.len()) = 0; // Null terminator
+
+            *data_ptr.add(i) = obj_data as *mut c_char;
+        }
+
+        data_ptr
+    }
 }
 
 /// Parse JSON map with string keys to Int values
@@ -2371,6 +2500,77 @@ pub extern "C" fn json_stringify(data: *const c_char) -> *mut c_char {
         // For now, wrap the string in JSON format
         // In a real implementation, this would properly escape and format
         let json_output = format!("\"{}\"", rust_str.replace("\"", "\\\""));
+
+        match CString::new(json_output) {
+            Ok(result) => result.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Serialize heap array of structs to JSON string
+/// Uses struct metadata to properly serialize each struct instance
+/// Returns pointer to heap-allocated JSON string, or null on error
+#[no_mangle]
+pub extern "C" fn array_to_json_with_metadata(
+    array_ptr: *const c_char,
+    _struct_name: *const c_char,
+    _metadata_json: *const c_char,
+) -> *mut c_char {
+    if array_ptr.is_null() {
+        // Return empty array JSON
+        return match CString::new("[]") {
+            Ok(result) => result.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        };
+    }
+
+    unsafe {
+        // The array_ptr points to a heap-allocated array
+        // Array structure in memory: [length: i32][element1][element2]...
+        // Read array length from the first 4 bytes
+        let length_ptr = array_ptr as *const i32;
+        let length = *length_ptr;
+
+        if length == 0 {
+            // Empty array
+            return match CString::new("[]") {
+                Ok(result) => result.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            };
+        }
+
+        // For arrays parsed from db.raw(), each element is a struct pointer
+        // The array data starts after the length (4 bytes)
+        let data_start = array_ptr.offset(4);
+
+        // Build JSON array manually
+        let mut json_output = String::from("[");
+
+        // Each element is a pointer to a struct (8 bytes on 64-bit, 4 bytes on 32-bit)
+        let ptr_size = std::mem::size_of::<*const c_char>();
+
+        for i in 0..length {
+            let element_ptr_location =
+                data_start.offset((i * ptr_size as i32) as isize) as *const *const c_char;
+            let element_ptr = *element_ptr_location;
+
+            if !element_ptr.is_null() {
+                // Try to read the element as a JSON object string
+                // For structs from db.raw(), they contain the original JSON data
+                let element_str_ptr = element_ptr as *const c_char;
+                if let Ok(c_str) = std::panic::catch_unwind(|| CStr::from_ptr(element_str_ptr)) {
+                    if let Ok(element_json) = c_str.to_str() {
+                        if i > 0 {
+                            json_output.push(',');
+                        }
+                        json_output.push_str(element_json);
+                    }
+                }
+            }
+        }
+
+        json_output.push(']');
 
         match CString::new(json_output) {
             Ok(result) => result.into_raw(),

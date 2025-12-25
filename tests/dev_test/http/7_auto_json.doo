@@ -1,0 +1,37 @@
+import std::Http::{Server};
+
+struct SearchQuery {
+    q: Str,
+    page: Int,
+}
+
+struct UserPath {
+    userId: Int,
+}
+
+struct UpdateProfileInput {
+    name: Str,
+    email: Str,
+}
+
+fn searchHandler(query: SearchQuery) -> Str {
+    return "Search for: " + query.q + ", page: " + query.page;
+}
+
+fn getUserHandler(path: UserPath) -> Str {
+    return "User ID: " + path.userId;
+}
+
+fn updateProfileHandler(path: UserPath, body: UpdateProfileInput) -> Str {
+    return "Updated user " + path.userId + " to name=" + body.name + ", email=" + body.email;
+}
+
+fn main() {
+    let app = Server::new(":3107");
+
+    app.get("/search", searchHandler); // Query params
+    app.get("/users/:userId", getUserHandler); // Path params
+    app.post("/users/:userId/profile", updateProfileHandler); // Path + body
+
+    app.start();
+}

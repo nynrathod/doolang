@@ -149,6 +149,22 @@ pub fn build_let_decl(builder: &mut MirBuilder, node: &AstNode) -> Vec<MirInstr>
             }
         }
 
+        // CRITICAL FIX: Back-patch TryPropagate instructions with the type annotation
+        // This ensures efficient JSON parsing for db.raw() calls
+        if let Some(type_ann) = type_annotation {
+            let type_str = type_ann.format_type_string();
+            for instr in instrs.iter_mut() {
+                if let MirInstr::TryPropagate {
+                    expected_ok_type, ..
+                } = instr
+                {
+                    if expected_ok_type.is_none() {
+                        *expected_ok_type = Some(type_str.clone());
+                    }
+                }
+            }
+        }
+
         instrs
     } else {
         vec![]
@@ -173,11 +189,13 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         body,
         decorators,
         receiver_type,
+        associated_type,
         ..
     } = node
     {
         // If this is a method declaration, use mangled name (Type::method)
-        let func_name = if let Some(type_name) = receiver_type {
+        // Use associated_type which is set for both static and instance methods
+        let func_name = if let Some(type_name) = associated_type {
             format!("{}::{}", type_name, name)
         } else {
             name.clone()
@@ -206,34 +224,46 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
 
         // For methods, first parameter is the receiver with inferred type
         // For regular functions, just use all parameters as-is
-        let (all_params, all_param_types) = if let Some(type_name) = receiver_type {
-            // This is a method - first param is receiver
+        // Use receiver_type to check if this is an instance method (has self parameter)
+        let (all_params, all_param_types) = if let Some(type_name) = associated_type {
+            // This is a method - check if it's an instance method or static method
             let mut method_params: Vec<String> = Vec::new();
             let mut method_param_types: Vec<Option<String>> = Vec::new();
 
-            // Add first parameter (receiver) with inferred type
-            if let Some((receiver_name, _)) = params.first() {
-                method_params.push(receiver_name.clone());
+            // If receiver_type is Some, this is an instance method with 'self' parameter
+            if receiver_type.is_some() {
+                // Add first parameter (receiver) with inferred type
+                if let Some((receiver_name, _)) = params.first() {
+                    method_params.push(receiver_name.clone());
 
-                // Determine the receiver type
-                let receiver_type_string = match type_name.as_str() {
-                    "Int" => Some("Int".to_string()),
-                    "Float" => Some("Float".to_string()),
-                    "Str" => Some("Str".to_string()),
-                    "Bool" => Some("Bool".to_string()),
-                    other => Some(other.to_string()),
-                };
-                method_param_types.push(receiver_type_string);
+                    // Determine the receiver type
+                    let receiver_type_string = match type_name.as_str() {
+                        "Int" => Some("Int".to_string()),
+                        "Float" => Some("Float".to_string()),
+                        "Str" => Some("Str".to_string()),
+                        "Bool" => Some("Bool".to_string()),
+                        other => Some(other.to_string()),
+                    };
+                    method_param_types.push(receiver_type_string);
+                }
+
+                // Add remaining parameters
+                method_params.extend(params.iter().skip(1).map(|(n, _)| n.clone()));
+                method_param_types.extend(
+                    params
+                        .iter()
+                        .skip(1)
+                        .map(|(_, t)| t.as_ref().map(|ty| ty.format_type_string())),
+                );
+            } else {
+                // Static method: include all parameters as-is
+                method_params.extend(params.iter().map(|(n, _)| n.clone()));
+                method_param_types.extend(
+                    params
+                        .iter()
+                        .map(|(_, t)| t.as_ref().map(|ty| ty.format_type_string())),
+                );
             }
-
-            // Add remaining parameters
-            method_params.extend(params.iter().skip(1).map(|(n, _)| n.clone()));
-            method_param_types.extend(
-                params
-                    .iter()
-                    .skip(1)
-                    .map(|(_, t)| t.as_ref().map(|ty| ty.format_type_string())),
-            );
 
             (method_params, method_param_types)
         } else {

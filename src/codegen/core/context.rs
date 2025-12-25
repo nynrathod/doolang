@@ -38,11 +38,24 @@ pub struct MapMetadata {
     pub value_needs_rc: bool,
 }
 
-/// Metadata for tracking struct field information
+/// Field layout information for a single struct field
+#[derive(Debug, Clone)]
+pub struct FieldLayout {
+    pub name: String,
+    pub type_name: String,
+    pub offset: u64,
+    pub size: u64,
+    pub align: u64,
+}
+
+/// Metadata for tracking struct field information and memory layout
 #[derive(Debug, Clone)]
 pub struct StructMetadata {
     pub field_names: Vec<String>,
     pub field_types: Vec<String>,
+    pub field_layouts: Vec<FieldLayout>, // Exact memory layout from LLVM
+    pub total_size: u64,
+    pub total_align: u64,
 }
 
 /// Loop type enumeration
@@ -106,6 +119,7 @@ pub struct CodeGen<'ctx> {
     pub current_function_params: Vec<(String, Option<String>)>, // Track current function parameters (name, type) for RC on return
     pub function_return_types: HashMap<String, String>, // Track function return types for proper RC handling on call results
     pub function_param_types: HashMap<String, Vec<String>>, // Track function parameter types for JSON.parse conversion
+    pub function_param_names: HashMap<String, Vec<String>>, // Track function parameter NAMES for path param extraction
     pub functions_returning_heap: std::collections::HashSet<String>, // Track functions that return heap-allocated values
 
     pub boolean_temps: std::collections::HashSet<String>, // Track temporary variables from boolean-returning methods
@@ -134,6 +148,8 @@ pub struct CodeGen<'ctx> {
     pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
+    pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
+    pub struct_decorators: HashMap<String, Vec<(String, Vec<String>)>>, // Struct-level decorators: struct_name -> [(decorator_name, [args])]
 
     // Current function context
     pub current_function_name: Option<String>, // Track the name of the function being currently generated
@@ -193,6 +209,7 @@ impl<'ctx> CodeGen<'ctx> {
             current_function_params: Vec::new(),
             function_return_types: HashMap::new(),
             function_param_types: HashMap::new(),
+            function_param_names: HashMap::new(),
             functions_returning_heap: std::collections::HashSet::new(),
 
             boolean_temps: std::collections::HashSet::new(),
@@ -216,6 +233,8 @@ impl<'ctx> CodeGen<'ctx> {
             enum_table: HashMap::new(),
             enum_variant_order: HashMap::new(),
             struct_table: HashMap::new(),
+            struct_field_decorators: HashMap::new(),
+            struct_decorators: HashMap::new(),
             current_function_name: None,
             current_error_type: None,
             closure_bodies: HashMap::new(),

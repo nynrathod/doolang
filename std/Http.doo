@@ -1,0 +1,433 @@
+// HTTP Server and routing via FFI
+// Complete implementation for Phase 1, 2, 3, 4, 5
+//
+// Usage:
+//   import std::Http;
+//
+//   fn main() {
+//       let app = Server.new(":3000");
+//       app.post("/signup", signup);
+//       app.get("/profile", getProfile);
+//       app.start();
+//   }
+
+// === Structs ===
+
+// HTTP Error struct for error handling
+struct HttpError {
+    Status: Int,
+    Message: Str,
+}
+
+// HTTP Request struct - populated by the server for each request
+struct Request {
+    Method: Str,         // GET, POST, PUT, DELETE, PATCH
+    Path: Str,           // /users/123
+    Body: Str,           // Raw request body
+    ContentType: Str,    // Content-Type header value
+}
+
+// HTTP Response struct - return this from handlers
+struct Response {
+    Status: Int,         // HTTP status code
+    Body: Str,           // Response body
+    ContentType: Str,    // Content-Type header
+}
+
+// Next type for middleware chaining - wraps the next handler in the chain
+// NOTE: Uses two Int fields to store a 64-bit pointer on 64-bit systems
+struct Next {
+    HandlerPtrLow: Int,   // Low 32 bits of pointer
+    HandlerPtrHigh: Int,  // High 32 bits of pointer (for 64-bit systems)
+}
+
+// HTTP Server struct
+struct Server {
+    Port: Int,
+    Host: Str,
+}
+
+// === HTTP Status Codes ===
+
+fn StatusOk() -> Int { return 200; }
+fn StatusCreated() -> Int { return 201; }
+fn StatusAccepted() -> Int { return 202; }
+fn StatusNoContent() -> Int { return 204; }
+
+fn StatusMovedPermanently() -> Int { return 301; }
+fn StatusFound() -> Int { return 302; }
+fn StatusNotModified() -> Int { return 304; }
+
+fn StatusBadRequest() -> Int { return 400; }
+fn StatusUnauthorized() -> Int { return 401; }
+fn StatusForbidden() -> Int { return 403; }
+fn StatusNotFound() -> Int { return 404; }
+fn StatusMethodNotAllowed() -> Int { return 405; }
+fn StatusConflict() -> Int { return 409; }
+fn StatusUnprocessableEntity() -> Int { return 422; }
+fn StatusTooManyRequests() -> Int { return 429; }
+
+fn StatusInternalServerError() -> Int { return 500; }
+fn StatusNotImplemented() -> Int { return 501; }
+fn StatusBadGateway() -> Int { return 502; }
+fn StatusServiceUnavailable() -> Int { return 503; }
+
+// === Server Constructor ===
+
+@ffi("doo_http")
+@extern("doo_http_server_new")
+fn Server.new(addr: Str) -> Server {}
+
+// === Server Methods - Route Registration ===
+
+@ffi("doo_http")
+@extern("doo_http_get")
+fn Server.get(self, path: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_post")
+fn Server.post(self, path: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_put")
+fn Server.put(self, path: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_delete")
+fn Server.delete(self, path: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_patch")
+fn Server.patch(self, path: Str, handler: Str) -> ! HttpError {}
+
+// === Route Registration with Middleware ===
+
+@ffi("doo_http")
+@extern("doo_http_get_with_middleware")
+fn Server.getWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_post_with_middleware")
+fn Server.postWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_put_with_middleware")
+fn Server.putWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_delete_with_middleware")
+fn Server.deleteWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_patch_with_middleware")
+fn Server.patchWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+
+// === Middleware Registration ===
+// Usage:
+//   app.use(LogMiddleware);              // Single middleware
+//   app.use(AuthMiddleware);             // Chain multiple via separate calls
+// Or method chaining:
+//   let app = Server::new(":3000")
+//       .use(LogMiddleware);
+
+@ffi("doo_http")
+@extern("doo_http_use")
+fn Server.use(self, middleware: Str) -> Server {}
+
+// === Route Groups ===
+
+@ffi("doo_http")
+@extern("doo_http_group")
+fn Server.group(self, prefix: Str) -> ! HttpError {}
+
+// === Server Lifecycle ===
+
+@ffi("doo_http")
+@extern("doo_http_listen")
+fn Server.start(self) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_listen")
+fn Server.listen(self, port: Int) -> ! HttpError {}
+
+// === Auth and CRUD Methods ===
+
+@ffi("doo_http")
+@extern("doo_http_auth")
+fn Server.auth(self, signupPath: Str, loginPath: Str, userStruct: Str, db: Str) -> ! HttpError {}
+
+@ffi("doo_http")
+@extern("doo_http_crud")
+fn Server.crud(self, basePath: Str, resourceStruct: Str, db: Str) -> ! HttpError {}
+
+// === Request Methods ===
+
+@ffi("doo_http")
+@extern("doo_http_req_query")
+fn Request.query(self, name: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doo_http_req_param")
+fn Request.param(self, name: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doo_http_req_header")
+fn Request.header(self, name: Str) -> Str {}
+
+// === Next Methods ===
+
+@ffi("doo_http")
+@extern("doo_http_next_call")
+fn Next.call(self) -> Response {}
+
+// === JSON Helpers (Phase 4) ===
+
+@ffi("doo_http")
+@extern("doo_http_parse_json")
+fn parseJson(body: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doo_http_to_json")
+fn toJson(data: Str) -> Str {}
+
+// === Helper Functions ===
+
+fn JsonResponse(status: Int, body: Str) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "application/json",
+    };
+}
+
+fn ErrorResponse(status: Int, message: Str) -> Response {
+    return Response {
+        Status: status,
+        Body: "{\"error\":\"" + message + "\"}",
+        ContentType: "application/json",
+    };
+}
+
+fn OkResponse(body: Str) -> Response {
+    return JsonResponse(200, body);
+}
+
+fn CreatedResponse(body: Str) -> Response {
+    return JsonResponse(201, body);
+}
+
+fn BadRequestResponse(message: Str) -> Response {
+    return ErrorResponse(400, message);
+}
+
+fn UnauthorizedResponse(message: Str) -> Response {
+    return ErrorResponse(401, message);
+}
+
+fn NotFoundResponse(message: Str) -> Response {
+    return ErrorResponse(404, message);
+}
+
+fn InternalErrorResponse(message: Str) -> Response {
+    return ErrorResponse(500, message);
+}
+
+// === RFC 7807 Error Response Helpers ===
+// These functions create RFC 7807 compliant error responses
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807")
+fn ErrorRfc7807(status: Int, detail: Str, instance: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_with_method")
+fn ErrorRfc7807WithMethod(status: Int, detail: Str, instance: Str, method: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_validation")
+fn ErrorRfc7807Validation(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_bad_request_with_fields")
+fn ErrorRfc7807BadRequestWithFields(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_method_not_allowed")
+fn ErrorRfc7807MethodNotAllowed(detail: Str, instance: Str, allowedMethods: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_parameter")
+fn ErrorRfc7807Parameter(detail: Str, instance: Str, name: Str, expected: Str, received: Str, message: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_unknown_fields")
+fn ErrorRfc7807UnknownFields(detail: Str, instance: Str, unknownFieldsCsv: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_error_rfc7807_content_type")
+fn ErrorRfc7807ContentType(detail: Str, instance: Str, expected: Str, received: Str) -> Str {}
+
+@ffi("doo_http")
+@extern("doohttp_last_error_status")
+fn LastErrorStatus() -> Int {}
+
+@ffi("doo_http")
+@extern("doohttp_last_error_json")
+fn LastErrorJson() -> Str {}
+
+// Convenience functions for RFC 7807 error responses
+fn BadRequestRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(400, detail, instance);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn UnauthorizedRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(401, detail, instance);
+    return Response {
+        Status: 401,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ForbiddenRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(403, detail, instance);
+    return Response {
+        Status: 403,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn NotFoundRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(404, detail, instance);
+    return Response {
+        Status: 404,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn MethodNotAllowedRfc7807(detail: Str, instance: Str, allowedMethods: Str) -> Response {
+    let json = ErrorRfc7807MethodNotAllowed(detail, instance, allowedMethods);
+    return Response {
+        Status: 405,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ConflictRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(409, detail, instance);
+    return Response {
+        Status: 409,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ValidationErrorRfc7807(detail: Str, instance: Str, fieldsJson: Str) -> Response {
+    let json = ErrorRfc7807Validation(detail, instance, fieldsJson);
+    return Response {
+        Status: 422,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn BadRequestWithFieldsRfc7807(detail: Str, instance: Str, fieldsJson: Str) -> Response {
+    let json = ErrorRfc7807BadRequestWithFields(detail, instance, fieldsJson);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn TooManyRequestsRfc7807(detail: Str, instance: Str, retryAfter: Int) -> Response {
+    // Note: retry_after not yet supported in FFI, using basic error
+    let json = ErrorRfc7807(429, detail, instance);
+    return Response {
+        Status: 429,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn InternalErrorRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(500, detail, instance);
+    return Response {
+        Status: 500,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn PathParamErrorRfc7807(detail: Str, instance: Str, name: Str, expected: Str, received: Str, message: Str) -> Response {
+    let json = ErrorRfc7807Parameter(detail, instance, name, expected, received, message);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn UnknownFieldsRfc7807(detail: Str, instance: Str, unknownFieldsCsv: Str) -> Response {
+    let json = ErrorRfc7807UnknownFields(detail, instance, unknownFieldsCsv);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ContentTypeRfc7807(detail: Str, instance: Str, expected: Str, received: Str) -> Response {
+    let json = ErrorRfc7807ContentType(detail, instance, expected, received);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+// === Response Static Methods ===
+
+// Response.json() - Create JSON response with custom status code
+fn Response.json(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "application/json",
+    };
+}
+
+// Response.text() - Create plain text response with custom status code
+fn Response.text(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "text/plain",
+    };
+}
+
+// Response.html() - Create HTML response with custom status code
+fn Response.html(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "text/html",
+    };
+}
+
+// Response.Json() - Create JSON response from map/struct
+fn Response.Json(data: Str) -> Response {
+    return Response {
+        Status: 200,
+        Body: data,
+        ContentType: "application/json",
+    };
+}

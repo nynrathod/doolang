@@ -1,0 +1,26 @@
+// Task models for API - based on examples/tasks/
+// Shows how to convert static structs → DB models
+
+import std::Database;
+
+enum Priority { Low, Medium, High }
+enum Status { Todo, InProgress, Done }
+
+struct User {
+    id: Int @primary @auto,                 // Primary key, auto-incremented
+    Email: Str @email @unique,              // Email validation + unique constraint
+    Password: Str @hash @min(8) @max(20),   // Auto-hashed, length validated
+    Name: Str,
+    Role: Str @default("user"),
+}
+
+struct Task {
+    id: Int @primary @auto,
+    Title: Str @min(1) @max(200),
+    Priority: Priority @default(Priority::Medium),
+    Status: Status @default(Status::Todo),
+}
+
+// Helper methods (same logic as static version)
+fn Task.IsDone(self) -> Bool => self.Status == Status::Done;
+fn Task.IsUrgent(self) -> Bool => self.Priority == Priority::High;

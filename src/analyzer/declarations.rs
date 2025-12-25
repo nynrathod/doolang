@@ -50,6 +50,30 @@ impl SemanticAnalyzer {
                 let patterns = self.collect_and_validate_targets(pattern)?;
                 let expected_count = patterns.len();
 
+                // Check if RHS is db.raw() or db.rawWithParams() without type annotation
+                // Default to Str type (JSON string) if no type annotation provided
+                if type_annotation.is_none() {
+                    if let AstNode::TryPropagate { expr } = &**value {
+                        if let AstNode::MethodCall { object, method, .. } = &**expr {
+                            // Check if this is a Database method call
+                            let obj_type = self.infer_type(&**object)?;
+                            if let TypeNode::TypeRef(type_name) = obj_type {
+                                if type_name == "Database"
+                                    && (method == "raw" || method == "rawWithParams")
+                                {
+                                    // Show error - type annotation is mandatory for db.raw()
+                                    return Err(SemanticError::ParseErrorMsg(
+                                        format!(
+                                            "Type annotation required for db.{}() result. Allowed types: Str, [Struct], Struct, Int, Bool, Float\nExample: let result: [Struct] = db.{}(...)?",
+                                            method, method
+                                        )
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // For empty maps and arrays, use the type annotation if available
                 let rhs_type = if let Some(annotated_type) = type_annotation.as_ref() {
                     // If we have a type annotation and value is empty map/array, use annotation directly
@@ -708,7 +732,7 @@ impl SemanticAnalyzer {
                         },
                     });
                 }
-                let value_type = self.infer_type(&actual_values[0])?;
+                let value_type = self.infer_type_with_expected(&actual_values[0], expected)?;
                 if !super::analyzer::types_compatible(
                     &value_type,
                     expected,
@@ -739,6 +763,7 @@ impl SemanticAnalyzer {
             name,
             fields,
             is_public,
+            ..
         } = node
         {
             // Prevent redeclaration of struct names.
@@ -749,6 +774,8 @@ impl SemanticAnalyzer {
             }
 
             let mut field_map = HashMap::new();
+            let mut field_decorators_map = HashMap::new();
+
             for field in fields {
                 let field_name = &field.name;
                 let field_type = &field.field_type;
@@ -759,7 +786,49 @@ impl SemanticAnalyzer {
                         field: field_name.clone(),
                     });
                 }
+
+                // Validate decorators on this field
+                super::decorators::validate_field_decorators(
+                    &field.decorators,
+                    field_type,
+                    field_name,
+                    name,
+                )?;
+
+                // Store decorators for codegen
+                if !field.decorators.is_empty() {
+                    let decorator_info: Vec<(String, Vec<String>)> = field
+                        .decorators
+                        .iter()
+                        .map(|d| {
+                            let args: Vec<String> = d
+                                .args
+                                .iter()
+                                .map(|arg| match arg {
+                                    AstNode::StringLiteral(s) => s.clone(),
+                                    AstNode::NumberLiteral(n) => n.to_string(),
+                                    AstNode::FloatLiteral(f) => f.to_string(),
+                                    AstNode::BoolLiteral(b) => b.to_string(),
+                                    AstNode::Identifier(id) => id.clone(),
+                                    AstNode::EnumVariant { enum_name, variant, .. } => {
+                                        format!("{}::{}", enum_name, variant)
+                                    }
+                                    _ => String::new(),
+                                })
+                                .collect();
+                            (d.name.clone(), args)
+                        })
+                        .collect();
+                    field_decorators_map.insert(field_name.clone(), decorator_info);
+                }
+
                 field_map.insert(field_name.clone(), field_type.clone());
+            }
+
+            // Store decorators in struct_field_decorators for codegen
+            if !field_decorators_map.is_empty() {
+                self.struct_field_decorators
+                    .insert(name.clone(), field_decorators_map);
             }
 
             // Insert struct type into the struct registry
@@ -889,18 +958,61 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    /// Enforces that functions declaring error types must have at least one Err expression
+    /// Enforces that functions declaring error types must have at least one Err expression OR Ok expression
+    /// Functions with error types can return only Ok values - the error type means they CAN return errors
     fn ensure_has_error_path(
         &self,
         body: &[AstNode],
         function_name: &str,
     ) -> Result<(), SemanticError> {
-        if !self.has_error_statement(body) {
+        // Check if function has any result expressions (Ok or Err)
+        if !self.has_result_expression(body) {
             return Err(SemanticError::MissingErrInFunctionWithErrorType {
                 function: function_name.to_string(),
             });
         }
         Ok(())
+    }
+
+    /// Check if function body contains any Result expressions (Ok or Err)
+    fn has_result_expression(&self, nodes: &[AstNode]) -> bool {
+        for node in nodes {
+            if self.node_has_result_expression(node) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if a node contains a Result expression (Ok or Err)
+    fn node_has_result_expression(&self, node: &AstNode) -> bool {
+        match node {
+            AstNode::OkExpr { .. } => true,
+            AstNode::ErrExpr { .. } => true,
+            AstNode::TryPropagate { .. } => true,
+            AstNode::LetDecl { value, .. } => self.node_has_result_expression(value),
+            AstNode::Return { values } => values.iter().any(|v| self.node_has_result_expression(v)),
+            AstNode::ConditionalStmt {
+                then_block,
+                else_branch,
+                ..
+            } => {
+                if self.has_result_expression(then_block) {
+                    return true;
+                }
+                if let Some(else_block) = else_branch {
+                    if self.node_has_result_expression(else_block) {
+                        return true;
+                    }
+                }
+                false
+            }
+            AstNode::Block(stmts) => self.has_result_expression(stmts),
+            AstNode::MatchExpr { arms, .. } => arms
+                .iter()
+                .any(|arm| self.node_has_result_expression(&arm.body)),
+            _ => false,
+        }
     }
 
     /// Recursively checks if a function body contains at least one Err expression or TryPropagate (?)

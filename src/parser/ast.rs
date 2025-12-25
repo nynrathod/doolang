@@ -201,6 +201,7 @@ pub enum AstNode {
         name: String,
         fields: Vec<StructField>,
         is_public: bool, // Determined by PascalCase vs camelCase
+        decorators: Vec<Decorator>, // Struct-level decorators like @table
     },
     EnumDecl {
         name: String,
@@ -251,9 +252,10 @@ pub enum AstNode {
         return_type: Option<TypeNode>,
         error_type: Option<TypeNode>, // Error type after ! in function signature
         body: Vec<AstNode>,
-        decorators: Vec<Decorator>,    // @ffi, @extern, etc.
-        receiver_type: Option<String>, // For method declarations: fn TypeName.methodName(self)
-        is_expression: bool,           // true if function uses => syntax (expression function)
+        decorators: Vec<Decorator>,      // @ffi, @extern, etc.
+        receiver_type: Option<String>, // For instance method declarations: fn TypeName.methodName(self)
+        associated_type: Option<String>, // For both static and instance methods: the TypeName in fn TypeName.methodName
+        is_expression: bool,             // true if function uses => syntax (expression function)
     },
     FunctionCall {
         func: Box<AstNode>,
@@ -293,11 +295,12 @@ pub enum AstNode {
         target_type: TypeNode,
     },
 
-    // Closure: () => {}
+    // Closure: () => {} or (x: T) -> R ! E { }
     Closure {
         params: Vec<(String, Option<TypeNode>)>,
         body: Box<AstNode>,
         return_type: Option<TypeNode>,
+        error_type: Option<TypeNode>, // Error type after ! for Result-returning closures
     },
 
     // Error handling constructs

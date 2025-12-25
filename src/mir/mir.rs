@@ -13,6 +13,8 @@ pub struct MirProgram {
     pub enum_table: HashMap<String, HashMap<String, Option<TypeNode>>>, // Enum definitions: name -> variant -> payload type
     pub struct_table: HashMap<String, HashMap<String, TypeNode>>, // Struct definitions: name -> field -> type
     pub enum_variant_order: HashMap<String, Vec<(String, Option<TypeNode>)>>, // Ordered enum variants: enum_name -> [(variant_name, payload_type)]
+    pub struct_field_decorators: HashMap<String, HashMap<String, Vec<(String, Vec<String>)>>>, // Struct field decorators: struct_name -> field_name -> [(decorator_name, [args])]
+    pub struct_decorators: HashMap<String, Vec<(String, Vec<String>)>>, // Struct-level decorators: struct_name -> [(decorator_name, [args])]
 }
 
 impl MirProgram {
@@ -494,6 +496,7 @@ pub enum MirInstr {
         name: String,        // Destination for Ok value
         result: String,      // Result to check
         error_block: String, // Block to jump to if Err
+        expected_ok_type: Option<String>, // Type annotation from surrounding Let statement
     },
 
     /// Unwrap Result or panic with message

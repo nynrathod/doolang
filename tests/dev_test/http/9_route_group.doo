@@ -1,0 +1,137 @@
+import std::Http::{Server};
+
+struct UserResponse {
+    Id: Int,
+    Name: Str,
+}
+
+struct PostResponse {
+    Id: Int,
+    Title: Str,
+}
+
+struct StatusResponse {
+    Status: Str,
+    Version: Str,
+}
+
+fn GetPublicStatus() -> StatusResponse {
+    print("📍 Handler: GetPublicStatus");
+    return StatusResponse {
+        Status: "ok",
+        Version: "1.0.0",
+    };
+}
+
+fn GetPublicHealth() -> StatusResponse {
+    print("📍 Handler: GetPublicHealth");
+    return StatusResponse {
+        Status: "healthy",
+        Version: "1.0.0",
+    };
+}
+
+fn GetUserProfile() -> UserResponse {
+    print("📍 Handler: GetUserProfile");
+    return UserResponse {
+        Id: 1,
+        Name: "John Doe",
+    };
+}
+
+fn CreateUser() -> UserResponse {
+    print("📍 Handler: CreateUser");
+    return UserResponse {
+        Id: 2,
+        Name: "New User",
+    };
+}
+
+fn GetUser(id: Int) -> UserResponse {
+    print("📍 Handler: GetUser - ID: " + id);
+    return UserResponse {
+        Id: id,
+        Name: "User " + id,
+    };
+}
+
+fn DeleteUser(id: Int) -> StatusResponse {
+    print("📍 Handler: DeleteUser - ID: " + id);
+    return StatusResponse {
+        Status: "deleted",
+        Version: "1.0.0",
+    };
+}
+
+fn GetPosts() -> PostResponse {
+    print("📍 Handler: GetPosts");
+    return PostResponse {
+        Id: 0,
+        Title: "All Posts",
+    };
+}
+
+fn CreatePost() -> PostResponse {
+    print("📍 Handler: CreatePost");
+    return PostResponse {
+        Id: 1,
+        Title: "New Post",
+    };
+}
+
+fn GetPost(id: Int) -> PostResponse {
+    print("📍 Handler: GetPost - ID: " + id);
+    return PostResponse {
+        Id: id,
+        Title: "Post " + id,
+    };
+}
+
+fn DeletePost(id: Int) -> StatusResponse {
+    print("📍 Handler: DeletePost - ID: " + id);
+    return StatusResponse {
+        Status: "deleted",
+        Version: "1.0.0",
+    };
+}
+
+fn GetAdminDashboard() -> StatusResponse {
+    print("📍 Handler: GetAdminDashboard");
+    return StatusResponse {
+        Status: "admin dashboard",
+        Version: "1.0.0",
+    };
+}
+
+fn GetAdminUsers() -> UserResponse {
+    print("📍 Handler: GetAdminUsers");
+    return UserResponse {
+        Id: 0,
+        Name: "All Admin Users",
+    };
+}
+
+fn main() {
+    let app = Server::new(":3110");
+
+    app.get("/status", GetPublicStatus);
+    app.get("/health", GetPublicHealth);
+
+    app.group("/api", {
+        get("/profile", GetUserProfile),
+        post("/users", CreateUser),
+        get("/users/:id", GetUser),
+        delete("/users/:id", DeleteUser),
+        get("/posts", GetPosts),
+        post("/posts", CreatePost),
+        get("/posts/:id", GetPost),
+        delete("/posts/:id", DeletePost),
+    });
+
+    app.group("/admin", {
+        get("/dashboard", GetAdminDashboard),
+        get("/users", GetAdminUsers),
+    });
+
+    app.start();
+}

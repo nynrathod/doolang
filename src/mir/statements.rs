@@ -235,6 +235,39 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             // Build MIR for the right-hand side expression.
             let value_tmp = build_expression(builder, value, block);
 
+            // CRITICAL: Propagate type annotation to TryPropagate instruction if present
+            // This enables proper JSON scalar extraction for db.rawWithParams() calls
+            // e.g., `let total: Int = db.rawWithParams(...)` needs Int type info in TryPropagate
+            if let Some(type_ann) = type_annotation {
+                // Find TryPropagate instruction with matching name and update its expected_ok_type
+                for instr in block.instrs.iter_mut() {
+                    if let MirInstr::TryPropagate {
+                        name,
+                        expected_ok_type,
+                        ..
+                    } = instr
+                    {
+                        if name == &value_tmp {
+                            // Convert TypeNode to string for expected_ok_type
+                            let type_str = match type_ann {
+                                crate::parser::ast::TypeNode::Int => "Int".to_string(),
+                                crate::parser::ast::TypeNode::Float => "Float".to_string(),
+                                crate::parser::ast::TypeNode::Bool => "Bool".to_string(),
+                                crate::parser::ast::TypeNode::String => "Str".to_string(),
+                                crate::parser::ast::TypeNode::TypeRef(n) => n.clone(),
+                                crate::parser::ast::TypeNode::Struct(n, _) => n.clone(),
+                                crate::parser::ast::TypeNode::Array(elem) => {
+                                    format!("Array({})", elem.format_type_string())
+                                }
+                                _ => type_ann.format_type_string(),
+                            };
+                            *expected_ok_type = Some(type_str);
+                            break;
+                        }
+                    }
+                }
+            }
+
             // CRITICAL FIX: If this is an empty array literal and we have a type annotation,
             // update the MirInstr::Array to use the correct element type from the annotation.
             // This ensures `let tasks: [Task] = []` creates an array with element_type="Task", not "Int".
@@ -663,6 +696,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             name,
             fields,
             is_public,
+            decorators: _, // Struct-level decorators handled in builder.rs
         } => {
             // Struct declarations are type definitions only.
             // Extract field names and types for the StructDecl instruction.
@@ -937,18 +971,28 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     body_block.terminator = Some(MirInstr::Jump { label: loop_header });
                 }
 
+                // Save the current block before we modify it
+                let original_block = MirBlock {
+                    label: block.label.clone(),
+                    instrs: block.instrs.clone(),
+                    terminator: block.terminator.clone(),
+                };
+
                 if let Some(func) = builder.program.functions.last_mut() {
+                    func.blocks.push(original_block);
                     func.blocks.push(header_block);
                     func.blocks.push(body_block);
-                    func.blocks.push(MirBlock {
-                        label: loop_end,
-                        instrs: vec![],
-                        terminator: None,
-                    });
                 }
 
                 builder.exit_loop();
-                return; // stop further processing
+                
+                // CRITICAL FIX: Instead of returning early, update the current block
+                // to be the loop_end block so subsequent statements get appended there.
+                // This is the same pattern used by if/else blocks (line 846).
+                block.label = loop_end;
+                block.instrs.clear();
+                block.terminator = None;
+                return; // Return to prevent falling through to other loop types
             }
 
             // Check if this is a tuple pattern for map iteration
