@@ -1,10 +1,15 @@
 import std::Http::Server;
+import std::Database;
 
 enum UserRole {
     User,
     Admin,
     Moderator,
 }
+
+enum Status { Todo, InProgress, Done }
+enum Priority { Low, Medium, High }
+
 
 struct UserInput {
     Email: Str @email,                       // Must be valid email
@@ -14,6 +19,20 @@ struct UserInput {
     Rank: Int @min(1) @max(5),               // Must be Int, between 1 and 5
     Role: UserRole,   // Must be one of these values
     Name: Str,                               // String field
+}
+
+struct User {
+    id: Int @primary @auto,
+    email: Str @email @unique,
+    password: Str @hash @min(6),
+}
+
+struct Task {
+    id: Int @primary @auto,
+    title: Str @min(1) @max(200),
+    status: Status @default(Status::Todo),
+    priority: Priority @default(Priority::Medium),
+    userId: Int @foreign(User),
 }
 
 fn createUser(input: UserInput) -> UserInput {
@@ -29,9 +48,12 @@ fn createUser(input: UserInput) -> UserInput {
 }
 
 fn main() {
+    let db = Database::postgres()?;
     let app = Server::new(":3104");
 
+    app.auth("/signup", "/login", User, db);
     app.post("/api/users/create", createUser);
+    app.crud("/tasks", Task, db);
 
     app.start();
 }
