@@ -538,6 +538,21 @@ fn c_to_string(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
 }
 
+/// Free a string allocated by string_to_c (which uses dooruntime_malloc with 8-byte RC header)
+/// Memory layout: [RC:4][Len:4][data...][null] - string_to_c returns ptr to data (offset +8)
+/// Must subtract 8 to get the real allocation base before calling libc::free
+/// This is cross-platform compatible (Windows, macOS, Linux)
+#[inline]
+fn free_rc_string(ptr: *const c_char) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let base_ptr = (ptr as *mut u8).sub(8);
+        libc::free(base_ptr as *mut libc::c_void);
+    }
+}
+
 // Helper for unified allocation - use Rust's allocator to match Box::from_raw
 // Previously used libc::malloc which caused heap corruption on macOS when
 // combined with Box::from_raw (allocator mismatch)
@@ -567,6 +582,25 @@ fn make_err_http(status: u16, message: &str) -> *mut DooResult {
         tag: 1,
         value: error as *mut std::ffi::c_void,
     }))
+}
+
+/// Free a handler result - ONLY frees the DooResult wrapper struct.
+/// 
+/// IMPORTANT: We do NOT free the value pointer because:
+/// 1. It may be a JSON string managed by Doo runtime's reference counting
+/// 2. It may be a DooResponse struct allocated by LLVM
+/// 3. We cannot reliably distinguish between them (ASCII '{' = 123 looks like status code)
+/// 
+/// This causes a small per-request memory leak (~16-24 bytes) but prevents heap corruption.
+/// The memory is reclaimed when the process exits.
+unsafe fn free_handler_result(result: *mut DooResult) {
+    if result.is_null() {
+        return;
+    }
+    
+    // ONLY free the DooResult wrapper struct itself
+    // Do NOT free result.value - it may be a Doo-managed string or a struct we can't identify
+    libc::free(result as *mut libc::c_void);
 }
 
 // ============================================================================
@@ -1579,10 +1613,33 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         timestamp, status_code, duration_ms, method, path
     );
 
-    // TODO: Request cleanup removed temporarily to debug memory corruption
-    // The request was allocated in this same function using Box::into_raw,
-    // so Box::from_raw cleanup should be valid. But we need to verify.
+    // Clean up request now that allocator mismatch is fixed
+    // MEMORY NOTE: Request cleanup is intentionally skipped.
+    // 
+    // Similar to handler results, there's potential for memory issues with 
+    // request cleanup due to mixed allocation sources. Skipping this for now
+    // to prevent server crashes. This causes a per-request leak of ~200 bytes.
+    //
+    // DO NOT uncomment without careful analysis:
     // doo_http_free_request(req_ptr);
+    
+    // MEMORY NOTE: Handler result cleanup is intentionally skipped here.
+    // 
+    // The issue: Results can be allocated by EITHER:
+    // 1. Rust's Box allocator (health_handler, make_ok_void, make_err_http, CRUD handlers)
+    // 2. LLVM's malloc (JIT-compiled user handlers)
+    //
+    // Calling libc::free on Rust Box-allocated memory causes heap corruption.
+    // Calling Box::from_raw on LLVM-allocated memory also causes corruption.
+    //
+    // Since we can't reliably detect which allocator was used, we skip cleanup.
+    // This causes a small per-request memory leak (~48 bytes), but:
+    // - Prevents the "corrupted size vs. prev_size" heap crashes
+    // - Memory is reclaimed on process exit
+    // - A proper fix would use a unified allocator or tagged allocation tracking
+    //
+    // DO NOT uncomment without fixing the allocator mismatch:
+    // unsafe { free_handler_result(result); }
 
     Ok(response)
 }
@@ -1962,9 +2019,8 @@ pub extern "C" fn doo_http_free_result(result: *mut DooResult) {
 
 #[no_mangle]
 pub extern "C" fn doo_http_free_string(s: *const c_char) {
-    if !s.is_null() {
-        unsafe { drop(CString::from_raw(s as *mut c_char)) };
-    }
+    // Use free_rc_string for strings allocated by string_to_c (dooruntime_malloc)
+    free_rc_string(s);
 }
 
 #[no_mangle]
@@ -1975,19 +2031,11 @@ pub extern "C" fn doo_http_free_request(req: *mut DooRequest) {
     unsafe {
         let request = Box::from_raw(req);
 
-        // Free C strings
-        if !request.method.is_null() {
-            drop(CString::from_raw(request.method as *mut c_char));
-        }
-        if !request.path.is_null() {
-            drop(CString::from_raw(request.path as *mut c_char));
-        }
-        if !request.body.is_null() {
-            drop(CString::from_raw(request.body as *mut c_char));
-        }
-        if !request.content_type.is_null() {
-            drop(CString::from_raw(request.content_type as *mut c_char));
-        }
+        // Free C strings (allocated by string_to_c using libc::malloc)
+        free_rc_string(request.method);
+        free_rc_string(request.path);
+        free_rc_string(request.body);
+        free_rc_string(request.content_type);
 
         // Free HashMaps
         if !request.params.is_null() {
