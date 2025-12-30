@@ -573,7 +573,16 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
                 alloc_response(500, string_to_c("Unknown error"), string_to_c("application/json"))
             } else {
                 let error_ref = &*error_ptr;
-                alloc_response(error_ref.status, error_ref.message, string_to_c("application/json"))
+                // CRITICAL: Copy the message string BEFORE freeing the result.
+                // The original message pointer will be freed by free_handler_result,
+                // so we must duplicate it to avoid use-after-free.
+                let message_copy = if error_ref.message.is_null() {
+                    string_to_c("Unknown error")
+                } else {
+                    let msg_str = CStr::from_ptr(error_ref.message).to_string_lossy();
+                    string_to_c(&msg_str)
+                };
+                alloc_response(error_ref.status, message_copy, string_to_c("application/json"))
             };
             
             // CLEANUP: We consumed the error info into a new response.
