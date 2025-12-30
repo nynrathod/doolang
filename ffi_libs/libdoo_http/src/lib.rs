@@ -187,16 +187,28 @@ struct DecoratorInfo {
 /// Built-in health check handler available at GET /health
 extern "C" fn health_handler(_req: *mut DooRequest) -> *mut DooResult {
     let body = r#"{"status":"ok"}"#;
-    let response = Box::new(DooResponse {
-        status: 200,
-        body: string_to_c(body),
-        content_type: string_to_c("application/json"),
-    });
+    unsafe {
+        // Allocate DooResponse using libc::malloc
+        let response_size = std::mem::size_of::<DooResponse>();
+        let response = libc::malloc(response_size) as *mut DooResponse;
+        if response.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*response).status = 200;
+        (*response).body = string_to_c(body);
+        (*response).content_type = string_to_c("application/json");
 
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: Box::into_raw(response) as *mut std::ffi::c_void,
-    }))
+        // Allocate DooResult using libc::malloc
+        let result_size = std::mem::size_of::<DooResult>();
+        let result = libc::malloc(result_size) as *mut DooResult;
+        if result.is_null() {
+            libc::free(response as *mut libc::c_void);
+            return std::ptr::null_mut();
+        }
+        (*result).tag = 0;
+        (*result).value = response as *mut std::ffi::c_void;
+        result
+    }
 }
 
 /// Route registry storing method -> router with handlers
@@ -387,13 +399,22 @@ pub struct DooResponse {
 /// Returns a Response struct (not DooResult) for middleware to use
 #[no_mangle]
 pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
+    // Helper to allocate DooResponse using libc::malloc (matches LLVM allocations and free_handler_result)
+    unsafe fn alloc_response(status: i32, body: *const c_char, content_type: *const c_char) -> *mut DooResponse {
+        let size = std::mem::size_of::<DooResponse>();
+        let ptr = libc::malloc(size) as *mut DooResponse;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).status = status;
+        (*ptr).body = body;
+        (*ptr).content_type = content_type;
+        ptr
+    }
+
     if next.is_null() {
         // Return error response
-        return Box::into_raw(Box::new(DooResponse {
-            status: 500,
-            body: string_to_c("Internal error: null Next"),
-            content_type: string_to_c("text/plain"),
-        }));
+        return unsafe { alloc_response(500, string_to_c("Internal error: null Next"), string_to_c("text/plain")) };
     }
 
     unsafe {
@@ -414,29 +435,41 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
                 // No more middleware, call the handler
                 (next_ref.handler)(request)
             } else {
-                // Create a new Next for the next middleware in chain
+                // Create a new Next for the next middleware in chain using libc::malloc
                 let new_middleware_vec = middleware_vec.clone();
-                let new_next = Box::new(DooNext {
-                    request,
-                    remaining_middleware: Box::into_raw(Box::new(new_middleware_vec))
-                        as *mut std::ffi::c_void,
-                    handler: next_ref.handler,
-                    current_index: idx + 1,
-                });
+                
+                // Allocate DooNext using libc::malloc
+                let next_size = std::mem::size_of::<DooNext>();
+                let new_next_ptr = libc::malloc(next_size) as *mut DooNext;
+                if new_next_ptr.is_null() {
+                    return alloc_response(500, string_to_c("Memory allocation failed"), string_to_c("text/plain"));
+                }
+                (*new_next_ptr).request = request;
+                (*new_next_ptr).remaining_middleware = Box::into_raw(Box::new(new_middleware_vec)) as *mut std::ffi::c_void;
+                (*new_next_ptr).handler = next_ref.handler;
+                (*new_next_ptr).current_index = idx + 1;
 
                 // Call the current middleware
                 let current_middleware = middleware_vec[idx];
-                current_middleware(request, Box::into_raw(new_next))
+                let call_result = current_middleware(request, new_next_ptr);
+
+                // CLEANUP: Free the intermediate DooNext struct and its contents
+                // 1. Drop the Vec<DooMiddlewareFn>
+                if !(*new_next_ptr).remaining_middleware.is_null() {
+                    let mw_ptr = (*new_next_ptr).remaining_middleware as *mut Vec<DooMiddlewareFn>;
+                    let _ = Box::from_raw(mw_ptr); // Reconstruct Box to drop Vec
+                }
+                
+                // 2. Free the DooNext struct itself (allocated with libc::malloc)
+                libc::free(new_next_ptr as *mut libc::c_void);
+
+                call_result
             }
         };
 
         // Convert DooResult to DooResponse for middleware to use
         if result.is_null() {
-            return Box::into_raw(Box::new(DooResponse {
-                status: 500,
-                body: string_to_c("Handler returned null"),
-                content_type: string_to_c("text/plain"),
-            }));
+            return alloc_response(500, string_to_c("Handler returned null"), string_to_c("text/plain"));
         }
 
         // CRITICAL: Result is allocated by LLVM's malloc, NOT Rust's Box.
@@ -448,11 +481,9 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
         if result_tag == 0 {
             // Success - extract response body
             if result_value.is_null() {
-                Box::into_raw(Box::new(DooResponse {
-                    status: 200,
-                    body: string_to_c(""),
-                    content_type: string_to_c("text/plain"),
-                }))
+                // Free the result wrapper
+                libc::free(result as *mut libc::c_void);
+                alloc_response(200, string_to_c(""), string_to_c("text/plain"))
             } else {
                 // Use helper to potential unwrap DooResult nesting
                 let raw_val = result_value as *const c_char;
@@ -465,14 +496,72 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
                     // It's a JSON string - wrap it in DooResponse
                     let json_body = c_to_string(real_val);
                     let wrapped_body = format!("{{\"data\":{}}}", json_body);
-                    Box::into_raw(Box::new(DooResponse {
-                        status: 200,
-                        body: string_to_c(&wrapped_body),
-                        content_type: string_to_c("application/json"),
-                    }))
+                    let resp = alloc_response(200, string_to_c(&wrapped_body), string_to_c("application/json"));
+                    
+                    // CLEANUP: We consumed the string content into a new response.
+                    // We must free the original result AND its string content.
+                    // free_handler_result handles freeing strings via free_rc_string
+                    free_handler_result(result);
+                    
+                    resp
                 } else {
-                    // Assume it's already a DooResponse pointer
-                    let response_ptr = result_value as *mut DooResponse;
+                    // Safety Check: If result_value is a small integer (e.g. Bool=1), do NOT dereference.
+                    // Treat it as a primitive value that shouldn't be freed or treated as response.
+                    if (result_value as usize) < 4096 {
+                         // It's a primitive (Bool/Int) cast to pointer.
+                         // We can't wrap it in JSON easily because we don't know the type.
+                         // But we MUST NOT free it or dereference it.
+                         // Return a generic success response or just empty?
+                         // If we return empty, the handler logic (which consumed the result) might be done.
+                         // But wait, doo_http_next_call returns the FINAL response.
+                         // If handler execution returns a Bool, that's weird for an outcome.
+                         // Best effort: Return {"data": "true"} if 1?
+                         
+                         // But actually, if we return here, we must free the DooResult wrapper.
+                         libc::free(result as *mut libc::c_void);
+                         
+                         // For now, return empty JSON object to signify success? 
+                         // Or if 1 -> true?
+                         let body = if (result_value as usize) == 1 { 
+                            "{\"data\":true}" 
+                         } else { 
+                            "{\"data\":false}" // or other int
+                         };
+                         return alloc_response(200, string_to_c(body), string_to_c("application/json"));
+                    }
+
+                    // Check if result_value looks like a DooResponse
+                    // Heuristic: First i32 is status code (200-599)
+                    let first_i32 = *(result_value as *const i32);
+                    let is_doo_response = first_i32 >= 100 && first_i32 <= 599;
+
+                    let response_ptr = if is_doo_response {
+                        // It's likely a DooResponse pointer
+                        result_value as *mut DooResponse
+                    } else {
+                        // It's a PLAIN STRING (not JSON, not DooResponse)
+                        // This happens when handlers return strings like "Hello" or hashes.
+                        // Wrap it in {"data": "..."} to be consistent with JSON returns.
+                        // Since we are wrapping it, we consume the string.
+                        
+                        let plain_str = c_to_string(result_value as *const c_char);
+                        
+                        // Try to parse as JSON just in case? No, if it didn't start with { or [ it's likely scalar.
+                        // Wrap in data object.
+                         let wrapped_body = format!("{{\"data\":\"{}\"}}", plain_str);
+                         let resp = alloc_response(200, string_to_c(&wrapped_body), string_to_c("application/json"));
+                         
+                         // Free the original result + string
+                         free_handler_result(result);
+                         
+                         return resp;
+                    };
+                    
+                    // CLEANUP: We transfer ownership of the DooResponse to the caller.
+                    // We must ONLY free the DooResult wrapper struct.
+                    // We do NOT call free_handler_result because that would free the response content too.
+                    libc::free(result as *mut libc::c_void);
+                    
                     response_ptr // Return the response pointer directly
                 }
             }
@@ -480,20 +569,18 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
             // Error - convert to error response
             // Error is also LLVM-allocated, read directly
             let error_ptr = result_value as *const DooHttpError;
-            if error_ptr.is_null() {
-                Box::into_raw(Box::new(DooResponse {
-                    status: 500,
-                    body: string_to_c("Unknown error"),
-                    content_type: string_to_c("application/json"),
-                }))
+            let resp = if error_ptr.is_null() {
+                alloc_response(500, string_to_c("Unknown error"), string_to_c("application/json"))
             } else {
                 let error_ref = &*error_ptr;
-                Box::into_raw(Box::new(DooResponse {
-                    status: error_ref.status,
-                    body: error_ref.message,
-                    content_type: string_to_c("application/json"),
-                }))
-            }
+                alloc_response(error_ref.status, error_ref.message, string_to_c("application/json"))
+            };
+            
+            // CLEANUP: We consumed the error info into a new response.
+            // Free the original result completely (struct + error content).
+            free_handler_result(result);
+            
+            resp
         }
     }
 }
@@ -553,53 +640,118 @@ fn free_rc_string(ptr: *const c_char) {
     }
 }
 
-// Helper for unified allocation - use Rust's allocator to match Box::from_raw
-// Previously used libc::malloc which caused heap corruption on macOS when
-// combined with Box::from_raw (allocator mismatch)
+// Helper for unified allocation - use libc::malloc to match LLVM JIT handlers
+// and free_handler_result which uses libc::free
 fn make_ok_void() -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: std::ptr::null_mut(),
-    }))
+    unsafe {
+        let size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(size) as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 0;
+        (*ptr).value = std::ptr::null_mut();
+        ptr
+    }
 }
 
 fn make_ok_string(s: &str) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: string_to_c(s) as *mut std::ffi::c_void,
-    }))
+    unsafe {
+        let size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(size) as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 0;
+        (*ptr).value = string_to_c(s) as *mut std::ffi::c_void;
+        ptr
+    }
 }
 
 fn make_err_http(status: u16, message: &str) -> *mut DooResult {
-    // Allocate Error using Rust allocator
-    let error = Box::into_raw(Box::new(DooHttpError {
-        status: status as i32,
-        message: string_to_c(message),
-    }));
+    unsafe {
+        // Allocate Error using libc::malloc
+        let error_size = std::mem::size_of::<DooHttpError>();
+        let error = libc::malloc(error_size) as *mut DooHttpError;
+        if error.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*error).status = status as i32;
+        (*error).message = string_to_c(message);
 
-    // Allocate Result using Rust allocator
-    Box::into_raw(Box::new(DooResult {
-        tag: 1,
-        value: error as *mut std::ffi::c_void,
-    }))
+        // Allocate Result using libc::malloc
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(result_size) as *mut DooResult;
+        if ptr.is_null() {
+            libc::free(error as *mut libc::c_void);
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 1;
+        (*ptr).value = error as *mut std::ffi::c_void;
+        ptr
+    }
 }
 
-/// Free a handler result - ONLY frees the DooResult wrapper struct.
-/// 
-/// IMPORTANT: We do NOT free the value pointer because:
-/// 1. It may be a JSON string managed by Doo runtime's reference counting
-/// 2. It may be a DooResponse struct allocated by LLVM
-/// 3. We cannot reliably distinguish between them (ASCII '{' = 123 looks like status code)
-/// 
-/// This causes a small per-request memory leak (~16-24 bytes) but prevents heap corruption.
-/// The memory is reclaimed when the process exits.
+/// Free a handler result - frees the DooResult wrapper and its contents.
+/// All allocations now use libc::malloc (helpers and LLVM JIT), so libc::free is safe.
 unsafe fn free_handler_result(result: *mut DooResult) {
     if result.is_null() {
         return;
     }
     
-    // ONLY free the DooResult wrapper struct itself
-    // Do NOT free result.value - it may be a Doo-managed string or a struct we can't identify
+    let result_ref = &*result;
+    let tag = result_ref.tag;
+    let value = result_ref.value;
+    
+    if !value.is_null() {
+        if tag == 0 {
+            // Success: value could be:
+            // 1. DooResponse* (from health_handler, CRUD handlers, LLVM JIT)
+            // 2. JSON string pointer (from handlers returning Str)
+            //
+            // Heuristic to detect DooResponse:
+            // - First i32 is HTTP status code (200, 201, 400, 404, 500, etc.)
+            // - JSON '{' = 123, '[' = 91, '"' = 34 - these are NOT valid status codes
+            // Using strict range 200..=599 covering standard HTTP status codes
+            
+            // Safety Check: If value is small int, assume primitive.
+            if (value as usize) < 4096 {
+                // Do not free.
+                return;
+            }
+
+            let first_i32 = *(value as *const i32);
+            let is_doo_response = first_i32 >= 200 && first_i32 <= 599;
+            
+            if is_doo_response {
+                // It's a DooResponse - free it
+                // Note: body and content_type are Doo runtime strings, don't free them
+                libc::free(value);
+            } else {
+                // If not a known status code, assume it's a Doo-managed string
+                // Strings returned by handlers are allocated via string_to_c (dooruntime_malloc)
+                // We MUST free them to avoid leaks.
+                // Cast to c_char and free using our specific helper
+                free_rc_string(value as *const c_char);
+            }
+        } else if tag == 1 {
+            // Error: value is DooHttpError*
+            // content (message) is allocated via string_to_c -> dooruntime_malloc
+            // The DooHttpError struct itself is libc::malloc
+            
+            let error_ptr = value as *mut DooHttpError;
+            if !error_ptr.is_null() {
+                // Free the message string inside DooHttpError
+                let msg_ptr = (*error_ptr).message;
+                free_rc_string(msg_ptr);
+                
+                // Free the DooHttpError struct
+                libc::free(value);
+            }
+        }
+    }
+    
+    // Free the DooResult struct itself
     libc::free(result as *mut libc::c_void);
 }
 
@@ -1429,7 +1581,21 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             current_index: 1,
         });
 
-        first_middleware(req_ptr, Box::into_raw(next_for_first))
+        let next_ptr = Box::into_raw(next_for_first);
+        let res = first_middleware(req_ptr, next_ptr);
+        
+        // CLEANUP: Drop the initial middleware chain logic
+        unsafe {
+            // Recover next_for_first to drop it
+            let n = Box::from_raw(next_ptr);
+            // Recover and drop the Vec<Middleware>
+            // Note: 'next' variable from above is already dropped, but the Vec raw pointer persists
+            if !n.remaining_middleware.is_null() {
+                let mw_vec_ptr = n.remaining_middleware as *mut Vec<DooMiddlewareFn>;
+                let _ = Box::from_raw(mw_vec_ptr);
+            }
+        }
+        res
     } else {
         // No middleware, call handler directly
         handler(req_ptr)
@@ -1614,32 +1780,26 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     );
 
     // Clean up request now that allocator mismatch is fixed
-    // MEMORY NOTE: Request cleanup is intentionally skipped.
-    // 
-    // Similar to handler results, there's potential for memory issues with 
-    // request cleanup due to mixed allocation sources. Skipping this for now
-    // to prevent server crashes. This causes a per-request leak of ~200 bytes.
-    //
-    // DO NOT uncomment without careful analysis:
-    // doo_http_free_request(req_ptr);
+    // CLEANUP: Drop the DooRequest and its components
+    unsafe {
+        let req = Box::from_raw(req_ptr);
+        // Drop internal HashMaps (allocated as Box)
+        // Note: method/path/body are managed by Doo runtime (or static), don't free
+        // Re-enabled cleanup now that stability is improved
+        let _ = Box::from_raw(req.params as *mut HashMap<String, String>);
+        let _ = Box::from_raw(req.query as *mut HashMap<String, String>);
+        let _ = Box::from_raw(req.headers as *mut HashMap<String, String>);
+        // req is dropped here
+    }
     
-    // MEMORY NOTE: Handler result cleanup is intentionally skipped here.
+    // MEMORY NOTE: Handler result cleanup - now enabled with unified libc::malloc allocation.
     // 
-    // The issue: Results can be allocated by EITHER:
-    // 1. Rust's Box allocator (health_handler, make_ok_void, make_err_http, CRUD handlers)
-    // 2. LLVM's malloc (JIT-compiled user handlers)
+    // All Rust-side FFI result allocations now use libc::malloc:
+    // - health_handler, make_ok_void, make_ok_string, make_err_http
+    // LLVM JIT handlers also use libc::malloc via build_malloc.
+    // This ensures free_handler_result using libc::free is safe.
     //
-    // Calling libc::free on Rust Box-allocated memory causes heap corruption.
-    // Calling Box::from_raw on LLVM-allocated memory also causes corruption.
-    //
-    // Since we can't reliably detect which allocator was used, we skip cleanup.
-    // This causes a small per-request memory leak (~48 bytes), but:
-    // - Prevents the "corrupted size vs. prev_size" heap crashes
-    // - Memory is reclaimed on process exit
-    // - A proper fix would use a unified allocator or tagged allocation tracking
-    //
-    // DO NOT uncomment without fixing the allocator mismatch:
-    // unsafe { free_handler_result(result); }
+    unsafe { free_handler_result(result); }
 
     Ok(response)
 }
@@ -1924,44 +2084,73 @@ unsafe fn unwrap_potential_dooresult(ptr: *const c_char) -> *const c_char {
         return ptr;
     }
 
-    // Check alignment check: Pointers to structs should be aligned to 4/8 bytes.
-    // Strings (char*) might not be.
-    if (ptr as usize) % 4 != 0 {
+    // Check alignment check: Pointers to structs should be aligned to at least 4 bytes.
+    // Strings (char*) might not be, but malloc usually aligns simple allocations.
+    // However, if it's an interior pointer to a string buffer, it might differ.
+    // But DooResult is a struct, so it must be aligned.
+    if (ptr as usize) % std::mem::align_of::<DooResult>() != 0 {
         return ptr;
     }
 
+    // Heuristic: Check if memory looks like a valid DooResult
+    // A DooResult has { tag: i32, value: *mut c_void }
+    
+    // 1. Check tag - must be 0 (Ok) or 1 (Err)
+    // We access it safely assuming the pointer is valid (which we have to assume for FFI)
     let tag_val = *(ptr as *const i32);
+    
+    // If tag is not 0 or 1, it's definitely NOT a DooResult
+    if tag_val != 0 && tag_val != 1 {
+        return ptr;
+    }
 
-    // DooResult only has tag 0 (Ok) or 1 (Err)
-    // Any other value (like HTTP status codes 200, 400, 500) means this is NOT a DooResult
+    // 2. Check value pointer - should look like a pointer (canonical address)
+    // specific to 64-bit systems usually, but loosely checking generic validity
+    // If it's a small integer being interpreted as a pointer, it's likely not a pointer.
+    // But value could be NULL, which is 0.
+    // Let's rely on the tag check primarily + context.
+    
     if tag_val == 0 {
-        // This could be DooResult with tag=0 (success)
+        // Tag 0: Ok
         let res = ptr as *const DooResult;
+        
+        // Sanity check: verify if the value points to valid memory if not null?
+        // Hard to do portably without segfaulting.
+        // Let's assume if tag is 0, it MIGHT be a DooResult.
+        
+        // Double check against JSON characters to avoid false positives 
+        // if a JSON string starts with \0 (tag 0) - very unlikely for valid JSON/text
+        // But invalid/binary data could trigger false positive.
+        
+        // If it's DooResult, return the content
         let val = (*res).value as *const c_char;
 
         if !val.is_null() {
+            // Check if value looks like JSON
             let first = *val;
             if first == b'{' as i8 || first == b'[' as i8 {
                 return val;
             }
         }
+        
+        // If value is null, or not JSON, we still might want to return val 
+        // if this was indeed a DooResult.
+        // But wait, the original logic was:
+        // "Returns the inner char* if it is a DooResult with JSON content, otherwise returns original ptr"
+        // If it's a DooResult but NOT JSON (e.g. DooResponse struct), what should we return?
+        // The caller (array_to_json_with_metadata) expects a JSON string ptr.
+        // So if it's a DooResponse, we should probably NOT unwrap it as a string.
+        
+        return ptr;
+        
     } else if tag_val == 1 {
-        // This is a DooResult with tag=1 (error)
-        // Return NULL to signal error
+        // Tag 1: Err
+        // Return NULL to signal error to the caller (who presumably handles nulls)
+        // This effectively "swallows" the error details which might be bad, 
+        // but conforms to the function signature returning *const c_char.
         return std::ptr::null();
     }
-    // For any other tag value (like 200, 400, 500), this is NOT a DooResult
-    // It could be a DooResponse struct or other data - return original pointer
-
-    // Check if it's a JSON string starting with { or [
-    // This handles the case where it's a raw string pointer
-    let first = *(ptr as *const u8);
-    if first == b'{' || first == b'[' {
-        return ptr;
-    }
-
-    // If tag is not 0 or 1, and not JSON string, return original pointer
-    // (It might be a struct like DooResponse where first field is status code)
+    
     ptr
 }
 
