@@ -638,13 +638,41 @@ fn c_to_string(ptr: *const c_char) -> String {
 /// Memory layout: [RC:4][Len:4][data...][null] - string_to_c returns ptr to data (offset +8)
 /// Must subtract 8 to get the real allocation base before calling libc::free
 /// This is cross-platform compatible (Windows, macOS, Linux)
+/// 
+/// SAFETY: Includes defensive checks to prevent heap corruption from invalid pointers
 #[inline]
 fn free_rc_string(ptr: *const c_char) {
     if ptr.is_null() {
         return;
     }
+    
+    // Defensive check: pointer must be at least 8 bytes from start of address space
+    // (otherwise subtracting 8 would wrap around)
+    let ptr_addr = ptr as usize;
+    if ptr_addr < 16 {
+        // This is clearly not a valid heap pointer
+        return;
+    }
+    
     unsafe {
         let base_ptr = (ptr as *mut u8).sub(8);
+        
+        // Validate RC header looks reasonable before freeing:
+        // - RC should be a small positive number (1-1000000)
+        // - Length should be non-negative and reasonable (0-100MB)
+        let rc = *(base_ptr as *const i32);
+        let len = *((base_ptr as *const i32).add(1));
+        
+        // Sanity checks - if these fail, the pointer is likely not from string_to_c
+        if rc < 0 || rc > 1_000_000 {
+            // Invalid RC - either already freed, or not an RC string
+            return;
+        }
+        if len < 0 || len > 100_000_000 {
+            // Invalid length - not a valid RC string
+            return;
+        }
+        
         libc::free(base_ptr as *mut libc::c_void);
     }
 }
@@ -733,8 +761,10 @@ unsafe fn free_handler_result(result: *mut DooResult) {
             let is_doo_response = first_i32 >= 200 && first_i32 <= 599;
             
             if is_doo_response {
-                // It's a DooResponse - free it
-                // Note: body and content_type are Doo runtime strings, don't free them
+                // It's a DooResponse - just free the struct, NOT the strings inside.
+                // The body and content_type strings are managed by Doo's reference counting
+                // system (LLVM JIT allocated) and will be freed automatically.
+                // Freeing them here causes double-free corruption.
                 libc::free(value);
             } else {
                 // If not a known status code, assume it's a Doo-managed string
@@ -1632,9 +1662,20 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         .body(Full::new(Bytes::from("")))
                         .unwrap()
                 } else {
+                    // Debug: Track request count for memory analysis
+                    static REQUEST_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                    let req_num = REQUEST_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    
                     // Check if value is DooResult (tag < 100) or DooResponse (status >= 100)
                     let raw_val = result_value as *const c_char;
                     let real_val = unwrap_potential_dooresult(raw_val);
+                    
+                    // Debug logging for diagnosis
+                    if real_val.is_null() && !raw_val.is_null() {
+                        eprintln!("[Doo DEBUG] Req #{}: unwrap_potential_dooresult returned NULL from non-null input", req_num);
+                        let first_byte = unsafe { *(raw_val as *const i32) };
+                        eprintln!("[Doo DEBUG] Req #{}: first 4 bytes (as i32) = {}", req_num, first_byte);
+                    }
 
                     if real_val.is_null() {
                         // Error unwrap (tag != 0)
@@ -1793,12 +1834,18 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     unsafe {
         let req = Box::from_raw(req_ptr);
         // Drop internal HashMaps (allocated as Box)
-        // Note: method/path/body are managed by Doo runtime (or static), don't free
-        // Re-enabled cleanup now that stability is improved
         let _ = Box::from_raw(req.params as *mut HashMap<String, String>);
         let _ = Box::from_raw(req.query as *mut HashMap<String, String>);
         let _ = Box::from_raw(req.headers as *mut HashMap<String, String>);
-        // req is dropped here
+        
+        // CRITICAL: Free RC-prefixed strings allocated by string_to_c
+        // These use dooruntime_malloc with 8-byte header [RC:4][Len:4][data]
+        // Must use free_rc_string which subtracts 8 before calling libc::free
+        free_rc_string(req.method);
+        free_rc_string(req.path);
+        free_rc_string(req.body);
+        free_rc_string(req.content_type);
+        // req struct is dropped here by Box destructor
     }
     
     // MEMORY NOTE: Handler result cleanup - now enabled with unified libc::malloc allocation.
