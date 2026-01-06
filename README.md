@@ -4,6 +4,8 @@
 [![LLVM](https://img.shields.io/badge/LLVM-blueviolet)](https://llvm.org/)
 [![Native](https://img.shields.io/badge/Compiles%20to-Native-green)](https://llvm.org/)
 
+> ⚠️ **Alpha Software**: Doo is in active development. Expect bugs and breaking changes. Not recommended for critical production use yet.
+
 Doo is a statically-typed, compiled programming language built in Rust + LLVM, designed for building production APIs quickly and safely. It uses automatic memory management via reference counting.
 
 **Stop wrestling with boilerplate. Write type-safe APIs and deploy with one command.**
@@ -19,6 +21,12 @@ struct User {
     password: Str @hash,
 }
 
+struct Todo {
+    id: Int @primary @auto,
+    title: Str @min(3),
+    done: Bool @default(false),
+}
+
 fn main() {
     let db = Database::postgres()?;
     let app = Server::new(":3000");
@@ -28,7 +36,7 @@ fn main() {
 
     // Full CRUD
     // GET, POST, GET/:id, PUT/:id, DELETE/:id
-    app.crud("/users", User, db);
+    app.crud("/todos", Todo, db);
 
     app.start();
 }
@@ -46,7 +54,7 @@ doo run  # Compiles to native + starts server
 
 | Traditional Stack          | Doo                       |
 | -------------------------- | ------------------------- |
-| 500+ lines of boilerplate  | 15 lines of code          |
+| 500+ lines of boilerplate  | 20 lines of code          |
 | 3 config files             | Zero config               |
 | Manual validation          | Auto-validated decorators |
 | Separate deployment setup  | One command deploy        |
@@ -144,7 +152,7 @@ fn main() {
 }
 ```
 
-**That's it.** 40 lines for a production-ready API with:
+**That's it.** 30 lines for a production-ready API with:
 
 - ✓ User authentication with JWT
 - ✓ Password hashing
