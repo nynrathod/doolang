@@ -2174,9 +2174,14 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
 
             return Some(data_ptr.into());
-        } else if expected_type.starts_with("Array(") {
-            // Extract element type from Array(ElementType)
-            let element_type = &expected_type[6..expected_type.len() - 1];
+        } else if expected_type.starts_with("Array(") || (expected_type.starts_with('[') && expected_type.ends_with(']')) {
+            // Extract element type from Array(ElementType) or [ElementType]
+            let element_type = if expected_type.starts_with("Array(") {
+                &expected_type[6..expected_type.len() - 1]
+            } else {
+                // [ElementType] syntax
+                &expected_type[1..expected_type.len() - 1]
+            };
 
             // Choose the right runtime parser based on element type
             let fn_name = match element_type {
@@ -2185,8 +2190,8 @@ impl<'ctx> CodeGen<'ctx> {
                 "Bool" => "json_parse_array_bool",
                 "Str" => "json_parse_array_str",
                 _ => {
-                    // Check if element type is a known struct
-                    if self.struct_metadata.contains_key(element_type) {
+                    // Check if element type is a known struct (check both metadata and struct_table for imports)
+                    if self.struct_metadata.contains_key(element_type) || self.struct_table.contains_key(element_type) {
                         // For struct arrays, return JSON string as-is
                         // The HTTP handler will serialize it directly
                         return Some(json_str_ptr.into());

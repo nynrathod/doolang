@@ -1,21 +1,187 @@
 use once_cell::sync::OnceCell;
 use serde_json::json;
+use std::collections::HashSet;
 use std::env;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::Once;
 use tokio::runtime::Runtime;
 use tokio::sync::Notify;
 use tokio_postgres::{Client, NoTls};
 
+/// Thread-safe set to track freed DooResult pointers.
+/// This prevents double-free by checking if a pointer was already freed.
+/// NOTE: We use actual pointer tracking instead of sentinel values because
+/// reading from freed memory (to check sentinel) is undefined behavior.
+static FREED_RESULTS: OnceCell<Mutex<HashSet<usize>>> = OnceCell::new();
+
+fn get_freed_results() -> &'static Mutex<HashSet<usize>> {
+    FREED_RESULTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Global counter for tracking malloc/free operations
+static MALLOC_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static FREE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Cross-platform stderr write helper
+/// On Windows, libc::write expects u32 for count, on Unix it expects usize
+#[inline]
+unsafe fn stderr_write(msg: &[u8]) {
+    #[cfg(windows)]
+    {
+        libc::write(2, msg.as_ptr() as *const libc::c_void, msg.len() as u32);
+    }
+    #[cfg(not(windows))]
+    {
+        libc::write(2, msg.as_ptr() as *const libc::c_void, msg.len());
+    }
+}
+
+/// Tracked malloc wrapper that logs all allocations
+unsafe fn tracked_malloc(size: usize, context: &str) -> *mut libc::c_void {
+    let ptr = libc::malloc(size);
+    let count = MALLOC_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    if size > 10000 {
+        let msg = format!(
+            "[TRACKED_MALLOC #{:06}] context='{}', size={}, ptr={:p}\n",
+            count, context, size, ptr
+        );
+        stderr_write(msg.as_bytes());
+    }
+
+    // Validate heap after large allocation
+    if size > 5000 && !ptr.is_null() {
+        let test = libc::malloc(64);
+        if test.is_null() {
+            let err_msg = format!(
+                "[TRACKED_MALLOC] HEAP CORRUPTED after malloc! context='{}', size={}, ptr={:p}\n",
+                context, size, ptr
+            );
+            stderr_write(err_msg.as_bytes());
+        } else {
+            libc::free(test);
+        }
+    }
+
+    ptr
+}
+
+/// Tracked free wrapper that logs all deallocations
+unsafe fn tracked_free(ptr: *mut libc::c_void, context: &str) {
+    if ptr.is_null() {
+        return;
+    }
+
+    let count = FREE_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    let msg = format!(
+        "[TRACKED_FREE #{:06}] context='{}', ptr={:p}\n",
+        count, context, ptr
+    );
+    stderr_write(msg.as_bytes());
+
+    // Validate heap before free
+    let test = libc::malloc(32);
+    if test.is_null() {
+        let err_msg = format!(
+            "[TRACKED_FREE] HEAP CORRUPTED before free! context='{}', ptr={:p}\n",
+            context, ptr
+        );
+        stderr_write(err_msg.as_bytes());
+    } else {
+        libc::free(test);
+    }
+
+    libc::free(ptr);
+
+    // Validate heap after free
+    let test2 = libc::malloc(32);
+    if test2.is_null() {
+        let err_msg = format!(
+            "[TRACKED_FREE] HEAP CORRUPTED after free! context='{}', ptr={:p}\n",
+            context, ptr
+        );
+        stderr_write(err_msg.as_bytes());
+    } else {
+        libc::free(test2);
+    }
+}
+
+/// Check if a pointer was already freed. Returns true if already freed.
+fn mark_as_freed(ptr: *mut DooResult) -> bool {
+    let addr = ptr as usize;
+    let mut set = get_freed_results().lock().unwrap();
+
+    // ATOMIC: insert() returns false if the value was already present
+    // This prevents race conditions where multiple threads try to free the same address
+    let was_newly_inserted = set.insert(addr);
+
+    if !was_newly_inserted {
+        // Address was already in the set - this is a double-free attempt!
+        eprintln!(
+            "[MARK_AS_FREED] Address {:p} (0x{:x}) ALREADY in freed set, returning true (skip free)",
+            ptr, addr
+        );
+        return true;
+    }
+
+    eprintln!(
+        "[MARK_AS_FREED] Address {:p} (0x{:x}) added to freed set, set size now {}",
+        ptr,
+        addr,
+        set.len()
+    );
+    false
+}
+
+/// Remove a pointer from the freed set (called when address is reused for new allocation)
+fn unmark_freed(ptr: *mut DooResult) {
+    let addr = ptr as usize;
+    if let Ok(mut set) = get_freed_results().lock() {
+        let was_present = set.remove(&addr);
+        if was_present {
+            eprintln!(
+                "[UNMARK_FREED] Address {:p} (0x{:x}) removed from freed set (reused by malloc)",
+                ptr, addr
+            );
+        }
+    }
+}
+
 static INIT: Once = Once::new();
 
 fn load_env() {
     INIT.call_once(|| {
-        // Try to load .env file, ignore if it doesn't exist
-        let _ = dotenvy::dotenv();
+        // 1. Identify project root from finding the main .doo file in args
+        let args: Vec<String> = env::args().collect();
+        let mut loaded = false;
+
+        for arg in &args {
+            if arg.ends_with(".doo") {
+                let path = std::path::Path::new(arg);
+                if path.exists() {
+                    // This is likely the entry file. Use its parent as root.
+                    if let Some(parent) = path.parent() {
+                        let env_path = parent.join(".env");
+                        if env_path.exists() {
+                            if dotenvy::from_path(&env_path).is_ok() {
+                                loaded = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback to current directory .env if not found relative to .doo file
+        if !loaded {
+            let _ = dotenvy::from_filename(".env");
+        }
     });
 }
 
@@ -32,12 +198,29 @@ extern "C" {
     ) -> *mut c_char;
     #[allow(dead_code)]
     fn dooruntime_free_string(ptr: *mut c_char);
+    // Ownership-aware string freeing
+    fn dooruntime_free_rc_string(ptr: *const c_char);
+    // Runtime allocator for LLVM-managed memory
+    fn dooruntime_malloc(size: usize) -> *mut libc::c_void;
+    fn dooruntime_strdup(s: *const c_char) -> *mut c_char;
+    fn dooruntime_free(ptr: *mut libc::c_void);
 }
 
+// Result type for FFI returns with ownership tracking
+// tag: 0 = Ok, 1 = Err
+// owner: 0 = LLVM (RC), 1 = FFI (libc), 2 = Rust (Box)
 #[repr(C)]
 pub struct DooResult {
-    tag: i32,                     // 0 = Ok, 1 = Err
-    value: *mut std::ffi::c_void, // pointer to data or error struct
+    tag: i32,
+    value: *mut std::ffi::c_void,
+    owner: u8, // Owner enum: 0=LLVM, 1=FFI, 2=Rust
+}
+
+/// Owner enum constants for DooResult
+pub mod owner {
+    pub const LLVM: u8 = 0;
+    pub const FFI: u8 = 1;
+    pub const RUST: u8 = 2;
 }
 
 #[repr(C)]
@@ -62,10 +245,37 @@ fn runtime() -> Result<&'static Runtime, String> {
     RUNTIME.get_or_try_init(|| Runtime::new().map_err(|e| format!("Failed to create runtime: {e}")))
 }
 
+/// Convert Rust String to C string using RC layout expected by the compiler/runtime.
+/// Layout: [rc:i32][len:i32][data...][0]
+/// Returns pointer to data (base + 8).
 fn string_to_c(s: String) -> *mut c_char {
-    CString::new(s)
-        .map(|c| c.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    unsafe {
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+
+        // total_size = header(8) + data(len) + null(1)
+        let total_size = len + 1 + 8;
+        let alloc_size = (total_size + 15) & !15; // Align to 16 bytes
+
+        let ptr = dooruntime_malloc(alloc_size) as *mut u8;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        // Zero memory for safety
+        std::ptr::write_bytes(ptr, 0, alloc_size);
+
+        // RC header
+        *(ptr as *mut i32) = 1; // RC = 1
+        *(ptr.add(4) as *mut i32) = len as i32; // Length
+
+        // Copy bytes after header
+        let data_ptr = ptr.add(8);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, len);
+        *data_ptr.add(len) = 0;
+
+        data_ptr as *mut c_char
+    }
 }
 
 fn c_to_string(s: *const c_char) -> Result<String, String> {
@@ -79,35 +289,113 @@ fn c_to_string(s: *const c_char) -> Result<String, String> {
 }
 
 fn make_ok_void() -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: std::ptr::null_mut(),
-    }))
+    unsafe {
+        let size = std::mem::size_of::<DooResult>();
+        let ptr = tracked_malloc(size, "make_ok_db") as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        // Unmark in case this address was previously freed and is being reused
+        unmark_freed(ptr);
+        (*ptr).tag = 0;
+        (*ptr).value = std::ptr::null_mut();
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 fn make_ok_database(connection_type: String, connected: bool) -> *mut DooResult {
-    let db = Box::new(DooDatabase {
-        connection_type: string_to_c(connection_type),
-        connected: if connected { 1 } else { 0 },
-    });
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: Box::into_raw(db) as *mut _,
-    }))
+    unsafe {
+        // Allocate DooDatabase using libc malloc
+        let db_size = std::mem::size_of::<DooDatabase>();
+        let db = libc::malloc(db_size) as *mut DooDatabase;
+        if db.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*db).connection_type = string_to_c(connection_type);
+        (*db).connected = if connected { 1 } else { 0 };
+
+        // Allocate DooResult using libc malloc
+        let size = std::mem::size_of::<DooResult>();
+        let ptr = tracked_malloc(size, "make_ok_int") as *mut DooResult;
+        if ptr.is_null() {
+            libc::free(db as *mut libc::c_void);
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 0;
+        (*ptr).value = db as *mut _;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 fn make_ok_string(s: String) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: string_to_c(s) as *mut _,
-    }))
+    unsafe {
+        // AGGRESSIVE DEBUG: Log before allocation
+        let s_len = s.len();
+        if s_len > 10000 {
+            let msg = format!(
+                "[MAKE_OK_STRING] About to create DooResult for {} byte string\n",
+                s_len
+            );
+            stderr_write(msg.as_bytes());
+        }
+
+        let size = std::mem::size_of::<DooResult>();
+        let ptr = tracked_malloc(size, "make_ok_void") as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        // Unmark in case this address was previously freed and is being reused
+        unmark_freed(ptr);
+
+        // AGGRESSIVE DEBUG: Before string_to_c
+        if s_len > 10000 {
+            let msg = b"[MAKE_OK_STRING] Calling string_to_c for large string\n";
+            stderr_write(msg);
+        }
+
+        let value_ptr = string_to_c(s);
+
+        // AGGRESSIVE DEBUG: After string_to_c
+        if s_len > 10000 {
+            let msg = format!("[MAKE_OK_STRING] string_to_c returned {:p}\n", value_ptr);
+            stderr_write(msg.as_bytes());
+        }
+
+        if value_ptr.is_null() {
+            let msg = b"[MAKE_OK_STRING] ERROR: string_to_c returned null!\n";
+            stderr_write(msg);
+            libc::free(ptr as *mut libc::c_void);
+            return std::ptr::null_mut();
+        }
+
+        (*ptr).tag = 0;
+        (*ptr).value = value_ptr as *mut _;
+        (*ptr).owner = owner::FFI;
+        eprintln!(
+            "[MAKE_OK_STRING] Created DooResult at {:p}, value at {:p}, owner=FFI (libc malloc)",
+            ptr, value_ptr
+        );
+        ptr
+    }
 }
 
 fn make_ok_int(n: i64) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: n as *mut _,
-    }))
+    unsafe {
+        let size = std::mem::size_of::<DooResult>();
+        let ptr = tracked_malloc(size, "make_ok_string") as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        // Unmark in case this address was previously freed and is being reused
+        unmark_freed(ptr);
+        (*ptr).tag = 0;
+        (*ptr).value = n as *mut std::ffi::c_void;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 fn make_err(msg: String) -> *mut DooResult {
@@ -137,14 +425,28 @@ fn make_err_with_code(code: &str, pg_code: &str, msg: String) -> *mut DooResult 
     })
     .to_string();
 
-    let err = Box::new(DooDbError {
-        code: -1,
-        message: string_to_c(error_json),
-    });
-    Box::into_raw(Box::new(DooResult {
-        tag: 1,
-        value: Box::into_raw(err) as *mut _,
-    }))
+    unsafe {
+        // Allocate DooDbError using libc allocator (consistent with rest of file)
+        let err_size = std::mem::size_of::<DooDbError>();
+        let err = tracked_malloc(err_size, "make_err_with_code_error") as *mut DooDbError;
+        if err.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*err).code = -1;
+        (*err).message = string_to_c(error_json);
+
+        // Allocate DooResult using libc allocator
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = tracked_malloc(result_size, "make_err_with_code_result") as *mut DooResult;
+        if ptr.is_null() {
+            tracked_free(err as *mut libc::c_void, "make_err_with_code_error_cleanup");
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 1;
+        (*ptr).value = err as *mut _;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 fn make_err_unique_violation(field: &str) -> *mut DooResult {
@@ -939,8 +1241,10 @@ pub extern "C" fn doo_db_free_string(ptr: *mut c_char) {
     if ptr.is_null() {
         return;
     }
+    eprintln!("[DOO_DB_FREE_STRING] Freeing string at {:p}", ptr);
     unsafe {
-        let _ = CString::from_raw(ptr);
+        // Strings are RC layout (data pointer), so free via runtime helper.
+        dooruntime_free_rc_string(ptr as *const c_char);
     }
 }
 
@@ -949,14 +1253,213 @@ pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
     if ptr.is_null() {
         return;
     }
+
+    // AGGRESSIVE DEBUG: Capture backtrace/caller info
     unsafe {
-        let res = Box::from_raw(ptr);
-        // Only free error values - Ok values might be integers cast to pointers
-        // or strings that will be freed separately
-        if res.tag != 0 && !res.value.is_null() {
-            let _ = Box::from_raw(res.value as *mut DooDbError);
-        }
+        let msg = format!("[DOO_DB_RESULT_FREE] ===== ENTRY ===== ptr={:p}\n", ptr);
+        stderr_write(msg.as_bytes());
     }
+
+    // CRITICAL FIX: Read struct fields FIRST, then check/mark as freed atomically.
+    // This prevents a race condition where:
+    // 1. Thread A checks mark_as_freed (returns false), about to read struct
+    // 2. Thread B allocates same address (unmark_freed), uses it, frees it
+    // 3. Thread A reads from now-freed memory → use-after-free!
+    //
+    // By reading fields first while we know ptr is valid (caller's responsibility),
+    // we avoid reading from potentially freed memory later.
+    let (owner, tag, value) = unsafe {
+        let res = &*ptr;
+        (res.owner, res.tag, res.value)
+    };
+
+    unsafe {
+        let msg = format!(
+            "[DOO_DB_RESULT_FREE] Read fields: owner={}, tag={}, value={:p}\n",
+            owner, tag, value
+        );
+        stderr_write(msg.as_bytes());
+    }
+
+    // Now atomically check if already freed
+    if mark_as_freed(ptr) {
+        // Already freed - this is a double-free attempt, skip it
+        unsafe {
+            let msg = format!(
+                "[DOO_DB_RESULT_FREE] !!!!! DOUBLE-FREE DETECTED !!!!! ptr={:p} was already freed!\n",
+                ptr
+            );
+            stderr_write(msg.as_bytes());
+        }
+        eprintln!(
+            "[DOO_DB_RESULT_FREE] SKIPPED - already freed (tracked in set) at {:p}",
+            ptr
+        );
+        return;
+    }
+
+    eprintln!(
+        "[DOO_DB_RESULT_FREE] Freeing result at {:p}, owner: {}, tag: {}",
+        ptr, owner, tag
+    );
+
+    // IMPORTANT: DooResult is allocated with libc::malloc in this crate.
+    // Using Box::from_raw here can cause allocator mismatch and heap corruption.
+    unsafe {
+        match owner {
+            owner::LLVM => {
+                // LLVM allocated - RC handles cleanup, don't free value
+                // CRITICAL: If owner is LLVM, the result was allocated by FFI but
+                // ownership was transferred to LLVM RC. The RC will free the string value.
+                // We only free the DooResult wrapper here, not the string.
+                eprintln!(
+                    "[DOO_DB_RESULT_FREE] Owner is LLVM - freeing wrapper only, RC handles string"
+                );
+
+                // AGGRESSIVE DEBUG: Validate heap before free
+                let test_alloc = libc::malloc(32);
+                if test_alloc.is_null() {
+                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED before free (LLVM owner)!\n";
+                    stderr_write(msg);
+                } else {
+                    libc::free(test_alloc);
+                }
+
+                eprintln!("[DOO_DB_RESULT_FREE] About to free wrapper at {:p}", ptr);
+                tracked_free(ptr as *mut libc::c_void, "DooResult_LLVM_owner");
+
+                // AGGRESSIVE DEBUG: Validate heap after free
+                let test_alloc2 = libc::malloc(32);
+                if test_alloc2.is_null() {
+                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED after free (LLVM owner)!\n";
+                    stderr_write(msg);
+                } else {
+                    libc::free(test_alloc2);
+                }
+            }
+            owner::FFI => {
+                // FFI allocated the DooResult wrapper and value.
+                // Key insight:
+                // - Error values (tag != 0): These are COPIED into the HTTP error response,
+                //   so we MUST free them here to prevent leaks.
+                // - OK values (tag == 0): The compiler EXTRACTS the value pointer directly
+                //   and stores it in LLVM-managed memory. The value is still in use,
+                //   so we must NOT free it here - LLVM RC will free it later.
+
+                if tag != 0 && !value.is_null() {
+                    // Error value - DooDbError - FREE IT (it was copied to response)
+                    eprintln!(
+                        "[DOO_DB_RESULT_FREE] Owner is FFI, ERROR value - freeing error at {:p}",
+                        value
+                    );
+                    let err_ptr = value as *mut DooDbError;
+                    if !err_ptr.is_null() {
+                        if !(*err_ptr).message.is_null() {
+                            eprintln!(
+                                "[DOO_DB_RESULT_FREE] Freeing error message at {:p}",
+                                (*err_ptr).message
+                            );
+                            // Error messages are allocated as RC strings (data pointer).
+                            // Free via centralized runtime helper to avoid invalid free/heap corruption.
+                            dooruntime_free_rc_string((*err_ptr).message as *const c_char);
+                        }
+                        libc::free(err_ptr as *mut libc::c_void);
+                    }
+                } else {
+                    // OK value - DON'T free it (compiler extracted and owns it via LLVM RC)
+                    eprintln!(
+                        "[DOO_DB_RESULT_FREE] Owner is FFI, OK value - NOT freeing (owned by LLVM RC)"
+                    );
+                }
+
+                // Free ONLY the result wrapper
+                eprintln!(
+                    "[DOO_DB_RESULT_FREE] Freeing DooResult wrapper at {:p}",
+                    ptr
+                );
+
+                // AGGRESSIVE DEBUG: Validate heap before free
+                let test_alloc = libc::malloc(32);
+                if test_alloc.is_null() {
+                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED before free (FFI owner)!\n";
+                    stderr_write(msg);
+                } else {
+                    libc::free(test_alloc);
+                }
+
+                let msg = format!(
+                    "[DOO_DB_RESULT_FREE] About to free FFI wrapper at {:p} (owner={}, tag={}, value={:p})\n",
+                    ptr, owner, tag, value
+                );
+                stderr_write(msg.as_bytes());
+
+                tracked_free(ptr as *mut libc::c_void, "DooResult_FFI_owner");
+
+                // AGGRESSIVE DEBUG: Validate heap after free
+                let test_alloc2 = libc::malloc(32);
+                if test_alloc2.is_null() {
+                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED after free (FFI owner)!\n";
+                    stderr_write(msg);
+                } else {
+                    libc::free(test_alloc2);
+                    let msg = b"[DOO_DB_RESULT_FREE] Heap OK after free (FFI owner)\n";
+                    stderr_write(msg);
+                }
+            }
+            owner::RUST => {
+                // Rust Box allocated - shouldn't happen in normal flow
+                // But if it does, we can't safely free it here without knowing the allocator
+                // Just free the wrapper with libc::free (might leak, but safer than double-free)
+
+                // AGGRESSIVE DEBUG: Validate heap before free
+                let test_alloc = libc::malloc(32);
+                if test_alloc.is_null() {
+                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED before free (RUST owner)!\n";
+                    stderr_write(msg);
+                } else {
+                    libc::free(test_alloc);
+                }
+
+                tracked_free(ptr as *mut libc::c_void, "DooResult_RUST_owner");
+
+                // AGGRESSIVE DEBUG: Validate heap after free
+                let test_alloc2 = libc::malloc(32);
+                if test_alloc2.is_null() {
+                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED after free (RUST owner)!\n";
+                    stderr_write(msg);
+                } else {
+                    libc::free(test_alloc2);
+                }
+            }
+            _ => {
+                // Unknown owner - default to FFI behavior, free wrapper only
+                eprintln!(
+                    "[DOO_DB_RESULT_FREE] Unknown owner {}, freeing wrapper only at {:p}",
+                    owner, ptr
+                );
+
+                // AGGRESSIVE DEBUG: Validate heap before free
+                let test_alloc = libc::malloc(32);
+                if test_alloc.is_null() {
+                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED before free (unknown owner)!\n";
+                    stderr_write(msg);
+                } else {
+                    libc::free(test_alloc);
+                }
+
+                tracked_free(ptr as *mut libc::c_void, "DooResult_unknown_owner");
+
+                // AGGRESSIVE DEBUG: Validate heap after free
+                let test_alloc2 = libc::malloc(32);
+                if test_alloc2.is_null() {
+                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED after free (unknown owner)!\n";
+                    stderr_write(msg);
+                } else {
+                    libc::free(test_alloc2);
+                }
+            }
+        }
+    } // end unsafe
 }
 
 #[no_mangle]
@@ -1065,8 +1568,56 @@ pub extern "C" fn doo_db_raw(_db: *const c_char, sql: *const c_char) -> *mut Doo
             array.push(serde_json::Value::Object(obj));
         }
 
+        let row_count = array.len();
         let json = serde_json::Value::Array(array).to_string();
-        make_ok_string(json)
+        eprintln!(
+            "[DOO_DB_RAW] Query returned {} rows, JSON length: {}",
+            row_count,
+            json.len()
+        );
+        if json.len() < 500 {
+            eprintln!("[DOO_DB_RAW] Full JSON: {}", json);
+        } else {
+            eprintln!(
+                "[DOO_DB_RAW] JSON preview (first 200 chars): {}",
+                &json[..200]
+            );
+        }
+        eprintln!(
+            "[DOO_DB_RAW] JSON first 50 bytes as hex: {:02x?}",
+            &json.as_bytes()[..json.len().min(50)]
+        );
+        let result = make_ok_string(json.clone());
+        eprintln!(
+            "[DOO_DB_RAW] make_ok_string returned result at {:p}",
+            result
+        );
+        if !result.is_null() {
+            unsafe {
+                eprintln!(
+                    "[DOO_DB_RAW] Verifying result: tag={}, value={:p}, owner={}",
+                    (*result).tag,
+                    (*result).value,
+                    (*result).owner
+                );
+                let verify_str = CStr::from_ptr((*result).value as *const c_char);
+                eprintln!(
+                    "[DOO_DB_RAW] Value string length: {}, first 50 chars: {}",
+                    verify_str.to_bytes().len(),
+                    verify_str
+                        .to_str()
+                        .unwrap_or("invalid")
+                        .chars()
+                        .take(50)
+                        .collect::<String>()
+                );
+            }
+        }
+        eprintln!(
+            "[DOO_DB_RAW] Created DooResult at {:p}, owner=LLVM (RC-managed via runtime allocator)",
+            result
+        );
+        result
     } else {
         // Execute as INSERT/UPDATE/DELETE/CREATE/DROP/ALTER
         let res = rt.block_on(async { client.execute(&sql_str, &[]).await });
@@ -1109,6 +1660,9 @@ pub extern "C" fn doo_db_raw_param(
         Ok(s) => s.trim().to_string(),
         Err(e) => return make_err_query_failed(e),
     };
+
+    eprintln!("[DOO_DB_RAW_PARAM] SQL: {}", sql_str);
+    eprintln!("[DOO_DB_RAW_PARAM] Params: {}", params_str);
 
     let client = match get_client() {
         Ok(c) => c,
@@ -1197,8 +1751,14 @@ pub extern "C" fn doo_db_raw_param(
 
         let res = rt.block_on(async { client.query(&sql_str, &pg_params_refs[..]).await });
         let rows = match res {
-            Ok(r) => r,
-            Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
+            Ok(r) => {
+                eprintln!("[DOO_DB_RAW_PARAM] Query returned {} rows", r.len());
+                r
+            }
+            Err(e) => {
+                eprintln!("[DOO_DB_RAW_PARAM] Query error: {}", e);
+                return make_err_query_failed(format!("Query failed: {}", e));
+            }
         };
 
         let mut array = Vec::new();
@@ -1237,8 +1797,22 @@ pub extern "C" fn doo_db_raw_param(
             array.push(serde_json::Value::Object(obj));
         }
 
+        let row_count = array.len();
         let json = serde_json::Value::Array(array).to_string();
-        make_ok_string(json)
+        eprintln!(
+            "[DOO_DB_RAW_PARAM] Returning {} rows, JSON length: {}",
+            row_count,
+            json.len()
+        );
+        if json.len() < 500 {
+            eprintln!("[DOO_DB_RAW_PARAM] Full JSON: {}", json);
+        }
+        let result = make_ok_string(json);
+        eprintln!(
+            "[DOO_DB_RAW_PARAM] Created DooResult at {:p}, owner=LLVM (RC-managed via runtime allocator)",
+            result
+        );
+        result
     } else {
         // Execute as INSERT/UPDATE/DELETE/CREATE/DROP/ALTER
         let pg_params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
@@ -1373,9 +1947,9 @@ pub extern "C" fn doo_db_validate_unique_constraints(
         let exists = doo_db_check_unique(table_c, field_c, value_c, exclude_id);
 
         unsafe {
-            let _ = CString::from_raw(field_c);
-            let _ = CString::from_raw(value_c);
-            let _ = CString::from_raw(table_c);
+            libc::free(field_c as *mut libc::c_void);
+            libc::free(value_c as *mut libc::c_void);
+            libc::free(table_c as *mut libc::c_void);
         }
 
         if exists == 1 {
@@ -1435,14 +2009,28 @@ fn extract_field_name(err: &tokio_postgres::Error) -> Option<String> {
 }
 
 fn make_err_not_null_violation(field: &str) -> *mut DooResult {
-    let err = Box::new(DooDbError {
-        code: 2,
-        message: string_to_c(format!("Field '{}' cannot be null", field)),
-    });
-    Box::into_raw(Box::new(DooResult {
-        tag: 1,
-        value: Box::into_raw(err) as *mut _,
-    }))
+    unsafe {
+        // Allocate DooDbError using libc::malloc
+        let err_size = std::mem::size_of::<DooDbError>();
+        let err = tracked_malloc(err_size, "make_err_not_null") as *mut DooDbError;
+        if err.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*err).code = 2;
+        (*err).message = string_to_c(format!("Field '{}' cannot be null", field));
+
+        // Allocate DooResult using libc::malloc
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = tracked_malloc(result_size, "make_err_not_null_result") as *mut DooResult;
+        if ptr.is_null() {
+            libc::free(err as *mut libc::c_void);
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 1;
+        (*ptr).value = err as *mut _;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 /// Get the global database instance
@@ -1565,6 +2153,130 @@ pub extern "C" fn doo_db_serialize_array(
 
     let json_str = serde_json::Value::Array(json_arr).to_string();
     string_to_c(json_str)
+}
+
+/// CRITICAL: Extract string from DooResult IMMEDIATELY before RC operations
+///
+/// ROOT CAUSE OF MEMORY CORRUPTION:
+/// When db.raw() returns a DooResult with owner::LLVM, the LLVM compiler's RC system
+/// wraps the string pointer in an RC header. However, when the RC count goes to zero,
+/// it frees the string. Meanwhile, array_to_json_with_metadata receives an RC-wrapped
+/// pointer that has already been freed, causing use-after-free corruption.
+///
+/// OWNERSHIP MODEL VIOLATION:
+/// - FFI allocates string with libc::malloc and sets owner::LLVM
+/// - LLVM RC treats this as RC-managed memory (WRONG!)
+/// - RC frees the malloc'd string prematurely
+/// - Result: Corrupted data when array_to_json tries to read it
+///
+/// THE PROPER FIX (COMPILER CHANGE REQUIRED):
+/// The compiler must generate code that calls this function IMMEDIATELY after
+/// doo_db_raw() or doo_db_rawWithParams(), BEFORE any RC operations:
+///
+///   let result = doo_db_raw(sql);  // Returns DooResult with malloc'd string
+///   let safe_string = doo_db_extract_string_from_result(result);  // Copy and free result
+///   // Now safe_string is a new malloc'd copy, safe from RC corruption
+///   // Pass safe_string to array_to_json_with_metadata
+///
+/// This function creates a NEW malloc'd copy of the string and frees the original
+/// DooResult, preventing the RC system from corrupting the data.
+///
+/// TEMPORARY WORKAROUND:
+/// Until compiler is fixed, avoid using db.raw() for array returns in handlers.
+/// Use CRUD endpoints or simple queries that return single values.
+#[no_mangle]
+pub extern "C" fn doo_db_extract_string_from_result(result: *mut DooResult) -> *mut c_char {
+    if result.is_null() {
+        eprintln!("[EXTRACT_STRING] Result is null");
+        return string_to_c("[]".to_string());
+    }
+
+    unsafe {
+        let res = &*result;
+        eprintln!(
+            "[EXTRACT_STRING] Extracting from DooResult at {:p}, tag={}, owner={}, value={:p}",
+            result, res.tag, res.owner, res.value
+        );
+
+        // Check if this is an error
+        if res.tag != 0 {
+            eprintln!("[EXTRACT_STRING] Result is error, returning empty");
+            return string_to_c("[]".to_string());
+        }
+
+        // Check if value is null
+        if res.value.is_null() {
+            eprintln!("[EXTRACT_STRING] Value is null, returning empty");
+            return string_to_c("[]".to_string());
+        }
+
+        // Extract the string pointer
+        let string_ptr = res.value as *mut c_char;
+        eprintln!("[EXTRACT_STRING] Reading from string_ptr={:p}", string_ptr);
+
+        // CRITICAL: Make a COPY of the string using string_to_c which allocates new memory
+        // This creates a new malloc'd string that won't be affected by the original being freed
+        let original_str = match CStr::from_ptr(string_ptr).to_str() {
+            Ok(s) => {
+                eprintln!(
+                    "[EXTRACT_STRING] String read OK, length={}, first 100 chars: {}",
+                    s.len(),
+                    s.chars().take(100).collect::<String>()
+                );
+                s
+            }
+            Err(e) => {
+                eprintln!("[EXTRACT_STRING] Failed to read string: {}", e);
+                eprintln!(
+                    "[EXTRACT_STRING] First 20 bytes as hex: {:02x?}",
+                    std::slice::from_raw_parts(string_ptr as *const u8, 20)
+                );
+                return string_to_c("[]".to_string());
+            }
+        };
+
+        eprintln!(
+            "[EXTRACT_STRING] Copying string, length={}, first 50 bytes hex: {:02x?}",
+            original_str.len(),
+            &original_str.as_bytes()[..original_str.len().min(50)]
+        );
+
+        // Create a NEW copy of the string
+        let new_string_ptr = string_to_c(original_str.to_string());
+
+        eprintln!(
+            "[EXTRACT_STRING] Created new string at {:p}",
+            new_string_ptr
+        );
+
+        // Verify the new string
+        let verify = CStr::from_ptr(new_string_ptr);
+        eprintln!(
+            "[EXTRACT_STRING] Verify new string: length={}, first 50 chars: {}",
+            verify.to_bytes().len(),
+            verify
+                .to_str()
+                .unwrap_or("invalid")
+                .chars()
+                .take(50)
+                .collect::<String>()
+        );
+
+        // Now we can safely free the original DooResult
+        // The string inside will be freed, but we have our copy
+        eprintln!("[EXTRACT_STRING] Freeing original DooResult");
+        doo_db_result_free(result);
+
+        eprintln!(
+            "[EXTRACT_STRING] ##### ABOUT TO RETURN new_string_ptr={:p} #####",
+            new_string_ptr
+        );
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+        eprintln!("[EXTRACT_STRING] ##### RETURNING NOW #####");
+        let _ = std::io::stderr().flush();
+        new_string_ptr
+    }
 }
 
 #[no_mangle]

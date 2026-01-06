@@ -1,8 +1,142 @@
 use crate::codegen::core::CodeGen;
 use inkwell::values::FunctionValue;
+use inkwell::values::PointerValue;
 use inkwell::AddressSpace;
 
 impl<'ctx> CodeGen<'ctx> {
+    pub fn clone_ffi_string_to_rc(&mut self, src: PointerValue<'ctx>) -> PointerValue<'ctx> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let null_ptr = ptr_type.const_null();
+
+        let is_null = self.builder.build_is_null(src, "ffi_str_is_null").unwrap();
+        let current_block = self.builder.get_insert_block().unwrap();
+        let func = current_block.get_parent().unwrap();
+        let null_block = self.context.append_basic_block(func, "ffi_str_null");
+        let nonnull_block = self.context.append_basic_block(func, "ffi_str_nonnull");
+        let merge_block = self.context.append_basic_block(func, "ffi_str_merge");
+
+        self.builder
+            .build_conditional_branch(is_null, null_block, nonnull_block)
+            .unwrap();
+
+        self.builder.position_at_end(null_block);
+        self.builder
+            .build_unconditional_branch(merge_block)
+            .unwrap();
+
+        self.builder.position_at_end(nonnull_block);
+
+        let strlen_fn = self.get_or_declare_strlen();
+        let len_i64 = self
+            .builder
+            .build_call(strlen_fn, &[src.into()], "ffi_strlen")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_int_value();
+
+        let len_plus_null = self
+            .builder
+            .build_int_add(
+                len_i64,
+                self.context.i64_type().const_int(1, false),
+                "ffi_len_plus_null",
+            )
+            .unwrap();
+
+        let total_size = self
+            .builder
+            .build_int_add(
+                len_plus_null,
+                self.context.i64_type().const_int(8, false),
+                "ffi_total_size",
+            )
+            .unwrap();
+
+        let malloc_fn = self.get_or_declare_malloc();
+        let heap_ptr = self
+            .builder
+            .build_call(malloc_fn, &[total_size.into()], "ffi_rc_heap")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        let rc_ptr = self
+            .builder
+            .build_pointer_cast(heap_ptr, ptr_type, "ffi_rc_ptr")
+            .unwrap();
+        self.builder
+            .build_store(rc_ptr, self.context.i32_type().const_int(1, false))
+            .unwrap();
+
+        let len_ptr = unsafe {
+            self.builder.build_gep(
+                self.context.i8_type(),
+                heap_ptr,
+                &[self.context.i32_type().const_int(4, false)],
+                "ffi_len_ptr",
+            )
+        }
+        .unwrap();
+        let len_ptr_cast = self
+            .builder
+            .build_pointer_cast(len_ptr, ptr_type, "ffi_len_ptr_cast")
+            .unwrap();
+        let len_i32 = self
+            .builder
+            .build_int_truncate(len_i64, self.context.i32_type(), "ffi_len_i32")
+            .unwrap();
+        self.builder.build_store(len_ptr_cast, len_i32).unwrap();
+
+        let data_ptr = unsafe {
+            self.builder.build_gep(
+                self.context.i8_type(),
+                heap_ptr,
+                &[self.context.i32_type().const_int(8, false)],
+                "ffi_data_ptr",
+            )
+        }
+        .unwrap();
+
+        let memcpy_fn = self.get_or_declare_memcpy();
+        self.builder
+            .build_call(
+                memcpy_fn,
+                &[
+                    data_ptr.into(),
+                    src.into(),
+                    len_plus_null.into(),
+                    self.context.bool_type().const_zero().into(),
+                ],
+                "",
+            )
+            .unwrap();
+
+        // DO NOT free the source FFI string here!
+        // For strings from DB FFI (extracted directly from DooResult), they are allocated
+        // with the runtime allocator and marked owner=LLVM, so they're RC-managed.
+        // Freeing here causes use-after-free when the HTTP layer tries to read the string.
+        // let free_fn = self.module.get_function("dooruntime_free_string").unwrap_or_else(|| {
+        //     let fn_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
+        //     self.module
+        //         .add_function("dooruntime_free_string", fn_type, None)
+        // });
+        // self.builder.build_call(free_fn, &[src.into()], "").unwrap();
+
+        self.builder
+            .build_unconditional_branch(merge_block)
+            .unwrap();
+
+        self.builder.position_at_end(merge_block);
+        let phi = self.builder.build_phi(ptr_type, "ffi_str_phi").unwrap();
+        phi.add_incoming(&[(&null_ptr, null_block), (&data_ptr, nonnull_block)]);
+
+        phi.as_basic_value().into_pointer_value()
+    }
+
     pub fn generate_string_concat(
         &mut self,
         name: &str,

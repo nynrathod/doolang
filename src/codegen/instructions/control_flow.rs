@@ -303,6 +303,8 @@ impl<'ctx> CodeGen<'ctx> {
                     has_error_type && is_ffi && result.is_pointer_value()
                 };
 
+                 let mut result = result;
+
                 // If FFI returned a pointer to Result, load the struct</parameter>
                 let actual_result = if is_ffi_result {
                     let result_ptr = result.into_pointer_value();

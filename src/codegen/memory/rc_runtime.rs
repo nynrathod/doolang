@@ -21,7 +21,7 @@ impl<'ctx> CodeGen<'ctx> {
             let malloc_type = ptr_type.fn_type(&[i64_type.into()], false);
             self.module.add_function("malloc", malloc_type, None);
         }
-        
+
         self.incref_fn = Some(self.create_incref_function());
         self.decref_fn = Some(self.create_decref_function());
     }
@@ -68,6 +68,27 @@ impl<'ctx> CodeGen<'ctx> {
         let rc = self
             .builder
             .build_load(self.context.i32_type(), rc_ptr_typed, "rc")
+            .unwrap()
+            .into_int_value();
+
+        // Load the length field (i32) from rc_ptr + 4
+        let len_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    rc_ptr,
+                    &[self.context.i32_type().const_int(4, false)],
+                    "len_ptr",
+                )
+                .unwrap()
+        };
+        let len_ptr_typed = self
+            .builder
+            .build_pointer_cast(len_ptr, i32_ptr_type, "len_ptr_typed")
+            .unwrap();
+        let len = self
+            .builder
+            .build_load(self.context.i32_type(), len_ptr_typed, "len")
             .unwrap()
             .into_int_value();
 
@@ -178,7 +199,6 @@ impl<'ctx> CodeGen<'ctx> {
                 "is_positive",
             )
             .unwrap();
-
         let is_reasonable = self
             .builder
             .build_int_compare(
@@ -188,16 +208,101 @@ impl<'ctx> CodeGen<'ctx> {
                 "is_reasonable",
             )
             .unwrap();
-
         let is_valid_rc = self
             .builder
             .build_and(is_positive, is_reasonable, "is_valid_rc")
             .unwrap();
 
+        // Load the length field (i32) from rc_ptr + 4
+        let len_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    rc_ptr,
+                    &[self.context.i32_type().const_int(4, false)],
+                    "len_ptr",
+                )
+                .unwrap()
+        };
+        let len_ptr_typed = self
+            .builder
+            .build_pointer_cast(len_ptr, i32_ptr_type, "len_ptr_typed")
+            .unwrap();
+        let len = self
+            .builder
+            .build_load(self.context.i32_type(), len_ptr_typed, "len")
+            .unwrap()
+            .into_int_value();
+
+        // SAFETY CHECK: Len should be non-negative and not absurdly large.
+        let len_is_nonneg = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGE,
+                len,
+                self.context.i32_type().const_int(0, false),
+                "len_is_nonneg",
+            )
+            .unwrap();
+        let len_is_reasonable = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLE,
+                len,
+                self.context.i32_type().const_int(100000000, false),
+                "len_is_reasonable",
+            )
+            .unwrap();
+        let len_is_valid = self
+            .builder
+            .build_and(len_is_nonneg, len_is_reasonable, "len_is_valid")
+            .unwrap();
+
+        // SAFETY CHECK: Ensure the string is null-terminated at exactly data[len].
+        // end_ptr = rc_ptr + 8 + len
+        let data_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    rc_ptr,
+                    &[self.context.i32_type().const_int(8, false)],
+                    "data_ptr",
+                )
+                .unwrap()
+        };
+        let end_ptr = unsafe {
+            self.builder
+                .build_gep(self.context.i8_type(), data_ptr, &[len], "end_ptr")
+                .unwrap()
+        };
+        let end_byte = self
+            .builder
+            .build_load(self.context.i8_type(), end_ptr, "end_byte")
+            .unwrap()
+            .into_int_value();
+        let end_is_null = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                end_byte,
+                self.context.i8_type().const_int(0, false),
+                "end_is_null",
+            )
+            .unwrap();
+
+        let is_valid_header = self
+            .builder
+            .build_and(is_valid_rc, len_is_valid, "is_valid_header")
+            .unwrap();
+        let is_valid = self
+            .builder
+            .build_and(is_valid_header, end_is_null, "is_valid")
+            .unwrap();
+
         // Branch to decrement logic only if RC is valid
         let do_decrement = self.context.append_basic_block(function, "do_decrement");
         self.builder
-            .build_conditional_branch(is_valid_rc, do_decrement, exit_block)
+            .build_conditional_branch(is_valid, do_decrement, exit_block)
             .unwrap();
 
         // Do decrement block

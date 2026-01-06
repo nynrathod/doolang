@@ -2511,14 +2511,21 @@ pub extern "C" fn json_stringify(data: *const c_char) -> *mut c_char {
 /// Serialize heap array of structs to JSON string
 /// Uses struct metadata to properly serialize each struct instance
 /// Returns pointer to heap-allocated JSON string, or null on error
+/// NOTE: This is a fallback implementation. The primary one is in libdoo_http.
+/// Renamed to avoid duplicate symbol collision which can cause undefined behavior.
 #[no_mangle]
-pub extern "C" fn array_to_json_with_metadata(
+pub extern "C" fn runtime_array_to_json_with_metadata(
     array_ptr: *const c_char,
     _struct_name: *const c_char,
     _metadata_json: *const c_char,
 ) -> *mut c_char {
+    // NEW SEMANTICS:
+    // For db.raw()/db.rawWithParams returning [Struct], the compiler now keeps the
+    // result as a JSON string (RC string or plain C string), not as a heap array.
+    // This runtime helper should therefore treat array_ptr as a pointer to a
+    // NUL-terminated UTF-8 JSON string and simply validate/passthrough it.
+
     if array_ptr.is_null() {
-        // Return empty array JSON
         return match CString::new("[]") {
             Ok(result) => result.into_raw(),
             Err(_) => std::ptr::null_mut(),
@@ -2526,53 +2533,31 @@ pub extern "C" fn array_to_json_with_metadata(
     }
 
     unsafe {
-        // The array_ptr points to a heap-allocated array
-        // Array structure in memory: [length: i32][element1][element2]...
-        // Read array length from the first 4 bytes
-        let length_ptr = array_ptr as *const i32;
-        let length = *length_ptr;
-
-        if length == 0 {
-            // Empty array
-            return match CString::new("[]") {
-                Ok(result) => result.into_raw(),
-                Err(_) => std::ptr::null_mut(),
-            };
-        }
-
-        // For arrays parsed from db.raw(), each element is a struct pointer
-        // The array data starts after the length (4 bytes)
-        let data_start = array_ptr.offset(4);
-
-        // Build JSON array manually
-        let mut json_output = String::from("[");
-
-        // Each element is a pointer to a struct (8 bytes on 64-bit, 4 bytes on 32-bit)
-        let ptr_size = std::mem::size_of::<*const c_char>();
-
-        for i in 0..length {
-            let element_ptr_location =
-                data_start.offset((i * ptr_size as i32) as isize) as *const *const c_char;
-            let element_ptr = *element_ptr_location;
-
-            if !element_ptr.is_null() {
-                // Try to read the element as a JSON object string
-                // For structs from db.raw(), they contain the original JSON data
-                let element_str_ptr = element_ptr as *const c_char;
-                if let Ok(c_str) = std::panic::catch_unwind(|| CStr::from_ptr(element_str_ptr)) {
-                    if let Ok(element_json) = c_str.to_str() {
-                        if i > 0 {
-                            json_output.push(',');
-                        }
-                        json_output.push_str(element_json);
-                    }
-                }
+        // Safely convert C string to Rust String
+        let c_str = match CStr::from_ptr(array_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                // Invalid UTF-8 or bad pointer -> return empty array JSON
+                return match CString::new("[]") {
+                    Ok(result) => result.into_raw(),
+                    Err(_) => std::ptr::null_mut(),
+                };
             }
-        }
+        };
 
-        json_output.push(']');
+        let trimmed = c_str.trim();
 
-        match CString::new(json_output) {
+        // If it already looks like JSON array/object, return as-is
+        let out = if trimmed.starts_with('[') || trimmed.starts_with('{') {
+            trimmed.to_string()
+        } else if trimmed.is_empty() {
+            "[]".to_string()
+        } else {
+            // Not JSON - safest fallback is empty array
+            "[]".to_string()
+        };
+
+        match CString::new(out) {
             Ok(result) => result.into_raw(),
             Err(_) => std::ptr::null_mut(),
         }

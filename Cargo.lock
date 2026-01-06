@@ -1110,6 +1110,7 @@ version = "0.3.0"
 dependencies = [
  "bcrypt",
  "jsonwebtoken",
+ "libc",
  "libdoo_runtime",
  "once_cell",
  "serde",
@@ -1121,6 +1122,7 @@ name = "libdoo_db"
 version = "0.3.0"
 dependencies = [
  "dotenvy",
+ "libc",
  "libdoo_runtime",
  "once_cell",
  "serde_json",
@@ -1160,9 +1162,11 @@ name = "libdoo_runtime"
 version = "0.3.0"
 dependencies = [
  "libc",
+ "rand 0.8.5",
  "regex",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]

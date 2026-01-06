@@ -43,9 +43,11 @@ impl<'ctx> CodeGen<'ctx> {
         };
 
         if variants.is_empty() {
-             // Fallback: return "Unknown"
-             let s = self.builder.build_global_string_ptr("Unknown", "enum_unknown").unwrap();
-             return s.as_pointer_value().into();
+             let s = self
+                 .builder
+                 .build_global_string_ptr("Unknown", "enum_unknown")
+                 .unwrap();
+             return self.clone_ffi_string_to_rc(s.as_pointer_value()).into();
         }
 
         // Extract tag from enum struct {i32, ptr}
@@ -66,8 +68,12 @@ impl<'ctx> CodeGen<'ctx> {
             cases.push((self.context.i32_type().const_int((*idx).into(), false), case_block));
 
             self.builder.position_at_end(case_block);
-            let str_val = self.builder.build_global_string_ptr(name, &format!("enum_{}", name)).unwrap();
-            incoming.push((str_val.as_pointer_value().into(), case_block));
+            let str_val = self
+                .builder
+                .build_global_string_ptr(name, &format!("enum_{}", name))
+                .unwrap();
+            let rc_str = self.clone_ffi_string_to_rc(str_val.as_pointer_value());
+            incoming.push((rc_str.into(), case_block));
             self.builder.build_unconditional_branch(merge_block).unwrap();
         }
 
@@ -76,8 +82,12 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Default case
         self.builder.position_at_end(default_block);
-        let default_str = self.builder.build_global_string_ptr("Unknown", "enum_unknown").unwrap();
-        incoming.push((default_str.as_pointer_value().into(), default_block));
+        let default_str = self
+            .builder
+            .build_global_string_ptr("Unknown", "enum_unknown")
+            .unwrap();
+        let default_rc = self.clone_ffi_string_to_rc(default_str.as_pointer_value());
+        incoming.push((default_rc.into(), default_block));
         self.builder.build_unconditional_branch(merge_block).unwrap();
 
         // Merge

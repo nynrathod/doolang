@@ -206,7 +206,9 @@ impl MirBuilder {
                                             AstNode::FloatLiteral(f) => f.to_string(),
                                             AstNode::BoolLiteral(b) => b.to_string(),
                                             AstNode::Identifier(id) => id.clone(),
-                                            AstNode::EnumVariant { enum_name, variant, .. } => format!("{}::{}", enum_name, variant),
+                                            AstNode::EnumVariant {
+                                                enum_name, variant, ..
+                                            } => format!("{}::{}", enum_name, variant),
                                             _ => String::new(),
                                         })
                                         .collect();

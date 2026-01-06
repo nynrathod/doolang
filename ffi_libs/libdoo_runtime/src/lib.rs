@@ -1,11 +1,54 @@
 //! Centralized runtime library for Doo FFI modules
 //! Provides shared validation, error handling, and utilities
 
+pub mod ownership;
+
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use url::Url;
+
+/// Convert a Rust String to a C string using libc::malloc for consistent FFI ownership.
+/// This ensures ALL FFI libraries use the same allocator (libc) to prevent heap corruption.
+/// CRITICAL: This function MUST be used instead of CString::into_raw() throughout the codebase.
+#[inline]
+fn string_to_c_ptr(s: &str) -> *mut c_char {
+    unsafe {
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+
+        let total_size = len + 1 + 8;
+        let alloc_size = (total_size + 15) & !15;
+        let heap_ptr = dooruntime_malloc(alloc_size) as *mut u8;
+        if heap_ptr.is_null() {
+            eprintln!(
+                "[RUNTIME] string_to_c_ptr: dooruntime_malloc failed for {} bytes",
+                alloc_size
+            );
+            return std::ptr::null_mut();
+        }
+
+        std::ptr::write_bytes(heap_ptr, 0, alloc_size);
+        *(heap_ptr as *mut i32) = 1;
+        *(heap_ptr.add(4) as *mut i32) = len as i32;
+
+        let data_ptr = heap_ptr.add(8);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, len);
+        *data_ptr.add(len) = 0;
+
+        data_ptr as *mut c_char
+    }
+}
+
+/// Convert owned String to C string using libc::malloc
+#[inline]
+fn string_owned_to_c(s: String) -> *mut c_char {
+    string_to_c_ptr(&s)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FieldDecorator {
@@ -65,9 +108,7 @@ pub extern "C" fn dooruntime_get_last_validation_error() -> *mut libc::c_char {
     LAST_VALIDATION_ERROR.with(|cell| {
         if let Some(error) = cell.borrow().as_ref() {
             if let Ok(json) = serde_json::to_string(error) {
-                if let Ok(c_str) = CString::new(json) {
-                    return c_str.into_raw();
-                }
+                return string_to_c_ptr(&json);
             }
         }
         std::ptr::null_mut()
@@ -123,16 +164,13 @@ pub extern "C" fn dooruntime_validate_field(
                 rule,
                 message: message.clone(),
                 value: value_str.clone(),
-                expected, 
+                expected,
                 received,
             };
             set_validation_error(validation_error);
 
             // Return simple error message as C string (backward compatibility)
-            match CString::new(err_msg) {
-                Ok(c_str) => c_str.into_raw(),
-                Err(_) => std::ptr::null(),
-            }
+            string_to_c_ptr(&err_msg)
         }
     }
 }
@@ -141,9 +179,7 @@ pub extern "C" fn dooruntime_validate_field(
 #[no_mangle]
 pub extern "C" fn dooruntime_free_string(ptr: *mut libc::c_char) {
     if !ptr.is_null() {
-        unsafe {
-            let _ = CString::from_raw(ptr);
-        }
+        unsafe { ownership::dooruntime_free_any_string(ptr as *const c_char) }
     }
 }
 
@@ -195,6 +231,30 @@ fn validate_field_decorators(
                         "Invalid email format".to_string(),
                         None,
                         None,
+                    ));
+                }
+            }
+            "url" => {
+                if field_type != "Str" {
+                    return Err((
+                        format!(
+                            "Field '{}' has @url decorator but type is {}, expected Str",
+                            field_name, field_type
+                        ),
+                        "url".to_string(),
+                        "URL decorator requires String type".to_string(),
+                        None,
+                        None,
+                    ));
+                }
+                // URL validation: must be a valid URL
+                if url::Url::parse(value).is_err() {
+                    return Err((
+                        format!("Field '{}': '{}' is not a valid URL", field_name, value),
+                        "url".to_string(),
+                        "Invalid URL format".to_string(),
+                        Some("Valid URL (e.g., https://example.com)".to_string()),
+                        Some(value.to_string()),
                     ));
                 }
             }
@@ -319,21 +379,19 @@ fn validate_field_decorators(
             "enum" => {
                 // Allow any type as long as value is string-like representation
                 // if field_type != "Str" { ... } // Removed strict check to support Enums
-                
+
                 // Check if value is in the allowed enum list
                 if !decorator.args.contains(&value.to_string()) {
                     let expected_str = format!("one of: {}", decorator.args.join(", "));
                     return Err((
                         format!(
                             "Invalid enum value '{}' for field '{}'. Allowed values: {:?}",
-                            value,
-                            field_name,
-                            decorator.args
+                            value, field_name, decorator.args
                         ),
                         "invalid_enum_value".to_string(), // Rule name as requested
                         format!("Invalid enum value '{}'", value), // Message
-                        Some(expected_str), // Expected
-                        Some(value.to_string()), // Received
+                        Some(expected_str),               // Expected
+                        Some(value.to_string()),          // Received
                     ));
                 }
             }
@@ -432,10 +490,7 @@ pub extern "C" fn dooruntime_get_default_value(
                     _ => return std::ptr::null_mut(),
                 };
 
-                return std::ffi::CString::new(validated_value)
-                    .ok()
-                    .map(|s| s.into_raw())
-                    .unwrap_or(std::ptr::null_mut());
+                return string_owned_to_c(validated_value);
             }
         }
     }
@@ -885,9 +940,7 @@ pub extern "C" fn dooruntime_db_error(
         let error = DbError::with_message(code, msg.to_string());
         let json = error.to_json_string();
 
-        CString::new(json)
-            .map(|c| c.into_raw())
-            .unwrap_or(std::ptr::null_mut())
+        string_to_c_ptr(&json)
     }
 }
 
@@ -916,9 +969,7 @@ pub extern "C" fn dooruntime_auth_error(
         let error = AuthError::with_message(code, msg.to_string());
         let json = error.to_json_string();
 
-        CString::new(json)
-            .map(|c| c.into_raw())
-            .unwrap_or(std::ptr::null_mut())
+        string_to_c_ptr(&json)
     }
 }
 
@@ -949,9 +1000,7 @@ pub extern "C" fn dooruntime_auth_error_rfc7807(
         let error = AuthError::with_message(code, msg.to_string());
         let json = error.to_rfc7807_string(&inst);
 
-        CString::new(json)
-            .map(|c| c.into_raw())
-            .unwrap_or(std::ptr::null_mut())
+        string_to_c_ptr(&json)
     }
 }
 
@@ -1104,9 +1153,7 @@ pub extern "C" fn dooruntime_extract_unique_fields(metadata_json: *const c_char)
         }
 
         let result_json = json!(unique_fields).to_string();
-        CString::new(result_json)
-            .map(|c| c.into_raw())
-            .unwrap_or(std::ptr::null_mut())
+        string_to_c_ptr(&result_json)
     }
 }
 
@@ -1169,9 +1216,7 @@ pub extern "C" fn dooruntime_db_error_rfc7807(
         })
         .to_string();
 
-        CString::new(json)
-            .map(|c| c.into_raw())
-            .unwrap_or(std::ptr::null_mut())
+        string_to_c_ptr(&json)
     }
 }
 
@@ -1273,9 +1318,7 @@ pub extern "C" fn dooruntime_get_json_type(json_value: *const libc::c_char) -> *
         serde_json::Value::Object(_) => "object",
     };
 
-    CString::new(type_name)
-        .map(|c| c.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    string_to_c_ptr(type_name)
 }
 
 /// Extract a field value from JSON object and return as Int
@@ -1479,9 +1522,7 @@ pub extern "C" fn dooruntime_get_json_type_mismatch() -> *mut libc::c_char {
             });
 
             if let Ok(json_str) = serde_json::to_string(&error) {
-                return CString::new(json_str)
-                    .map(|c| c.into_raw())
-                    .unwrap_or(std::ptr::null_mut());
+                return string_to_c_ptr(&json_str);
             }
         }
         std::ptr::null_mut()
@@ -1529,9 +1570,7 @@ pub extern "C" fn json_get_str(
     if let Some(field_value) = json_obj.get(field_str) {
         // Validate it's a string
         if let Some(s) = field_value.as_str() {
-            return CString::new(s)
-                .map(|c| c.into_raw())
-                .unwrap_or(std::ptr::null_mut());
+            return string_to_c_ptr(s);
         } else {
             // Type mismatch - set error
             let actual_type = if field_value.is_number() {
@@ -1675,10 +1714,7 @@ pub extern "C" fn dooruntime_check_missing_fields(
                 if !obj.contains_key(&field_name) {
                     let mut field_error = serde_json::Map::new();
                     field_error.insert("error".to_string(), json!("required"));
-                    field_error.insert(
-                        "message".to_string(),
-                        json!("This field is required"),
-                    );
+                    field_error.insert("message".to_string(), json!("This field is required"));
                     missing_fields.insert(field_name, json!(field_error));
                 }
             }
@@ -1691,7 +1727,8 @@ pub extern "C" fn dooruntime_check_missing_fields(
             });
 
             CString::new(error_obj.to_string())
-                .map(|c| c.into_raw())
+                .ok()
+                .map(|_| string_to_c_ptr(&error_obj.to_string()))
                 .unwrap_or(std::ptr::null_mut())
         } else {
             std::ptr::null_mut() // All fields present
@@ -1707,75 +1744,101 @@ fn validate_type(expected_type: &str, value: &serde_json::Value) -> (bool, Optio
             if value.is_i64() || value.is_u64() {
                 (true, None)
             } else {
-                (false, Some(format!("expected Int, got {}", json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected Int, got {}", json_type_name(value))),
+                )
             }
         }
         "Float" => {
             if value.is_f64() || value.is_i64() || value.is_u64() {
                 (true, None)
             } else {
-                (false, Some(format!("expected Float, got {}", json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected Float, got {}", json_type_name(value))),
+                )
             }
         }
         "Bool" => {
             if value.is_boolean() {
                 (true, None)
             } else {
-                (false, Some(format!("expected Bool, got {}", json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected Bool, got {}", json_type_name(value))),
+                )
             }
         }
         "Str" => {
             if value.is_string() {
                 (true, None)
             } else {
-                (false, Some(format!("expected Str, got {}", json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected Str, got {}", json_type_name(value))),
+                )
             }
         }
         // Array types: [Str], [Int], [Float], [Bool]
         ty if ty.starts_with('[') && ty.ends_with(']') => {
-            let inner_type = &ty[1..ty.len()-1];
+            let inner_type = &ty[1..ty.len() - 1];
             if let Some(arr) = value.as_array() {
                 for (idx, elem) in arr.iter().enumerate() {
                     let (elem_valid, elem_error) = validate_type(inner_type, elem);
                     if !elem_valid {
-                        return (false, Some(format!(
-                            "array element at index {} has wrong type: {}",
-                            idx, elem_error.unwrap_or_default()
-                        )));
+                        return (
+                            false,
+                            Some(format!(
+                                "array element at index {} has wrong type: {}",
+                                idx,
+                                elem_error.unwrap_or_default()
+                            )),
+                        );
                     }
                 }
                 (true, None)
             } else {
-                (false, Some(format!("expected array, got {}", json_type_name(value))))
+                (
+                    false,
+                    Some(format!("expected array, got {}", json_type_name(value))),
+                )
             }
         }
         // Map types: {Str: Int}, {Str: Str}, etc.
         ty if ty.starts_with('{') && ty.ends_with('}') && ty.contains(':') => {
-            let inner = &ty[1..ty.len()-1];
+            let inner = &ty[1..ty.len() - 1];
             if let Some(colon_pos) = inner.find(':') {
                 let key_type = inner[..colon_pos].trim();
-                let value_type = inner[colon_pos+1..].trim();
-                
+                let value_type = inner[colon_pos + 1..].trim();
+
                 if let Some(obj) = value.as_object() {
                     // Validate keys (should always be strings in JSON)
                     if key_type != "Str" {
                         // JSON only supports string keys, so non-Str key types can't be validated
                         return (true, None);
                     }
-                    
+
                     // Validate values
                     for (k, v) in obj {
                         let (val_valid, val_error) = validate_type(value_type, v);
                         if !val_valid {
-                            return (false, Some(format!(
-                                "map value for key '{}' has wrong type: {}",
-                                k, val_error.unwrap_or_default()
-                            )));
+                            return (
+                                false,
+                                Some(format!(
+                                    "map value for key '{}' has wrong type: {}",
+                                    k,
+                                    val_error.unwrap_or_default()
+                                )),
+                            );
                         }
                     }
                     (true, None)
                 } else {
-                    (false, Some(format!("expected object, got {}", json_type_name(value))))
+                    (
+                        false,
+                        Some(format!("expected object, got {}", json_type_name(value))),
+                    )
                 }
             } else {
                 (true, None) // Can't parse map type, skip validation
@@ -1792,8 +1855,12 @@ fn json_type_name(value: &serde_json::Value) -> &'static str {
         serde_json::Value::Null => "null",
         serde_json::Value::Bool(_) => "Bool",
         serde_json::Value::Number(n) => {
-            if n.is_f64() && n.as_i64().is_none() { "Float" } else { "Int" }
-        },
+            if n.is_f64() && n.as_i64().is_none() {
+                "Float"
+            } else {
+                "Int"
+            }
+        }
         serde_json::Value::String(_) => "Str",
         serde_json::Value::Array(_) => "array",
         serde_json::Value::Object(_) => "object",
@@ -1851,14 +1918,14 @@ pub extern "C" fn dooruntime_validate_field_types(
                             let value_str = field_value.to_string();
                             let mut field_error = serde_json::Map::new();
                             field_error.insert("expected".to_string(), json!(expected_type));
-                            field_error.insert("received".to_string(), json!(json_type_name(field_value)));
+                            field_error
+                                .insert("received".to_string(), json!(json_type_name(field_value)));
                             field_error.insert("value".to_string(), json!(value_str));
                             if let Some(detail) = error_detail {
                                 field_error.insert("detail".to_string(), json!(detail));
                             }
                             type_errors.insert(field_name.clone(), json!(field_error));
                         }
-
                     }
                 }
             }
@@ -1870,9 +1937,7 @@ pub extern "C" fn dooruntime_validate_field_types(
                 "fields": type_errors
             });
 
-            CString::new(error_obj.to_string())
-                .map(|c| c.into_raw())
-                .unwrap_or(std::ptr::null_mut())
+            string_to_c_ptr(&error_obj.to_string())
         } else {
             std::ptr::null_mut() // All types correct
         }
@@ -1925,10 +1990,8 @@ pub extern "C" fn dooruntime_validate_json_body(
                         if !obj.contains_key(field_name) {
                             let mut field_error = serde_json::Map::new();
                             field_error.insert("error".to_string(), json!("required"));
-                            field_error.insert(
-                                "message".to_string(),
-                                json!("This field is required"),
-                            );
+                            field_error
+                                .insert("message".to_string(), json!("This field is required"));
                             all_errors.insert(field_name.to_string(), json!(field_error));
                             error_detail = "Required field missing in request body".to_string();
                         }
@@ -1989,9 +2052,7 @@ pub extern "C" fn dooruntime_validate_json_body(
                 "detail": error_detail
             });
 
-            CString::new(error_obj.to_string())
-                .map(|c| c.into_raw())
-                .unwrap_or(std::ptr::null_mut())
+            string_to_c_ptr(&error_obj.to_string())
         } else {
             std::ptr::null_mut() // All validation passed
         }
@@ -2193,9 +2254,7 @@ pub extern "C" fn json_extract_first_str(json: *const libc::c_char) -> *mut libc
         Ok(v) => v,
         Err(_) => {
             // Return the raw string
-            return CString::new(json_str)
-                .map(|c| c.into_raw())
-                .unwrap_or(std::ptr::null_mut());
+            return string_to_c_ptr(json_str);
         }
     };
 
@@ -2204,9 +2263,7 @@ pub extern "C" fn json_extract_first_str(json: *const libc::c_char) -> *mut libc
 
 fn extract_first_str_from_value(json_val: &serde_json::Value) -> *mut libc::c_char {
     if let Some(s) = json_val.as_str() {
-        return CString::new(s)
-            .map(|c| c.into_raw())
-            .unwrap_or(std::ptr::null_mut());
+        return string_to_c_ptr(s);
     }
 
     if let Some(arr) = json_val.as_array() {
@@ -2218,9 +2275,7 @@ fn extract_first_str_from_value(json_val: &serde_json::Value) -> *mut libc::c_ch
     if let Some(obj) = json_val.as_object() {
         if let Some((_, val)) = obj.iter().next() {
             if let Some(s) = val.as_str() {
-                return CString::new(s)
-                    .map(|c| c.into_raw())
-                    .unwrap_or(std::ptr::null_mut());
+                return string_to_c_ptr(s);
             }
         }
     }
@@ -2228,4 +2283,29 @@ fn extract_first_str_from_value(json_val: &serde_json::Value) -> *mut libc::c_ch
     std::ptr::null_mut()
 }
 
+/// Generate a random base62 string of specified length
+#[no_mangle]
+pub extern "C" fn doo_random_base62(len: libc::size_t) -> *mut libc::c_char {
+    let s: String = thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(len as usize)
+        .map(char::from)
+        .collect();
 
+    string_owned_to_c(s)
+}
+
+/// Validate if a string is a valid URL
+#[no_mangle]
+pub extern "C" fn doo_url_is_valid(s: *const libc::c_char) -> bool {
+    if s.is_null() {
+        return false;
+    }
+    let s_str = unsafe {
+        match CStr::from_ptr(s).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+    Url::parse(s_str).is_ok()
+}

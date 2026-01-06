@@ -113,7 +113,15 @@ impl<'ctx> CodeGen<'ctx> {
             let is_scalar_with_symbol = self.symbols.contains_key(name)
                 && self.variable_types.get(name).map(|t| matches!(t.as_str(), "Int" | "Float" | "Bool" | "Struct(Int)" | "Struct(Float)" | "Struct(Bool)")).unwrap_or(false);
             
-            if (is_loop_var || is_heap_map || has_symbol || is_scalar_with_symbol) && self.symbols.contains_key(name) {
+            // CRITICAL FIX: For heap_strings (JSON strings from db.raw()), we MUST return the temp_value
+            // directly because it contains the correct RC string pointer. Symbol lookup would
+            // return a stale or incorrect pointer since the symbol wasn't updated with the RC value.
+            let is_heap_string_with_temp = self.heap_strings.contains(name);
+            
+            if is_heap_string_with_temp {
+                // Return the temp_value directly for JSON strings from db.raw()
+                return *val;
+            } else if (is_loop_var || is_heap_map || has_symbol || is_scalar_with_symbol) && self.symbols.contains_key(name) {
                 // Fall through to symbol lookup below
             } else {
                 return *val;
@@ -271,6 +279,7 @@ impl<'ctx> CodeGen<'ctx> {
             // Use i32 for Bool to match internal representation (all Bools are stored as i32)
             "Bool" => self.context.i32_type().into(),
             "Str" => self.context.ptr_type(AddressSpace::default()).into(),
+            "Ptr" => self.context.ptr_type(AddressSpace::default()).into(),
             _ => self.context.i32_type().into(),
         }
     }
