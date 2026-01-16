@@ -1,4 +1,5 @@
 use crate::{
+    doo_expr_debug, doo_mir_debug, doo_trace_enter, doo_trace_exit, doo_type_debug, doo_warn,
     lexer::token::TokenType,
     mir::statements::build_statement,
     mir::{builder::MirBuilder, MirBlock, MirInstr},
@@ -26,6 +27,11 @@ fn get_enum_variant_index(builder: &MirBuilder, enum_name: &str, variant_name: &
             }
         }
     }
+    doo_warn!(
+        "CRITICAL: Enum variant not found: {}::{}, returning 0 - may cause incorrect tag values!",
+        enum_name,
+        variant_name
+    );
     0
 }
 
@@ -173,7 +179,13 @@ pub fn determine_op_type(builder: &MirBuilder, lhs: &str, rhs: &str) -> Result<S
 pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut MirBlock) -> String {
     // Check recursion depth to prevent stack overflow
     builder.recursion_depth += 1;
+
     if builder.recursion_depth > crate::limits::MIR_MAX_DEPTH {
+        doo_warn!(
+            "CRITICAL: MIR expression depth limit exceeded: {} > {}",
+            builder.recursion_depth,
+            crate::limits::MIR_MAX_DEPTH
+        );
         builder.recursion_depth -= 1;
         // Return error marker on depth exceeded
         let tmp = builder.next_tmp();
@@ -183,7 +195,6 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
         });
         return tmp;
     }
-
     let result = match expr {
         AstNode::NumberLiteral(n) => {
             let tmp = builder.next_tmp();
@@ -193,6 +204,56 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             });
             // Track type in symbol table
             builder.mir_symbol_table.insert(tmp.clone(), TypeNode::Int);
+            tmp
+        }
+
+        AstNode::ObjectLiteral(entries) => {
+            // Lower object literals into a homogeneous Map(Str, Str).
+            // Each value is encoded as a JSON string using JSON.stringify(value).
+            // This allows heterogeneous values (arrays/bools/ints) while keeping the map value type uniform.
+
+            let mut map_entries: Vec<(String, String)> = Vec::new();
+
+            for (key, value_expr) in entries {
+                // Keys are always string constants
+                let key_tmp = builder.next_tmp();
+                block.instrs.push(MirInstr::ConstString {
+                    name: key_tmp.clone(),
+                    value: key.clone(),
+                });
+                builder
+                    .mir_symbol_table
+                    .insert(key_tmp.clone(), TypeNode::String);
+
+                let val_tmp = build_expression(builder, value_expr, block);
+
+                // JSON.stringify(value)
+                let json_tmp = builder.next_tmp();
+                block.instrs.push(MirInstr::MethodCall {
+                    dest: json_tmp.clone(),
+                    object: "JSON".to_string(),
+                    method: "stringify".to_string(),
+                    args: vec![val_tmp],
+                });
+                builder
+                    .mir_symbol_table
+                    .insert(json_tmp.clone(), TypeNode::String);
+
+                map_entries.push((key_tmp, json_tmp));
+            }
+
+            let tmp = builder.next_tmp();
+            block.instrs.push(MirInstr::Map {
+                name: tmp.clone(),
+                entries: map_entries,
+                key_type: Some("Str".to_string()),
+                value_type: Some("Str".to_string()),
+            });
+
+            builder.mir_symbol_table.insert(
+                tmp.clone(),
+                TypeNode::Map(Box::new(TypeNode::String), Box::new(TypeNode::String)),
+            );
             tmp
         }
         AstNode::FloatLiteral(f) => {
@@ -859,7 +920,8 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
                         let elem_tmp = build_expression(builder, elem, block);
                         // Track the type of the first element to use for the array
                         if tmp_elements.is_empty() {
-                            if let Some(elem_t) = get_operand_type(builder, &elem_tmp) {
+                            let detected_type = get_operand_type(builder, &elem_tmp);
+                            if let Some(elem_t) = detected_type {
                                 element_type = elem_t;
                             }
                         }
@@ -1252,7 +1314,8 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
             let mut field_values = Vec::new();
 
             // Get struct field types from the struct table to handle empty arrays correctly
-            let struct_field_types = builder.program.struct_table.get(name).cloned();
+            // Use builder.struct_table (populated by analyzer) instead of program.struct_table
+            let struct_field_types = builder.struct_table.get(name).cloned();
 
             for (field_name, field_expr) in fields {
                 // For empty array literals, check if we know the expected field type
@@ -1352,16 +1415,71 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
 
         // Field access: obj.field
         AstNode::FieldAccess { object, field } => {
-            // Build MIR for the object expression
+            // Duration sugar: 1.hour / 5.minutes / 30.seconds
+            // Lower into integer multiplication in seconds.
             let object_tmp = build_expression(builder, object, block);
+            if let Some(TypeNode::Int) = builder.mir_symbol_table.get(&object_tmp) {
+                let multiplier = match field.as_str() {
+                    "second" | "seconds" => Some(1),
+                    "minute" | "minutes" => Some(60),
+                    "hour" | "hours" => Some(3600),
+                    _ => None,
+                };
+
+                if let Some(mult) = multiplier {
+                    let mult_tmp = builder.next_tmp();
+                    block.instrs.push(MirInstr::ConstInt {
+                        name: mult_tmp.clone(),
+                        value: mult,
+                    });
+                    builder
+                        .mir_symbol_table
+                        .insert(mult_tmp.clone(), TypeNode::Int);
+
+                    let out_tmp = builder.next_tmp();
+                    block.instrs.push(MirInstr::BinaryOp(
+                        "mul:int".to_string(),
+                        out_tmp.clone(),
+                        object_tmp,
+                        mult_tmp,
+                    ));
+                    builder
+                        .mir_symbol_table
+                        .insert(out_tmp.clone(), TypeNode::Int);
+                    return out_tmp;
+                }
+            }
+
+            // Build MIR for the object expression
+            let object_tmp = object_tmp;
 
             // Create field access instruction
             let field_tmp = builder.next_tmp();
             block.instrs.push(MirInstr::StructGet {
                 name: field_tmp.clone(),
-                struct_instance: object_tmp,
+                struct_instance: object_tmp.clone(),
                 field: field.clone(),
             });
+
+            if let Some(obj_ty) = builder.mir_symbol_table.get(&object_tmp).cloned() {
+                let struct_name_opt = match obj_ty {
+                    TypeNode::TypeRef(name) => Some(name),
+                    TypeNode::Struct(name, _) => Some(name),
+                    _ => None,
+                };
+
+                if let Some(struct_name) = struct_name_opt {
+                    // Use builder.struct_table (populated by analyzer) instead of program.struct_table
+                    // (which is only populated during finalize() after build_program() completes)
+                    if let Some(field_map) = builder.struct_table.get(&struct_name) {
+                        if let Some(field_ty) = field_map.get(field) {
+                            builder
+                                .mir_symbol_table
+                                .insert(field_tmp.clone(), field_ty.clone());
+                        }
+                    }
+                }
+            }
 
             field_tmp
         }
@@ -2133,6 +2251,10 @@ pub fn build_expression(builder: &mut MirBuilder, expr: &AstNode, block: &mut Mi
         }
 
         _ => {
+            doo_warn!(
+                "CRITICAL: Unhandled expression type in build_expression: {:?}",
+                std::mem::discriminant(expr)
+            );
             // For unhandled expressions, create a placeholder temporary.
             // This is a safeguard for future AST node types.
             builder.next_tmp()

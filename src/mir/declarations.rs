@@ -97,13 +97,12 @@ pub fn build_let_decl(builder: &mut MirBuilder, node: &AstNode) -> Vec<MirInstr>
                 });
 
                 // Track variable type in mir_symbol_table
-                // Copy type from value_tmp if available, or use type_annotation
-                if let Some(value_type) = builder.mir_symbol_table.get(&value_tmp).cloned() {
-                    builder.mir_symbol_table.insert(name.clone(), value_type);
-                } else if let Some(type_ann) = type_annotation {
+                if let Some(type_ann) = type_annotation {
                     builder
                         .mir_symbol_table
                         .insert(name.clone(), type_ann.clone());
+                } else if let Some(value_type) = builder.mir_symbol_table.get(&value_tmp).cloned() {
+                    builder.mir_symbol_table.insert(name.clone(), value_type);
                 }
 
                 // Insert IncRef ONLY when copying from an existing variable.
@@ -200,6 +199,13 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         } else {
             name.clone()
         };
+
+        crate::doo_mir_debug!(
+            "build_function_decl: {} ({} params, {} stmts)",
+            func_name,
+            params.len(),
+            body.len()
+        );
         // Extract FFI information from decorators
         let mut ffi_lib: Option<String> = None;
         let mut ffi_symbol: Option<String> = None;
@@ -313,7 +319,7 @@ pub fn build_function_decl(builder: &mut MirBuilder, node: &AstNode) {
         };
 
         // Enter function scope for reference counting.
-        builder.enter_scope();
+        builder.push_scope();
 
         // Track parameter names and types to check if they need RC
         let mut param_rc_types: Vec<(String, bool)> = Vec::new();
