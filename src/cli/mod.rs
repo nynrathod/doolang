@@ -2,6 +2,7 @@ pub mod analytics;
 pub mod templates;
 
 use clap::{Parser, Subcommand};
+use console::Term;
 use dialoguer::{
     theme::{ColorfulTheme, SimpleTheme},
     Confirm, MultiSelect, Password, Select,
@@ -69,6 +70,10 @@ pub enum Commands {
         #[arg(long)]
         keep_ll: bool,
 
+        /// Enable debug output (temporary, session-only)
+        #[arg(long)]
+        debug: bool,
+
         /// Arguments to pass to the program
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -102,11 +107,14 @@ pub fn run_cli(cli: Cli) -> i32 {
     use doo::compiler::{compile_project, CompileOptions};
 
     match cli.command {
-        None => {
-            println!("🎉 doo CLI - doo language tool");
-            println!("Type 'doo --help' for usage");
-            0
-        }
+        None => run_cli(Cli {
+            command: Some(Commands::Run {
+                path: PathBuf::from("."),
+                keep_ll: false,
+                debug: false,
+                args: Vec::new(),
+            }),
+        }),
         Some(Commands::Init { name, template }) => run_init(name, template),
         Some(Commands::Deploy { verbose }) => run_deploy(verbose),
         Some(Commands::Build {
@@ -148,12 +156,150 @@ pub fn run_cli(cli: Cli) -> i32 {
         Some(Commands::Run {
             path,
             keep_ll,
+            debug,
             args,
         }) => {
+            let mut path = path;
+
+            if env::var("DOO_ENTRY").is_err() && !path.is_file() {
+                let candidates = doo::compiler::discover_main_doo_candidates(&path, 4, 25);
+                if candidates.len() == 1 {
+                    path = candidates[0].clone();
+                } else if candidates.len() > 1 {
+                    let is_interactive = Term::stdout().is_term();
+                    if is_interactive {
+                        let display_items: Vec<String> =
+                            candidates.iter().map(|p| p.display().to_string()).collect();
+
+                        let idx = match Select::with_theme(&ColorfulTheme::default())
+                            .with_prompt("Multiple projects found. Select one to run")
+                            .items(&display_items)
+                            .default(0)
+                            .interact()
+                        {
+                            Ok(i) => i,
+                            Err(_) => {
+                                eprintln!("{} Failed to select project", ERROR);
+                                return 1;
+                            }
+                        };
+
+                        if let Some(selected) = candidates.get(idx) {
+                            path = selected.clone();
+                        }
+                    } else {
+                        // Non-interactive (e.g. IDE task running `doo`): pick a deterministic default
+                        // to avoid failing with "main.doo not found" when run from repo root.
+                        let search_root = path.clone();
+                        let mut best: Option<(usize, String, PathBuf)> = None;
+                        for c in &candidates {
+                            let rel_depth = c
+                                .strip_prefix(&search_root)
+                                .ok()
+                                .map(|p| p.components().count())
+                                .unwrap_or_else(|| c.components().count());
+                            let key_str = c.display().to_string();
+                            match &best {
+                                None => best = Some((rel_depth, key_str, c.clone())),
+                                Some((best_depth, best_str, _)) => {
+                                    if rel_depth < *best_depth
+                                        || (rel_depth == *best_depth && key_str < *best_str)
+                                    {
+                                        best = Some((rel_depth, key_str, c.clone()));
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some((_, _, chosen)) = best {
+                            path = chosen;
+                        }
+                    }
+                }
+            }
+
+            // Set debug mode based on CLI flag or build type
+            let debug_enabled = debug || cfg!(debug_assertions);
+
+            // Determine the working directory for the user's project (for .env, etc.)
+            let run_root: PathBuf = if path.is_file() {
+                let parent = path.parent().unwrap_or_else(|| Path::new("."));
+                let parent = if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                };
+                parent.to_path_buf()
+            } else {
+                path.clone()
+            };
+
             let temp_name = format!("temp_doo_{}", std::process::id());
 
-            // Use target/release for temporary binary to find DLLs and keep root clean
-            let target_dir = Path::new("target").join("release");
+            // Find the compiler's build directory for target-linux/target-windows
+            // Priority: DOO_BUILD_ROOT env var > walk up to find Cargo.toml > ~/.doo fallback
+            let doo_compiler_root = if let Ok(build_root) = env::var("DOO_BUILD_ROOT") {
+                // Use explicit build root if set
+                PathBuf::from(build_root)
+            } else if let Ok(exe_path) = env::current_exe() {
+                let mut search_path = exe_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
+
+                // Walk up to find Cargo.toml (for development builds)
+                let mut found_cargo_root = None;
+                loop {
+                    if search_path.join("Cargo.toml").exists() {
+                        found_cargo_root = Some(search_path.clone());
+                        break;
+                    }
+
+                    match search_path.parent() {
+                        Some(parent) if parent != search_path => {
+                            search_path = parent.to_path_buf();
+                        }
+                        _ => break,
+                    }
+                }
+
+                // If Cargo.toml found, use it; otherwise use ~/.doo for installed binaries
+                if let Some(root) = found_cargo_root {
+                    root
+                } else {
+                    // For installed binaries, use ~/.doo directory
+                    let home_dir = env::var("HOME")
+                        .or_else(|_| env::var("USERPROFILE"))
+                        .unwrap_or_else(|_| String::from("."));
+                    PathBuf::from(home_dir).join(".doo")
+                }
+            } else {
+                // Last resort fallback
+                let home_dir = env::var("HOME")
+                    .or_else(|_| env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| String::from("."));
+                PathBuf::from(home_dir).join(".doo")
+            };
+
+            // Use target/{platform}/release for temporary binaries
+            // This is the standard layout used by cargo and other build systems
+            let target_root = if cfg!(windows) {
+                "target-windows"
+            } else if cfg!(target_os = "macos") {
+                "target"
+            } else {
+                "target-linux"
+            };
+            let base_is_already_target_root = doo_compiler_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == target_root)
+                .unwrap_or(false);
+            let target_dir = if base_is_already_target_root {
+                doo_compiler_root.join("release")
+            } else {
+                doo_compiler_root.join(target_root).join("release")
+            };
             if !target_dir.exists() {
                 let _ = std::fs::create_dir_all(&target_dir);
             }
@@ -205,23 +351,32 @@ pub fn run_cli(cli: Cli) -> i32 {
                 temp_name.clone()
             };
 
-            // Full absolute path to executable
-            let exe_full_path = match std::env::current_dir() {
-                Ok(dir) => dir.join("target").join("release").join(&exe_name),
-                Err(_) => {
-                    eprintln!("{} Error: Could not determine current directory", ERROR);
-                    return 1;
-                }
-            };
+            let exe_full_path = target_dir.join(&exe_name);
 
             use std::sync::{Arc, Mutex};
 
-            let child = Command::new(&exe_full_path)
-                .args(&args)
+            // Build command with DOO_DEBUG env var if debug is enabled
+            let mut cmd = Command::new(&exe_full_path);
+            cmd.args(&args)
+                .current_dir(&run_root)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .spawn();
+                .stderr(Stdio::inherit());
+
+            let env_file = run_root.join(".env");
+            let env_vars = read_env_vars_from_file(&env_file);
+            for (key, value) in env_vars {
+                if env::var(&key).is_err() {
+                    cmd.env(key, value);
+                }
+            }
+
+            // Pass DOO_DEBUG to subprocess
+            if debug_enabled {
+                cmd.env("DOO_DEBUG", "1");
+            }
+
+            let child = cmd.spawn();
 
             let code = match child {
                 Ok(child) => {
@@ -577,8 +732,23 @@ fn install_flyctl() -> bool {
 }
 
 fn read_env_vars() -> Vec<(String, String)> {
+    read_env_vars_from_file(Path::new(".env"))
+}
+
+fn strip_surrounding_quotes(value: &str) -> String {
+    let value = value.trim();
+    if value.len() >= 2 {
+        let first = value.as_bytes()[0];
+        let last = value.as_bytes()[value.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return value[1..value.len() - 1].to_string();
+        }
+    }
+    value.to_string()
+}
+
+fn read_env_vars_from_file(env_path: &Path) -> Vec<(String, String)> {
     let mut vars = Vec::new();
-    let env_path = Path::new(".env");
 
     if let Ok(content) = fs::read_to_string(env_path) {
         for line in content.lines() {
@@ -588,8 +758,8 @@ fn read_env_vars() -> Vec<(String, String)> {
                 continue;
             }
             if let Some((key, value)) = line.split_once('=') {
-                let key = key.trim().to_string();
-                let value = value.trim().to_string();
+                let key = key.trim().trim_start_matches("export ").trim().to_string();
+                let value = strip_surrounding_quotes(value);
                 if !key.is_empty() {
                     vars.push((key, value));
                 }
@@ -1672,9 +1842,7 @@ fn is_release_file(file_name: &str) -> bool {
     // Match any file starting with "doo" (doo.exe, doo.dll, doo_http.dll, doo_db.so, etc.)
     // Match any file starting with "libdoo" (libdoo.so, libdoo_http.dylib, etc.)
     // Match the "std" folder
-    file_name.starts_with("doo")
-        || file_name.starts_with("libdoo")
-        || file_name == "std"
+    file_name.starts_with("doo") || file_name.starts_with("libdoo") || file_name == "std"
 }
 
 /// Recursively copy a directory

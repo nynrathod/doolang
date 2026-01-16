@@ -149,7 +149,7 @@ struct Todo {
     id: Int @primary @auto,
     Title: Str,
     Completed: Bool @default(false),
-    UserId: Int,
+    UserId: Int @foreign(User),
 }
 
 fn main() {
@@ -225,7 +225,7 @@ fn GetFeed() -> [Post] ! DatabaseError {
     let result: [Post] = db.raw("
         SELECT p.title
         FROM posts p
-        JOIN users u ON p.authorid = u.id
+        JOIN users u ON p.author_id = u.id
         WHERE p.published = true
     ")?;
 
@@ -237,7 +237,7 @@ fn GetUserPosts(authorId: Int) -> [Post] ! DatabaseError {
 
     let result: [Post] = db.rawWithParams("
         SELECT * FROM posts
-        WHERE authorid = $1
+        WHERE author_id = $1
     ", authorId)?;
 
     Ok result;
@@ -248,7 +248,7 @@ fn GetMyPosts(userId: Int) -> [Post] ! DatabaseError {
 
     let result: [Post] = db.rawWithParams("
         SELECT * FROM posts
-        WHERE authorid = $1
+        WHERE author_id = $1
     ", userId)?;
 
     Ok result;

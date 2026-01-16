@@ -79,7 +79,73 @@ pub struct CompileResult {
     pub exe_path: Option<PathBuf>,
 }
 
+pub fn discover_main_doo_candidates(
+    start: &Path,
+    max_depth: usize,
+    max_results: usize,
+) -> Vec<PathBuf> {
+    use std::collections::VecDeque;
+
+    let mut results: Vec<PathBuf> = Vec::new();
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((start.to_path_buf(), 0));
+
+    while let Some((dir, depth)) = queue.pop_front() {
+        if depth > max_depth {
+            continue;
+        }
+
+        let main_file = dir.join("main.doo");
+        if main_file.exists() {
+            results.push(main_file);
+            if results.len() >= max_results {
+                break;
+            }
+        }
+
+        let src_main = dir.join("src").join("main.doo");
+        if src_main.exists() {
+            results.push(src_main);
+            if results.len() >= max_results {
+                break;
+            }
+        }
+
+        if depth == max_depth {
+            continue;
+        }
+
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.')
+                || name == "target"
+                || name == "target-windows"
+                || name == "node_modules"
+            {
+                continue;
+            }
+            queue.push_back((path, depth + 1));
+        }
+    }
+
+    results.sort();
+    results.dedup();
+    results
+}
+
 pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
+    crate::doo_trace_enter!("compile_project", "input={}", opts.input_path.display());
     let output_name = env::var("DOO_OUTPUT_NAME").unwrap_or(opts.output_name);
     let check_only = env::var("DOO_CHECK_ONLY").is_ok() || opts.check_only;
 
@@ -102,11 +168,67 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
             if src_main_file.exists() {
                 src_main_file
             } else {
-                return Err(format!(
-                    "Error: main.doo not found in {} or {}/src",
-                    opts.input_path.display(),
-                    opts.input_path.display()
-                ));
+                let candidates = discover_main_doo_candidates(&opts.input_path, 4, 25);
+                if candidates.len() == 1 {
+                    candidates[0].clone()
+                } else if candidates.is_empty() {
+                    return Err(format!(
+                        "Error: main.doo not found in {} or {}/src",
+                        opts.input_path.display(),
+                        opts.input_path.display()
+                    ));
+                } else {
+                    if let Ok(entry_override) = env::var("DOO_ENTRY") {
+                        let override_path = PathBuf::from(entry_override);
+                        let override_path = if override_path.is_absolute() {
+                            override_path
+                        } else {
+                            opts.input_path.join(override_path)
+                        };
+
+                        if override_path.is_file() {
+                            return compile_project(CompileOptions {
+                                input_path: override_path,
+                                ..opts
+                            });
+                        }
+
+                        if override_path.is_dir() {
+                            let override_main = override_path.join("main.doo");
+                            if override_main.exists() {
+                                return compile_project(CompileOptions {
+                                    input_path: override_main,
+                                    ..opts
+                                });
+                            }
+
+                            let override_src_main = override_path.join("src").join("main.doo");
+                            if override_src_main.exists() {
+                                return compile_project(CompileOptions {
+                                    input_path: override_src_main,
+                                    ..opts
+                                });
+                            }
+                        }
+                    }
+
+                    let mut msg = String::new();
+                    msg.push_str(&format!(
+                        "Error: main.doo not found in {} or {}/src\n\nFound multiple candidates:\n",
+                        opts.input_path.display(),
+                        opts.input_path.display()
+                    ));
+                    for c in candidates {
+                        msg.push_str(&format!("  - {}\n", c.display()));
+                    }
+                    msg.push_str(
+                        "\nRun with an explicit path, e.g. `doo run <project_dir_or_main.doo>`\n",
+                    );
+                    msg.push_str(
+                        "Or set DOO_ENTRY to a project dir or main.doo path to disambiguate.\n",
+                    );
+                    return Err(msg);
+                }
             }
         }
     };
@@ -291,6 +413,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let mut all_nodes = analyzer.imported_structs.clone();
     all_nodes.extend(analyzer.imported_functions.clone());
     all_nodes.extend(statements);
+    
+    crate::doo_mir_debug!("Starting MIR build: {} total nodes ({} imported structs, {} imported functions)", 
+        all_nodes.len(), analyzer.imported_structs.len(), analyzer.imported_functions.len());
 
     if opts.print_ast {}
 
@@ -305,6 +430,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     mir_builder.set_is_main_entry(true); // Mark this as the main entry point
     mir_builder.build_program(&all_nodes);
     mir_builder.finalize();
+    
+    crate::doo_mir_debug!("MIR complete: {} functions, {} globals", 
+        mir_builder.program.functions.len(), mir_builder.program.globals.len());
 
     // Validate MIR before codegen
     if let Err(e) = mir_builder.program.validate() {
@@ -323,11 +451,13 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     if opts.print_mir || opts.dev_mode {}
 
+    crate::doo_codegen_debug!("Starting LLVM codegen");
     let context = inkwell::context::Context::create();
     let mut codegen = CodeGen::new("main_module", &context);
     codegen.function_aliases = analyzer.function_aliases.clone();
 
     codegen.generate_program(&mir_builder.program);
+    crate::doo_codegen_debug!("LLVM codegen complete");
 
     if opts.dev_mode {
         codegen.dump();
@@ -419,7 +549,7 @@ fn compile_to_native(
     // Always remove .o file after linking unless keep_obj is true
     if !opts.keep_obj {
         if fs::remove_file(&obj_file).is_err() && opts.dev_mode {
-            eprintln!("Warning: failed to remove object file {}", obj_file);
+            crate::doo_debug!("Warning: failed to remove object file {}", obj_file);
         }
     }
 
@@ -432,12 +562,16 @@ fn link_object_file(
     _dev_mode: bool,
     mir_program: &crate::mir::mir::MirProgram,
 ) -> Result<(), String> {
+    crate::doo_linker_debug!("link_object_file: {} -> {}", obj_file, output);
+    
     // Collect all FFI libraries needed from the MIR
     let mut ffi_libs: std::collections::HashSet<String> = mir_program
         .functions
         .iter()
         .filter_map(|f| f.ffi_lib.clone())
         .collect();
+    
+    crate::doo_linker_debug!("FFI libs from MIR: {:?}", ffi_libs);
 
     // Runtime functions (hash_string, json_*, file_*, panic_runtime) are now
     // compiled into libdoo.dylib (the main compiler library).
@@ -661,7 +795,14 @@ fn link_object_file(
 
         // Link FFI libraries in correct dependency order
         // Order matters on Unix: dependents before dependencies
-        let lib_order = ["doo_http", "doo_auth", "doo_db", "doo_file", "doo_runtime", "doo"];
+        let lib_order = [
+            "doo_http",
+            "doo_auth",
+            "doo_db",
+            "doo_file",
+            "doo_runtime",
+            "doo",
+        ];
         let mut sorted_libs: Vec<&String> = lib_order
             .iter()
             .filter_map(|lib| ffi_libs.iter().find(|l| l.as_str() == *lib))
