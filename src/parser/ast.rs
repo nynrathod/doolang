@@ -178,6 +178,7 @@ pub enum AstNode {
     NilLiteral,
     ArrayLiteral(Vec<AstNode>),
     MapLiteral(Vec<(AstNode, AstNode)>),
+    ObjectLiteral(Vec<(String, AstNode)>),
     SpreadElement(Box<AstNode>), // ...expr for spreading arrays/objects
 
     UnaryExpr {

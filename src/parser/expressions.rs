@@ -139,6 +139,112 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Check if current position is an object literal vs map literal vs block expression
+    /// Object literal: { key: value, ... } where key is an identifier
+    /// Map literal: { "string": value } or { 1: value } or { true: value } or {...spread}
+    fn is_object_literal(&mut self) -> bool {
+        let saved_pos = self.current;
+
+        if !self.peek_is(TokenType::OpenBrace) {
+            return false;
+        }
+        self.advance(); // consume '{'
+
+        // Empty braces - treat as empty map (existing behavior)
+        if self.peek_is(TokenType::CloseBrace) {
+            self.current = saved_pos;
+            return false;
+        }
+
+        // Spread operator - treat as map (existing behavior)
+        if self.peek_is(TokenType::Spread) {
+            self.current = saved_pos;
+            return false;
+        }
+
+        // If the first token inside is an identifier and we can find a top-level ':'
+        // before a top-level ';', then this is an object literal.
+        if !self.peek_is(TokenType::Identifier) {
+            self.current = saved_pos;
+            return false;
+        }
+
+        let mut depth = 0;
+        let mut paren_depth = 0;
+        let mut found_colon = false;
+        let mut found_semicolon = false;
+
+        while self.current < self.tokens.len() {
+            let tok = self.peek();
+            if tok.is_none() {
+                break;
+            }
+            let tok_type = tok.unwrap().kind;
+
+            match tok_type {
+                TokenType::OpenBrace => depth += 1,
+                TokenType::CloseBrace => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                TokenType::OpenParen => paren_depth += 1,
+                TokenType::CloseParen => paren_depth -= 1,
+                TokenType::Colon if depth == 0 && paren_depth == 0 => {
+                    found_colon = true;
+                    break;
+                }
+                TokenType::Semi if depth == 0 && paren_depth == 0 => {
+                    found_semicolon = true;
+                    break;
+                }
+                _ => {}
+            }
+
+            self.advance();
+        }
+
+        self.current = saved_pos;
+
+        if found_semicolon {
+            return false;
+        }
+        found_colon
+    }
+
+    /// Parses an object literal.
+    /// Example: `{ origins: ["a"], methods: ["GET"], credentials: true }`
+    fn parse_object_literal(&mut self) -> ParseResult<AstNode> {
+        self.expect(TokenType::OpenBrace)?;
+
+        let mut entries: Vec<(String, AstNode)> = Vec::new();
+
+        while !self.peek_is(TokenType::CloseBrace) {
+            if self.peek_is(TokenType::Spread) {
+                // Spread is not supported in object literal yet; keep this strict for safety
+                return Err(ParseError::UnexpectedTokenAt {
+                    msg: "Spread operator is not supported in object literals".to_string(),
+                    line: self.peek().map(|t| t.line).unwrap_or(0),
+                    col: self.peek().map(|t| t.col).unwrap_or(0),
+                });
+            }
+
+            let key_tok = self.expect(TokenType::Identifier)?;
+            let key = key_tok.value.to_string();
+            self.expect(TokenType::Colon)?;
+            let value = self.parse_expression()?;
+            entries.push((key, value));
+
+            if !self.peek_is(TokenType::CloseBrace) {
+                self.expect(TokenType::Comma)?;
+            }
+        }
+
+        self.expect(TokenType::CloseBrace)?;
+        Ok(AstNode::ObjectLiteral(entries))
+    }
+
     /// Parses postfix operations on an expression.
     /// Handles array/map element access: arr[0], map["key"], nested[i][j]
     /// Also handles method calls: obj.method(args)
@@ -406,8 +512,12 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::OpenBracket => self.parse_array_literal(),
                 TokenType::OpenBrace => {
-                    // Disambiguate between map literal and block expression
-                    if self.is_map_literal() {
+                    // Disambiguate between map literal, object literal, and block expression
+                    // Object literal: { key: value, ... } where key is an identifier
+                    // Map literal: { "key": value, ... } or { 1: 2 } etc.
+                    if self.is_object_literal() {
+                        self.parse_object_literal()
+                    } else if self.is_map_literal() {
                         self.parse_map_literal()
                     } else {
                         self.parse_block_expr()
