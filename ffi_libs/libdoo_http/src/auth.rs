@@ -34,9 +34,9 @@ pub fn register_auth_routes(
     struct_metadata: AuthStructMetadata,
     db_connection: *const std::ffi::c_void,
 ) -> Result<(), String> {
-    println!("✓ Generating auth routes for {}", struct_metadata.name);
-    println!("  - POST {} (signup)", signup_path);
-    println!("  - POST {} (login)", login_path);
+    crate::doo_debug!("✓ Generating auth routes for {}", struct_metadata.name);
+    crate::doo_debug!("  - POST {} (signup)", signup_path);
+    crate::doo_debug!("  - POST {} (login)", login_path);
 
     // Create and register signup handler
     let signup_handler = create_signup_handler(struct_metadata.clone(), db_connection);
