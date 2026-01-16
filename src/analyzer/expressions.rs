@@ -137,10 +137,20 @@ impl SemanticAnalyzer {
                 if let Some(info) = self.lookup_variable(name) {
                     Ok(info.ty.clone())
                 } else if let Some(outer) = &self.outer_symbol_table {
-                    if outer.contains_key(name) {
-                        return Err(SemanticError::OutOfScopeVariable(NamedError {
-                            name: name.clone(),
-                        }));
+                    if let Some(info) = outer.get(name) {
+                        // Allow access to imported types (structs, enums, type references) from outer scope
+                        // These are registered at module level and should be accessible within function bodies
+                        match &info.ty {
+                            TypeNode::Struct(_, _) | TypeNode::Enum(_, _) | TypeNode::TypeRef(_) => {
+                                return Ok(info.ty.clone());
+                            }
+                            _ => {
+                                // For regular variables from outer scope, return out of scope error
+                                return Err(SemanticError::OutOfScopeVariable(NamedError {
+                                    name: name.clone(),
+                                }));
+                            }
+                        }
                     }
                     Err(SemanticError::UndeclaredVariable(NamedError {
                         name: name.clone(),
@@ -793,6 +803,10 @@ impl SemanticAnalyzer {
                 ))
             }
 
+            // Object literal: heterogeneous object used for inline options/config
+            // Treat as Any so it can be passed into builtins that interpret it structurally.
+            AstNode::ObjectLiteral(_entries) => Ok(TypeNode::Any),
+
             // Element access: arr[index] or map[key] or arr[start..end]
             // Infer type of the array/map and the index/key
             AstNode::ElementAccess { array, index } => {
@@ -945,6 +959,13 @@ impl SemanticAnalyzer {
             // Try propagate: infer from the expression being propagated
             // The ? operator unwraps a Result<T, E> to just T
             AstNode::TryPropagate { expr } => {
+                // Validate that ? is used inside a function with error type
+                if self.current_function_error_type.is_none() {
+                    return Err(SemanticError::UnexpectedNode {
+                        expected: "? operator can only be used in functions with error return type (e.g., -> T ! E or ! E)".to_string(),
+                    });
+                }
+                
                 let expr_type = self.infer_type(expr)?;
                 match expr_type {
                     TypeNode::Result(ok_type, _err_type) => Ok(*ok_type),
@@ -1117,6 +1138,17 @@ impl SemanticAnalyzer {
             // Field access: obj.field
             AstNode::FieldAccess { object, field } => {
                 let object_type = self.infer_type(object)?;
+
+                // Duration sugar: 1.hour / 5.minutes / 30.seconds
+                // This is a compile-time numeric convenience. It is only valid on Int.
+                if object_type == TypeNode::Int {
+                    if matches!(
+                        field.as_str(),
+                        "second" | "seconds" | "minute" | "minutes" | "hour" | "hours"
+                    ) {
+                        return Ok(TypeNode::Int);
+                    }
+                }
 
                 // Resolve TypeRef to actual struct type
                 let resolved_type = match &object_type {
@@ -1843,13 +1875,24 @@ impl SemanticAnalyzer {
                 let full_type = format!("Array({})", inner.format_type_string());
                 if let Some(methods) = self.method_table.get(&full_type) {
                     if let Some((param_types, return_type, _)) = methods.get(method) {
-                        // Check argument count
-                        if args.len() != param_types.len() {
+                        // Check argument count (allow omitting trailing Optional params)
+                        if args.len() > param_types.len() {
                             return Err(SemanticError::FunctionArgumentMismatch {
                                 name: format!("{}.{}", full_type, method),
                                 expected: param_types.len(),
                                 found: args.len(),
                             });
+                        }
+                        if args.len() < param_types.len() {
+                            let missing = &param_types[args.len()..];
+                            let ok = missing.iter().all(|t| matches!(t, TypeNode::Optional(_)));
+                            if !ok {
+                                return Err(SemanticError::FunctionArgumentMismatch {
+                                    name: format!("{}.{}", full_type, method),
+                                    expected: param_types.len(),
+                                    found: args.len(),
+                                });
+                            }
                         }
                         return Ok(return_type.clone());
                     }
@@ -1866,13 +1909,24 @@ impl SemanticAnalyzer {
                 );
                 if let Some(methods) = self.method_table.get(&full_type) {
                     if let Some((param_types, return_type, _)) = methods.get(method) {
-                        // Check argument count
-                        if args.len() != param_types.len() {
+                        // Check argument count (allow omitting trailing Optional params)
+                        if args.len() > param_types.len() {
                             return Err(SemanticError::FunctionArgumentMismatch {
                                 name: format!("{}.{}", full_type, method),
                                 expected: param_types.len(),
                                 found: args.len(),
                             });
+                        }
+                        if args.len() < param_types.len() {
+                            let missing = &param_types[args.len()..];
+                            let ok = missing.iter().all(|t| matches!(t, TypeNode::Optional(_)));
+                            if !ok {
+                                return Err(SemanticError::FunctionArgumentMismatch {
+                                    name: format!("{}.{}", full_type, method),
+                                    expected: param_types.len(),
+                                    found: args.len(),
+                                });
+                            }
                         }
                         return Ok(return_type.clone());
                     }
@@ -1889,13 +1943,24 @@ impl SemanticAnalyzer {
         if !type_name.is_empty() {
             if let Some(methods) = self.method_table.get(type_name) {
                 if let Some((param_types, return_type, _)) = methods.get(method) {
-                    // Check argument count (don't include 'self' in count)
-                    if args.len() != param_types.len() {
+                    // Check argument count (allow omitting trailing Optional params)
+                    if args.len() > param_types.len() {
                         return Err(SemanticError::FunctionArgumentMismatch {
                             name: format!("{}.{}", type_name, method),
                             expected: param_types.len(),
                             found: args.len(),
                         });
+                    }
+                    if args.len() < param_types.len() {
+                        let missing = &param_types[args.len()..];
+                        let ok = missing.iter().all(|t| matches!(t, TypeNode::Optional(_)));
+                        if !ok {
+                            return Err(SemanticError::FunctionArgumentMismatch {
+                                name: format!("{}.{}", type_name, method),
+                                expected: param_types.len(),
+                                found: args.len(),
+                            });
+                        }
                     }
                     return Ok(return_type.clone());
                 }

@@ -153,6 +153,8 @@ impl SemanticAnalyzer {
         nodes: &mut Vec<AstNode>,
         import_stack: &mut Vec<String>,
     ) -> Result<(), SemanticError> {
+        crate::doo_analyzer_debug!("analyze_program_with_stack: {} nodes, import_stack_depth={}", nodes.len(), import_stack.len());
+        
         // PREPROCESSING 1: Transform inline closures in route handlers into named functions
         // This converts app.post("/path", (req) -> Res { ... }) into a named function
         crate::analyzer::route_transform::transform_inline_closures(nodes);
@@ -202,6 +204,16 @@ impl SemanticAnalyzer {
                             self.collected_errors.push(e);
                         }
 
+                        // Validate decorator combinations (check for conflicts)
+                        if let Err(e) = super::decorators::validate_decorator_combinations(
+                            &field.decorators,
+                            field.is_optional,
+                            &field.name,
+                            name,
+                        ) {
+                            self.collected_errors.push(e);
+                        }
+
                         // Store decorators for codegen
                         if !field.decorators.is_empty() {
                             let decorator_info: Vec<(String, Vec<String>)> = field
@@ -217,9 +229,9 @@ impl SemanticAnalyzer {
                                             AstNode::FloatLiteral(f) => Some(f.to_string()),
                                             AstNode::BoolLiteral(b) => Some(b.to_string()),
                                             AstNode::Identifier(id) => Some(id.clone()),
-                                            AstNode::EnumVariant { enum_name, variant, .. } => {
-                                                Some(format!("{}::{}", enum_name, variant))
-                                            }
+                                            AstNode::EnumVariant {
+                                                enum_name, variant, ..
+                                            } => Some(format!("{}::{}", enum_name, variant)),
                                             _ => None, // Skip unknown types instead of empty string
                                         })
                                         .collect();
@@ -1185,11 +1197,14 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         // Create module key for circular import detection
         let module_key = path.join("::");
+        
+        crate::doo_import_debug!("import_module: {} ({} items)", module_key, items.len());
 
         // CIRCULAR DEPENDENCY DETECTION
         if import_stack.contains(&module_key) {
             let mut cycle = import_stack.clone();
             cycle.push(module_key.clone());
+            crate::doo_import_debug!("CIRCULAR IMPORT DETECTED: {:?}", cycle);
             return Err(SemanticError::CircularImport { cycle });
         }
         import_stack.push(module_key.clone());
@@ -1525,6 +1540,7 @@ impl SemanticAnalyzer {
 
                             // Copy function signature to current function table
                             // Use full_name to get method signatures (Type::method)
+
                             if let Some((params, ret, err)) =
                                 imported_analyzer.function_table.get(&full_name)
                             {
