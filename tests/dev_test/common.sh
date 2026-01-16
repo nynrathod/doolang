@@ -171,9 +171,18 @@ setup_trap() {
 # where jq starts reading before curl finishes writing
 # =============================================================================
 pretty_json() {
+    local input
+    input="$(cat)"
+
     if command -v jq >/dev/null 2>&1; then
-        jq . 2>/dev/null || cat
-    else
-        cat
+        case "$input" in
+            \{*|\[*)
+                if printf '%s' "$input" | jq . 2>/dev/null; then
+                    return 0
+                fi
+                ;;
+        esac
     fi
+
+    printf '%s\n' "$input"
 }
