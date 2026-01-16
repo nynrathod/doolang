@@ -87,3 +87,14 @@ curl -s -X DELETE \
 echo ""
 
 echo "✅ All middleware + auth + group tests completed"
+
+# --------------------------------------------------
+# Log location (like blog/test_blog.sh)
+# --------------------------------------------------
+echo ""
+echo "📝 Server logs saved in: $(cd "$SCRIPT_DIR" && pwd)/server.log"
+echo "   To inspect: tail -200 \"$SCRIPT_DIR/server.log\""
+if command -v wslpath >/dev/null 2>&1; then
+  WIN_LOG_PATH="$(wslpath -w "$SCRIPT_DIR/server.log")"
+  echo "   Windows path: $WIN_LOG_PATH"
+fi
