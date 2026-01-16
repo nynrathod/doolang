@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "doo"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bumpalo",
  "clap",
@@ -1106,7 +1106,7 @@ checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
 
 [[package]]
 name = "libdoo_auth"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bcrypt",
  "jsonwebtoken",
@@ -1119,8 +1119,9 @@ dependencies = [
 
 [[package]]
 name = "libdoo_db"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
+ "chrono",
  "dotenvy",
  "libc",
  "libdoo_runtime",
@@ -1132,14 +1133,15 @@ dependencies = [
 
 [[package]]
 name = "libdoo_file"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libc",
+ "libdoo_runtime",
 ]
 
 [[package]]
 name = "libdoo_http"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "http-body-util",
@@ -1150,6 +1152,7 @@ dependencies = [
  "libdoo_db",
  "libdoo_runtime",
  "matchit",
+ "rand 0.8.5",
  "regex",
  "serde",
  "serde_json",
@@ -1159,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "libdoo_runtime"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libc",
  "rand 0.8.5",
@@ -1526,6 +1529,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef4605b7c057056dd35baeb6ac0c0338e4975b1f2bef0f65da953285eb007095"
 dependencies = [
  "bytes",
+ "chrono",
  "fallible-iterator",
  "postgres-protocol",
 ]
