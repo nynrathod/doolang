@@ -13,7 +13,7 @@ extern "C" {
 #[no_mangle]
 pub extern "C" fn panic_runtime(msg: *const u8) {
     if msg.is_null() {
-        eprintln!("Runtime error: panic");
+        crate::doo_debug!("Runtime error: panic");
         std::process::exit(1);
     }
 
@@ -21,9 +21,9 @@ pub extern "C" fn panic_runtime(msg: *const u8) {
     unsafe {
         let c_str = std::ffi::CStr::from_ptr(msg as *const i8);
         if let Ok(msg_str) = c_str.to_str() {
-            eprintln!("{}", msg_str);
+            crate::doo_debug!("{}", msg_str);
         } else {
-            eprintln!("Runtime error: invalid UTF-8 in panic message");
+            crate::doo_debug!("Runtime error: invalid UTF-8 in panic message");
         }
     }
 
@@ -96,9 +96,6 @@ pub extern "C" fn json_parse(json_str: *const c_char) -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn json_parse_array_int(json_str: *const c_char) -> *mut i32 {
     if json_str.is_null() {
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!("[RUNTIME] json_parse_array_int: null input");
-        }
         return std::ptr::null_mut();
     }
 
@@ -107,23 +104,12 @@ pub extern "C" fn json_parse_array_int(json_str: *const c_char) -> *mut i32 {
         let rust_str = match c_str.to_str() {
             Ok(s) => s.trim(),
             Err(_) => {
-                if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                    eprintln!("[RUNTIME] json_parse_array_int: invalid UTF-8");
-                }
                 return std::ptr::null_mut();
             }
         };
-
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!("[RUNTIME] json_parse_array_int: input = '{}'", rust_str);
-        }
-
         // Parse JSON array: "[1, 2, 3]"
         let trimmed = rust_str.trim();
         if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-            if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                eprintln!("[RUNTIME] json_parse_array_int: not an array, returning empty");
-            }
             // Return empty array - use C malloc for compatibility
             let ptr = malloc(8) as *mut i32;
             if ptr.is_null() {
@@ -144,14 +130,6 @@ pub extern "C" fn json_parse_array_int(json_str: *const c_char) -> *mut i32 {
                 .collect()
         };
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!(
-                "[RUNTIME] json_parse_array_int: parsed {} elements: {:?}",
-                elements.len(),
-                elements
-            );
-        }
-
         // Allocate: 8 bytes header + elements - use C malloc for compatibility
         let data_size = elements.len() * std::mem::size_of::<i32>();
         let total_size = 8 + data_size;
@@ -168,13 +146,6 @@ pub extern "C" fn json_parse_array_int(json_str: *const c_char) -> *mut i32 {
             *data_ptr.add(i) = *val;
         }
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!(
-                "[RUNTIME] json_parse_array_int: allocated at {:p}, data at {:p}",
-                ptr, data_ptr
-            );
-        }
-
         data_ptr
     }
 }
@@ -182,9 +153,6 @@ pub extern "C" fn json_parse_array_int(json_str: *const c_char) -> *mut i32 {
 #[no_mangle]
 pub extern "C" fn json_parse_array_float(json_str: *const c_char) -> *mut f64 {
     if json_str.is_null() {
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!("[RUNTIME] json_parse_array_float: null input");
-        }
         return std::ptr::null_mut();
     }
 
@@ -193,22 +161,12 @@ pub extern "C" fn json_parse_array_float(json_str: *const c_char) -> *mut f64 {
         let rust_str = match c_str.to_str() {
             Ok(s) => s.trim(),
             Err(_) => {
-                if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                    eprintln!("[RUNTIME] json_parse_array_float: invalid UTF-8");
-                }
                 return std::ptr::null_mut();
             }
         };
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!("[RUNTIME] json_parse_array_float: input = '{}'", rust_str);
-        }
-
         let trimmed = rust_str.trim();
         if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-            if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                eprintln!("[RUNTIME] json_parse_array_float: not an array, returning empty");
-            }
             // Return empty array - use C malloc for compatibility
             let ptr = malloc(16);
             if ptr.is_null() {
@@ -229,14 +187,6 @@ pub extern "C" fn json_parse_array_float(json_str: *const c_char) -> *mut f64 {
                 .collect()
         };
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!(
-                "[RUNTIME] json_parse_array_float: parsed {} elements: {:?}",
-                elements.len(),
-                elements
-            );
-        }
-
         // Allocate: 8 bytes header + elements (8 bytes each)
         let data_size = elements.len() * std::mem::size_of::<f64>();
         let total_size = 8 + data_size;
@@ -253,13 +203,6 @@ pub extern "C" fn json_parse_array_float(json_str: *const c_char) -> *mut f64 {
             *data_ptr.add(i) = *val;
         }
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!(
-                "[RUNTIME] json_parse_array_float: allocated at {:p}, data at {:p}",
-                ptr, data_ptr
-            );
-        }
-
         data_ptr
     }
 }
@@ -267,9 +210,6 @@ pub extern "C" fn json_parse_array_float(json_str: *const c_char) -> *mut f64 {
 #[no_mangle]
 pub extern "C" fn json_parse_array_bool(json_str: *const c_char) -> *mut i32 {
     if json_str.is_null() {
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!("[RUNTIME] json_parse_array_bool: null input");
-        }
         return std::ptr::null_mut();
     }
 
@@ -278,22 +218,12 @@ pub extern "C" fn json_parse_array_bool(json_str: *const c_char) -> *mut i32 {
         let rust_str = match c_str.to_str() {
             Ok(s) => s.trim(),
             Err(_) => {
-                if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                    eprintln!("[RUNTIME] json_parse_array_bool: invalid UTF-8");
-                }
                 return std::ptr::null_mut();
             }
         };
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!("[RUNTIME] json_parse_array_bool: input = '{}'", rust_str);
-        }
-
         let trimmed = rust_str.trim();
         if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-            if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                eprintln!("[RUNTIME] json_parse_array_bool: not an array, returning empty");
-            }
             // Bool elements are i32 - use C malloc for compatibility
             let ptr = malloc(8) as *mut i32;
             if ptr.is_null() {
@@ -317,14 +247,6 @@ pub extern "C" fn json_parse_array_bool(json_str: *const c_char) -> *mut i32 {
                 .collect()
         };
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!(
-                "[RUNTIME] json_parse_array_bool: parsed {} elements: {:?}",
-                elements.len(),
-                elements
-            );
-        }
-
         // Bool elements are i32 (4 bytes each)
         let data_size = elements.len() * std::mem::size_of::<i32>();
         let total_size = 8 + data_size;
@@ -341,13 +263,6 @@ pub extern "C" fn json_parse_array_bool(json_str: *const c_char) -> *mut i32 {
             *data_ptr.add(i) = if *val { 1 } else { 0 };
         }
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!(
-                "[RUNTIME] json_parse_array_bool: allocated at {:p}, data at {:p}",
-                ptr, data_ptr
-            );
-        }
-
         data_ptr
     }
 }
@@ -355,9 +270,6 @@ pub extern "C" fn json_parse_array_bool(json_str: *const c_char) -> *mut i32 {
 #[no_mangle]
 pub extern "C" fn json_parse_array_str(json_str: *const c_char) -> *mut *mut c_char {
     if json_str.is_null() {
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!("[RUNTIME] json_parse_array_str: null input");
-        }
         return std::ptr::null_mut();
     }
 
@@ -366,22 +278,12 @@ pub extern "C" fn json_parse_array_str(json_str: *const c_char) -> *mut *mut c_c
         let rust_str = match c_str.to_str() {
             Ok(s) => s.trim(),
             Err(_) => {
-                if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                    eprintln!("[RUNTIME] json_parse_array_str: invalid UTF-8");
-                }
                 return std::ptr::null_mut();
             }
         };
 
-        if std::env::var("DOO_DEBUG_JSON").is_ok() {
-            eprintln!("[RUNTIME] json_parse_array_str: input = '{}'", rust_str);
-        }
-
         let trimmed = rust_str.trim();
         if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-            if std::env::var("DOO_DEBUG_JSON").is_ok() {
-                eprintln!("[RUNTIME] json_parse_array_str: not an array, returning empty");
-            }
             let ptr = malloc(16);
             if ptr.is_null() {
                 return std::ptr::null_mut();
@@ -2292,21 +2194,23 @@ pub extern "C" fn json_get_int(json_str: *const c_char, field_name: *const c_cha
             Err(_) => return 0,
         };
 
-        // Find "field_name": value pattern
-        let pattern = format!("\"{}\":", field);
-        if let Some(pos) = json.find(&pattern) {
-            let after_colon = &json[pos + pattern.len()..];
-            let trimmed = after_colon.trim_start();
-            // Parse the number
-            let mut num_str = String::new();
-            for ch in trimmed.chars() {
-                if ch.is_ascii_digit() || ch == '-' {
-                    num_str.push(ch);
-                } else if !num_str.is_empty() {
-                    break;
+        // Find "field_name": value pattern (try exact and lowercase)
+        for field_variant in [field.to_string(), field.to_lowercase()] {
+            let pattern = format!("\"{}\":", field_variant);
+            if let Some(pos) = json.find(&pattern) {
+                let after_colon = &json[pos + pattern.len()..];
+                let trimmed = after_colon.trim_start();
+                // Parse the number
+                let mut num_str = String::new();
+                for ch in trimmed.chars() {
+                    if ch.is_ascii_digit() || ch == '-' {
+                        num_str.push(ch);
+                    } else if !num_str.is_empty() {
+                        break;
+                    }
                 }
+                return num_str.parse::<i32>().unwrap_or(0);
             }
-            return num_str.parse::<i32>().unwrap_or(0);
         }
         0
     }
@@ -2332,25 +2236,27 @@ pub extern "C" fn json_get_float(json_str: *const c_char, field_name: *const c_c
             Err(_) => return 0.0,
         };
 
-        let pattern = format!("\"{}\":", field);
-        if let Some(pos) = json.find(&pattern) {
-            let after_colon = &json[pos + pattern.len()..];
-            let trimmed = after_colon.trim_start();
-            let mut num_str = String::new();
-            for ch in trimmed.chars() {
-                if ch.is_ascii_digit()
-                    || ch == '-'
-                    || ch == '.'
-                    || ch == 'e'
-                    || ch == 'E'
-                    || ch == '+'
-                {
-                    num_str.push(ch);
-                } else if !num_str.is_empty() {
-                    break;
+        for field_variant in [field.to_string(), field.to_lowercase()] {
+            let pattern = format!("\"{}\":", field_variant);
+            if let Some(pos) = json.find(&pattern) {
+                let after_colon = &json[pos + pattern.len()..];
+                let trimmed = after_colon.trim_start();
+                let mut num_str = String::new();
+                for ch in trimmed.chars() {
+                    if ch.is_ascii_digit()
+                        || ch == '-'
+                        || ch == '.'
+                        || ch == 'e'
+                        || ch == 'E'
+                        || ch == '+'
+                    {
+                        num_str.push(ch);
+                    } else if !num_str.is_empty() {
+                        break;
+                    }
                 }
+                return num_str.parse::<f64>().unwrap_or(0.0);
             }
-            return num_str.parse::<f64>().unwrap_or(0.0);
         }
         0.0
     }
@@ -2376,12 +2282,14 @@ pub extern "C" fn json_get_bool(json_str: *const c_char, field_name: *const c_ch
             Err(_) => return 0,
         };
 
-        let pattern = format!("\"{}\":", field);
-        if let Some(pos) = json.find(&pattern) {
-            let after_colon = &json[pos + pattern.len()..];
-            let trimmed = after_colon.trim_start();
-            if trimmed.starts_with("true") || trimmed.starts_with("1") {
-                return 1;
+        for field_variant in [field.to_string(), field.to_lowercase()] {
+            let pattern = format!("\"{}\":", field_variant);
+            if let Some(pos) = json.find(&pattern) {
+                let after_colon = &json[pos + pattern.len()..];
+                let trimmed = after_colon.trim_start();
+                if trimmed.starts_with("true") || trimmed.starts_with("1") {
+                    return 1;
+                }
             }
         }
         0
@@ -2437,34 +2345,34 @@ pub extern "C" fn json_get_str(json_str: *const c_char, field_name: *const c_cha
             }
         };
 
-        let pattern = format!("\"{}\":", field);
-        let value = if let Some(pos) = json.find(&pattern) {
-            let after_colon = &json[pos + pattern.len()..];
-            let trimmed = after_colon.trim_start();
-            if trimmed.starts_with('"') {
-                // Parse string value
-                let mut result = String::new();
-                let mut chars = trimmed[1..].chars();
-                let mut escape_next = false;
-                while let Some(ch) = chars.next() {
-                    if escape_next {
-                        result.push(ch);
-                        escape_next = false;
-                    } else if ch == '\\' {
-                        escape_next = true;
-                    } else if ch == '"' {
-                        break;
-                    } else {
-                        result.push(ch);
+        let mut value = String::new();
+        for field_variant in [field.to_string(), field.to_lowercase()] {
+            let pattern = format!("\"{}\":", field_variant);
+            if let Some(pos) = json.find(&pattern) {
+                let after_colon = &json[pos + pattern.len()..];
+                let trimmed = after_colon.trim_start();
+                if trimmed.starts_with('"') {
+                    // Parse string value
+                    let mut result = String::new();
+                    let mut chars = trimmed[1..].chars();
+                    let mut escape_next = false;
+                    while let Some(ch) = chars.next() {
+                        if escape_next {
+                            result.push(ch);
+                            escape_next = false;
+                        } else if ch == '\\' {
+                            escape_next = true;
+                        } else if ch == '"' {
+                            break;
+                        } else {
+                            result.push(ch);
+                        }
                     }
+                    value = result;
                 }
-                result
-            } else {
-                String::new()
+                break;
             }
-        } else {
-            String::new()
-        };
+        }
 
         // Allocate heap string with RC header
         let bytes = value.as_bytes();
