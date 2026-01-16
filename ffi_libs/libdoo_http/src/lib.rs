@@ -873,7 +873,7 @@ fn looks_like_json_cstr(ptr: *const c_char) -> bool {
     if addr < 0x1000 {
         return false;
     }
-    if !doo_runtime::memory::validate_pointer(ptr as *const std::ffi::c_void, "looks_like_json_cstr") {
+    if !validate_cstr_pointer(ptr, "looks_like_json_cstr") {
         return false;
     }
     let first = unsafe { *(ptr as *const u8) };
@@ -889,7 +889,7 @@ fn looks_like_any_cstr(ptr: *const c_char) -> bool {
     if addr < 0x1000 {
         return false;
     }
-    if !doo_runtime::memory::validate_pointer(ptr as *const std::ffi::c_void, "looks_like_any_cstr") {
+    if !validate_cstr_pointer(ptr, "looks_like_any_cstr") {
         return false;
     }
     let first = unsafe { *(ptr as *const u8) };
@@ -897,6 +897,40 @@ fn looks_like_any_cstr(ptr: *const c_char) -> bool {
         return true;
     }
     (0x20..=0x7e).contains(&first) || first == b'\t' || first == b'\n' || first == b'\r'
+}
+
+#[inline]
+fn validate_cstr_pointer(ptr: *const c_char, context: &str) -> bool {
+    if ptr.is_null() {
+        return true;
+    }
+
+    let addr = ptr as usize;
+    if addr < 0x1000 {
+        return false;
+    }
+
+    #[cfg(unix)]
+    unsafe {
+        let page_size = libc::sysconf(libc::_SC_PAGESIZE);
+        if page_size > 0 {
+            let page_size = page_size as usize;
+            let page_base = (addr / page_size) * page_size;
+            let mut vec: [u8; 1] = [0];
+            let rc = libc::mincore(page_base as *mut libc::c_void, page_size, vec.as_mut_ptr());
+            if rc != 0 {
+                if doo_runtime::debug::is_debug_enabled() {
+                    eprintln!(
+                        "[DOO::MEM] CORRUPT ptr={:p} (unmapped) context={}",
+                        ptr, context
+                    );
+                }
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 // ============================================================================
@@ -2369,10 +2403,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         let body_str = if real_body.is_null() {
                             String::new()
                         } else {
-                            if !doo_runtime::memory::validate_pointer(
-                                real_body as *const std::ffi::c_void,
-                                "response_body",
-                            ) {
+                            if !validate_cstr_pointer(real_body, "response_body") {
                                 String::new()
                             } else {
                                 CStr::from_ptr(real_body).to_string_lossy().to_string()
@@ -2887,7 +2918,7 @@ unsafe fn unwrap_potential_dooresult(ptr: *const c_char) -> *const c_char {
         return std::ptr::null();
     }
 
-    if !doo_runtime::memory::validate_pointer(ptr as *const std::ffi::c_void, "unwrap_potential_dooresult") {
+    if !validate_cstr_pointer(ptr, "unwrap_potential_dooresult") {
         return std::ptr::null();
     }
 
@@ -2908,20 +2939,16 @@ unsafe fn unwrap_potential_dooresult(ptr: *const c_char) -> *const c_char {
     let tag_val = *(ptr as *const i32);
 
     // If this is a Doo RC string header ([rc: i32][len: i32][data...]), the first i32 is a small
-    // positive refcount (often 1). In that case, the JSON begins at offset +8.
+    // positive refcount (often 1). In that case, the string begins at offset +8.
     // This prevents mistaking RC header pointers for DooResult errors (tag=1).
     if tag_val > 0 && tag_val < 200 {
         let len_val = *((ptr as *const u8).add(4) as *const i32);
-        // For JSON strings we expect at least 2 bytes ("[]", "{}", "\"\""), and not absurdly large.
         // This also prevents misclassifying a real DooResult (where offset+4 is padding, usually 0).
-        if len_val < 2 || len_val > 50_000_000 {
+        if len_val <= 0 || len_val > 50_000_000 {
         } else {
             let data_ptr = (ptr as *const u8).add(8) as *const c_char;
-            if !data_ptr.is_null() {
-                let first = *(data_ptr as *const u8);
-                if first == b'{' || first == b'[' || first == b'"' {
-                    return data_ptr;
-                }
+            if !data_ptr.is_null() && validate_cstr_pointer(data_ptr, "unwrap_potential_dooresult_rc") {
+                return data_ptr;
             }
         }
     }
@@ -5792,14 +5819,25 @@ pub extern "C" fn doohttp_populate_struct_from_request(
     // layout entry in metadata.struct_layouts.
     let struct_name = if !metadata.param_types.is_empty() {
         let layouts_obj = metadata.struct_layouts.as_object();
-        metadata
+
+        let pick_last = effective_source_type == 0;
+
+        let mut candidates = metadata
             .param_types
             .iter()
-            .find(|t| {
+            .filter(|t| {
                 layouts_obj
                     .map(|m| m.contains_key(t.as_str()))
                     .unwrap_or(false)
-            })
+            });
+
+        let chosen = if pick_last {
+            candidates.next_back()
+        } else {
+            candidates.next()
+        };
+
+        chosen
             .cloned()
             .unwrap_or_else(|| {
                 metadata
@@ -6305,10 +6343,6 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                             "unknown".to_string()
                                         };
 
-                                        extern "C" {
-                                            fn dooruntime_free_string(ptr: *mut libc::c_char);
-                                        }
-
                                         let error_json = json!({
                                             "field": field_name,
                                             "expected": "Int",
@@ -6316,9 +6350,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                         });
 
                                         if let Ok(json_str) = serde_json::to_string(&error_json) {
-                                            if let Ok(c_str) = CString::new(json_str) {
-                                                // Store error in thread-local
-                                                let error_ptr = c_str.into_raw();
+                                            if let Ok(_c_str) = CString::new(json_str) {
                                                 // Create RFC 7807 error
                                                 let error = bad_request(
                                                     format!("Type mismatch in request body"),
@@ -6339,7 +6371,6 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                                     },
                                                 );
                                                 set_last_error(400, error.to_json_string());
-                                                dooruntime_free_string(error_ptr);
                                                 return 400;
                                             }
                                         }
