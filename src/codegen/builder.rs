@@ -7971,6 +7971,45 @@ impl<'ctx> CodeGen<'ctx> {
                             self.heap_strings.insert(name.clone());
                         }
 
+                        // CRITICAL: Propagate heap metadata for arrays/maps when unwrapping Result.
+                        // Without this, the unwrapped pointer can be treated as a C string (garbage)
+                        // and downstream printing/serialization becomes inconsistent.
+                        if normalized_type.contains("Array(") {
+                            let element_type =
+                                Self::extract_array_element_type_from_return(&normalized_type);
+                            let contains_strings = element_type == "Str";
+                            self.array_metadata.insert(
+                                name.clone(),
+                                crate::codegen::ArrayMetadata {
+                                    length: 0,
+                                    element_type: element_type.clone(),
+                                    contains_strings,
+                                },
+                            );
+                            self.heap_arrays.insert(name.clone());
+                            // Ensure we don't accidentally treat arrays as RC strings.
+                            self.heap_strings.remove(name);
+                        } else if normalized_type.contains("Map(") {
+                            let (key_type, value_type) =
+                                Self::extract_map_types_from_return(&normalized_type);
+                            let key_is_string = key_type == "Str";
+                            let value_is_string = value_type == "Str";
+                            self.map_metadata.insert(
+                                name.clone(),
+                                crate::codegen::MapMetadata {
+                                    length: 0,
+                                    key_type: key_type.to_string(),
+                                    value_type: value_type.to_string(),
+                                    key_is_string,
+                                    value_is_string,
+                                    key_needs_rc: key_is_string,
+                                    value_needs_rc: value_is_string,
+                                },
+                            );
+                            self.heap_maps.insert(name.clone());
+                            self.heap_strings.remove(name);
+                        }
+
                         // IMPORTANT: Do NOT track structs in heap_arrays.
                         // heap_arrays are RC-managed arrays (and cleanup calls __decref on them).
                         // Struct values (including opaque FFI pointers modeled as Struct(...), e.g. Database)
@@ -8279,6 +8318,57 @@ impl<'ctx> CodeGen<'ctx> {
                         ok_type.clone()
                     };
                     self.variable_types.insert(name.clone(), normalized_type);
+
+                    // CRITICAL: Preserve heap tracking/metadata for arrays and maps when unwrapping.
+                    // Otherwise the pointer can be printed as a string (garbage) and can break
+                    // JSON stringify/HTTP serialization.
+                    let normalized_type = self
+                        .variable_types
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| ok_type.clone());
+                    if normalized_type.contains("Array(") {
+                        let element_type =
+                            Self::extract_array_element_type_from_return(&normalized_type);
+                        let contains_strings = element_type == "Str";
+                        self.array_metadata.insert(
+                            name.clone(),
+                            crate::codegen::ArrayMetadata {
+                                length: 0,
+                                element_type,
+                                contains_strings,
+                            },
+                        );
+                        self.heap_arrays.insert(name.clone());
+                        self.heap_strings.remove(name);
+                    } else if normalized_type.contains("Map(") {
+                        let (key_type, value_type) =
+                            Self::extract_map_types_from_return(&normalized_type);
+                        let key_is_string = key_type == "Str";
+                        let value_is_string = value_type == "Str";
+                        self.map_metadata.insert(
+                            name.clone(),
+                            crate::codegen::MapMetadata {
+                                length: 0,
+                                key_type: key_type.to_string(),
+                                value_type: value_type.to_string(),
+                                key_is_string,
+                                value_is_string,
+                                key_needs_rc: key_is_string,
+                                value_needs_rc: value_is_string,
+                            },
+                        );
+                        self.heap_maps.insert(name.clone());
+                        self.heap_strings.remove(name);
+                    } else if normalized_type == "Str"
+                        || normalized_type == "String"
+                        || normalized_type == "Str?"
+                        || normalized_type == "String?"
+                        || normalized_type == "Optional(Str)"
+                        || normalized_type == "Optional(String)"
+                    {
+                        self.heap_strings.insert(name.clone());
+                    }
 
                     Some(actual_value)
                 } else {
