@@ -416,10 +416,9 @@ impl<'ctx> CodeGen<'ctx> {
                     .into_pointer_value();
 
                 // Build error response
-                let error_response_type = self.context.struct_type(
-                    &[i32_type.into(), ptr_type.into(), ptr_type.into()],
-                    false,
-                );
+                let error_response_type = self
+                    .context
+                    .struct_type(&[i32_type.into(), ptr_type.into(), ptr_type.into()], false);
                 let malloc_fn = self.get_or_declare_malloc();
                 let error_response_alloc = self
                     .builder
@@ -463,20 +462,14 @@ impl<'ctx> CodeGen<'ctx> {
                 let json_ct = self.generate_rc_string_literal_ptr("application/json");
                 let error_ct_ptr = self
                     .builder
-                    .build_struct_gep(
-                        error_response_type,
-                        error_response_alloc,
-                        2,
-                        "error_ct_ptr",
-                    )
+                    .build_struct_gep(error_response_type, error_response_alloc, 2, "error_ct_ptr")
                     .unwrap();
                 self.builder.build_store(error_ct_ptr, json_ct).unwrap();
 
                 // Build DooResult for error
-                let error_result_type = self.context.struct_type(
-                    &[i32_type.into(), ptr_type.into(), i8_type.into()],
-                    false,
-                );
+                let error_result_type = self
+                    .context
+                    .struct_type(&[i32_type.into(), ptr_type.into(), i8_type.into()], false);
                 let error_result_alloc = self
                     .builder
                     .build_call(
@@ -492,12 +485,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                 let error_tag_ptr = self
                     .builder
-                    .build_struct_gep(
-                        error_result_type,
-                        error_result_alloc,
-                        0,
-                        "error_tag_ptr",
-                    )
+                    .build_struct_gep(error_result_type, error_result_alloc, 0, "error_tag_ptr")
                     .unwrap();
                 self.builder
                     .build_store(error_tag_ptr, i32_type.const_int(1, false))
@@ -505,12 +493,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                 let error_value_ptr = self
                     .builder
-                    .build_struct_gep(
-                        error_result_type,
-                        error_result_alloc,
-                        1,
-                        "error_value_ptr",
-                    )
+                    .build_struct_gep(error_result_type, error_result_alloc, 1, "error_value_ptr")
                     .unwrap();
                 self.builder
                     .build_store(error_value_ptr, error_response_alloc)
@@ -518,15 +501,10 @@ impl<'ctx> CodeGen<'ctx> {
 
                 let error_owner_ptr = self
                     .builder
-                    .build_struct_gep(
-                        error_result_type,
-                        error_result_alloc,
-                        2,
-                        "error_owner_ptr",
-                    )
+                    .build_struct_gep(error_result_type, error_result_alloc, 2, "error_owner_ptr")
                     .unwrap();
                 self.builder
-                    .build_store(error_owner_ptr, i8_type.const_zero())
+                    .build_store(error_owner_ptr, i8_type.const_int(1, false))
                     .unwrap();
 
                 self.builder
@@ -740,10 +718,9 @@ impl<'ctx> CodeGen<'ctx> {
                         .into_pointer_value();
 
                     // Build error response
-                    let error_response_type = self.context.struct_type(
-                        &[i32_type.into(), ptr_type.into(), ptr_type.into()],
-                        false,
-                    );
+                    let error_response_type = self
+                        .context
+                        .struct_type(&[i32_type.into(), ptr_type.into(), ptr_type.into()], false);
                     let malloc_fn = self.get_or_declare_malloc();
                     let error_response_alloc = self
                         .builder
@@ -797,10 +774,9 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.build_store(error_ct_ptr, json_ct).unwrap();
 
                     // Build DooResult for error
-                    let error_result_type = self.context.struct_type(
-                        &[i32_type.into(), ptr_type.into(), i8_type.into()],
-                        false,
-                    );
+                    let error_result_type = self
+                        .context
+                        .struct_type(&[i32_type.into(), ptr_type.into(), i8_type.into()], false);
                     let error_result_alloc = self
                         .builder
                         .build_call(
@@ -850,7 +826,7 @@ impl<'ctx> CodeGen<'ctx> {
                         )
                         .unwrap();
                     self.builder
-                        .build_store(error_owner_ptr, i8_type.const_zero())
+                        .build_store(error_owner_ptr, i8_type.const_int(1, false))
                         .unwrap();
 
                     self.builder
@@ -864,7 +840,71 @@ impl<'ctx> CodeGen<'ctx> {
                 } else if param_type.is_pointer_type() {
                     args.push(request_ptr.into());
                 } else if param_type.is_int_type() {
-                    args.push(i32_type.const_zero().into());
+                    // Int parameter: either a path param (e.g. id) or a JWT-injected userId
+                    let param_name = self
+                        .function_param_names
+                        .get(&actual_func_name)
+                        .and_then(|names| names.get(i as usize).cloned())
+                        .unwrap_or_else(|| "id".to_string());
+
+                    if param_name == "userId" {
+                        // Extract user ID from JWT token in request
+                        let req_user_id_fn =
+                            if let Some(f) = self.module.get_function("doo_http_req_user_id") {
+                                f
+                            } else {
+                                let fn_type = i32_type.fn_type(&[ptr_type.into()], false);
+                                self.module
+                                    .add_function("doo_http_req_user_id", fn_type, None)
+                            };
+
+                        let user_id = self
+                            .builder
+                            .build_call(req_user_id_fn, &[request_ptr.into()], "user_id_from_jwt")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap();
+                        args.push(user_id.into());
+                    } else {
+                        // Extract Int value from path params by name
+                        let extract_fn = if let Some(f) =
+                            self.module.get_function("doohttp_extract_param_int")
+                        {
+                            f
+                        } else {
+                            let fn_type = self
+                                .context
+                                .i64_type()
+                                .fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                            self.module
+                                .add_function("doohttp_extract_param_int", fn_type, None)
+                        };
+
+                        let param_name_cstr = self.generate_string_literal_ptr(&param_name);
+                        let param_i64 = self
+                            .builder
+                            .build_call(
+                                extract_fn,
+                                &[request_ptr.into(), param_name_cstr.into()],
+                                &format!("param_int_{}", i),
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_int_value();
+
+                        let param_i32 = self
+                            .builder
+                            .build_int_truncate(
+                                param_i64,
+                                i32_type,
+                                &format!("param_int_i32_{}", i),
+                            )
+                            .unwrap();
+                        args.push(param_i32.into());
+                    }
                 } else {
                     args.push(ptr_type.const_null().into());
                 }
@@ -891,7 +931,11 @@ impl<'ctx> CodeGen<'ctx> {
         let malloc_fn = self.get_or_declare_malloc();
         let result_alloc = self
             .builder
-            .build_call(malloc_fn, &[result_type.size_of().unwrap().into()], "result_alloc")
+            .build_call(
+                malloc_fn,
+                &[result_type.size_of().unwrap().into()],
+                "result_alloc",
+            )
             .unwrap()
             .try_as_basic_value()
             .left()
@@ -919,7 +963,11 @@ impl<'ctx> CodeGen<'ctx> {
 
             let response_alloc = self
                 .builder
-                .build_call(malloc_fn, &[response_type.size_of().unwrap().into()], "response_alloc")
+                .build_call(
+                    malloc_fn,
+                    &[response_type.size_of().unwrap().into()],
+                    "response_alloc",
+                )
                 .unwrap()
                 .try_as_basic_value()
                 .left()
@@ -1238,38 +1286,35 @@ impl<'ctx> CodeGen<'ctx> {
                         .cloned()
                         .unwrap_or_default();
 
-                    eprintln!(
-                        "[HANDLER_WRAPPER] is_result_type={}, return_type='{}'",
-                        is_result_type, return_type
-                    );
-
                     let value_ptr_for_response = if is_result_type {
-                        eprintln!("[HANDLER_WRAPPER] YES - This IS a Result type, extracting value pointer");
                         // This is a Result type - extract the value pointer from field 1
                         let extracted_ptr = self
                             .builder
                             .build_extract_value(struct_val, 1, "result_value_ptr")
                             .unwrap()
                             .into_pointer_value();
-                        eprintln!(
-                            "[HANDLER_WRAPPER] Extracted value pointer from Result successfully"
-                        );
                         extracted_ptr
                     } else {
-                        eprintln!(
-                            "[HANDLER_WRAPPER] NO - Not a Result type, allocating regular struct"
-                        );
                         // Regular struct - allocate and store it
                         let struct_alloc = self
                             .builder
                             .build_malloc(struct_type, "struct_return_alloc")
                             .unwrap();
                         self.builder.build_store(struct_alloc, struct_val).unwrap();
-                        eprintln!("[HANDLER_WRAPPER] Returning struct alloca pointer");
                         struct_alloc
                     };
 
-                    eprintln!("[HANDLER_WRAPPER] value_ptr_for_response obtained, checking return type...");
+                    // CRITICAL: Extract Result tag to check for errors (tag=1)
+                    let result_tag_value = if is_result_type {
+                        let tag = self
+                            .builder
+                            .build_extract_value(struct_val, 0, "result_tag")
+                            .unwrap()
+                            .into_int_value();
+                        Some(tag)
+                    } else {
+                        None
+                    };
 
                     // Check if return type is Str or array
                     // if it is Str, it's a pointer to a string (already JSON or plain text)
@@ -1284,43 +1329,159 @@ impl<'ctx> CodeGen<'ctx> {
                         return_type.clone()
                     };
 
-                    eprintln!(
-                        "[HANDLER_WRAPPER] Extracted inner_type='{}' from return_type='{}'",
-                        inner_type, return_type
-                    );
-
                     let is_array_return =
                         inner_type.starts_with("Array(") || inner_type.starts_with('[');
                     let is_string_return = inner_type == "Str" || inner_type.is_empty();
 
-                    eprintln!(
-                        "[HANDLER_WRAPPER] is_array_return={}, is_string_return={}",
-                        is_array_return, is_string_return
-                    );
+                    let response_body_ptr = if let Some(tag_val) = result_tag_value {
+                        let is_ok = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                tag_val,
+                                self.context.i32_type().const_zero(),
+                                "result_is_ok",
+                            )
+                            .unwrap();
 
-                    let response_body_ptr = if is_string_return {
-                        eprintln!("[HANDLER_WRAPPER] is_string_return=true, using value_ptr as-is");
-                        // Return type is Str - value is already JSON string (or we treat it as such)
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let target_fn = current_block.get_parent().unwrap();
+
+                        let ok_block = self.context.append_basic_block(target_fn, "resp_body_ok");
+                        let err_block = self.context.append_basic_block(target_fn, "resp_body_err");
+                        let merge_block = self
+                            .context
+                            .append_basic_block(target_fn, "resp_body_merge");
+
+                        self.builder
+                            .build_conditional_branch(is_ok, ok_block, err_block)
+                            .unwrap();
+
+                        // OK: build the success body
+                        self.builder.position_at_end(ok_block);
+                        let ok_body_ptr = if is_string_return {
+                            value_ptr_for_response
+                        } else if is_array_return {
+                            let struct_name = if inner_type.starts_with("Array(") {
+                                &inner_type[6..inner_type.len() - 1]
+                            } else {
+                                &inner_type[1..inner_type.len() - 1]
+                            };
+
+                            let metadata = self.struct_metadata.get(struct_name).cloned();
+                            let metadata_json = if let Some(meta) = metadata {
+                                let fields: Vec<String> = meta
+                                    .field_names
+                                    .iter()
+                                    .zip(meta.field_types.iter())
+                                    .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
+                                    .collect();
+                                format!("{{{}}}", fields.join(","))
+                            } else {
+                                "{}".to_string()
+                            };
+                            let metadata_cstr = self.generate_string_literal_ptr(&metadata_json);
+                            let struct_name_cstr = self.generate_string_literal_ptr(struct_name);
+
+                            let array_to_json_fn = if let Some(f) =
+                                self.module.get_function("array_to_json_with_metadata")
+                            {
+                                f
+                            } else {
+                                let fn_type = ptr_type.fn_type(
+                                    &[ptr_type.into(), ptr_type.into(), ptr_type.into()],
+                                    false,
+                                );
+                                self.module.add_function(
+                                    "array_to_json_with_metadata",
+                                    fn_type,
+                                    None,
+                                )
+                            };
+
+                            self.builder
+                                .build_call(
+                                    array_to_json_fn,
+                                    &[
+                                        value_ptr_for_response.into(),
+                                        struct_name_cstr.into(),
+                                        metadata_cstr.into(),
+                                    ],
+                                    "json_ptr",
+                                )
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_pointer_value()
+                        } else {
+                            let struct_ptr = self
+                                .builder
+                                .build_pointer_cast(
+                                    value_ptr_for_response,
+                                    ptr_type,
+                                    "struct_ptr_cast",
+                                )
+                                .unwrap();
+
+                            let serialize_fn = if let Some(f) =
+                                self.module.get_function("doohttp_serialize_struct_to_json")
+                            {
+                                f
+                            } else {
+                                let fn_type =
+                                    ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                                self.module.add_function(
+                                    "doohttp_serialize_struct_to_json",
+                                    fn_type,
+                                    None,
+                                )
+                            };
+
+                            let handler_name_cstr = self.generate_string_literal_ptr(handler_name);
+                            self.builder
+                                .build_call(
+                                    serialize_fn,
+                                    &[struct_ptr.into(), handler_name_cstr.into()],
+                                    "json_str",
+                                )
+                                .unwrap()
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap()
+                                .into_pointer_value()
+                        };
+                        self.builder
+                            .build_unconditional_branch(merge_block)
+                            .unwrap();
+                        let ok_end = self.builder.get_insert_block().unwrap();
+
+                        // ERR: do not attempt to serialize; just pass null
+                        self.builder.position_at_end(err_block);
+                        let err_body_ptr = ptr_type.const_null();
+                        self.builder
+                            .build_unconditional_branch(merge_block)
+                            .unwrap();
+                        let err_end = self.builder.get_insert_block().unwrap();
+
+                        self.builder.position_at_end(merge_block);
+                        let phi = self.builder.build_phi(ptr_type, "resp_body").unwrap();
+                        phi.add_incoming(&[
+                            (&ok_body_ptr.as_basic_value_enum(), ok_end),
+                            (&err_body_ptr.as_basic_value_enum(), err_end),
+                        ]);
+                        phi.as_basic_value().into_pointer_value()
+                    } else if is_string_return {
                         value_ptr_for_response
                     } else if is_array_return {
-                        eprintln!("[HANDLER_WRAPPER] is_array_return=true, calling array_to_json_with_metadata");
-                        // Array return - assume it's an Array struct that needs serialization
-                        // Extract struct name from type
                         let struct_name = if inner_type.starts_with("Array(") {
                             &inner_type[6..inner_type.len() - 1]
                         } else {
                             &inner_type[1..inner_type.len() - 1]
                         };
 
-                        eprintln!(
-                            "[HANDLER_WRAPPER] Extracted struct_name='{}' from inner_type",
-                            struct_name
-                        );
-
-                        // Get struct metadata - build JSON manually
                         let metadata = self.struct_metadata.get(struct_name).cloned();
                         let metadata_json = if let Some(meta) = metadata {
-                            // Convert struct metadata to JSON manually
                             let fields: Vec<String> = meta
                                 .field_names
                                 .iter()
@@ -1334,128 +1495,6 @@ impl<'ctx> CodeGen<'ctx> {
                         let metadata_cstr = self.generate_string_literal_ptr(&metadata_json);
                         let struct_name_cstr = self.generate_string_literal_ptr(struct_name);
 
-                        // RUNTIME DEBUG: Before array_to_json_with_metadata call
-                        let printf_fn = self.get_or_declare_printf();
-                        let debug_before_array_to_json = self
-                            .builder
-                            .build_global_string_ptr(
-                                "[HANDLER_WRAPPER_RUNTIME] ##### ABOUT TO CALL array_to_json_with_metadata, value_ptr=%p #####\n",
-                                "debug_before_array_json",
-                            )
-                            .unwrap();
-                        self.builder
-                            .build_call(
-                                printf_fn,
-                                &[
-                                    debug_before_array_to_json.as_pointer_value().into(),
-                                    value_ptr_for_response.into(),
-                                ],
-                                "",
-                            )
-                            .unwrap();
-
-                        // AGGRESSIVE DEBUG: Print first 8 bytes of value_ptr BEFORE calling array_to_json
-                        let debug_bytes_before = self
-                            .builder
-                            .build_global_string_ptr(
-                                "[HANDLER_WRAPPER_RUNTIME] Data first 8 bytes BEFORE call: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                                "debug_bytes_before_json",
-                            )
-                            .unwrap();
-                        let i8_type = self.context.i8_type();
-                        let hw_byte0 = self
-                            .builder
-                            .build_load(i8_type, value_ptr_for_response, "hw_byte0")
-                            .unwrap();
-                        let hw_p1 = unsafe {
-                            self.builder.build_gep(
-                                i8_type,
-                                value_ptr_for_response,
-                                &[self.context.i32_type().const_int(1, false)],
-                                "hw_p1",
-                            )
-                        }
-                        .unwrap();
-                        let hw_byte1 = self.builder.build_load(i8_type, hw_p1, "hw_byte1").unwrap();
-                        let hw_p2 = unsafe {
-                            self.builder.build_gep(
-                                i8_type,
-                                value_ptr_for_response,
-                                &[self.context.i32_type().const_int(2, false)],
-                                "hw_p2",
-                            )
-                        }
-                        .unwrap();
-                        let hw_byte2 = self.builder.build_load(i8_type, hw_p2, "hw_byte2").unwrap();
-                        let hw_p3 = unsafe {
-                            self.builder.build_gep(
-                                i8_type,
-                                value_ptr_for_response,
-                                &[self.context.i32_type().const_int(3, false)],
-                                "hw_p3",
-                            )
-                        }
-                        .unwrap();
-                        let hw_byte3 = self.builder.build_load(i8_type, hw_p3, "hw_byte3").unwrap();
-                        let hw_p4 = unsafe {
-                            self.builder.build_gep(
-                                i8_type,
-                                value_ptr_for_response,
-                                &[self.context.i32_type().const_int(4, false)],
-                                "hw_p4",
-                            )
-                        }
-                        .unwrap();
-                        let hw_byte4 = self.builder.build_load(i8_type, hw_p4, "hw_byte4").unwrap();
-                        let hw_p5 = unsafe {
-                            self.builder.build_gep(
-                                i8_type,
-                                value_ptr_for_response,
-                                &[self.context.i32_type().const_int(5, false)],
-                                "hw_p5",
-                            )
-                        }
-                        .unwrap();
-                        let hw_byte5 = self.builder.build_load(i8_type, hw_p5, "hw_byte5").unwrap();
-                        let hw_p6 = unsafe {
-                            self.builder.build_gep(
-                                i8_type,
-                                value_ptr_for_response,
-                                &[self.context.i32_type().const_int(6, false)],
-                                "hw_p6",
-                            )
-                        }
-                        .unwrap();
-                        let hw_byte6 = self.builder.build_load(i8_type, hw_p6, "hw_byte6").unwrap();
-                        let hw_p7 = unsafe {
-                            self.builder.build_gep(
-                                i8_type,
-                                value_ptr_for_response,
-                                &[self.context.i32_type().const_int(7, false)],
-                                "hw_p7",
-                            )
-                        }
-                        .unwrap();
-                        let hw_byte7 = self.builder.build_load(i8_type, hw_p7, "hw_byte7").unwrap();
-                        self.builder
-                            .build_call(
-                                printf_fn,
-                                &[
-                                    debug_bytes_before.as_pointer_value().into(),
-                                    hw_byte0.into(),
-                                    hw_byte1.into(),
-                                    hw_byte2.into(),
-                                    hw_byte3.into(),
-                                    hw_byte4.into(),
-                                    hw_byte5.into(),
-                                    hw_byte6.into(),
-                                    hw_byte7.into(),
-                                ],
-                                "",
-                            )
-                            .unwrap();
-
-                        // Call array_to_json_with_metadata(array_ptr, struct_name, metadata_json)
                         let array_to_json_fn = if let Some(f) =
                             self.module.get_function("array_to_json_with_metadata")
                         {
@@ -1469,8 +1508,7 @@ impl<'ctx> CodeGen<'ctx> {
                                 .add_function("array_to_json_with_metadata", fn_type, None)
                         };
 
-                        let json_ptr = self
-                            .builder
+                        self.builder
                             .build_call(
                                 array_to_json_fn,
                                 &[
@@ -1484,40 +1522,13 @@ impl<'ctx> CodeGen<'ctx> {
                             .try_as_basic_value()
                             .left()
                             .unwrap()
-                            .into_pointer_value();
-                        eprintln!(
-                            "[HANDLER_WRAPPER] array_to_json_with_metadata returned successfully"
-                        );
-
-                        // RUNTIME DEBUG: After array_to_json_with_metadata returns
-                        let debug_after_array_to_json = self
-                            .builder
-                            .build_global_string_ptr(
-                                "[HANDLER_WRAPPER_RUNTIME] ##### array_to_json_with_metadata RETURNED, json_ptr=%p #####\n",
-                                "debug_after_array_json",
-                            )
-                            .unwrap();
-                        self.builder
-                            .build_call(
-                                printf_fn,
-                                &[
-                                    debug_after_array_to_json.as_pointer_value().into(),
-                                    json_ptr.into(),
-                                ],
-                                "",
-                            )
-                            .unwrap();
-
-                        json_ptr
+                            .into_pointer_value()
                     } else {
-                        eprintln!("[HANDLER_WRAPPER] Neither string nor array, serializing as regular struct");
-                        // Return type is a struct - serialize to JSON
                         let struct_ptr = self
                             .builder
                             .build_pointer_cast(value_ptr_for_response, ptr_type, "struct_ptr_cast")
                             .unwrap();
 
-                        // Declare/get doohttp_serialize_struct_to_json function
                         let serialize_fn = if let Some(f) =
                             self.module.get_function("doohttp_serialize_struct_to_json")
                         {
@@ -1532,10 +1543,7 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                         };
 
-                        // Get handler name as C string
                         let handler_name_cstr = self.generate_string_literal_ptr(handler_name);
-
-                        // Call serialization function
                         self.builder
                             .build_call(
                                 serialize_fn,
@@ -1549,29 +1557,133 @@ impl<'ctx> CodeGen<'ctx> {
                             .into_pointer_value()
                     };
 
-                    // Store response with 200 status
-                    let status_ptr = self
-                        .builder
-                        .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
-                        .unwrap();
-                    self.builder
-                        .build_store(status_ptr, self.context.i32_type().const_int(200, false))
-                        .unwrap();
+                    // FFI-FIRST: Use single FFI call to handle Result-to-Response conversion
+                    // This moves all conditional error/success logic to FFI
+                    if let Some(tag_val) = result_tag_value {
+                        // Result type - let FFI handle tag checking and response creation
+                        let create_response_fn = if let Some(f) = self
+                            .module
+                            .get_function("doohttp_create_response_from_result")
+                        {
+                            f
+                        } else {
+                            // DooResponse* doohttp_create_response_from_result(i32 tag, void* value_ptr, char* success_body)
+                            let fn_type = ptr_type.fn_type(
+                                &[
+                                    self.context.i32_type().into(),
+                                    ptr_type.into(),
+                                    ptr_type.into(),
+                                ],
+                                false,
+                            );
+                            self.module.add_function(
+                                "doohttp_create_response_from_result",
+                                fn_type,
+                                None,
+                            )
+                        };
 
-                    let body_ptr = self
-                        .builder
-                        .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
-                        .unwrap();
-                    self.builder
-                        .build_store(body_ptr, response_body_ptr)
-                        .unwrap();
+                        // Call FFI function with tag, value_ptr, and success_body
+                        let ffi_response = self
+                            .builder
+                            .build_call(
+                                create_response_fn,
+                                &[
+                                    tag_val.into(),
+                                    value_ptr_for_response.into(),
+                                    response_body_ptr.into(),
+                                ],
+                                "ffi_response",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
 
-                    let ct_str = self.generate_rc_string_literal_ptr("application/json");
-                    let ct_ptr = self
-                        .builder
-                        .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
-                        .unwrap();
-                    self.builder.build_store(ct_ptr, ct_str).unwrap();
+                        // DooResponse struct: { status: i32, body: *const char, content_type: *const char }
+                        let doo_response_type = self.context.struct_type(
+                            &[
+                                self.context.i32_type().into(),
+                                ptr_type.into(),
+                                ptr_type.into(),
+                            ],
+                            false,
+                        );
+
+                        // Extract status from FFI response
+                        let ffi_status_ptr = self
+                            .builder
+                            .build_struct_gep(doo_response_type, ffi_response, 0, "ffi_status_ptr")
+                            .unwrap();
+                        let ffi_status = self
+                            .builder
+                            .build_load(self.context.i32_type(), ffi_status_ptr, "ffi_status")
+                            .unwrap();
+
+                        // Extract body from FFI response
+                        let ffi_body_ptr = self
+                            .builder
+                            .build_struct_gep(doo_response_type, ffi_response, 1, "ffi_body_ptr")
+                            .unwrap();
+                        let ffi_body = self
+                            .builder
+                            .build_load(ptr_type, ffi_body_ptr, "ffi_body")
+                            .unwrap();
+
+                        // Extract content_type from FFI response
+                        let ffi_ct_ptr = self
+                            .builder
+                            .build_struct_gep(doo_response_type, ffi_response, 2, "ffi_ct_ptr")
+                            .unwrap();
+                        let ffi_ct = self
+                            .builder
+                            .build_load(ptr_type, ffi_ct_ptr, "ffi_ct")
+                            .unwrap();
+
+                        // Store in our response struct
+                        let status_ptr = self
+                            .builder
+                            .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
+                            .unwrap();
+                        self.builder.build_store(status_ptr, ffi_status).unwrap();
+
+                        let body_ptr = self
+                            .builder
+                            .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
+                            .unwrap();
+                        self.builder.build_store(body_ptr, ffi_body).unwrap();
+
+                        let ct_ptr = self
+                            .builder
+                            .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
+                            .unwrap();
+                        self.builder.build_store(ct_ptr, ffi_ct).unwrap();
+                    } else {
+                        // Not a Result type - simple 200 response
+                        let status_ptr = self
+                            .builder
+                            .build_struct_gep(response_type, response_ptr, 0, "status_ptr")
+                            .unwrap();
+                        self.builder
+                            .build_store(status_ptr, self.context.i32_type().const_int(200, false))
+                            .unwrap();
+
+                        let body_ptr = self
+                            .builder
+                            .build_struct_gep(response_type, response_ptr, 1, "body_ptr")
+                            .unwrap();
+                        self.builder
+                            .build_store(body_ptr, response_body_ptr)
+                            .unwrap();
+
+                        let ct_str = self.generate_rc_string_literal_ptr("application/json");
+                        let ct_ptr = self
+                            .builder
+                            .build_struct_gep(response_type, response_ptr, 2, "ct_ptr")
+                            .unwrap();
+                        self.builder.build_store(ct_ptr, ct_str).unwrap();
+                    }
                 }
             } else {
                 // Int or other simple value - convert to string and wrap in 200 OK
@@ -1624,7 +1736,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_struct_gep(result_type, result_struct, 2, "owner_ptr")
                 .unwrap();
             self.builder
-                .build_store(owner_ptr, i8_type.const_zero())
+                .build_store(owner_ptr, i8_type.const_int(1, false))
                 .unwrap();
         } else {
             // No return value - return null response (still success)
@@ -1649,7 +1761,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_struct_gep(result_type, result_struct, 2, "owner_ptr")
                 .unwrap();
             self.builder
-                .build_store(owner_ptr, i8_type.const_zero())
+                .build_store(owner_ptr, i8_type.const_int(1, false))
                 .unwrap();
         }
 
@@ -1731,7 +1843,7 @@ impl<'ctx> CodeGen<'ctx> {
         let wrapper_name = match self.generate_handler_wrapper(&handler_name) {
             Some(name) => name,
             None => {
-                eprintln!(
+                crate::doo_debug!(
                     "Warning: Could not generate wrapper for handler '{}'",
                     handler_name
                 );
@@ -2081,27 +2193,35 @@ impl<'ctx> CodeGen<'ctx> {
         // Check recursion depth to prevent stack overflow
         self.recursion_depth += 1;
         if self.recursion_depth > CODEGEN_MAX_DEPTH {
+            crate::doo_warn!("generate_instr: max depth exceeded!");
             self.recursion_depth -= 1;
             return None;
         }
 
+        // Log instruction type for debugging
+        crate::doo_instr_debug!("generate_instr: {:?}", std::mem::discriminant(instr));
+
         let result = match instr {
             // Constants
             MirInstr::ConstInt { name, value } => {
+                crate::doo_const_debug!("ConstInt: {} = {}", name, value);
                 self.variable_types.insert(name.clone(), "Int".to_string());
                 self.generate_const_int(name, *value)
             }
             MirInstr::ConstFloat { name, value } => {
+                crate::doo_const_debug!("ConstFloat: {} = {}", name, value);
                 self.variable_types
                     .insert(name.clone(), "Float".to_string());
                 self.generate_const_float(name, *value)
             }
             MirInstr::ConstBool { name, value } => {
+                crate::doo_const_debug!("ConstBool: {} = {}", name, value);
                 self.variable_types.insert(name.clone(), "Bool".to_string());
                 self.boolean_temps.insert(name.clone());
                 self.generate_const_bool(name, *value)
             }
             MirInstr::ConstString { name, value } => {
+                crate::doo_const_debug!("ConstString: {} = \"{}\" len={}", name, &value[..value.len().min(50)], value.len());
                 self.variable_types.insert(name.clone(), "Str".to_string());
                 self.generate_const_string(name, value)
             }
@@ -2112,8 +2232,14 @@ impl<'ctx> CodeGen<'ctx> {
                 elements,
                 element_type,
             } => {
-                self.variable_types
-                    .insert(name.clone(), "Array".to_string());
+                crate::doo_array_debug!("Array: {} len={} elem_type={:?}", name, elements.len(), element_type);
+                // Store full type including element type for rawWithParams serialization
+                let full_type = if let Some(elem_t) = element_type.as_deref() {
+                    format!("Array({})", elem_t)
+                } else {
+                    "Array".to_string()
+                };
+                self.variable_types.insert(name.clone(), full_type);
                 self.generate_array_with_metadata_typed(name, elements, element_type.as_deref())
             }
             MirInstr::Map {
@@ -2122,6 +2248,7 @@ impl<'ctx> CodeGen<'ctx> {
                 key_type,
                 value_type,
             } => {
+                crate::doo_hashmap_debug!("Map: {} entries={} key_type={:?} val_type={:?}", name, entries.len(), key_type, value_type);
                 self.variable_types.insert(name.clone(), "Map".to_string());
                 self.generate_map_with_metadata(
                     name,
@@ -2133,16 +2260,21 @@ impl<'ctx> CodeGen<'ctx> {
 
             // String operations
             MirInstr::StringConcat { name, left, right } => {
+                crate::doo_string_debug!("StringConcat: {} = {} + {}", name, left, right);
                 self.variable_types
                     .insert(name.clone(), "String".to_string());
                 self.generate_string_concat(name, left, right)
             }
 
             // Arithmetic
-            MirInstr::BinaryOp(op, dst, lhs, rhs) => self.generate_binary_op(op, dst, lhs, rhs),
+            MirInstr::BinaryOp(op, dst, lhs, rhs) => {
+                crate::doo_binop_debug!("BinaryOp: {:?} {} = {} op {}", op, dst, lhs, rhs);
+                self.generate_binary_op(op, dst, lhs, rhs)
+            }
 
             // Collection operations
             MirInstr::LoadArrayElement { dest, array, index } => {
+                crate::doo_array_debug!("LoadArrayElement: {} = {}[{}]", dest, array, index);
                 self.generate_load_array_element(dest, array, index)
             }
             MirInstr::LoadMapPair {
@@ -2150,7 +2282,10 @@ impl<'ctx> CodeGen<'ctx> {
                 val_dest,
                 map,
                 index,
-            } => self.generate_load_map_pair(key_dest, val_dest, map, index),
+            } => {
+                crate::doo_hashmap_debug!("LoadMapPair: ({}, {}) = {}[{}]", key_dest, val_dest, map, index);
+                self.generate_load_map_pair(key_dest, val_dest, map, index)
+            }
 
             MirInstr::MapGetPair { name, map, index } => {
                 // MapGetPair: extract both key and value from a map at given index
@@ -2176,13 +2311,17 @@ impl<'ctx> CodeGen<'ctx> {
                 target_type,
             } => self.generate_cast(name, value, source_type, target_type),
 
-            MirInstr::Call { dest, func, args } => self.generate_call(dest, func, args),
+            MirInstr::Call { dest, func, args } => {
+                crate::doo_call_debug!("Call: func={} args={} dest={:?}", func, args.len(), dest);
+                self.generate_call(dest, func, args)
+            }
             MirInstr::MethodCall {
                 dest,
                 object,
                 method,
                 args,
             } => {
+                crate::doo_call_debug!("MethodCall: {}.{}({}) -> {}", object, method, args.len(), dest);
                 // IMPORTANT: For HTTP route registration methods, we need to register the handler
                 // function pointer BEFORE calling the route registration FFI function.
                 // This ensures the FFI can look up the handler by name when routes are matched.
@@ -2336,6 +2475,8 @@ impl<'ctx> CodeGen<'ctx> {
                 value,
                 mutable: _,
             } => {
+                crate::doo_instr_debug!("Assign: {} = {}", name, value);
+
                 // Propagate type information from source to destination
                 if let Some(source_type) = self.variable_types.get(value).cloned() {
                     self.variable_types
@@ -2410,6 +2551,18 @@ impl<'ctx> CodeGen<'ctx> {
                         self.struct_instance_types
                             .insert(format!("%{}", name), struct_type);
                     }
+                } else {
+                    // Assignment from a non-struct value: clear any stale struct type tracking
+                    // so later cleanup/type decisions don't treat this var as a struct pointer.
+                    let name_no_pct = name.trim_start_matches('%').to_string();
+                    let name_with_pct = if name.starts_with('%') {
+                        name.clone()
+                    } else {
+                        format!("%{}", name)
+                    };
+                    self.struct_instance_types.remove(name);
+                    self.struct_instance_types.remove(&name_no_pct);
+                    self.struct_instance_types.remove(&name_with_pct);
                 }
                 // Propagate heap tracking
                 if self.heap_arrays.contains(value) {
@@ -2450,6 +2603,59 @@ impl<'ctx> CodeGen<'ctx> {
                 let value_is_heap_str = self.heap_strings.contains(value);
                 let value_is_heap_array = self.heap_arrays.contains(value);
                 let value_is_heap_map = self.heap_maps.contains(value);
+
+                // Clear stale heap-kind tracking on the destination.
+                // A variable must not be simultaneously treated as RC-string and RC-array/map.
+                // If it is, return cleanup will emit multiple __decref calls for the same symbol.
+                let name_no_pct = name.trim_start_matches('%').to_string();
+                let name_with_pct = if name.starts_with('%') {
+                    name.clone()
+                } else {
+                    format!("%{}", name)
+                };
+
+                let value_is_struct = self
+                    .struct_instance_types
+                    .contains_key(value)
+                    || self
+                        .struct_instance_types
+                        .contains_key(&value.trim_start_matches('%').to_string())
+                    || self
+                        .struct_instance_types
+                        .contains_key(&format!("%{}", value));
+
+                if value_is_heap_array {
+                    self.heap_strings.remove(name);
+                    self.heap_strings.remove(&name_no_pct);
+                    self.heap_strings.remove(&name_with_pct);
+                    self.heap_maps.remove(name);
+                    self.heap_maps.remove(&name_no_pct);
+                    self.heap_maps.remove(&name_with_pct);
+                } else if value_is_heap_map {
+                    self.heap_strings.remove(name);
+                    self.heap_strings.remove(&name_no_pct);
+                    self.heap_strings.remove(&name_with_pct);
+                    self.heap_arrays.remove(name);
+                    self.heap_arrays.remove(&name_no_pct);
+                    self.heap_arrays.remove(&name_with_pct);
+                } else if value_is_heap_str {
+                    self.heap_arrays.remove(name);
+                    self.heap_arrays.remove(&name_no_pct);
+                    self.heap_arrays.remove(&name_with_pct);
+                    self.heap_maps.remove(name);
+                    self.heap_maps.remove(&name_no_pct);
+                    self.heap_maps.remove(&name_with_pct);
+                } else if value_is_struct {
+                    self.heap_strings.remove(name);
+                    self.heap_strings.remove(&name_no_pct);
+                    self.heap_strings.remove(&name_with_pct);
+                    self.heap_arrays.remove(name);
+                    self.heap_arrays.remove(&name_no_pct);
+                    self.heap_arrays.remove(&name_with_pct);
+                    self.heap_maps.remove(name);
+                    self.heap_maps.remove(&name_no_pct);
+                    self.heap_maps.remove(&name_with_pct);
+                }
 
                 if let Some(ptrs) = self.composite_string_ptrs.remove(value) {
                     self.composite_string_ptrs.insert(name.clone(), ptrs);
@@ -3815,34 +4021,14 @@ impl<'ctx> CodeGen<'ctx> {
                                                                     .struct_metadata
                                                                     .contains_key(type_str)
                                                             {
-                                                                // Handle struct types in tuple extraction
-                                                                // Normalize to "Struct(Name)" format
-                                                                let normalized_type = if type_str
-                                                                    .starts_with("Struct(")
-                                                                {
+                                                                let normalized_type = if type_str.starts_with("Struct(") {
                                                                     type_str.to_string()
                                                                 } else {
                                                                     format!("Struct({})", type_str)
                                                                 };
-
-                                                                self.variable_types.insert(
-                                                                    name.clone(),
-                                                                    normalized_type,
-                                                                );
-                                                                self.heap_arrays
-                                                                    .insert(name.clone());
-                                                                // Track for RC
-                                                            } else {
-                                                                // For non-struct types, store the type string
-                                                                self.variable_types.insert(
-                                                                    name.clone(),
-                                                                    type_str.to_string(),
-                                                                );
+                                                                self.variable_types.insert(name.clone(), normalized_type);
                                                             }
                                                         }
-
-                                                        self.temp_values
-                                                            .insert(name.clone(), field_val);
 
                                                         // CRITICAL FIX: Also store to symbol if one exists (cross-block vars)
                                                         // This ensures resolve_value gets the correct value when loading from symbol
@@ -3852,8 +4038,8 @@ impl<'ctx> CodeGen<'ctx> {
                                                                 .expect("Failed to store TupleExtract result to symbol");
                                                         }
 
+                                                        self.temp_values.insert(name.clone(), field_val);
                                                         return Some(field_val);
-                                                    } else {
                                                     }
                                                 }
                                             } else {
@@ -3936,7 +4122,6 @@ impl<'ctx> CodeGen<'ctx> {
                                             format!("Struct({})", type_str)
                                         };
                                         self.variable_types.insert(name.clone(), normalized_type);
-                                        self.heap_arrays.insert(name.clone());
                                     } else {
                                         self.variable_types
                                             .insert(name.clone(), type_str.to_string());
@@ -4037,7 +4222,6 @@ impl<'ctx> CodeGen<'ctx> {
                                         };
 
                                         self.variable_types.insert(name.clone(), normalized_type);
-                                        self.heap_arrays.insert(name.clone()); // Track for RC
                                     } else {
                                         // For non-struct types, store the type string
                                         self.variable_types
@@ -4388,7 +4572,6 @@ impl<'ctx> CodeGen<'ctx> {
                                                     };
                                                 self.variable_types
                                                     .insert(name.clone(), normalized_type);
-                                                self.heap_arrays.insert(name.clone());
                                             } else {
                                                 self.variable_types
                                                     .insert(name.clone(), type_str.clone());
@@ -7048,6 +7231,10 @@ impl<'ctx> CodeGen<'ctx> {
                     let struct_val = error_val.into_struct_value();
                     let struct_type_val = struct_val.get_type();
 
+                    crate::doo_rc_debug!(
+                        "Heap-alloc error enum: {} fields",
+                        struct_type_val.count_fields()
+                    );
                     let struct_heap = self
                         .builder
                         .build_malloc(struct_type_val, "error_enum_heap")
@@ -7197,59 +7384,10 @@ impl<'ctx> CodeGen<'ctx> {
                 error_block: _error_block,
                 expected_ok_type: mir_expected_ok_type,
             } => {
-                // RUNTIME DEBUG: TryPropagate entry
-                let printf_fn = self.get_or_declare_printf();
-                let debug_try_entry = self
-                    .builder
-                    .build_global_string_ptr(
-                        "[TRY_PROPAGATE_RUNTIME] ===== ENTRY: result_tmp='%s', name='%s' =====\n",
-                        "debug_try_entry_fmt",
-                    )
-                    .unwrap();
-                let result_tmp_cstr = self.generate_string_literal_ptr(result_tmp);
-                let name_cstr = self.generate_string_literal_ptr(name);
-                self.builder
-                    .build_call(
-                        printf_fn,
-                        &[
-                            debug_try_entry.as_pointer_value().into(),
-                            result_tmp_cstr.into(),
-                            name_cstr.into(),
-                        ],
-                        "",
-                    )
-                    .unwrap();
+                crate::doo_codegen_debug!("TryPropagate: {} from {}", name, result_tmp);
 
                 // Extract the Result struct and check the tag
                 let mut result_val = self.resolve_value(result_tmp);
-
-                // RUNTIME DEBUG: After resolve_value
-                let debug_resolved = self
-                    .builder
-                    .build_global_string_ptr(
-                        "[TRY_PROPAGATE_RUNTIME] resolve_value returned, is_struct=%d, is_pointer=%d\n",
-                        "debug_resolved_fmt",
-                    )
-                    .unwrap();
-                let is_struct_i32 = self
-                    .context
-                    .i32_type()
-                    .const_int(if result_val.is_struct_value() { 1 } else { 0 }, false);
-                let is_pointer_i32 = self
-                    .context
-                    .i32_type()
-                    .const_int(if result_val.is_pointer_value() { 1 } else { 0 }, false);
-                self.builder
-                    .build_call(
-                        printf_fn,
-                        &[
-                            debug_resolved.as_pointer_value().into(),
-                            is_struct_i32.into(),
-                            is_pointer_i32.into(),
-                        ],
-                        "",
-                    )
-                    .unwrap();
 
                 // CRITICAL FIX: If result_val is a pointer, we need to load the Result struct from it
                 // This happens when FFI functions return pointer to Result struct
@@ -7259,35 +7397,10 @@ impl<'ctx> CodeGen<'ctx> {
                 // This prevents signature mismatches from multiple declarations
                 let free_ptr_fn = self.get_or_declare_free();
 
-                // RUNTIME DEBUG: Before pointer check
-                let debug_before_ptr_check = self
-                    .builder
-                    .build_global_string_ptr(
-                        "[TRY_PROPAGATE_RUNTIME] About to check if pointer needs loading...\n",
-                        "debug_before_ptr_check",
-                    )
-                    .unwrap();
-                self.builder
-                    .build_call(
-                        printf_fn,
-                        &[debug_before_ptr_check.as_pointer_value().into()],
-                        "",
-                    )
-                    .unwrap();
-
                 if result_val.is_pointer_value() && !result_val.is_struct_value() {
-                    // RUNTIME DEBUG: Loading from pointer
-                    let debug_loading = self
-                        .builder
-                        .build_global_string_ptr(
-                            "[TRY_PROPAGATE_RUNTIME] YES - Loading Result struct from pointer...\n",
-                            "debug_loading",
-                        )
-                        .unwrap();
-                    self.builder
-                        .build_call(printf_fn, &[debug_loading.as_pointer_value().into()], "")
-                        .unwrap();
                     let result_ptr = result_val.into_pointer_value();
+                    crate::doo_rc_debug!("TryPropagate: Loading Result from ptr {:?}", result_ptr);
+
                     let result_struct_type = self
                         .context
                         .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false);
@@ -7298,6 +7411,7 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Free the heap allocation holding the Result struct after extracting it.
                     // This pointer is NOT a DooResult*; using doo_db_result_free here corrupts heap.
+                    crate::doo_rc_debug!("TryPropagate: Freeing ptr {:?}", result_ptr);
                     self.builder
                         .build_call(free_ptr_fn, &[result_ptr.into()], "")
                         .unwrap();
@@ -7328,18 +7442,6 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // If result is a struct (Result type), extract tag and value
                 if result_val.is_struct_value() {
-                    // RUNTIME DEBUG: Extracting from struct
-                    let debug_struct = self
-                        .builder
-                        .build_global_string_ptr(
-                            "[TRY_PROPAGATE_RUNTIME] Result is struct, extracting tag and value...\n",
-                            "debug_struct",
-                        )
-                        .unwrap();
-                    self.builder
-                        .build_call(printf_fn, &[debug_struct.as_pointer_value().into()], "")
-                        .unwrap();
-
                     let result_struct = result_val.into_struct_value();
 
                     // Extract tag (field 0)
@@ -7348,22 +7450,6 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_extract_value(result_struct, 0, "result_tag")
                         .unwrap()
                         .into_int_value();
-
-                    // RUNTIME DEBUG: Print tag value
-                    let debug_tag = self
-                        .builder
-                        .build_global_string_ptr(
-                            "[TRY_PROPAGATE_RUNTIME] Result.tag = %d\n",
-                            "debug_tag_fmt",
-                        )
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[debug_tag.as_pointer_value().into(), tag.into()],
-                            "",
-                        )
-                        .unwrap();
 
                     // Check if tag == 1 (Err)
                     let is_err = self
@@ -7651,22 +7737,6 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_pointer_value();
 
-                    // RUNTIME DEBUG: Print extracted OK value pointer
-                    let debug_ok_ptr = self
-                        .builder
-                        .build_global_string_ptr(
-                            "[TRY_PROPAGATE_RUNTIME] Extracted OK value pointer: %p\n",
-                            "debug_ok_ptr_fmt",
-                        )
-                        .unwrap();
-                    self.builder
-                        .build_call(
-                            printf_fn,
-                            &[debug_ok_ptr.as_pointer_value().into(), ok_value_ptr.into()],
-                            "",
-                        )
-                        .unwrap();
-
                     // Get the Ok type from result_types to know how to convert the pointer back
                     // Use same fallback logic as ManualErrorExtract
                     let ok_type = self
@@ -7830,17 +7900,26 @@ impl<'ctx> CodeGen<'ctx> {
                                             },
                                         );
                                         self.heap_arrays.insert(name.clone());
+
+                                        // If this variable previously held a JSON string (and was tracked
+                                        // as a heap string), clear that stale tracking now that it is an array.
+                                        // Otherwise cleanup will decref it twice (as array + as string).
+                                        self.heap_strings.remove(name);
                                     } else if self.struct_metadata.contains_key(&target_type) {
                                         self.struct_instance_types
                                             .insert(name.clone(), target_type.clone());
-                                        self.heap_arrays.insert(name.clone());
+
+                                        // Parsed value is now a struct pointer, not an RC string.
+                                        self.heap_strings.remove(name);
                                     } else if target_type.starts_with("Struct(")
                                         && target_type.ends_with(")")
                                     {
                                         let struct_name = &target_type[7..target_type.len() - 1];
                                         self.struct_instance_types
                                             .insert(name.clone(), struct_name.to_string());
-                                        self.heap_arrays.insert(name.clone());
+
+                                        // Parsed value is now a struct pointer, not an RC string.
+                                        self.heap_strings.remove(name);
                                     }
                                 }
                             }
@@ -7879,19 +7958,23 @@ impl<'ctx> CodeGen<'ctx> {
                             .insert(name.clone(), normalized_type.clone());
 
                         // If this is a string type, track it in heap_strings for proper printing
-                        if normalized_type == "Str"
+                        // IMPORTANT: Do NOT use contains("Str") here.
+                        // "Struct(...)" contains "Str" and would incorrectly mark struct pointers
+                        // (e.g., Database) as RC strings, leading to __decref on non-RC memory.
+                        let is_string_type = normalized_type == "Str"
                             || normalized_type == "String"
-                            || normalized_type.contains("Str")
-                        {
+                            || normalized_type == "Str?"
+                            || normalized_type == "String?"
+                            || normalized_type == "Optional(Str)"
+                            || normalized_type == "Optional(String)";
+                        if is_string_type {
                             self.heap_strings.insert(name.clone());
                         }
 
-                        // If this is a struct type (but NOT a scalar type), also track it for heap management
-                        // CRITICAL: Exclude scalar types (Int, Float, Bool) which should NOT be in heap_arrays
-                        // because heap_arrays causes resolve_value to load as ptr instead of i32/f64
-                        if is_struct_type && !is_scalar_type {
-                            self.heap_arrays.insert(name.clone());
-                        }
+                        // IMPORTANT: Do NOT track structs in heap_arrays.
+                        // heap_arrays are RC-managed arrays (and cleanup calls __decref on them).
+                        // Struct values (including opaque FFI pointers modeled as Struct(...), e.g. Database)
+                        // are NOT RC-managed and must never be passed to __decref.
 
                         // If this is a tuple type, propagate tuple metadata
                         if is_tuple_type {
@@ -7979,6 +8062,8 @@ impl<'ctx> CodeGen<'ctx> {
                 result: result_tmp,
                 panic_msg,
             } => {
+                crate::doo_codegen_debug!("UnwrapOrPanic: {} from {}", name, result_tmp);
+
                 // Extract the Result struct and check the tag
                 let mut result_val = self.resolve_value(result_tmp);
 
@@ -7991,6 +8076,8 @@ impl<'ctx> CodeGen<'ctx> {
 
                 if result_val.is_pointer_value() && !result_val.is_struct_value() {
                     let result_ptr = result_val.into_pointer_value();
+                    crate::doo_rc_debug!("UnwrapOrPanic: Loading Result from ptr {:?}", result_ptr);
+
                     let result_struct_type = self.context.struct_type(
                         &[self.context.i32_type().into(), ptr_type_unwrap.into()],
                         false,
@@ -8001,6 +8088,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .expect("Failed to load Result struct from pointer in UnwrapOrPanic");
 
                     // Free the heap allocation holding the Result struct after extracting it.
+                    crate::doo_rc_debug!("UnwrapOrPanic: Freeing ptr {:?}", result_ptr);
                     self.builder
                         .build_call(free_ptr_fn_unwrap, &[result_ptr.into()], "")
                         .unwrap();
@@ -8208,6 +8296,13 @@ impl<'ctx> CodeGen<'ctx> {
                 error_name,
                 result: result_tmp,
             } => {
+                crate::doo_codegen_debug!(
+                    "ManualErrorExtract: {} ok values, error={}, result={}",
+                    ok_names.len(),
+                    error_name,
+                    result_tmp
+                );
+
                 // Extract the Result struct
                 let mut result_val = self.resolve_value(result_tmp);
 
@@ -8215,6 +8310,11 @@ impl<'ctx> CodeGen<'ctx> {
                 // This happens when FFI functions return pointer to Result struct
                 if result_val.is_pointer_value() && !result_val.is_struct_value() {
                     let result_ptr = result_val.into_pointer_value();
+                    crate::doo_rc_debug!(
+                        "ManualErrorExtract: Loading Result from ptr {:?}",
+                        result_ptr
+                    );
+
                     let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
                     let result_struct_type = self
                         .context
@@ -9375,7 +9475,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .insert(format!("{}_struct_type", name), struct_name.clone());
 
                 // Track for RC memory management
-                self.heap_arrays.insert(name.clone()); // Reuse heap tracking for structs
+                self.struct_instance_types.insert(name.clone(), struct_name.clone()); // Reuse heap tracking for structs
 
                 Some(typed_ptr.into())
             }
@@ -9425,18 +9525,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_conditional_branch(is_null, null_block, valid_block)
                         .unwrap();
 
-                    // Null block: Create a null/default value and jump to merge
-                    self.builder.position_at_end(null_block);
-                    let null_val = self
-                        .context
-                        .ptr_type(inkwell::AddressSpace::default())
-                        .const_null();
-                    self.builder
-                        .build_unconditional_branch(merge_block)
-                        .unwrap();
-                    let null_block_end = self.builder.get_insert_block().unwrap();
-
-                    // Valid block: Access the field normally
+                    // Valid block: Access the field normally FIRST to determine field type
                     self.builder.position_at_end(valid_block);
 
                     // Get struct type info (duplicated from below, needed for valid block)
@@ -9464,7 +9553,7 @@ impl<'ctx> CodeGen<'ctx> {
                         String::new()
                     };
 
-                    let (field_index_local, _field_type_local) =
+                    let (field_index_local, field_type_local) =
                         if let Some(metadata) = self.struct_metadata.get(&struct_name_local) {
                             let index = metadata
                                 .field_names
@@ -9510,10 +9599,16 @@ impl<'ctx> CodeGen<'ctx> {
                             .build_load(field_llvm_type_local, fptr, "valid_field_val")
                             .unwrap()
                     } else {
-                        self.context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .const_null()
-                            .into()
+                        // Fallback: create default based on field type
+                        match field_type_local.as_str() {
+                            "Int" | "Bool" => self.context.i32_type().const_int(0, false).into(),
+                            "Float" => self.context.f64_type().const_float(0.0).into(),
+                            _ => self
+                                .context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null()
+                                .into(),
+                        }
                     };
 
                     self.builder
@@ -9521,32 +9616,54 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     let valid_block_end = self.builder.get_insert_block().unwrap();
 
+                    // Null block: Create a default value based on field type and jump to merge
+                    self.builder.position_at_end(null_block);
+                    let null_val: inkwell::values::BasicValueEnum = match field_type_local.as_str()
+                    {
+                        "Int" | "Bool" | "Optional(Int)" | "Optional(Bool)" => {
+                            self.context.i32_type().const_int(0, false).into()
+                        }
+                        "Float" | "Optional(Float)" => {
+                            self.context.f64_type().const_float(0.0).into()
+                        }
+                        _ => self
+                            .context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .const_null()
+                            .into(),
+                    };
+                    self.builder
+                        .build_unconditional_branch(merge_block)
+                        .unwrap();
+                    let null_block_end = self.builder.get_insert_block().unwrap();
+
                     // Merge block: PHI node to select between null and valid values
                     self.builder.position_at_end(merge_block);
 
-                    let result_type = self.context.ptr_type(inkwell::AddressSpace::default());
+                    // Use the actual field type for PHI node
                     let phi = self
                         .builder
-                        .build_phi(result_type, "struct_field_result")
+                        .build_phi(field_llvm_type_local, "struct_field_result")
                         .unwrap();
 
-                    phi.add_incoming(&[
-                        (&null_val, null_block_end),
-                        (&valid_val.into_pointer_value(), valid_block_end),
-                    ]);
+                    phi.add_incoming(&[(&null_val, null_block_end), (&valid_val, valid_block_end)]);
 
                     let result_val = phi.as_basic_value();
                     self.temp_values.insert(name.clone(), result_val);
-                    self.variable_types.insert(name.clone(), "Str".to_string());
+                    self.variable_types
+                        .insert(name.clone(), field_type_local.clone());
 
                     // Create symbol for cross-block access
-                    let alloca = self.builder.build_alloca(result_type, name).unwrap();
+                    let alloca = self
+                        .builder
+                        .build_alloca(field_llvm_type_local, name)
+                        .unwrap();
                     self.builder.build_store(alloca, result_val).unwrap();
                     self.symbols.insert(
                         name.clone(),
                         crate::codegen::core::context::Symbol {
                             ptr: alloca,
-                            ty: result_type.into(),
+                            ty: field_llvm_type_local,
                         },
                     );
 
@@ -9634,12 +9751,24 @@ impl<'ctx> CodeGen<'ctx> {
                                     "Float" => self.context.f64_type().into(),
                                     // Use i32 for Bool to match internal representation (all Bools are stored as i32)
                                     "Bool" => self.context.i32_type().into(),
-                                    "Str" | "String" => self
+                                    "Str" | "String" | "Optional(Str)" | "Optional(String)" => self
                                         .context
                                         .ptr_type(inkwell::AddressSpace::default())
                                         .into(),
+                                    "Optional(Int)" => self.context.i32_type().into(),
+                                    "Optional(Float)" => self.context.f64_type().into(),
+                                    // Optional(Bool) stored as i32
+                                    "Optional(Bool)" => self.context.i32_type().into(),
                                     _ if self.struct_metadata.contains_key(type_name) => {
                                         // Nested struct - use pointer to the struct
+                                        self.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into()
+                                    }
+                                    _ if type_name.starts_with("Optional(")
+                                        && type_name.ends_with(")") =>
+                                    {
+                                        // Optional of any non-scalar defaults to pointer
                                         self.context
                                             .ptr_type(inkwell::AddressSpace::default())
                                             .into()
