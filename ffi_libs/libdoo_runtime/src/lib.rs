@@ -1,12 +1,30 @@
 //! Centralized runtime library for Doo FFI modules
 //! Provides shared validation, error handling, and utilities
 
+pub mod debug;
+pub mod memory;
 pub mod ownership;
 
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global debug flag - set by doo run --debug or debug builds
+static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Initialize debug mode based on build type and CLI flag
+#[no_mangle]
+pub extern "C" fn doo_runtime_init_debug(enable: bool) {
+    DEBUG_ENABLED.store(enable, Ordering::Relaxed);
+}
+
+/// Check if debug mode is enabled (for runtime use)
+#[no_mangle]
+pub extern "C" fn doo_runtime_is_debug_enabled() -> bool {
+    DEBUG_ENABLED.load(Ordering::Relaxed)
+}
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -25,10 +43,6 @@ fn string_to_c_ptr(s: &str) -> *mut c_char {
         let alloc_size = (total_size + 15) & !15;
         let heap_ptr = dooruntime_malloc(alloc_size) as *mut u8;
         if heap_ptr.is_null() {
-            eprintln!(
-                "[RUNTIME] string_to_c_ptr: dooruntime_malloc failed for {} bytes",
-                alloc_size
-            );
             return std::ptr::null_mut();
         }
 
@@ -187,13 +201,18 @@ pub extern "C" fn dooruntime_free_string(ptr: *mut libc::c_char) {
 /// This ensures compatibility between FFI libraries and JIT-compiled code
 #[no_mangle]
 pub extern "C" fn dooruntime_malloc(size: libc::size_t) -> *mut u8 {
-    unsafe { libc::malloc(size) as *mut u8 }
+    let ptr = unsafe { libc::malloc(size) as *mut u8 };
+    memory::track_alloc(ptr as *const std::ffi::c_void, "dooruntime_malloc");
+    ptr
 }
 
 /// Free memory using the runtime's allocator (libc::free)
 #[no_mangle]
 pub extern "C" fn dooruntime_free(ptr: *mut u8) {
     if !ptr.is_null() {
+        if memory::track_free(ptr as *const std::ffi::c_void, "dooruntime_free") {
+            return;
+        }
         unsafe { libc::free(ptr as *mut libc::c_void) }
     }
 }
@@ -1321,6 +1340,41 @@ pub extern "C" fn dooruntime_get_json_type(json_value: *const libc::c_char) -> *
     string_to_c_ptr(type_name)
 }
 
+fn normalize_json_field_key(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch == '_' || ch == '-' {
+            continue;
+        }
+        for lc in ch.to_lowercase() {
+            out.push(lc);
+        }
+    }
+    out
+}
+
+fn get_json_field_value<'a>(
+    container: &'a serde_json::Value,
+    field_name: &str,
+) -> Option<&'a serde_json::Value> {
+    let serde_json::Value::Object(map) = container else {
+        return None;
+    };
+
+    if let Some(v) = map.get(field_name) {
+        return Some(v);
+    }
+
+    let target = normalize_json_field_key(field_name);
+    for (k, v) in map.iter() {
+        if normalize_json_field_key(k) == target {
+            return Some(v);
+        }
+    }
+
+    None
+}
+
 /// Extract a field value from JSON object and return as Int
 /// Returns the integer value, or 0 if field not found or type mismatch
 /// This validates that the JSON value is actually a number, not a string
@@ -1350,21 +1404,28 @@ pub extern "C" fn json_get_int(json: *const libc::c_char, field_name: *const lib
         Err(_) => return 0,
     };
 
+    let container = match &json_obj {
+        serde_json::Value::Object(_) => Some(&json_obj),
+        serde_json::Value::Array(arr) => arr.first(),
+        _ => None,
+    };
+
     // Extract field
-    if let Some(field_value) = json_obj.get(field_str) {
+    if let Some(field_value) = container.and_then(|v| get_json_field_value(v, field_str)) {
         // Validate it's a number
         if let Some(num) = field_value.as_i64() {
             return num as i32;
         } else if let Some(num) = field_value.as_u64() {
             return num as i32;
+        } else if field_value.is_null() {
+            // Null is valid for optional Int fields - return 0 without error
+            return 0;
         } else {
-            // Type mismatch - set error
+            // Type mismatch - set error ONLY for truly wrong types
             let actual_type = if field_value.is_string() {
                 "string"
             } else if field_value.is_boolean() {
                 "boolean"
-            } else if field_value.is_null() {
-                "null"
             } else if field_value.is_array() {
                 "array"
             } else if field_value.is_object() {
@@ -1414,8 +1475,14 @@ pub extern "C" fn json_get_float(
         Err(_) => return 0.0,
     };
 
+    let container = match &json_obj {
+        serde_json::Value::Object(_) => Some(&json_obj),
+        serde_json::Value::Array(arr) => arr.first(),
+        _ => None,
+    };
+
     // Extract field
-    if let Some(field_value) = json_obj.get(field_str) {
+    if let Some(field_value) = container.and_then(|v| get_json_field_value(v, field_str)) {
         // Validate it's a number
         if let Some(num) = field_value.as_f64() {
             return num;
@@ -1423,14 +1490,15 @@ pub extern "C" fn json_get_float(
             return num as f64;
         } else if let Some(num) = field_value.as_u64() {
             return num as f64;
+        } else if field_value.is_null() {
+            // Null is valid for optional Float fields - return 0.0 without error
+            return 0.0;
         } else {
-            // Type mismatch - set error
+            // Type mismatch - set error ONLY for truly wrong types
             let actual_type = if field_value.is_string() {
                 "string"
             } else if field_value.is_boolean() {
                 "boolean"
-            } else if field_value.is_null() {
-                "null"
             } else if field_value.is_array() {
                 "array"
             } else if field_value.is_object() {
@@ -1477,19 +1545,26 @@ pub extern "C" fn json_get_bool(json: *const libc::c_char, field_name: *const li
         Err(_) => return 0,
     };
 
+    let container = match &json_obj {
+        serde_json::Value::Object(_) => Some(&json_obj),
+        serde_json::Value::Array(arr) => arr.first(),
+        _ => None,
+    };
+
     // Extract field
-    if let Some(field_value) = json_obj.get(field_str) {
+    if let Some(field_value) = container.and_then(|v| get_json_field_value(v, field_str)) {
         // Validate it's a boolean
         if let Some(b) = field_value.as_bool() {
             return if b { 1 } else { 0 };
+        } else if field_value.is_null() {
+            // Null is valid for optional Bool fields - return 0 (false) without error
+            return 0;
         } else {
-            // Type mismatch - set error
+            // Type mismatch - set error ONLY for truly wrong types
             let actual_type = if field_value.is_string() {
                 "string"
             } else if field_value.is_number() {
                 "number"
-            } else if field_value.is_null() {
-                "null"
             } else if field_value.is_array() {
                 "array"
             } else if field_value.is_object() {
@@ -1528,8 +1603,6 @@ pub extern "C" fn dooruntime_get_json_type_mismatch() -> *mut libc::c_char {
         std::ptr::null_mut()
     })
 }
-
-/// Clear JSON type mismatch error
 #[no_mangle]
 pub extern "C" fn dooruntime_clear_json_type_mismatch() {
     clear_json_type_mismatch();
@@ -1566,19 +1639,26 @@ pub extern "C" fn json_get_str(
         Err(_) => return std::ptr::null_mut(),
     };
 
+    let container = match &json_obj {
+        serde_json::Value::Object(_) => Some(&json_obj),
+        serde_json::Value::Array(arr) => arr.first(),
+        _ => None,
+    };
+
     // Extract field
-    if let Some(field_value) = json_obj.get(field_str) {
+    if let Some(field_value) = container.and_then(|v| get_json_field_value(v, field_str)) {
         // Validate it's a string
         if let Some(s) = field_value.as_str() {
             return string_to_c_ptr(s);
+        } else if field_value.is_null() {
+            // Null is valid for optional Str fields - return null without error
+            return std::ptr::null_mut();
         } else {
-            // Type mismatch - set error
+            // Type mismatch - set error ONLY for truly wrong types (not null)
             let actual_type = if field_value.is_number() {
                 "number"
             } else if field_value.is_boolean() {
                 "boolean"
-            } else if field_value.is_null() {
-                "null"
             } else if field_value.is_array() {
                 "array"
             } else if field_value.is_object() {
@@ -1636,8 +1716,14 @@ pub extern "C" fn json_validate_field_type(
         Err(_) => return 0,
     };
 
+    let container = match &json_obj {
+        serde_json::Value::Object(_) => Some(&json_obj),
+        serde_json::Value::Array(arr) => arr.first(),
+        _ => None,
+    };
+
     // Extract field
-    if let Some(field_value) = json_obj.get(field_str) {
+    if let Some(field_value) = container.and_then(|v| get_json_field_value(v, field_str)) {
         // Check type
         match type_str {
             "Int" | "number" => {
