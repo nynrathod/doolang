@@ -11,10 +11,9 @@ impl<'ctx> CodeGen<'ctx> {
         elements: &[String],
         explicit_element_type: Option<&str>,
     ) -> Option<BasicValueEnum<'ctx>> {
+        crate::doo_array_debug!("generate_array_with_metadata_typed: name={} len={} type={:?}", name, elements.len(), explicit_element_type);
         self.generate_array_with_metadata_inner(name, elements, explicit_element_type)
     }
-
-
 
     // Helper to convert Enum to String at runtime
     fn convert_enum_to_string_generic(
@@ -24,48 +23,65 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> BasicValueEnum<'ctx> {
         // Strip Enum() wrapper
         let enum_name = if type_str.starts_with("Enum(") && type_str.ends_with(")") {
-             &type_str[5..type_str.len() - 1]
+            &type_str[5..type_str.len() - 1]
         } else {
-             type_str
+            type_str
         };
 
         // Get variants
         let variants = if let Some(v) = self.enum_variants.get(enum_name) {
-             v.clone()
+            v.clone()
         } else {
-             // Try stripping namespace (e.g. Models::Status -> Status)
+            // Try stripping namespace (e.g. Models::Status -> Status)
             let simple_name = if let Some(idx) = enum_name.rfind("::") {
                 &enum_name[idx + 2..]
             } else {
                 enum_name
             };
-            self.enum_variants.get(simple_name).cloned().unwrap_or_default()
+            self.enum_variants
+                .get(simple_name)
+                .cloned()
+                .unwrap_or_default()
         };
 
         if variants.is_empty() {
-             let s = self
-                 .builder
-                 .build_global_string_ptr("Unknown", "enum_unknown")
-                 .unwrap();
-             return self.clone_ffi_string_to_rc(s.as_pointer_value()).into();
+            let s = self
+                .builder
+                .build_global_string_ptr("Unknown", "enum_unknown")
+                .unwrap();
+            return self.clone_ffi_string_to_rc(s.as_pointer_value()).into();
         }
 
         // Extract tag from enum struct {i32, ptr}
         let struct_val = val.into_struct_value();
-        let tag = self.builder.build_extract_value(struct_val, 0, "enum_tag").unwrap().into_int_value();
+        let tag = self
+            .builder
+            .build_extract_value(struct_val, 0, "enum_tag")
+            .unwrap()
+            .into_int_value();
 
         // Create switch
         let current_block = self.builder.get_insert_block().unwrap();
         let current_fn = current_block.get_parent().unwrap();
-        let merge_block = self.context.append_basic_block(current_fn, "enum_to_str_merge");
-        let default_block = self.context.append_basic_block(current_fn, "enum_to_str_default");
+        let merge_block = self
+            .context
+            .append_basic_block(current_fn, "enum_to_str_merge");
+        let default_block = self
+            .context
+            .append_basic_block(current_fn, "enum_to_str_default");
 
         let mut cases = Vec::new();
-        let mut incoming: Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> = Vec::new();
+        let mut incoming: Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
+            Vec::new();
 
         for (name, idx) in &variants {
-            let case_block = self.context.append_basic_block(current_fn, &format!("case_{}", name));
-            cases.push((self.context.i32_type().const_int((*idx).into(), false), case_block));
+            let case_block = self
+                .context
+                .append_basic_block(current_fn, &format!("case_{}", name));
+            cases.push((
+                self.context.i32_type().const_int((*idx).into(), false),
+                case_block,
+            ));
 
             self.builder.position_at_end(case_block);
             let str_val = self
@@ -73,12 +89,20 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_global_string_ptr(name, &format!("enum_{}", name))
                 .unwrap();
             let rc_str = self.clone_ffi_string_to_rc(str_val.as_pointer_value());
-            incoming.push((rc_str.into(), case_block));
-            self.builder.build_unconditional_branch(merge_block).unwrap();
+            // clone_ffi_string_to_rc() emits its own blocks and leaves the builder positioned at
+            // its internal merge block (e.g. "ffi_str_merge"). That block is the actual CFG
+            // predecessor of enum_to_str_merge, not the original case_block.
+            let pred_block = self.builder.get_insert_block().unwrap();
+            incoming.push((rc_str.into(), pred_block));
+            self.builder
+                .build_unconditional_branch(merge_block)
+                .unwrap();
         }
 
         self.builder.position_at_end(current_block);
-        self.builder.build_switch(tag, default_block, &cases).unwrap();
+        self.builder
+            .build_switch(tag, default_block, &cases)
+            .unwrap();
 
         // Default case
         self.builder.position_at_end(default_block);
@@ -87,14 +111,22 @@ impl<'ctx> CodeGen<'ctx> {
             .build_global_string_ptr("Unknown", "enum_unknown")
             .unwrap();
         let default_rc = self.clone_ffi_string_to_rc(default_str.as_pointer_value());
-        incoming.push((default_rc.into(), default_block));
-        self.builder.build_unconditional_branch(merge_block).unwrap();
+        // Same reasoning as above: the predecessor is the internal merge block from
+        // clone_ffi_string_to_rc(), not default_block.
+        let pred_block = self.builder.get_insert_block().unwrap();
+        incoming.push((default_rc.into(), pred_block));
+        self.builder
+            .build_unconditional_branch(merge_block)
+            .unwrap();
 
         // Merge
         self.builder.position_at_end(merge_block);
-        let phi = self.builder.build_phi(self.context.ptr_type(AddressSpace::default()), "enum_str").unwrap();
+        let phi = self
+            .builder
+            .build_phi(self.context.ptr_type(AddressSpace::default()), "enum_str")
+            .unwrap();
         for (val, block) in &incoming {
-             phi.add_incoming(&[(val, *block)]);
+            phi.add_incoming(&[(val, *block)]);
         }
 
         phi.as_basic_value()
@@ -179,7 +211,8 @@ impl<'ctx> CodeGen<'ctx> {
         // This includes: single enum arrays, mixed enum arrays, or enums mixed with other types
         let force_string_array = has_enums
             || (has_enums && has_strings)
-            || (has_enums && has_others);
+            || (has_enums && has_others)
+            || matches!(explicit_element_type, Some("Str") | Some("String"));
 
         let element_values: Vec<BasicValueEnum<'ctx>> = expanded_elements
             .iter()
@@ -230,7 +263,9 @@ impl<'ctx> CodeGen<'ctx> {
                                     if force_string_array {
                                         let meta_type = meta.element_type.clone();
                                         if meta_type.starts_with("Enum(") {
-                                             elem_val = self.convert_enum_to_string_generic(elem_val, &meta_type);
+                                            elem_val = self.convert_enum_to_string_generic(
+                                                elem_val, &meta_type,
+                                            );
                                         }
                                     }
                                     return elem_val;
@@ -269,6 +304,75 @@ impl<'ctx> CodeGen<'ctx> {
                             }
                         }
                     }
+
+                    if val.is_int_value() {
+                        let int_val = val.into_int_value();
+                        let is_bool = self
+                            .variable_types
+                            .get(el)
+                            .map(|t| t == "Bool")
+                            .unwrap_or(false)
+                            || int_val.get_type().get_bit_width() == 1;
+
+                        if is_bool {
+                            let true_str = self
+                                .builder
+                                .build_global_string_ptr("true", "bool_true")
+                                .unwrap();
+                            let false_str = self
+                                .builder
+                                .build_global_string_ptr("false", "bool_false")
+                                .unwrap();
+
+                            let is_true = if int_val.get_type().get_bit_width() == 1 {
+                                int_val
+                            } else {
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::NE,
+                                        int_val,
+                                        self.context.i32_type().const_zero(),
+                                        "is_true",
+                                    )
+                                    .unwrap()
+                            };
+
+                            let selected = self
+                                .builder
+                                .build_select(
+                                    is_true,
+                                    true_str.as_pointer_value(),
+                                    false_str.as_pointer_value(),
+                                    "bool_str",
+                                )
+                                .unwrap()
+                                .into_pointer_value();
+
+                            return self.clone_ffi_string_to_rc(selected).into();
+                        }
+
+                        let buf_ptr = self
+                            .convert_int_to_string_via_sprintf(int_val)
+                            .into_pointer_value();
+                        let rc_ptr = self.clone_ffi_string_to_rc(buf_ptr);
+                        let free_fn = self.get_or_declare_free();
+                        self.builder
+                            .build_call(free_fn, &[buf_ptr.into()], "")
+                            .unwrap();
+                        return rc_ptr.into();
+                    }
+
+                    if val.is_float_value() {
+                        let buf_ptr = self
+                            .convert_float_to_string_via_sprintf(val.into_float_value())
+                            .into_pointer_value();
+                        let rc_ptr = self.clone_ffi_string_to_rc(buf_ptr);
+                        let free_fn = self.get_or_declare_free();
+                        self.builder
+                            .build_call(free_fn, &[buf_ptr.into()], "")
+                            .unwrap();
+                        return rc_ptr.into();
+                    }
                 }
 
                 val
@@ -277,7 +381,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Allow empty arrays: use explicit type if provided, otherwise default to Int
         let elem_type = if force_string_array {
-             self.context
+            self.context
                 .ptr_type(inkwell::AddressSpace::default())
                 .as_basic_type_enum()
         } else if element_values.is_empty() {
