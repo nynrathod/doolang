@@ -46,6 +46,26 @@ impl<'ctx> CodeGen<'ctx> {
             return self.generate_ratelimit_config(dest, object, args);
         }
 
+        // STATIC METHOD CALL DETECTION:
+        // Check if object is a known struct type name (e.g., Server, Database).
+        // If so, treat TypeName.method() as TypeName::method() - a static method call.
+        // This supports both Server.new() and Server::new() syntax for static methods.
+        let is_struct_type = self.struct_metadata.contains_key(object)
+            || self.canonical_struct_types.contains_key(object);
+
+        // Also check if object is a type name that has a corresponding function registered
+        // as TypeName::method (e.g., Server::new, Database::postgres)
+        let qualified_name = format!("{}::{}", object, method);
+        let has_static_method = self.module.get_function(&qualified_name).is_some()
+            || self.function_aliases.contains_key(&qualified_name);
+
+        if is_struct_type || has_static_method {
+            // This is a static method call using dot syntax: Server.new(...) -> Server::new(...)
+            // Convert to a regular function call
+            let dest_vec = vec![dest.to_string()];
+            return self.generate_call(&dest_vec, &qualified_name, args);
+        }
+
         // First, check if this is a custom user-defined method
         // Try to determine the type name from the object
         let object_val = self.resolve_value(object);
@@ -160,9 +180,6 @@ impl<'ctx> CodeGen<'ctx> {
                     && clean_type != "Bool"
                     && clean_type != "Str"
                 {
-                    for func in self.module.get_functions() {
-                        eprintln!("  - {}", func.get_name().to_str().unwrap());
-                    }
                     panic!(
                         "Method '{}::{}' was not generated - check MIR generation",
                         clean_type, method
@@ -346,7 +363,7 @@ impl<'ctx> CodeGen<'ctx> {
         use inkwell::AddressSpace;
 
         if args.is_empty() {
-            eprintln!("Error: db.{}() requires SQL query argument", method);
+            crate::doo_debug!("Error: db.{}() requires SQL query argument", method);
             return None;
         }
 
@@ -360,7 +377,7 @@ impl<'ctx> CodeGen<'ctx> {
         let (raw_fn_name, call_args) = if method == "rawWithParams" {
             // db.rawWithParams(sql, params) -> doo_db_raw_param(db, sql, params)
             if args.len() < 2 {
-                eprintln!(
+                crate::doo_debug!(
                     "Error: db.rawWithParams() requires 2 arguments: SQL query and parameters"
                 );
                 return None;
@@ -797,61 +814,44 @@ impl<'ctx> CodeGen<'ctx> {
             .left()
             .unwrap();
 
-        // RUNTIME DEBUG: Print IMMEDIATELY after FFI call returns
-        let printf_fn = self.get_or_declare_printf();
-        let debug_msg_ffi_returned = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] @@@@@ doo_db_raw FFI call RETURNED @@@@@\n",
-                "debug_ffi_returned",
-            )
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[debug_msg_ffi_returned.as_pointer_value().into()],
-                "",
-            )
-            .unwrap();
+        // RUNTIME DEBUG: Use fprintf which respects debug mode
+        // Get or declare fprintf(stderr, format, ...)
+        let fprintf_fn = if let Some(f) = self.module.get_function("fprintf") {
+            f
+        } else {
+            let fn_type = self.context.i32_type().fn_type(
+                &[
+                    self.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .into(),
+                    self.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .into(),
+                ],
+                true, // variadic
+            );
+            self.module.add_function("fprintf", fn_type, None)
+        };
 
-        // DIRECT EXTRACTION: No FFI call - extract DooResult fields directly
-        // DooResult struct layout: { i32 tag, ptr value, u8 owner }
-        let debug_msg_direct_extract = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] ##### DIRECT extraction from DooResult (no FFI call) #####\n",
-                "debug_direct_extract",
-            )
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[debug_msg_direct_extract.as_pointer_value().into()],
-                "",
-            )
-            .unwrap();
+        // Get or declare stderr
+        let stderr_global = if let Some(g) = self.module.get_global("stderr") {
+            g.as_pointer_value()
+        } else {
+            self.module
+                .add_global(
+                    self.context.ptr_type(inkwell::AddressSpace::default()),
+                    None,
+                    "stderr",
+                )
+                .as_pointer_value()
+        };
+
+        // Only generate debug output if DOO_DEBUG is enabled
+        // We'll check this at compile time by using cfg! or always generate and let runtime filter
+        // For now, we always generate the calls and let the user control via --debug flag
 
         // Cast raw_result (ptr) to DooResult* for struct access
         let result_ptr = raw_result.into_pointer_value();
-
-        // RUNTIME DEBUG: Print DooResult pointer
-        let debug_msg_result_ptr = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] DooResult pointer: %p\n",
-                "debug_result_ptr_fmt",
-            )
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[
-                    debug_msg_result_ptr.as_pointer_value().into(),
-                    result_ptr.into(),
-                ],
-                "",
-            )
-            .unwrap();
 
         // Define DooResult struct type: { i32, ptr, i8 }
         let i32_type = self.context.i32_type();
@@ -870,20 +870,11 @@ impl<'ctx> CodeGen<'ctx> {
             .build_load(i32_type, tag_ptr, "doo_result_tag")
             .unwrap();
 
-        // RUNTIME DEBUG: Print tag value
-        let debug_msg_tag = self
-            .builder
-            .build_global_string_ptr("[COMPILER_RUNTIME] DooResult.tag = %d\n", "debug_tag_fmt")
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[debug_msg_tag.as_pointer_value().into(), tag_value.into()],
-                "",
-            )
-            .unwrap();
+        // Debug output removed to reduce verbosity
 
-        // GEP to field 1 (value pointer - the actual string pointer)
+        // GEP to field 1 (value pointer)
+        // For tag=0, this is a JSON string.
+        // For tag=1, this is a pointer to a DooDbError struct.
         let value_ptr_ptr = self
             .builder
             .build_struct_gep(
@@ -893,21 +884,65 @@ impl<'ctx> CodeGen<'ctx> {
                 "doo_result_value_ptr_ptr",
             )
             .unwrap();
-        let safe_string = self
+        let raw_value_ptr = self
             .builder
-            .build_load(ptr_type, value_ptr_ptr, "doo_result_string_ptr")
+            .build_load(ptr_type, value_ptr_ptr, "doo_result_value_ptr")
+            .unwrap()
+            .into_pointer_value();
+
+        // Only clone to an RC string when tag==0 (OK).
+        // For tag==1, preserve the raw error pointer so the HTTP layer can format it.
+        let current_block2 = self.builder.get_insert_block().unwrap();
+        let current_fn2 = current_block2.get_parent().unwrap();
+        let ok_block = self
+            .context
+            .append_basic_block(current_fn2, "db_raw_ok_value");
+        let err_block = self
+            .context
+            .append_basic_block(current_fn2, "db_raw_err_value");
+        let merge_block_val = self
+            .context
+            .append_basic_block(current_fn2, "db_raw_value_merge");
+
+        let is_success = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                tag_value.into_int_value(),
+                i32_type.const_zero(),
+                "is_success_for_value",
+            )
             .unwrap();
 
-        let rc_string_ptr = self.clone_ffi_string_to_rc(safe_string.into_pointer_value());
+        self.builder
+            .build_conditional_branch(is_success, ok_block, err_block)
+            .unwrap();
 
-        // IMPORTANT: The returned Result will hold onto this RC-managed string pointer.
-        // This builtin function also keeps a local reference (e.g. via a symbol/allocation)
-        // which is decref'd during function-exit cleanup. Without an extra incref here,
-        // the cleanup decref would drop RC to 0 and free the buffer, leaving the returned
-        // pointer dangling (causing UTF-8 failures and empty responses).
+        // OK: clone string into RC layout and incref for returned Result
+        self.builder.position_at_end(ok_block);
+        let rc_string_ptr = self.clone_ffi_string_to_rc(raw_value_ptr);
+
         let incref = self
             .incref_fn
             .expect("RC runtime not initialized (incref_fn missing)");
+        let ok_current_block = self.builder.get_insert_block().unwrap();
+        let ok_current_fn = ok_current_block.get_parent().unwrap();
+        let ok_incref_block = self
+            .context
+            .append_basic_block(ok_current_fn, "db_raw_ok_incref");
+        let ok_after_incref_block = self
+            .context
+            .append_basic_block(ok_current_fn, "db_raw_ok_after_incref");
+
+        let ok_is_null = self
+            .builder
+            .build_is_null(rc_string_ptr, "db_raw_ok_rc_is_null")
+            .unwrap();
+        self.builder
+            .build_conditional_branch(ok_is_null, ok_after_incref_block, ok_incref_block)
+            .unwrap();
+
+        self.builder.position_at_end(ok_incref_block);
         let rc_header_for_return = unsafe {
             self.builder.build_in_bounds_gep(
                 self.context.i8_type(),
@@ -920,12 +955,123 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder
             .build_call(incref, &[rc_header_for_return.into()], "")
             .unwrap();
+        self.builder
+            .build_unconditional_branch(ok_after_incref_block)
+            .unwrap();
+
+        self.builder.position_at_end(ok_after_incref_block);
+
+        // clone_ffi_string_to_rc changes control-flow and may move the builder into an internal
+        // merge block. Capture the *actual* predecessor block for the upcoming PHI.
+        let ok_pred_block: inkwell::basic_block::BasicBlock<'ctx> =
+            self.builder.get_insert_block().unwrap();
+
+        self.builder
+            .build_unconditional_branch(merge_block_val)
+            .unwrap();
+
+        // ERR: copy DB error message now (before freeing DooResult) into an RC string.
+        // The DB layer frees the DooDbError when we free the DooResult wrapper, so passing
+        // the raw DooDbError* to HTTP would become a dangling pointer (garbled errors).
+        self.builder.position_at_end(err_block);
+
+        let get_err_msg_fn = self
+            .module
+            .get_function("doo_db_get_error_message")
+            .unwrap_or_else(|| {
+                let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+                self.module
+                    .add_function("doo_db_get_error_message", fn_type, None)
+            });
+
+        let err_msg_ptr = self
+            .builder
+            .build_call(get_err_msg_fn, &[result_ptr.into()], "db_err_msg_ptr")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        let rc_err_string_ptr = self.clone_ffi_string_to_rc(err_msg_ptr);
+
+        let incref = self
+            .incref_fn
+            .expect("RC runtime not initialized (incref_fn missing)");
+        let err_current_block = self.builder.get_insert_block().unwrap();
+        let err_current_fn = err_current_block.get_parent().unwrap();
+        let err_incref_block = self
+            .context
+            .append_basic_block(err_current_fn, "db_raw_err_incref");
+        let err_after_incref_block = self
+            .context
+            .append_basic_block(err_current_fn, "db_raw_err_after_incref");
+
+        let err_is_null = self
+            .builder
+            .build_is_null(rc_err_string_ptr, "db_raw_err_rc_is_null")
+            .unwrap();
+        self.builder
+            .build_conditional_branch(err_is_null, err_after_incref_block, err_incref_block)
+            .unwrap();
+
+        self.builder.position_at_end(err_incref_block);
+        let rc_header_for_return_err = unsafe {
+            self.builder.build_in_bounds_gep(
+                self.context.i8_type(),
+                rc_err_string_ptr,
+                &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                "db_err_rc_header_for_return",
+            )
+        }
+        .unwrap();
+        self.builder
+            .build_call(incref, &[rc_header_for_return_err.into()], "")
+            .unwrap();
+        self.builder
+            .build_unconditional_branch(err_after_incref_block)
+            .unwrap();
+
+        self.builder.position_at_end(err_after_incref_block);
+
+        // Free the copied C string returned by doo_db_get_error_message
+        let free_string_fn_type_local = self.context.void_type().fn_type(&[ptr_type.into()], false);
+        let free_string_fn_local = self
+            .module
+            .get_function("doo_db_free_string")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("doo_db_free_string", free_string_fn_type_local, None)
+            });
+        self.builder
+            .build_call(free_string_fn_local, &[err_msg_ptr.into()], "")
+            .unwrap();
+
+        let err_pred_block: inkwell::basic_block::BasicBlock<'ctx> =
+            self.builder.get_insert_block().unwrap();
+        self.builder
+            .build_unconditional_branch(merge_block_val)
+            .unwrap();
+
+        self.builder.position_at_end(merge_block_val);
+        let phi_val = self
+            .builder
+            .build_phi(ptr_type, "db_raw_value_phi")
+            .unwrap();
+        phi_val.add_incoming(&[
+            (&rc_string_ptr.as_basic_value_enum(), ok_pred_block),
+            (&rc_err_string_ptr.as_basic_value_enum(), err_pred_block),
+        ]);
+        let value_for_result = phi_val.as_basic_value().into_pointer_value();
 
         let free_string_fn_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
         let free_string_fn = self
             .module
             .get_function("doo_db_free_string")
-            .unwrap_or_else(|| self.module.add_function("doo_db_free_string", free_string_fn_type, None));
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("doo_db_free_string", free_string_fn_type, None)
+            });
         let free_string_fn_ptr = free_string_fn.as_global_value().as_pointer_value();
         let free_string_fn_ptr_type = free_string_fn_type.ptr_type(AddressSpace::default());
         let free_string_fn_ptr_cast = self
@@ -936,87 +1082,68 @@ impl<'ctx> CodeGen<'ctx> {
                 "doo_db_free_string_cast",
             )
             .unwrap();
+
+        // CRITICAL FIX: Only free string for success (tag=0), NOT for errors (tag=1)
+        // For errors, value points to DooDbError struct, not a string!
+        let is_success_for_free = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                tag_value.into_int_value(),
+                i32_type.const_zero(),
+                "is_success_for_free",
+            )
+            .unwrap();
+
+        let current_block = self.builder.get_insert_block().unwrap();
+        let current_fn = current_block.get_parent().unwrap();
+        let free_string_block = self
+            .context
+            .append_basic_block(current_fn, "free_string_block");
+        let after_free_block = self
+            .context
+            .append_basic_block(current_fn, "after_free_block");
+
+        // Only call free_string if tag=0 (success)
+        self.builder
+            .build_conditional_branch(is_success_for_free, free_string_block, after_free_block)
+            .unwrap();
+
+        // Free string block (only for success)
+        self.builder.position_at_end(free_string_block);
         self.builder
             .build_indirect_call(
                 free_string_fn_type,
                 free_string_fn_ptr_cast,
-                &[safe_string.into()],
+                &[raw_value_ptr.into()],
                 "",
             )
             .unwrap();
+        self.builder
+            .build_unconditional_branch(after_free_block)
+            .unwrap();
+
+        // Continue after conditional free
+        self.builder.position_at_end(after_free_block);
 
         let free_result_fn = self
             .module
             .get_function("doo_db_result_free")
             .unwrap_or_else(|| {
                 let fn_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
-                self.module.add_function("doo_db_result_free", fn_type, None)
+                self.module
+                    .add_function("doo_db_result_free", fn_type, None)
             });
         self.builder
             .build_call(free_result_fn, &[result_ptr.into()], "")
             .unwrap();
 
-        // RUNTIME DEBUG: Print string pointer
-        let debug_msg_string_ptr = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] DooResult.value (string ptr) = %p\n",
-                "debug_string_ptr_fmt",
-            )
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[
-                    debug_msg_string_ptr.as_pointer_value().into(),
-                    safe_string.into(),
-                ],
-                "",
-            )
-            .unwrap();
+        // Debug output removed to reduce verbosity
 
-        // GEP to field 2 (owner)
-        let owner_ptr = self
-            .builder
-            .build_struct_gep(
-                doo_result_struct_type,
-                result_ptr,
-                2,
-                "doo_result_owner_ptr",
-            )
-            .unwrap();
-        let owner_value = self
-            .builder
-            .build_load(i8_type, owner_ptr, "doo_result_owner")
-            .unwrap();
-
-        // RUNTIME DEBUG: Print owner value
-        let debug_msg_owner = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] DooResult.owner = %d\n",
-                "debug_owner_fmt",
-            )
-            .unwrap();
-        let owner_as_i32 = self
-            .builder
-            .build_int_z_extend(owner_value.into_int_value(), i32_type, "owner_i32")
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[
-                    debug_msg_owner.as_pointer_value().into(),
-                    owner_as_i32.into(),
-                ],
-                "",
-            )
-            .unwrap();
-
-        // Check if string pointer is null
+        // Check if pointer is null (for OK: JSON string ptr; for Err: error struct ptr)
         let is_null = self
             .builder
-            .build_is_null(safe_string.into_pointer_value(), "is_string_null")
+            .build_is_null(raw_value_ptr, "is_value_null")
             .unwrap();
 
         let current_block = self.builder.get_insert_block().unwrap();
@@ -1034,51 +1161,19 @@ impl<'ctx> CodeGen<'ctx> {
 
         // Null block
         self.builder.position_at_end(null_block);
-        let debug_msg_null = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] ERROR: DooResult.value is NULL!\n",
-                "debug_null",
-            )
-            .unwrap();
-        self.builder
-            .build_call(printf_fn, &[debug_msg_null.as_pointer_value().into()], "")
-            .unwrap();
+        // Debug output removed to reduce verbosity
         self.builder
             .build_unconditional_branch(not_null_block)
             .unwrap();
 
         // Not null block - continue
         self.builder.position_at_end(not_null_block);
-        let debug_msg_not_null = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] DooResult.value is valid continuing\n",
-                "debug_not_null",
-            )
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[debug_msg_not_null.as_pointer_value().into()],
-                "",
-            )
-            .unwrap();
+        // Debug output removed to reduce verbosity
 
         // NOTE: We free the DooResult wrapper and the original FFI string above.
         // From here on, we only work with an RC-managed string.
 
-        // RUNTIME DEBUG: About to wrap in Result struct
-        let debug_msg_wrap = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] @@@ Creating Result struct @@@\n",
-                "debug_wrap",
-            )
-            .unwrap();
-        self.builder
-            .build_call(printf_fn, &[debug_msg_wrap.as_pointer_value().into()], "")
-            .unwrap();
+        // Debug output removed to reduce verbosity
 
         // Wrap in Result struct { i32 tag, ptr value } for handler
         let i32_type = self.context.i32_type();
@@ -1092,42 +1187,25 @@ impl<'ctx> CodeGen<'ctx> {
             .build_alloca(result_struct_type, "db_result_struct")
             .unwrap();
 
-        // Store tag = 0 (Ok) in field 0
+        // Store actual tag from DooResult (0 = Ok, 1 = Err) - CRITICAL: don't hardcode 0!
         let tag_ptr_field = self
             .builder
             .build_struct_gep(result_struct_type, result_alloca, 0, "tag_ptr")
             .unwrap();
-        self.builder
-            .build_store(tag_ptr_field, i32_type.const_zero())
-            .unwrap();
+        self.builder.build_store(tag_ptr_field, tag_value).unwrap();
 
-        // Store string pointer in field 1 (the extracted value from DooResult)
+        // Store payload pointer in field 1:
+        // - tag=0: RC string pointer
+        // - tag=1: raw error pointer (DooDbError*)
         let value_ptr_field = self
             .builder
             .build_struct_gep(result_struct_type, result_alloca, 1, "value_ptr")
             .unwrap();
         self.builder
-            .build_store(value_ptr_field, rc_string_ptr)
+            .build_store(value_ptr_field, value_for_result)
             .unwrap();
 
-        // RUNTIME DEBUG: Print the string pointer being stored
-        let debug_msg_storing = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] Storing string ptr %p in Result struct\n",
-                "debug_storing_fmt",
-            )
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[
-                    debug_msg_storing.as_pointer_value().into(),
-                    rc_string_ptr.into(),
-                ],
-                "",
-            )
-            .unwrap();
+        // Debug output removed to reduce verbosity
 
         // Load the complete struct
         let result_struct = self
@@ -1135,17 +1213,7 @@ impl<'ctx> CodeGen<'ctx> {
             .build_load(result_struct_type, result_alloca, "db_result_final")
             .unwrap();
 
-        // RUNTIME DEBUG: Print wrapping complete
-        let debug_msg_done = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] ===== Result struct LOADED successfully =====\n",
-                "debug_done",
-            )
-            .unwrap();
-        self.builder
-            .build_call(printf_fn, &[debug_msg_done.as_pointer_value().into()], "")
-            .unwrap();
+        // Debug output removed to reduce verbosity
 
         // CRITICAL FIX: Allocate Result struct on heap and store POINTER in temp_values
         // TryPropagate expects to load from a pointer, not a struct value
@@ -1168,24 +1236,7 @@ impl<'ctx> CodeGen<'ctx> {
             .build_store(result_heap_ptr, result_struct)
             .unwrap();
 
-        // RUNTIME DEBUG: Print allocated pointer
-        let debug_msg_alloc = self
-            .builder
-            .build_global_string_ptr(
-                "[COMPILER_RUNTIME] Allocated Result struct at %p\n",
-                "debug_alloc_fmt",
-            )
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[
-                    debug_msg_alloc.as_pointer_value().into(),
-                    result_heap_ptr.into(),
-                ],
-                "",
-            )
-            .unwrap();
+        // Debug output removed to reduce verbosity
 
         // Store the Result struct POINTER - TryPropagate will unwrap it
         self.temp_values
@@ -1195,29 +1246,9 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(sym) = self.symbols.get(dest) {
             self.builder.build_store(sym.ptr, result_heap_ptr).unwrap();
 
-            // RUNTIME DEBUG: Confirm store
-            let debug_msg_stored = self
-                .builder
-                .build_global_string_ptr(
-                    "[COMPILER_RUNTIME] Stored Result ptr into symbol alloca\n",
-                    "debug_stored",
-                )
-                .unwrap();
-            self.builder
-                .build_call(printf_fn, &[debug_msg_stored.as_pointer_value().into()], "")
-                .unwrap();
+            // Debug output removed to reduce verbosity
         } else {
-            // RUNTIME DEBUG: Symbol not found
-            let debug_msg_nosym = self
-                .builder
-                .build_global_string_ptr(
-                    "[COMPILER_RUNTIME] WARNING: Symbol not found for dest, cannot store!\n",
-                    "debug_nosym",
-                )
-                .unwrap();
-            self.builder
-                .build_call(printf_fn, &[debug_msg_nosym.as_pointer_value().into()], "")
-                .unwrap();
+            // Debug output removed to reduce verbosity
         }
 
         // Determine the expected Ok type for the Result
@@ -1259,7 +1290,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         dest: &str,
         object: &str,
-        _args: &[String],
+        args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
         use inkwell::AddressSpace;
 
@@ -1268,20 +1299,33 @@ impl<'ctx> CodeGen<'ctx> {
         // Get the server object
         let server_val = self.resolve_value(object);
 
-        // Declare doo_http_cors FFI function - takes only server pointer
-        let cors_fn = if let Some(f) = self.module.get_function("doo_http_cors") {
+        // Single-name API: app.cors() or app.cors({ ... })
+        // Always call doo_http_cors_custom(server, options_ptr). If omitted, pass null.
+        let cors_custom_fn = if let Some(f) = self.module.get_function("doo_http_cors_custom") {
             f
         } else {
-            let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
-            let func = self.module.add_function("doo_http_cors", fn_type, None);
+            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            let func = self
+                .module
+                .add_function("doo_http_cors_custom", fn_type, None);
             func.set_linkage(inkwell::module::Linkage::External);
             func
         };
 
-        // Call doo_http_cors(server)
+        let options_ptr = if args.len() == 1 {
+            let options_map = &args[0];
+            self.resolve_value(options_map).into_pointer_value()
+        } else {
+            ptr_type.const_null()
+        };
+
         let result = self
             .builder
-            .build_call(cors_fn, &[server_val.into()], "cors_result")
+            .build_call(
+                cors_custom_fn,
+                &[server_val.into(), options_ptr.into()],
+                "cors_custom_result",
+            )
             .unwrap()
             .try_as_basic_value()
             .left()
@@ -1318,7 +1362,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         dest: &str,
         object: &str,
-        _args: &[String],
+        args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
         use inkwell::AddressSpace;
 
@@ -1327,22 +1371,34 @@ impl<'ctx> CodeGen<'ctx> {
         // Get the server object
         let server_val = self.resolve_value(object);
 
-        // Declare doo_http_ratelimit FFI function - takes only server pointer
-        let ratelimit_fn = if let Some(f) = self.module.get_function("doo_http_ratelimit") {
-            f
+        // Single-name API: app.ratelimit() or app.ratelimit({ ... })
+        // Always call doo_http_ratelimit_custom(server, options_ptr). If omitted, pass null.
+        let ratelimit_custom_fn =
+            if let Some(f) = self.module.get_function("doo_http_ratelimit_custom") {
+                f
+            } else {
+                let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                let func = self
+                    .module
+                    .add_function("doo_http_ratelimit_custom", fn_type, None);
+                func.set_linkage(inkwell::module::Linkage::External);
+                func
+            };
+
+        let options_ptr = if args.len() == 1 {
+            let options_map = &args[0];
+            self.resolve_value(options_map).into_pointer_value()
         } else {
-            let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
-            let func = self
-                .module
-                .add_function("doo_http_ratelimit", fn_type, None);
-            func.set_linkage(inkwell::module::Linkage::External);
-            func
+            ptr_type.const_null()
         };
 
-        // Call doo_http_ratelimit(server)
         let result = self
             .builder
-            .build_call(ratelimit_fn, &[server_val.into()], "ratelimit_result")
+            .build_call(
+                ratelimit_custom_fn,
+                &[server_val.into(), options_ptr.into()],
+                "ratelimit_custom_result",
+            )
             .unwrap()
             .try_as_basic_value()
             .left()
