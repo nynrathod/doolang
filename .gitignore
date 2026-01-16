@@ -6,6 +6,7 @@ target-*
 /tests/fuzz/corpus
 /tests/fuzz/artifacts
 /fuzz_logs
+output
 output.*
 /linkers
 *.o
