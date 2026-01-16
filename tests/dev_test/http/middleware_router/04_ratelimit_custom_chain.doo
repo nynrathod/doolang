@@ -1,0 +1,18 @@
+import std::Http::{Server};
+
+fn Ping() -> Str {
+   return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3114")
+        .ratelimit({
+            max: 2,
+            window: 30.seconds,
+            per: "ip",
+        });
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
