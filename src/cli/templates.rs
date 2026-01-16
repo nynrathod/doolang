@@ -85,7 +85,7 @@ pub const STARTER_TEMPLATE: Template = Template {
         TemplateFile {
             path: "main.doo",
             content: r#"// 🔥 Doo - The fastest way to build and deploy production APIs
-// Template: Blog API (Posts + Comments + JWT Auth)
+// Template: Starter
 // Run: doo run | Deploy: doo deploy
 // Learn more at: https://github.com/nynrathod/doolang
 
@@ -129,7 +129,7 @@ pub const TODO_TEMPLATE: Template = Template {
         TemplateFile {
             path: "main.doo",
             content: r#"// 🔥 Doo - The fastest way to build and deploy production APIs
-// Template: Blog API (Posts + Comments + JWT Auth)
+// Template: Todo API (jwt auth & crud)
 // Run: doo run | Deploy: doo deploy
 // Learn more at: https://github.com/nynrathod/doolang
 
@@ -161,7 +161,7 @@ fn main() {
     // Authentication via JWT
     app.auth("/signup", "/login", User, db);
 
-    // Posts:    GET, POST, GET/:id, PUT/:id, DELETE/:id at /todos
+    // Todos:    GET, POST, GET/:id, PUT/:id, DELETE/:id at /todos
     app.crud("/todos", Todo, db);
 
     app.start();
