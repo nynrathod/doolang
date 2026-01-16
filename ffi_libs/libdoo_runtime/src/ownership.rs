@@ -6,6 +6,8 @@
 
 use std::os::raw::c_char;
 
+use crate::memory;
+
 /// Ownership tag indicating which allocator owns the memory
 /// This must match the values set by the LLVM compiler
 #[repr(u8)]
@@ -198,6 +200,9 @@ unsafe fn free_rc_string_internal(ptr: *const c_char) {
         return;
     }
 
+    if memory::track_free(base_ptr as *const std::ffi::c_void, "dooruntime_free_rc_string") {
+        return;
+    }
     libc::free(base_ptr as *mut libc::c_void);
 }
 
@@ -227,12 +232,18 @@ unsafe fn free_any_string_internal(ptr: *const c_char) {
                     *(base_ptr as *mut i32) = rc - 1;
                     return;
                 }
+                if memory::track_free(base_ptr as *const std::ffi::c_void, "dooruntime_free_any_string") {
+                    return;
+                }
                 libc::free(base_ptr as *mut libc::c_void);
                 return;
             }
         }
     }
 
+    if memory::track_free(ptr as *const std::ffi::c_void, "dooruntime_free_any_string") {
+        return;
+    }
     libc::free(ptr as *mut libc::c_void);
 }
 
