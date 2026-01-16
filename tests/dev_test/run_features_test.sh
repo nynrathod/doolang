@@ -34,7 +34,7 @@ run_test() {
     echo "──────────────────────────────────────────────────────────"
 
     # Run with 30 second timeout, show full output
-    timeout 30s "$BIN" run "$file" --debug 2>&1
+    timeout 30s "$BIN" run "$file" 2>&1
     exit_code=$?
 
     if [ "$exit_code" -eq 0 ]; then
