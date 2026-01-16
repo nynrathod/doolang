@@ -1,3 +1,10 @@
+use chrono::{DateTime, NaiveDateTime, Utc};
+use doo_runtime::{
+    doo_db_debug, doo_debug, doo_ffi_enter, doo_ffi_exit, doo_mem_alloc, doo_mem_free,
+    doo_mem_stats, dooruntime_free, dooruntime_free_string, dooruntime_malloc,
+    ownership::dooruntime_free_rc_string,
+    memory::{track_alloc, track_free, is_freed, validate_pointer},
+};
 use once_cell::sync::OnceCell;
 use serde_json::json;
 use std::collections::HashSet;
@@ -11,6 +18,9 @@ use std::sync::Once;
 use tokio::runtime::Runtime;
 use tokio::sync::Notify;
 use tokio_postgres::{Client, NoTls};
+
+// Debug macro now imported from libdoo_runtime
+// Use doo_db_debug!("message") or doo_debug!("DB", "message")
 
 /// Thread-safe set to track freed DooResult pointers.
 /// This prevents double-free by checking if a pointer was already freed.
@@ -26,42 +36,101 @@ fn get_freed_results() -> &'static Mutex<HashSet<usize>> {
 static MALLOC_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static FREE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Cross-platform stderr write helper
-/// On Windows, libc::write expects u32 for count, on Unix it expects usize
-#[inline]
-unsafe fn stderr_write(msg: &[u8]) {
-    #[cfg(windows)]
-    {
-        libc::write(2, msg.as_ptr() as *const libc::c_void, msg.len() as u32);
-    }
-    #[cfg(not(windows))]
-    {
-        libc::write(2, msg.as_ptr() as *const libc::c_void, msg.len());
+fn parse_rfc3339_datetime(s: &str) -> Option<DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn row_col_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
+    let col = &row.columns()[i];
+    match col.type_().name() {
+        "int4" => row
+            .try_get::<usize, Option<i32>>(i)
+            .ok()
+            .flatten()
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+        "int8" => row
+            .try_get::<usize, Option<i64>>(i)
+            .ok()
+            .flatten()
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+        "float4" => row
+            .try_get::<usize, Option<f32>>(i)
+            .ok()
+            .flatten()
+            .map(|v| serde_json::Value::from(v as f64))
+            .unwrap_or(serde_json::Value::Null),
+        "float8" => row
+            .try_get::<usize, Option<f64>>(i)
+            .ok()
+            .flatten()
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+        "bool" => row
+            .try_get::<usize, Option<bool>>(i)
+            .ok()
+            .flatten()
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+        "timestamptz" => row
+            .try_get::<usize, Option<DateTime<Utc>>>(i)
+            .ok()
+            .flatten()
+            .map(|dt| serde_json::Value::String(dt.to_rfc3339()))
+            .unwrap_or(serde_json::Value::Null),
+        "timestamp" => row
+            .try_get::<usize, Option<NaiveDateTime>>(i)
+            .ok()
+            .flatten()
+            .map(|dt| serde_json::Value::String(dt.and_utc().to_rfc3339()))
+            .unwrap_or(serde_json::Value::Null),
+        _ => row
+            .try_get::<usize, Option<String>>(i)
+            .ok()
+            .flatten()
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
     }
 }
 
-/// Tracked malloc wrapper that logs all allocations
+/// Cross-platform stderr write helper
+/// On Windows, libc::write expects u32 for count, on Unix it expects usize
+#[inline]
+// stderr_write replaced with doo_db_debug! macro
+
+/// Tracked malloc wrapper that logs and tracks all allocations
 unsafe fn tracked_malloc(size: usize, context: &str) -> *mut libc::c_void {
     let ptr = libc::malloc(size);
     let count = MALLOC_COUNTER.fetch_add(1, Ordering::SeqCst);
 
+    // Integrate with centralized tracking in doo_runtime
+    if !ptr.is_null() {
+        track_alloc(ptr as *const std::ffi::c_void, context);
+    }
+
     if size > 10000 {
-        let msg = format!(
-            "[TRACKED_MALLOC #{:06}] context='{}', size={}, ptr={:p}\n",
-            count, context, size, ptr
+        doo_db_debug!(
+            "TRACKED_MALLOC #{:06} context='{}', size={}, ptr={:p}",
+            count,
+            context,
+            size,
+            ptr
         );
-        stderr_write(msg.as_bytes());
     }
 
     // Validate heap after large allocation
     if size > 5000 && !ptr.is_null() {
         let test = libc::malloc(64);
         if test.is_null() {
-            let err_msg = format!(
-                "[TRACKED_MALLOC] HEAP CORRUPTED after malloc! context='{}', size={}, ptr={:p}\n",
-                context, size, ptr
+            doo_db_debug!(
+                "TRACKED_MALLOC HEAP CORRUPTED after malloc! context='{}', size={}, ptr={:p}",
+                context,
+                size,
+                ptr
             );
-            stderr_write(err_msg.as_bytes());
         } else {
             libc::free(test);
         }
@@ -70,28 +139,39 @@ unsafe fn tracked_malloc(size: usize, context: &str) -> *mut libc::c_void {
     ptr
 }
 
-/// Tracked free wrapper that logs all deallocations
+/// Tracked free wrapper that logs all deallocations and checks for double-free
 unsafe fn tracked_free(ptr: *mut libc::c_void, context: &str) {
     if ptr.is_null() {
         return;
     }
 
+    // Check for double-free using centralized tracking
+    if track_free(ptr as *const std::ffi::c_void, context) {
+        doo_db_debug!(
+            "DOUBLE-FREE DETECTED (centralized) context='{}', ptr={:p}",
+            context,
+            ptr
+        );
+        return; // Abort the free!
+    }
+
     let count = FREE_COUNTER.fetch_add(1, Ordering::SeqCst);
 
-    let msg = format!(
-        "[TRACKED_FREE #{:06}] context='{}', ptr={:p}\n",
-        count, context, ptr
+    doo_db_debug!(
+        "[TRACKED_FREE #{:06}] context='{}', ptr={:p}",
+        count,
+        context,
+        ptr
     );
-    stderr_write(msg.as_bytes());
 
     // Validate heap before free
     let test = libc::malloc(32);
     if test.is_null() {
-        let err_msg = format!(
-            "[TRACKED_FREE] HEAP CORRUPTED before free! context='{}', ptr={:p}\n",
-            context, ptr
+        doo_db_debug!(
+            "TRACKED_FREE HEAP CORRUPTED before free! context='{}', ptr={:p}",
+            context,
+            ptr
         );
-        stderr_write(err_msg.as_bytes());
     } else {
         libc::free(test);
     }
@@ -101,11 +181,11 @@ unsafe fn tracked_free(ptr: *mut libc::c_void, context: &str) {
     // Validate heap after free
     let test2 = libc::malloc(32);
     if test2.is_null() {
-        let err_msg = format!(
-            "[TRACKED_FREE] HEAP CORRUPTED after free! context='{}', ptr={:p}\n",
-            context, ptr
+        doo_db_debug!(
+            "TRACKED_FREE HEAP CORRUPTED after free! context='{}', ptr={:p}",
+            context,
+            ptr
         );
-        stderr_write(err_msg.as_bytes());
     } else {
         libc::free(test2);
     }
@@ -122,19 +202,8 @@ fn mark_as_freed(ptr: *mut DooResult) -> bool {
 
     if !was_newly_inserted {
         // Address was already in the set - this is a double-free attempt!
-        eprintln!(
-            "[MARK_AS_FREED] Address {:p} (0x{:x}) ALREADY in freed set, returning true (skip free)",
-            ptr, addr
-        );
         return true;
     }
-
-    eprintln!(
-        "[MARK_AS_FREED] Address {:p} (0x{:x}) added to freed set, set size now {}",
-        ptr,
-        addr,
-        set.len()
-    );
     false
 }
 
@@ -143,12 +212,7 @@ fn unmark_freed(ptr: *mut DooResult) {
     let addr = ptr as usize;
     if let Ok(mut set) = get_freed_results().lock() {
         let was_present = set.remove(&addr);
-        if was_present {
-            eprintln!(
-                "[UNMARK_FREED] Address {:p} (0x{:x}) removed from freed set (reused by malloc)",
-                ptr, addr
-            );
-        }
+        if was_present {}
     }
 }
 
@@ -186,24 +250,10 @@ fn load_env() {
 }
 
 // Link to centralized runtime functions
+use doo_runtime::{dooruntime_db_error, dooruntime_db_error_rfc7807};
+
 extern "C" {
-    #[allow(dead_code)]
-    fn dooruntime_db_error(code: *const c_char, message: *const c_char) -> *mut c_char;
-    #[allow(dead_code)]
-    fn dooruntime_db_error_rfc7807(
-        code: *const c_char,
-        message: *const c_char,
-        instance: *const c_char,
-        field: *const c_char,
-    ) -> *mut c_char;
-    #[allow(dead_code)]
-    fn dooruntime_free_string(ptr: *mut c_char);
-    // Ownership-aware string freeing
-    fn dooruntime_free_rc_string(ptr: *const c_char);
-    // Runtime allocator for LLVM-managed memory
-    fn dooruntime_malloc(size: usize) -> *mut libc::c_void;
     fn dooruntime_strdup(s: *const c_char) -> *mut c_char;
-    fn dooruntime_free(ptr: *mut libc::c_void);
 }
 
 // Result type for FFI returns with ownership tracking
@@ -240,6 +290,18 @@ static CLIENT: OnceCell<Arc<Client>> = OnceCell::new();
 static GLOBAL_DB: OnceCell<Arc<Client>> = OnceCell::new();
 static SHUTDOWN_SIGNAL: OnceCell<Arc<Notify>> = OnceCell::new();
 static IS_CONNECTED: AtomicBool = AtomicBool::new(false);
+
+fn block_on_compat<F, T>(rt: &Runtime, fut: F) -> Result<T, tokio_postgres::Error>
+where
+    F: std::future::Future<Output = Result<T, tokio_postgres::Error>>,
+{
+    // If we're already inside a Tokio runtime (e.g. the HTTP server runtime), we must
+    // not block a worker thread directly. Use block_in_place + Handle::block_on.
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        return tokio::task::block_in_place(|| handle.block_on(fut));
+    }
+    rt.block_on(fut)
+}
 
 fn runtime() -> Result<&'static Runtime, String> {
     RUNTIME.get_or_try_init(|| Runtime::new().map_err(|e| format!("Failed to create runtime: {e}")))
@@ -334,11 +396,10 @@ fn make_ok_string(s: String) -> *mut DooResult {
         // AGGRESSIVE DEBUG: Log before allocation
         let s_len = s.len();
         if s_len > 10000 {
-            let msg = format!(
-                "[MAKE_OK_STRING] About to create DooResult for {} byte string\n",
+            doo_db_debug!(
+                "MAKE_OK_STRING About to create DooResult for {} byte string",
                 s_len
             );
-            stderr_write(msg.as_bytes());
         }
 
         let size = std::mem::size_of::<DooResult>();
@@ -352,21 +413,18 @@ fn make_ok_string(s: String) -> *mut DooResult {
 
         // AGGRESSIVE DEBUG: Before string_to_c
         if s_len > 10000 {
-            let msg = b"[MAKE_OK_STRING] Calling string_to_c for large string\n";
-            stderr_write(msg);
+            doo_db_debug!("MAKE_OK_STRING Calling string_to_c for large string");
         }
 
         let value_ptr = string_to_c(s);
 
         // AGGRESSIVE DEBUG: After string_to_c
         if s_len > 10000 {
-            let msg = format!("[MAKE_OK_STRING] string_to_c returned {:p}\n", value_ptr);
-            stderr_write(msg.as_bytes());
+            doo_db_debug!("MAKE_OK_STRING string_to_c returned {:p}", value_ptr);
         }
 
         if value_ptr.is_null() {
-            let msg = b"[MAKE_OK_STRING] ERROR: string_to_c returned null!\n";
-            stderr_write(msg);
+            doo_db_debug!("MAKE_OK_STRING ERROR: string_to_c returned null!");
             libc::free(ptr as *mut libc::c_void);
             return std::ptr::null_mut();
         }
@@ -374,10 +432,6 @@ fn make_ok_string(s: String) -> *mut DooResult {
         (*ptr).tag = 0;
         (*ptr).value = value_ptr as *mut _;
         (*ptr).owner = owner::FFI;
-        eprintln!(
-            "[MAKE_OK_STRING] Created DooResult at {:p}, value at {:p}, owner=FFI (libc malloc)",
-            ptr, value_ptr
-        );
         ptr
     }
 }
@@ -442,6 +496,7 @@ fn make_err_with_code(code: &str, pg_code: &str, msg: String) -> *mut DooResult 
             tracked_free(err as *mut libc::c_void, "make_err_with_code_error_cleanup");
             return std::ptr::null_mut();
         }
+        unmark_freed(ptr);
         (*ptr).tag = 1;
         (*ptr).value = err as *mut _;
         (*ptr).owner = owner::FFI;
@@ -490,6 +545,7 @@ fn get_client() -> Result<Arc<Client>, String> {
 
 #[no_mangle]
 pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
+    doo_ffi_enter!("doo_db_connect_postgres");
     // Load .env file on first connection attempt
     load_env();
 
@@ -507,7 +563,7 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
         Err(e) => return make_err(e),
     };
 
-    let connect_res = rt.block_on(tokio_postgres::connect(&database_url, NoTls));
+    let connect_res = block_on_compat(rt, tokio_postgres::connect(&database_url, NoTls));
     let (client, connection) = match connect_res {
         Ok(v) => v,
         Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
@@ -525,7 +581,7 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
                 if let Err(e) = result {
                     // Only print error if not a normal shutdown
                     if IS_CONNECTED.load(Ordering::SeqCst) {
-                        eprintln!("Connection error: {}", e);
+                        doo_db_debug!("Connection error: {}", e);
                     }
                 }
             }
@@ -577,12 +633,9 @@ pub extern "C" fn doo_db_table_exists(_db: *const c_char, table_name: *const c_c
         Err(_) => return 0,
     };
     let query = "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)";
-    let exists = rt.block_on(async {
-        match client.query_one(query, &[&table]).await {
-            Ok(row) => row.get::<usize, bool>(0),
-            Err(_) => false,
-        }
-    });
+    let exists = block_on_compat(rt, async { client.query_one(query, &[&table]).await })
+        .map(|row| row.get::<usize, bool>(0))
+        .unwrap_or(false);
     if exists {
         1
     } else {
@@ -604,7 +657,7 @@ pub extern "C" fn doo_db_create_table(_db: *const c_char, sql: *const c_char) ->
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
-    let res = rt.block_on(async { client.execute(sql.as_str(), &[]).await });
+    let res = block_on_compat(rt, async { client.execute(sql.as_str(), &[]).await });
     match res {
         Ok(_) => make_ok_void(),
         Err(e) => make_err_from_pg_error(&e),
@@ -625,7 +678,7 @@ pub extern "C" fn doo_db_query(_db: *const c_char, sql: *const c_char) -> *mut D
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
-    let res = rt.block_on(async { client.query(sql.as_str(), &[]).await });
+    let res = block_on_compat(rt, async { client.query(sql.as_str(), &[]).await });
     let rows = match res {
         Ok(r) => r,
         Err(e) => return make_err_from_pg_error(&e),
@@ -688,7 +741,7 @@ pub extern "C" fn doo_db_execute(_db: *const c_char, sql: *const c_char) -> *mut
         Err(e) => return make_err(e),
     };
 
-    match rt.block_on(async { client.execute(&sql_str, &[]).await }) {
+    match block_on_compat(rt, async { client.execute(&sql_str, &[]).await }) {
         Ok(rows) => make_ok_int(rows as i64),
         Err(e) => {
             let err_str = e.to_string();
@@ -726,7 +779,7 @@ pub extern "C" fn doo_db_insert(
         Err(e) => return make_err(e),
     };
 
-    match rt.block_on(async { client.execute(&sql_str, &[&values_str]).await }) {
+    match block_on_compat(rt, async { client.execute(&sql_str, &[&values_str]).await }) {
         Ok(rows) => make_ok_int(rows as i64),
         Err(e) => {
             let err_str = e.to_string();
@@ -754,7 +807,7 @@ pub extern "C" fn doo_db_query_one(_db: *const c_char, sql: *const c_char) -> *m
         Err(e) => return make_err(e),
     };
 
-    let res = rt.block_on(async { client.query_one(sql.as_str(), &[]).await });
+    let res = block_on_compat(rt, async { client.query_one(sql.as_str(), &[]).await });
     let row = match res {
         Ok(r) => r,
         Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
@@ -763,32 +816,7 @@ pub extern "C" fn doo_db_query_one(_db: *const c_char, sql: *const c_char) -> *m
     let mut obj = serde_json::Map::new();
     for (i, col) in row.columns().iter().enumerate() {
         let name = col.name();
-        let value: serde_json::Value = match col.type_().name() {
-            "int4" => row
-                .get::<usize, Option<i32>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "int8" => row
-                .get::<usize, Option<i64>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "float4" => row
-                .get::<usize, Option<f32>>(i)
-                .map(|v| serde_json::Value::from(v as f64))
-                .unwrap_or(serde_json::Value::Null),
-            "float8" => row
-                .get::<usize, Option<f64>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "bool" => row
-                .get::<usize, Option<bool>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            _ => row
-                .get::<usize, Option<String>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-        };
+        let value: serde_json::Value = row_col_to_json(&row, i);
         obj.insert(name.to_string(), value);
     }
 
@@ -832,6 +860,7 @@ pub extern "C" fn doo_db_insert_json(
     let mut int64_values: Vec<i64> = Vec::new();
     let mut float_values: Vec<f64> = Vec::new();
     let mut bool_values: Vec<bool> = Vec::new();
+    let mut dt_values: Vec<DateTime<Utc>> = Vec::new();
 
     // Store parameter types and indices
     let mut param_types: Vec<&str> = Vec::new();
@@ -840,9 +869,15 @@ pub extern "C" fn doo_db_insert_json(
     for (i, value) in values.iter().enumerate() {
         match value {
             serde_json::Value::String(s) => {
-                string_values.push(s.clone());
-                param_types.push("string");
-                param_indices.push((i, string_values.len() - 1));
+                if let Some(dt) = parse_rfc3339_datetime(s) {
+                    dt_values.push(dt);
+                    param_types.push("timestamptz");
+                    param_indices.push((i, dt_values.len() - 1));
+                } else {
+                    string_values.push(s.clone());
+                    param_types.push("string");
+                    param_indices.push((i, string_values.len() - 1));
+                }
             }
             serde_json::Value::Number(n) => {
                 if let Some(i_val) = n.as_i64() {
@@ -891,11 +926,12 @@ pub extern "C" fn doo_db_insert_json(
             "int64" => params.push(&int64_values[idx]),
             "float" => params.push(&float_values[idx]),
             "bool" => params.push(&bool_values[idx]),
+            "timestamptz" => params.push(&dt_values[idx]),
             _ => {}
         }
     }
 
-    let res = rt.block_on(async { client.query_one(sql.as_str(), &params[..]).await });
+    let res = block_on_compat(rt, async { client.query_one(sql.as_str(), &params[..]).await });
 
     match res {
         Ok(row) => {
@@ -966,7 +1002,7 @@ pub extern "C" fn doo_db_query_one_param(
         Err(e) => return make_err(e),
     };
 
-    let res = rt.block_on(async { client.query_one(sql.as_str(), &[&param]).await });
+    let res = block_on_compat(rt, async { client.query_one(sql.as_str(), &[&param]).await });
     let row = match res {
         Ok(r) => r,
         Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
@@ -975,32 +1011,7 @@ pub extern "C" fn doo_db_query_one_param(
     let mut obj = serde_json::Map::new();
     for (i, col) in row.columns().iter().enumerate() {
         let name = col.name();
-        let value: serde_json::Value = match col.type_().name() {
-            "int4" => row
-                .get::<usize, Option<i32>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "int8" => row
-                .get::<usize, Option<i64>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "float4" => row
-                .get::<usize, Option<f32>>(i)
-                .map(|v| serde_json::Value::from(v as f64))
-                .unwrap_or(serde_json::Value::Null),
-            "float8" => row
-                .get::<usize, Option<f64>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "bool" => row
-                .get::<usize, Option<bool>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            _ => row
-                .get::<usize, Option<String>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-        };
+        let value: serde_json::Value = row_col_to_json(&row, i);
         obj.insert(name.to_string(), value);
     }
 
@@ -1034,7 +1045,7 @@ pub extern "C" fn doo_db_query_param(
         Err(e) => return make_err(e),
     };
 
-    let res = rt.block_on(async { client.query(sql.as_str(), &[&param]).await });
+    let res = block_on_compat(rt, async { client.query(sql.as_str(), &[&param]).await });
     let rows = match res {
         Ok(r) => r,
         Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
@@ -1045,32 +1056,7 @@ pub extern "C" fn doo_db_query_param(
         let mut obj = serde_json::Map::new();
         for (i, col) in row.columns().iter().enumerate() {
             let name = col.name();
-            let value: serde_json::Value = match col.type_().name() {
-                "int4" => row
-                    .get::<usize, Option<i32>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-                "int8" => row
-                    .get::<usize, Option<i64>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-                "float4" => row
-                    .get::<usize, Option<f32>>(i)
-                    .map(|v| serde_json::Value::from(v as f64))
-                    .unwrap_or(serde_json::Value::Null),
-                "float8" => row
-                    .get::<usize, Option<f64>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-                "bool" => row
-                    .get::<usize, Option<bool>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-                _ => row
-                    .get::<usize, Option<String>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-            };
+            let value: serde_json::Value = row_col_to_json(&row, i);
             obj.insert(name.to_string(), value);
         }
         json_rows.push(serde_json::Value::Object(obj));
@@ -1104,7 +1090,7 @@ pub extern "C" fn doo_db_execute_param(
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
-    let res = rt.block_on(async { client.execute(sql.as_str(), &[&param]).await });
+    let res = block_on_compat(rt, async { client.execute(sql.as_str(), &[&param]).await });
     match res {
         Ok(rows) => make_ok_int(rows as i64),
         Err(e) => {
@@ -1133,7 +1119,7 @@ pub extern "C" fn doo_db_query_json(sql: *const c_char) -> *mut DooResult {
         Err(e) => return make_err(e),
     };
 
-    let res = rt.block_on(async { client.query(sql.as_str(), &[]).await });
+    let res = block_on_compat(rt, async { client.query(sql.as_str(), &[]).await });
     let rows = match res {
         Ok(r) => r,
         Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
@@ -1144,32 +1130,7 @@ pub extern "C" fn doo_db_query_json(sql: *const c_char) -> *mut DooResult {
         let mut obj = serde_json::Map::new();
         for (i, col) in row.columns().iter().enumerate() {
             let name = col.name();
-            let value: serde_json::Value = match col.type_().name() {
-                "int4" => row
-                    .get::<usize, Option<i32>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-                "int8" => row
-                    .get::<usize, Option<i64>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-                "float4" => row
-                    .get::<usize, Option<f32>>(i)
-                    .map(|v| serde_json::Value::from(v as f64))
-                    .unwrap_or(serde_json::Value::Null),
-                "float8" => row
-                    .get::<usize, Option<f64>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-                "bool" => row
-                    .get::<usize, Option<bool>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-                _ => row
-                    .get::<usize, Option<String>>(i)
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null),
-            };
+            let value: serde_json::Value = row_col_to_json(&row, i);
             obj.insert(name.to_string(), value);
         }
         json_rows.push(serde_json::Value::Object(obj));
@@ -1194,7 +1155,7 @@ pub extern "C" fn doo_db_query_one_json(sql: *const c_char) -> *mut DooResult {
         Err(e) => return make_err(e),
     };
 
-    let res = rt.block_on(async { client.query_one(sql.as_str(), &[]).await });
+    let res = block_on_compat(rt, async { client.query_one(sql.as_str(), &[]).await });
     let row = match res {
         Ok(r) => r,
         Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
@@ -1203,32 +1164,7 @@ pub extern "C" fn doo_db_query_one_json(sql: *const c_char) -> *mut DooResult {
     let mut obj = serde_json::Map::new();
     for (i, col) in row.columns().iter().enumerate() {
         let name = col.name();
-        let value: serde_json::Value = match col.type_().name() {
-            "int4" => row
-                .get::<usize, Option<i32>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "int8" => row
-                .get::<usize, Option<i64>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "float4" => row
-                .get::<usize, Option<f32>>(i)
-                .map(|v| serde_json::Value::from(v as f64))
-                .unwrap_or(serde_json::Value::Null),
-            "float8" => row
-                .get::<usize, Option<f64>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            "bool" => row
-                .get::<usize, Option<bool>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-            _ => row
-                .get::<usize, Option<String>>(i)
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
-        };
+        let value: serde_json::Value = row_col_to_json(&row, i);
         obj.insert(name.to_string(), value);
     }
 
@@ -1241,7 +1177,6 @@ pub extern "C" fn doo_db_free_string(ptr: *mut c_char) {
     if ptr.is_null() {
         return;
     }
-    eprintln!("[DOO_DB_FREE_STRING] Freeing string at {:p}", ptr);
     unsafe {
         // Strings are RC layout (data pointer), so free via runtime helper.
         dooruntime_free_rc_string(ptr as *const c_char);
@@ -1255,52 +1190,28 @@ pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
     }
 
     // AGGRESSIVE DEBUG: Capture backtrace/caller info
-    unsafe {
-        let msg = format!("[DOO_DB_RESULT_FREE] ===== ENTRY ===== ptr={:p}\n", ptr);
-        stderr_write(msg.as_bytes());
-    }
+    doo_db_debug!("DOO_DB_RESULT_FREE ===== ENTRY ===== ptr={:p}", ptr);
 
-    // CRITICAL FIX: Read struct fields FIRST, then check/mark as freed atomically.
-    // This prevents a race condition where:
-    // 1. Thread A checks mark_as_freed (returns false), about to read struct
-    // 2. Thread B allocates same address (unmark_freed), uses it, frees it
-    // 3. Thread A reads from now-freed memory → use-after-free!
-    //
-    // By reading fields first while we know ptr is valid (caller's responsibility),
-    // we avoid reading from potentially freed memory later.
-    let (owner, tag, value) = unsafe {
-        let res = &*ptr;
-        (res.owner, res.tag, res.value)
-    };
-
-    unsafe {
-        let msg = format!(
-            "[DOO_DB_RESULT_FREE] Read fields: owner={}, tag={}, value={:p}\n",
-            owner, tag, value
-        );
-        stderr_write(msg.as_bytes());
-    }
-
-    // Now atomically check if already freed
-    if mark_as_freed(ptr) {
-        // Already freed - this is a double-free attempt, skip it
-        unsafe {
-            let msg = format!(
-                "[DOO_DB_RESULT_FREE] !!!!! DOUBLE-FREE DETECTED !!!!! ptr={:p} was already freed!\n",
-                ptr
-            );
-            stderr_write(msg.as_bytes());
-        }
-        eprintln!(
-            "[DOO_DB_RESULT_FREE] SKIPPED - already freed (tracked in set) at {:p}",
+    // CRITICAL: Never dereference a pointer that might already be freed.
+    // First check/mark it. If it was already freed, return early.
+    if is_freed(ptr as *const std::ffi::c_void) {
+        doo_db_debug!(
+            "DOO_DB_RESULT_FREE !!!!! DOUBLE-FREE DETECTED !!!!! ptr={:p} was already freed!",
             ptr
         );
         return;
     }
 
-    eprintln!(
-        "[DOO_DB_RESULT_FREE] Freeing result at {:p}, owner: {}, tag: {}",
-        ptr, owner, tag
+    let (owner, tag, value) = unsafe {
+        let res = &*ptr;
+        (res.owner, res.tag, res.value)
+    };
+
+    doo_db_debug!(
+        "DOO_DB_RESULT_FREE Read fields: owner={}, tag={}, value={:p}",
+        owner,
+        tag,
+        value
     );
 
     // IMPORTANT: DooResult is allocated with libc::malloc in this crate.
@@ -1312,27 +1223,21 @@ pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
                 // CRITICAL: If owner is LLVM, the result was allocated by FFI but
                 // ownership was transferred to LLVM RC. The RC will free the string value.
                 // We only free the DooResult wrapper here, not the string.
-                eprintln!(
-                    "[DOO_DB_RESULT_FREE] Owner is LLVM - freeing wrapper only, RC handles string"
-                );
 
                 // AGGRESSIVE DEBUG: Validate heap before free
                 let test_alloc = libc::malloc(32);
                 if test_alloc.is_null() {
-                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED before free (LLVM owner)!\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE HEAP CORRUPTED before free (LLVM owner)!");
                 } else {
                     libc::free(test_alloc);
                 }
 
-                eprintln!("[DOO_DB_RESULT_FREE] About to free wrapper at {:p}", ptr);
                 tracked_free(ptr as *mut libc::c_void, "DooResult_LLVM_owner");
 
                 // AGGRESSIVE DEBUG: Validate heap after free
                 let test_alloc2 = libc::malloc(32);
                 if test_alloc2.is_null() {
-                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED after free (LLVM owner)!\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE HEAP CORRUPTED after free (LLVM owner)!");
                 } else {
                     libc::free(test_alloc2);
                 }
@@ -1348,41 +1253,23 @@ pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
 
                 if tag != 0 && !value.is_null() {
                     // Error value - DooDbError - FREE IT (it was copied to response)
-                    eprintln!(
-                        "[DOO_DB_RESULT_FREE] Owner is FFI, ERROR value - freeing error at {:p}",
-                        value
-                    );
                     let err_ptr = value as *mut DooDbError;
                     if !err_ptr.is_null() {
                         if !(*err_ptr).message.is_null() {
-                            eprintln!(
-                                "[DOO_DB_RESULT_FREE] Freeing error message at {:p}",
-                                (*err_ptr).message
-                            );
                             // Error messages are allocated as RC strings (data pointer).
                             // Free via centralized runtime helper to avoid invalid free/heap corruption.
                             dooruntime_free_rc_string((*err_ptr).message as *const c_char);
                         }
-                        libc::free(err_ptr as *mut libc::c_void);
+                        tracked_free(err_ptr as *mut libc::c_void, "DooDbError_FFI_owner");
                     }
                 } else {
                     // OK value - DON'T free it (compiler extracted and owns it via LLVM RC)
-                    eprintln!(
-                        "[DOO_DB_RESULT_FREE] Owner is FFI, OK value - NOT freeing (owned by LLVM RC)"
-                    );
                 }
-
-                // Free ONLY the result wrapper
-                eprintln!(
-                    "[DOO_DB_RESULT_FREE] Freeing DooResult wrapper at {:p}",
-                    ptr
-                );
 
                 // AGGRESSIVE DEBUG: Validate heap before free
                 let test_alloc = libc::malloc(32);
                 if test_alloc.is_null() {
-                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED before free (FFI owner)!\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE HEAP CORRUPTED before free (FFI owner)!");
                 } else {
                     libc::free(test_alloc);
                 }
@@ -1391,19 +1278,17 @@ pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
                     "[DOO_DB_RESULT_FREE] About to free FFI wrapper at {:p} (owner={}, tag={}, value={:p})\n",
                     ptr, owner, tag, value
                 );
-                stderr_write(msg.as_bytes());
+                doo_db_debug!("{}", msg);
 
                 tracked_free(ptr as *mut libc::c_void, "DooResult_FFI_owner");
 
                 // AGGRESSIVE DEBUG: Validate heap after free
                 let test_alloc2 = libc::malloc(32);
                 if test_alloc2.is_null() {
-                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED after free (FFI owner)!\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE HEAP CORRUPTED after free (FFI owner)!");
                 } else {
                     libc::free(test_alloc2);
-                    let msg = b"[DOO_DB_RESULT_FREE] Heap OK after free (FFI owner)\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE Heap OK after free (FFI owner)");
                 }
             }
             owner::RUST => {
@@ -1414,8 +1299,7 @@ pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
                 // AGGRESSIVE DEBUG: Validate heap before free
                 let test_alloc = libc::malloc(32);
                 if test_alloc.is_null() {
-                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED before free (RUST owner)!\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE HEAP CORRUPTED before free (RUST owner)!");
                 } else {
                     libc::free(test_alloc);
                 }
@@ -1425,24 +1309,16 @@ pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
                 // AGGRESSIVE DEBUG: Validate heap after free
                 let test_alloc2 = libc::malloc(32);
                 if test_alloc2.is_null() {
-                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED after free (RUST owner)!\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE HEAP CORRUPTED after free (RUST owner)!");
                 } else {
                     libc::free(test_alloc2);
                 }
             }
             _ => {
-                // Unknown owner - default to FFI behavior, free wrapper only
-                eprintln!(
-                    "[DOO_DB_RESULT_FREE] Unknown owner {}, freeing wrapper only at {:p}",
-                    owner, ptr
-                );
-
                 // AGGRESSIVE DEBUG: Validate heap before free
                 let test_alloc = libc::malloc(32);
                 if test_alloc.is_null() {
-                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED before free (unknown owner)!\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE HEAP CORRUPTED before free (unknown owner)!");
                 } else {
                     libc::free(test_alloc);
                 }
@@ -1452,8 +1328,7 @@ pub extern "C" fn doo_db_result_free(ptr: *mut DooResult) {
                 // AGGRESSIVE DEBUG: Validate heap after free
                 let test_alloc2 = libc::malloc(32);
                 if test_alloc2.is_null() {
-                    let msg = b"[DOO_DB_RESULT_FREE] HEAP CORRUPTED after free (unknown owner)!\n";
-                    stderr_write(msg);
+                    doo_db_debug!("DOO_DB_RESULT_FREE HEAP CORRUPTED after free (unknown owner)!");
                 } else {
                     libc::free(test_alloc2);
                 }
@@ -1520,16 +1395,19 @@ pub extern "C" fn doo_db_raw(_db: *const c_char, sql: *const c_char) -> *mut Doo
         Err(e) => return make_err(e),
     };
 
-    // Detect if this is a SELECT query
+    // Detect if this query returns rows
+    // SELECT/WITH always return rows, and INSERT/UPDATE/DELETE may return rows via RETURNING.
     let sql_upper = sql_str.to_uppercase();
-    let is_select = sql_upper.starts_with("SELECT") || sql_upper.starts_with("WITH");
+    let returns_rows = sql_upper.starts_with("SELECT")
+        || sql_upper.starts_with("WITH")
+        || sql_upper.contains("RETURNING");
 
-    if is_select {
+    if returns_rows {
         // Execute as SELECT and return JSON
-        let res = rt.block_on(async { client.query(&sql_str, &[]).await });
+        let res = block_on_compat(rt, async { client.query(&sql_str, &[]).await });
         let rows = match res {
             Ok(r) => r,
-            Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
+            Err(e) => return make_err_from_pg_error(&e),
         };
 
         let mut array = Vec::new();
@@ -1537,90 +1415,19 @@ pub extern "C" fn doo_db_raw(_db: *const c_char, sql: *const c_char) -> *mut Doo
             let mut obj = serde_json::Map::new();
             for (i, col) in row.columns().iter().enumerate() {
                 let name = col.name();
-                let value: serde_json::Value = match col.type_().name() {
-                    "int4" => row
-                        .get::<usize, Option<i32>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                    "int8" => row
-                        .get::<usize, Option<i64>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                    "float4" => row
-                        .get::<usize, Option<f32>>(i)
-                        .map(|v| serde_json::Value::from(v as f64))
-                        .unwrap_or(serde_json::Value::Null),
-                    "float8" => row
-                        .get::<usize, Option<f64>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                    "bool" => row
-                        .get::<usize, Option<bool>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                    _ => row
-                        .get::<usize, Option<String>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                };
+                let value: serde_json::Value = row_col_to_json(&row, i);
                 obj.insert(name.to_string(), value);
             }
             array.push(serde_json::Value::Object(obj));
         }
 
-        let row_count = array.len();
         let json = serde_json::Value::Array(array).to_string();
-        eprintln!(
-            "[DOO_DB_RAW] Query returned {} rows, JSON length: {}",
-            row_count,
-            json.len()
-        );
-        if json.len() < 500 {
-            eprintln!("[DOO_DB_RAW] Full JSON: {}", json);
-        } else {
-            eprintln!(
-                "[DOO_DB_RAW] JSON preview (first 200 chars): {}",
-                &json[..200]
-            );
-        }
-        eprintln!(
-            "[DOO_DB_RAW] JSON first 50 bytes as hex: {:02x?}",
-            &json.as_bytes()[..json.len().min(50)]
-        );
+
         let result = make_ok_string(json.clone());
-        eprintln!(
-            "[DOO_DB_RAW] make_ok_string returned result at {:p}",
-            result
-        );
-        if !result.is_null() {
-            unsafe {
-                eprintln!(
-                    "[DOO_DB_RAW] Verifying result: tag={}, value={:p}, owner={}",
-                    (*result).tag,
-                    (*result).value,
-                    (*result).owner
-                );
-                let verify_str = CStr::from_ptr((*result).value as *const c_char);
-                eprintln!(
-                    "[DOO_DB_RAW] Value string length: {}, first 50 chars: {}",
-                    verify_str.to_bytes().len(),
-                    verify_str
-                        .to_str()
-                        .unwrap_or("invalid")
-                        .chars()
-                        .take(50)
-                        .collect::<String>()
-                );
-            }
-        }
-        eprintln!(
-            "[DOO_DB_RAW] Created DooResult at {:p}, owner=LLVM (RC-managed via runtime allocator)",
-            result
-        );
         result
     } else {
         // Execute as INSERT/UPDATE/DELETE/CREATE/DROP/ALTER
-        let res = rt.block_on(async { client.execute(&sql_str, &[]).await });
+        let res = block_on_compat(rt, async { client.execute(&sql_str, &[]).await });
         match res {
             Ok(_) => make_ok_string(String::new()),
             Err(e) => {
@@ -1634,10 +1441,11 @@ pub extern "C" fn doo_db_raw(_db: *const c_char, sql: *const c_char) -> *mut Doo
                     } else {
                         "UNKNOWN".to_string()
                     };
-                    return make_err_query_failed(format!(
-                        "SQL: {} | Error: {} | PG Code: {}",
-                        sql_str, e, pg_code
-                    ));
+                    return make_err_with_code(
+                        "QUERY_FAILED",
+                        &pg_code,
+                        format!("SQL: {} | Error: {}", sql_str, e),
+                    );
                 }
             }
         }
@@ -1660,9 +1468,6 @@ pub extern "C" fn doo_db_raw_param(
         Ok(s) => s.trim().to_string(),
         Err(e) => return make_err_query_failed(e),
     };
-
-    eprintln!("[DOO_DB_RAW_PARAM] SQL: {}", sql_str);
-    eprintln!("[DOO_DB_RAW_PARAM] Params: {}", params_str);
 
     let client = match get_client() {
         Ok(c) => c,
@@ -1692,72 +1497,119 @@ pub extern "C" fn doo_db_raw_param(
         }
     };
 
-    // Convert JSON params to PostgreSQL parameters
-    // Supports: primitives, arrays (for ANY/ALL), and objects (as JSONB)
-    let pg_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> = match &params_value {
-        serde_json::Value::Array(arr) => {
-            // If it's an array, each element becomes a separate $1, $2, $3... parameter
-            arr.iter()
-                .map(|v| -> Box<dyn tokio_postgres::types::ToSql + Sync> {
-                    match v {
-                        serde_json::Value::String(s) => Box::new(s.clone()),
-                        serde_json::Value::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                // Use i32 for integers to match postgres INT4
-                                Box::new(i as i32)
-                            } else if let Some(f) = n.as_f64() {
-                                Box::new(f)
-                            } else {
-                                Box::new(n.to_string())
-                            }
-                        }
-                        serde_json::Value::Bool(b) => Box::new(*b),
-                        serde_json::Value::Null => Box::new(None::<String>),
-                        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-                            // Nested arrays/objects as JSONB
-                            Box::new(serde_json::to_string(v).unwrap_or_default())
-                        }
-                    }
-                })
-                .collect()
-        }
-        serde_json::Value::String(s) => vec![Box::new(s.clone())],
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                // Use i32 for integers to match postgres INT4
-                vec![Box::new(i as i32)]
-            } else if let Some(f) = n.as_f64() {
-                vec![Box::new(f)]
-            } else {
-                vec![Box::new(n.to_string())]
+    // Convert JSON params to PostgreSQL parameters.
+    // IMPORTANT: we must match the *expected* parameter types of the SQL statement.
+    // Otherwise, passing e.g. "2" (String) for an int4 param will fail with
+    // "error serializing parameter N".
+
+    // Prepare statement first so we can read parameter types.
+    let prepared = block_on_compat(rt, async { client.prepare(&sql_str).await });
+
+    let expected_param_types: Option<Vec<tokio_postgres::types::Type>> =
+        prepared.as_ref().ok().map(|stmt| stmt.params().to_vec());
+
+    let coerce_param = |idx: usize,
+                        v: &serde_json::Value|
+     -> Box<dyn tokio_postgres::types::ToSql + Sync> {
+        let expected = expected_param_types
+            .as_ref()
+            .and_then(|tys| tys.get(idx))
+            .map(|t| t.name());
+
+        match (expected, v) {
+            (Some("int4"), serde_json::Value::Number(n)) => {
+                Box::new(n.as_i64().unwrap_or(0) as i32)
+            }
+            (Some("int4"), serde_json::Value::String(s)) => Box::new(s.parse::<i32>().unwrap_or(0)),
+            (Some("int4"), serde_json::Value::Null) => Box::new(None::<i32>),
+
+            (Some("int8"), serde_json::Value::Number(n)) => {
+                Box::new(n.as_i64().unwrap_or(0) as i64)
+            }
+            (Some("int8"), serde_json::Value::String(s)) => Box::new(s.parse::<i64>().unwrap_or(0)),
+            (Some("int8"), serde_json::Value::Null) => Box::new(None::<i64>),
+
+            (Some("float4"), serde_json::Value::Number(n)) => {
+                Box::new(n.as_f64().unwrap_or(0.0) as f32)
+            }
+            (Some("float4"), serde_json::Value::String(s)) => {
+                Box::new(s.parse::<f32>().unwrap_or(0.0))
+            }
+            (Some("float4"), serde_json::Value::Null) => Box::new(None::<f32>),
+
+            (Some("float8"), serde_json::Value::Number(n)) => Box::new(n.as_f64().unwrap_or(0.0)),
+            (Some("float8"), serde_json::Value::String(s)) => {
+                Box::new(s.parse::<f64>().unwrap_or(0.0))
+            }
+            (Some("float8"), serde_json::Value::Null) => Box::new(None::<f64>),
+
+            (Some("bool"), serde_json::Value::Bool(b)) => Box::new(*b),
+            (Some("bool"), serde_json::Value::String(s)) => {
+                let b = s == "true" || s == "1";
+                Box::new(b)
+            }
+            (Some("bool"), serde_json::Value::Null) => Box::new(None::<bool>),
+
+            (Some("timestamptz"), serde_json::Value::String(s)) => {
+                if let Some(dt) = parse_rfc3339_datetime(s) {
+                    Box::new(dt)
+                } else {
+                    // If it's not RFC3339, fall back to text.
+                    Box::new(s.clone())
+                }
+            }
+            (Some("timestamptz"), serde_json::Value::Null) => {
+                Box::new(None::<chrono::DateTime<chrono::Utc>>)
+            }
+
+            // Default: preserve JSON types as best-effort.
+            (_, serde_json::Value::String(s)) => Box::new(s.clone()),
+            (_, serde_json::Value::Number(n)) => {
+                if let Some(i) = n.as_i64() {
+                    Box::new(i as i32)
+                } else if let Some(f) = n.as_f64() {
+                    Box::new(f)
+                } else {
+                    Box::new(n.to_string())
+                }
+            }
+            (_, serde_json::Value::Bool(b)) => Box::new(*b),
+            (_, serde_json::Value::Null) => Box::new(None::<String>),
+            (_, serde_json::Value::Array(_) | serde_json::Value::Object(_)) => {
+                Box::new(serde_json::to_string(v).unwrap_or_default())
             }
         }
-        serde_json::Value::Bool(b) => vec![Box::new(*b)],
-        serde_json::Value::Object(_) => {
-            // Struct/object as JSONB string
-            vec![Box::new(params_str.clone())]
-        }
-        serde_json::Value::Null => vec![Box::new(None::<String>)],
     };
 
-    // Detect if this is a SELECT query
-    let sql_upper = sql_str.to_uppercase();
-    let is_select = sql_upper.starts_with("SELECT") || sql_upper.starts_with("WITH");
+    let pg_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> = match &params_value {
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .enumerate()
+            .map(|(i, v)| coerce_param(i, v))
+            .collect(),
+        _ => vec![coerce_param(0, &params_value)],
+    };
 
-    if is_select {
+    // Detect if this query returns rows
+    // SELECT/WITH always return rows, and INSERT/UPDATE/DELETE may return rows via RETURNING.
+    let sql_upper = sql_str.to_uppercase();
+    let returns_rows = sql_upper.starts_with("SELECT")
+        || sql_upper.starts_with("WITH")
+        || sql_upper.contains("RETURNING");
+
+    if returns_rows {
         // Execute as SELECT and return JSON
         let pg_params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
             pg_params.iter().map(|p| p.as_ref()).collect();
 
-        let res = rt.block_on(async { client.query(&sql_str, &pg_params_refs[..]).await });
+        let res = match prepared {
+            Ok(stmt) => block_on_compat(rt, async { client.query(&stmt, &pg_params_refs[..]).await }),
+            Err(_) => block_on_compat(rt, async { client.query(&sql_str, &pg_params_refs[..]).await }),
+        };
         let rows = match res {
-            Ok(r) => {
-                eprintln!("[DOO_DB_RAW_PARAM] Query returned {} rows", r.len());
-                r
-            }
+            Ok(r) => r,
             Err(e) => {
-                eprintln!("[DOO_DB_RAW_PARAM] Query error: {}", e);
-                return make_err_query_failed(format!("Query failed: {}", e));
+                return make_err_from_pg_error(&e);
             }
         };
 
@@ -1766,32 +1618,10 @@ pub extern "C" fn doo_db_raw_param(
             let mut obj = serde_json::Map::new();
             for (i, col) in row.columns().iter().enumerate() {
                 let name = col.name();
-                let value: serde_json::Value = match col.type_().name() {
-                    "int4" => row
-                        .get::<usize, Option<i32>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                    "int8" => row
-                        .get::<usize, Option<i64>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                    "float4" => row
-                        .get::<usize, Option<f32>>(i)
-                        .map(|v| serde_json::Value::from(v as f64))
-                        .unwrap_or(serde_json::Value::Null),
-                    "float8" => row
-                        .get::<usize, Option<f64>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                    "bool" => row
-                        .get::<usize, Option<bool>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                    _ => row
-                        .get::<usize, Option<String>>(i)
-                        .map(serde_json::Value::from)
-                        .unwrap_or(serde_json::Value::Null),
-                };
+                // IMPORTANT: never use row.get(..) here. It can error and panic
+                // when the column isn't actually the requested Rust type.
+                // row_col_to_json uses try_get and handles timestamptz/timestamp.
+                let value: serde_json::Value = row_col_to_json(&row, i);
                 obj.insert(name.to_string(), value);
             }
             array.push(serde_json::Value::Object(obj));
@@ -1799,26 +1629,19 @@ pub extern "C" fn doo_db_raw_param(
 
         let row_count = array.len();
         let json = serde_json::Value::Array(array).to_string();
-        eprintln!(
-            "[DOO_DB_RAW_PARAM] Returning {} rows, JSON length: {}",
-            row_count,
-            json.len()
-        );
-        if json.len() < 500 {
-            eprintln!("[DOO_DB_RAW_PARAM] Full JSON: {}", json);
-        }
+
         let result = make_ok_string(json);
-        eprintln!(
-            "[DOO_DB_RAW_PARAM] Created DooResult at {:p}, owner=LLVM (RC-managed via runtime allocator)",
-            result
-        );
+
         result
     } else {
         // Execute as INSERT/UPDATE/DELETE/CREATE/DROP/ALTER
         let pg_params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
             pg_params.iter().map(|p| p.as_ref()).collect();
 
-        let res = rt.block_on(async { client.execute(&sql_str, &pg_params_refs[..]).await });
+        let res = match prepared {
+            Ok(stmt) => block_on_compat(rt, async { client.execute(&stmt, &pg_params_refs[..]).await }),
+            Err(_) => block_on_compat(rt, async { client.execute(&sql_str, &pg_params_refs[..]).await }),
+        };
         match res {
             Ok(_) => make_ok_string(String::new()),
             Err(e) => {
@@ -1886,9 +1709,9 @@ pub extern "C" fn doo_db_check_unique(
     };
 
     let res = if exclude_id >= 0 {
-        rt.block_on(async { client.query_one(&sql, &[&value, &exclude_id]).await })
+        block_on_compat(rt, async { client.query_one(&sql, &[&value, &exclude_id]).await })
     } else {
-        rt.block_on(async { client.query_one(&sql, &[&value]).await })
+        block_on_compat(rt, async { client.query_one(&sql, &[&value]).await })
     };
 
     match res {
@@ -1947,9 +1770,9 @@ pub extern "C" fn doo_db_validate_unique_constraints(
         let exists = doo_db_check_unique(table_c, field_c, value_c, exclude_id);
 
         unsafe {
-            libc::free(field_c as *mut libc::c_void);
-            libc::free(value_c as *mut libc::c_void);
-            libc::free(table_c as *mut libc::c_void);
+            dooruntime_free_rc_string(field_c as *const c_char);
+            dooruntime_free_rc_string(value_c as *const c_char);
+            dooruntime_free_rc_string(table_c as *const c_char);
         }
 
         if exists == 1 {
@@ -2026,6 +1849,7 @@ fn make_err_not_null_violation(field: &str) -> *mut DooResult {
             libc::free(err as *mut libc::c_void);
             return std::ptr::null_mut();
         }
+        unmark_freed(ptr);
         (*ptr).tag = 1;
         (*ptr).value = err as *mut _;
         (*ptr).owner = owner::FFI;
@@ -2187,93 +2011,43 @@ pub extern "C" fn doo_db_serialize_array(
 #[no_mangle]
 pub extern "C" fn doo_db_extract_string_from_result(result: *mut DooResult) -> *mut c_char {
     if result.is_null() {
-        eprintln!("[EXTRACT_STRING] Result is null");
         return string_to_c("[]".to_string());
     }
 
     unsafe {
         let res = &*result;
-        eprintln!(
-            "[EXTRACT_STRING] Extracting from DooResult at {:p}, tag={}, owner={}, value={:p}",
-            result, res.tag, res.owner, res.value
-        );
 
         // Check if this is an error
         if res.tag != 0 {
-            eprintln!("[EXTRACT_STRING] Result is error, returning empty");
             return string_to_c("[]".to_string());
         }
 
         // Check if value is null
         if res.value.is_null() {
-            eprintln!("[EXTRACT_STRING] Value is null, returning empty");
             return string_to_c("[]".to_string());
         }
 
         // Extract the string pointer
         let string_ptr = res.value as *mut c_char;
-        eprintln!("[EXTRACT_STRING] Reading from string_ptr={:p}", string_ptr);
 
         // CRITICAL: Make a COPY of the string using string_to_c which allocates new memory
         // This creates a new malloc'd string that won't be affected by the original being freed
         let original_str = match CStr::from_ptr(string_ptr).to_str() {
-            Ok(s) => {
-                eprintln!(
-                    "[EXTRACT_STRING] String read OK, length={}, first 100 chars: {}",
-                    s.len(),
-                    s.chars().take(100).collect::<String>()
-                );
-                s
-            }
+            Ok(s) => s,
             Err(e) => {
-                eprintln!("[EXTRACT_STRING] Failed to read string: {}", e);
-                eprintln!(
-                    "[EXTRACT_STRING] First 20 bytes as hex: {:02x?}",
-                    std::slice::from_raw_parts(string_ptr as *const u8, 20)
-                );
                 return string_to_c("[]".to_string());
             }
         };
 
-        eprintln!(
-            "[EXTRACT_STRING] Copying string, length={}, first 50 bytes hex: {:02x?}",
-            original_str.len(),
-            &original_str.as_bytes()[..original_str.len().min(50)]
-        );
-
         // Create a NEW copy of the string
         let new_string_ptr = string_to_c(original_str.to_string());
 
-        eprintln!(
-            "[EXTRACT_STRING] Created new string at {:p}",
-            new_string_ptr
-        );
-
-        // Verify the new string
-        let verify = CStr::from_ptr(new_string_ptr);
-        eprintln!(
-            "[EXTRACT_STRING] Verify new string: length={}, first 50 chars: {}",
-            verify.to_bytes().len(),
-            verify
-                .to_str()
-                .unwrap_or("invalid")
-                .chars()
-                .take(50)
-                .collect::<String>()
-        );
-
         // Now we can safely free the original DooResult
         // The string inside will be freed, but we have our copy
-        eprintln!("[EXTRACT_STRING] Freeing original DooResult");
         doo_db_result_free(result);
 
-        eprintln!(
-            "[EXTRACT_STRING] ##### ABOUT TO RETURN new_string_ptr={:p} #####",
-            new_string_ptr
-        );
         use std::io::Write;
         let _ = std::io::stderr().flush();
-        eprintln!("[EXTRACT_STRING] ##### RETURNING NOW #####");
         let _ = std::io::stderr().flush();
         new_string_ptr
     }

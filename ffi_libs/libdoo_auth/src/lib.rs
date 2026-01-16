@@ -12,10 +12,11 @@ use std::os::raw::c_char;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-extern "C" {
-    fn dooruntime_malloc(size: usize) -> *mut u8;
-    fn dooruntime_free_rc_string(ptr: *const c_char);
-}
+use doo_runtime::{
+    doo_auth_debug, doo_ffi_enter, doo_ffi_exit, doo_mem_alloc, doo_mem_free, dooruntime_malloc,
+    ownership::dooruntime_free_rc_string,
+    memory::{track_alloc, track_free, is_freed, validate_pointer},
+};
 
 /// Thread-safe set to track freed DooResult pointers.
 /// This prevents double-free by checking if a pointer was already freed.
@@ -33,6 +34,13 @@ fn mark_auth_as_freed(ptr: *mut DooResult) -> bool {
     let mut set = get_freed_auth_results().lock().unwrap();
     // insert returns false if the value was already present
     !set.insert(addr)
+}
+
+fn unmark_auth_as_freed(ptr: *mut DooResult) {
+    let addr = ptr as usize;
+    if let Ok(mut set) = get_freed_auth_results().lock() {
+        let _ = set.remove(&addr);
+    }
 }
 
 // Result type for FFI returns with ownership tracking
@@ -118,6 +126,7 @@ fn make_err(msg: String) -> *mut DooResult {
         if err.is_null() {
             return std::ptr::null_mut();
         }
+        track_alloc(err as *const std::ffi::c_void, "auth_make_err_error");
         (*err).message = string_to_c(msg);
 
         // Allocate DooResult using libc::malloc
@@ -127,6 +136,8 @@ fn make_err(msg: String) -> *mut DooResult {
             libc::free(err as *mut libc::c_void);
             return std::ptr::null_mut();
         }
+        track_alloc(ptr as *const std::ffi::c_void, "auth_make_err_result");
+        unmark_auth_as_freed(ptr);
         (*ptr).tag = 1;
         (*ptr).value = err as *mut _;
         (*ptr).owner = owner::FFI;
@@ -143,6 +154,7 @@ fn make_err_from_auth_error(auth_err: AuthError) -> *mut DooResult {
         if err.is_null() {
             return std::ptr::null_mut();
         }
+        track_alloc(err as *const std::ffi::c_void, "auth_make_err_from_auth_error_error");
         (*err).message = string_to_c(err_json);
 
         // Allocate DooResult using libc::malloc
@@ -152,6 +164,8 @@ fn make_err_from_auth_error(auth_err: AuthError) -> *mut DooResult {
             libc::free(err as *mut libc::c_void);
             return std::ptr::null_mut();
         }
+        track_alloc(ptr as *const std::ffi::c_void, "auth_make_err_from_auth_error_result");
+        unmark_auth_as_freed(ptr);
         (*ptr).tag = 1;
         (*ptr).value = err as *mut _;
         (*ptr).owner = owner::FFI;
@@ -166,6 +180,8 @@ fn make_ok_string(s: String) -> *mut DooResult {
         if ptr.is_null() {
             return std::ptr::null_mut();
         }
+        track_alloc(ptr as *const std::ffi::c_void, "auth_make_ok_string");
+        unmark_auth_as_freed(ptr);
         (*ptr).tag = 0;
         (*ptr).value = string_to_c(s) as *mut _;
         (*ptr).owner = owner::FFI;
@@ -180,6 +196,8 @@ fn make_ok_void() -> *mut DooResult {
         if ptr.is_null() {
             return std::ptr::null_mut();
         }
+        track_alloc(ptr as *const std::ffi::c_void, "auth_make_ok_void");
+        unmark_auth_as_freed(ptr);
         (*ptr).tag = 0;
         (*ptr).value = std::ptr::null_mut();
         (*ptr).owner = owner::FFI;
@@ -200,14 +218,17 @@ fn ensure_keys() -> Result<(EncodingKey, DecodingKey), String> {
 
 #[no_mangle]
 pub extern "C" fn doo_auth_hash_password(password: *const c_char) -> *mut DooResult {
+    doo_ffi_enter!("doo_auth_hash_password");
     let pwd = match c_to_string(password) {
         Ok(s) => s,
         Err(e) => return make_err(e),
     };
-    match hash(pwd, DEFAULT_COST - 4) {
+    let result = match hash(pwd, DEFAULT_COST - 4) {
         Ok(h) => make_ok_string(h),
         Err(e) => make_err_from_auth_error(errors::internal_error(&format!("Hash failed: {}", e))),
-    }
+    };
+    doo_ffi_exit!("doo_auth_hash_password", "result={:p}", result);
+    result
 }
 
 #[no_mangle]
@@ -215,6 +236,7 @@ pub extern "C" fn doo_auth_verify_password(
     password: *const c_char,
     hashed: *const c_char,
 ) -> *mut DooResult {
+    doo_ffi_enter!("doo_auth_verify_password");
     let pwd = match c_to_string(password) {
         Ok(s) => s,
         Err(e) => return make_err(e),
@@ -230,6 +252,8 @@ pub extern "C" fn doo_auth_verify_password(
             if ptr.is_null() {
                 return std::ptr::null_mut();
             }
+            track_alloc(ptr as *const std::ffi::c_void, "auth_verify_password_ok_result");
+            unmark_auth_as_freed(ptr);
             (*ptr).tag = 0;
             (*ptr).value = (ok as i32) as *mut _;
             (*ptr).owner = owner::FFI;
@@ -245,8 +269,9 @@ pub extern "C" fn doo_auth_verify_password(
 pub extern "C" fn doo_auth_sign(
     sub: *const c_char,
     data_json: *const c_char,
-    expires_seconds: i64,
+    expires_seconds: i32,
 ) -> *mut DooResult {
+    doo_ffi_enter!("doo_auth_sign", "expires_seconds={}", expires_seconds);
     let (enc, _) = match ensure_keys() {
         Ok(v) => v,
         Err(_) => return make_err_from_auth_error(errors::jwt_secret_missing()),
@@ -267,7 +292,8 @@ pub extern "C" fn doo_auth_sign(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as usize)
         .unwrap_or(0);
-    let exp = now.saturating_add(expires_seconds.max(1) as usize);
+    let expires_seconds_usize = (expires_seconds as i64).max(1) as usize;
+    let exp = now.saturating_add(expires_seconds_usize);
     let claims = Claims {
         sub,
         exp,
@@ -284,6 +310,7 @@ pub extern "C" fn doo_auth_sign(
 
 #[no_mangle]
 pub extern "C" fn doo_auth_verify(token: *const c_char) -> *mut DooResult {
+    doo_ffi_enter!("doo_auth_verify");
     let (_, dec) = match ensure_keys() {
         Ok(v) => v,
         Err(_) => return make_err_from_auth_error(errors::jwt_secret_missing()),
@@ -322,7 +349,11 @@ pub extern "C" fn doo_auth_free_string(ptr: *mut c_char) {
 
 #[no_mangle]
 pub extern "C" fn doo_auth_free_result(ptr: *mut DooResult) {
+    if doo_mem_free!(ptr, "doo_auth_free_result_entry") {
+        return;
+    }
     if ptr.is_null() {
+        doo_auth_debug!("doo_auth_free_result: null ptr, skip");
         return;
     }
 
@@ -331,6 +362,7 @@ pub extern "C" fn doo_auth_free_result(ptr: *mut DooResult) {
     // freed memory on subsequent calls (also UB), causing heap corruption.
     if mark_auth_as_freed(ptr) {
         // Already freed - this is a double-free attempt, skip it
+        doo_auth_debug!("doo_auth_free_result: DOUBLE-FREE PREVENTED ptr={:p}", ptr);
         return;
     }
 

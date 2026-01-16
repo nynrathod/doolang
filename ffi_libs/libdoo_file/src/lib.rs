@@ -5,10 +5,7 @@ use std::os::raw::c_char;
 use std::path::Path;
 use std::time::SystemTime;
 
-extern "C" {
-    fn dooruntime_malloc(size: usize) -> *mut u8;
-    fn dooruntime_free_rc_string(ptr: *const c_char);
-}
+use doo_runtime::{dooruntime_malloc, ownership::dooruntime_free_rc_string};
 
 /// Doo Result struct layout: { i32 tag, void* value, u8 owner }
 /// tag = 0 for Ok, tag = 1 for Err
