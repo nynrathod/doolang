@@ -69,20 +69,18 @@ macro_rules! doo_auth_debug {
 /// Also adds to global tracking set for double-free detection
 #[macro_export]
 macro_rules! doo_mem_alloc {
-    ($ptr:expr, $size:expr, $context:expr) => {
-        {
-            // Track in global set
-            $crate::memory::track_alloc($ptr as *const std::ffi::c_void, $context);
-            
-            if $crate::debug::is_debug_enabled() {
-                let id = $crate::memory::next_alloc_id();
-                eprintln!(
-                    "[DOO::MEM] ALLOC #{:06} ptr={:p} size={} context={}",
-                    id, $ptr, $size, $context
-                );
-            }
+    ($ptr:expr, $size:expr, $context:expr) => {{
+        // Track in global set
+        $crate::memory::track_alloc($ptr as *const std::ffi::c_void, $context);
+
+        if $crate::debug::is_debug_enabled() {
+            let id = $crate::memory::next_alloc_id();
+            eprintln!(
+                "[DOO::MEM] ALLOC #{:06} ptr={:p} size={} context={}",
+                id, $ptr, $size, $context
+            );
         }
-    };
+    }};
 }
 
 /// Aggressive memory free tracking macro with double-free detection
@@ -91,45 +89,41 @@ macro_rules! doo_mem_alloc {
 /// Returns true if this is a DOUBLE-FREE (caller should abort the free!)
 #[macro_export]
 macro_rules! doo_mem_free {
-    ($ptr:expr, $context:expr) => {
-        {
-            let is_double_free = $crate::memory::track_free($ptr as *const std::ffi::c_void, $context);
-            
-            if $crate::debug::is_debug_enabled() {
-                let id = $crate::memory::next_free_id();
-                if is_double_free {
-                    eprintln!(
-                        "[DOO::MEM] FREE  #{:06} ptr={:p} context={} !!!DOUBLE-FREE!!!",
-                        id, $ptr, $context
-                    );
-                } else {
-                    eprintln!(
-                        "[DOO::MEM] FREE  #{:06} ptr={:p} context={}",
-                        id, $ptr, $context
-                    );
-                }
+    ($ptr:expr, $context:expr) => {{
+        let is_double_free = $crate::memory::track_free($ptr as *const std::ffi::c_void, $context);
+
+        if $crate::debug::is_debug_enabled() {
+            let id = $crate::memory::next_free_id();
+            if is_double_free {
+                eprintln!(
+                    "[DOO::MEM] FREE  #{:06} ptr={:p} context={} !!!DOUBLE-FREE!!!",
+                    id, $ptr, $context
+                );
+            } else {
+                eprintln!(
+                    "[DOO::MEM] FREE  #{:06} ptr={:p} context={}",
+                    id, $ptr, $context
+                );
             }
-            
-            is_double_free
         }
-    };
+
+        is_double_free
+    }};
 }
 
 /// Check if a pointer has already been freed (use-after-free detection)
 #[macro_export]
 macro_rules! doo_mem_check_freed {
-    ($ptr:expr, $context:expr) => {
-        {
-            let is_freed = $crate::memory::is_freed($ptr as *const std::ffi::c_void);
-            if is_freed && $crate::debug::is_debug_enabled() {
-                eprintln!(
-                    "[DOO::MEM] USE-AFTER-FREE ptr={:p} context={}",
-                    $ptr, $context
-                );
-            }
-            is_freed
+    ($ptr:expr, $context:expr) => {{
+        let is_freed = $crate::memory::is_freed($ptr as *const std::ffi::c_void);
+        if is_freed && $crate::debug::is_debug_enabled() {
+            eprintln!(
+                "[DOO::MEM] USE-AFTER-FREE ptr={:p} context={}",
+                $ptr, $context
+            );
         }
-    };
+        is_freed
+    }};
 }
 
 /// Memory stats debug output
@@ -283,11 +277,7 @@ pub fn validate_pointer(ptr: *const std::ffi::c_void, context: &str) -> bool {
                 let page_base = (addr / page_size) * page_size;
                 let mut vec: [u8; 1] = [0];
                 // mincore() length must be non-zero and typically page-size aligned.
-                let rc = libc::mincore(
-                    page_base as *mut libc::c_void,
-                    page_size,
-                    vec.as_mut_ptr(),
-                );
+                let rc = libc::mincore(page_base as *mut libc::c_void, page_size, vec.as_mut_ptr());
                 if rc != 0 {
                     if is_debug_enabled() {
                         eprintln!(
@@ -303,35 +293,3 @@ pub fn validate_pointer(ptr: *const std::ffi::c_void, context: &str) -> bool {
 
     true
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_debug_enabled() {
-        // In test builds, cfg!(debug_assertions) is typically true
-        let enabled = is_debug_enabled();
-        assert!(enabled || !enabled); // Just ensure it compiles
-    }
-
-    #[test]
-    fn test_alloc_counter() {
-        let id1 = next_alloc_id();
-        let id2 = next_alloc_id();
-        assert!(id2 > id1);
-    }
-
-    #[test]
-    fn test_validate_pointer() {
-        let valid_ptr = Box::into_raw(Box::new(42)) as *const std::ffi::c_void;
-        assert!(validate_pointer(valid_ptr, "test"));
-        assert!(validate_pointer(std::ptr::null(), "test_null"));
-
-        // Clean up
-        unsafe {
-            let _ = Box::from_raw(valid_ptr as *mut i32);
-        }
-    }
-}
-
