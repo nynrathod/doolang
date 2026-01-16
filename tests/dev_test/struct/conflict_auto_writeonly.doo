@@ -1,0 +1,10 @@
+// Test 3: @auto + @writeOnly conflict
+// This should produce a compile-time error
+
+struct Test3 {
+    id: Int @auto @writeOnly,
+}
+
+fn main() {
+    print("This should not compile!");
+}

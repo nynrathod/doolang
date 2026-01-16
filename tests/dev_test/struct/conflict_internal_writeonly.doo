@@ -1,0 +1,10 @@
+// Test 1: @internal + @writeOnly conflict
+// This should produce a compile-time error
+
+struct Test1 {
+    userId: Int @internal @writeOnly,
+}
+
+fn main() {
+    print("This should not compile!");
+}

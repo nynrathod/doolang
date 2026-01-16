@@ -1,0 +1,32 @@
+// Test valid field visibility decorators
+// This file demonstrates all 4 field visibility cases and should compile successfully
+
+struct Link {
+    // Case 1: Not in req, in res (@auto or @readOnly)
+    id: Int @auto,
+    clickCount: Int @readOnly,
+
+    // Case 2: In req, in res (default - no decorator)
+    shortCode: Str,
+    destinationUrl: Str,
+
+    // Case 3: In req, not in res (@writeOnly)
+    password: Str @writeOnly,
+
+    // Case 4: Not in req, not in res (@internal)
+    userId: Int @internal,
+
+    // Optional variants using new syntax
+    expiresAt?: Str,                    // Optional in both req & res
+    optionalPassword?: Str @writeOnly,  // Optional in req, never in res
+    notes?: Str @readOnly,              // Optional in res, never in req
+}
+
+fn main() {
+    print("Field visibility test compiled successfully!");
+    print("All 4 field visibility cases validated:");
+    print("  1. @auto / @readOnly - not in request, in response");
+    print("  2. (no decorator) - in request, in response");
+    print("  3. @writeOnly - in request, not in response");
+    print("  4. @internal - not in request, not in response");
+}

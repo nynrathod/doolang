@@ -1,0 +1,10 @@
+// Test: @internal + ? optional conflict
+// This should produce a compile-time error
+
+struct Test2 {
+    userId?: Int @internal,
+}
+
+fn main() {
+    print("This should not compile!");
+}
