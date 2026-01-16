@@ -16,6 +16,7 @@ impl<'ctx> CodeGen<'ctx> {
         _return_type: &Option<String>,
         _captures: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
+        crate::doo_codegen_debug!("generate_closure: name={} params={:?}", name, params);
         // Generate a unique function name for this closure
         let closure_fn_name = format!("closure_{}", name);
 

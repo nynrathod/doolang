@@ -1,4 +1,4 @@
-use crate::codegen::{core::CodeGen, ArrayMetadata};
+use crate::codegen::core::CodeGen;
 use inkwell::values::BasicValueEnum;
 
 impl<'ctx> CodeGen<'ctx> {
@@ -10,6 +10,7 @@ impl<'ctx> CodeGen<'ctx> {
         method: &str,
         args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
+        crate::doo_string_debug!("generate_string_method: dest={} method={} args={:?}", dest, method, args);
         match method {
             "len" => {
                 let strlen_fn = self.module.get_function("strlen").unwrap_or_else(|| {

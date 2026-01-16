@@ -11,6 +11,7 @@ impl<'ctx> CodeGen<'ctx> {
         method: &str,
         args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
+        crate::doo_hashmap_debug!("generate_map_method: dest={} object={} method={} args={:?}", dest, object, method, args);
         match method {
             "get" => {
                 // map.get() is removed - use map[key] syntax instead

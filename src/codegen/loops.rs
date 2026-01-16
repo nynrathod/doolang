@@ -20,6 +20,7 @@ impl<'ctx> CodeGen<'ctx> {
         instr: &MirInstr,
         bb_map: &HashMap<String, BasicBlock<'ctx>>,
     ) {
+        crate::doo_codegen_debug!("generate_for_loop: {:?}", std::mem::discriminant(instr));
         match instr {
             MirInstr::ForRange {
                 var,
@@ -30,6 +31,7 @@ impl<'ctx> CodeGen<'ctx> {
                 body_block,
                 exit_block,
             } => {
+                crate::doo_codegen_debug!("ForRange: var={} start={} end={} inclusive={}", var, start, end, inclusive);
                 self.generate_for_range(
                     var, start, end, *inclusive, body_block, exit_block, bb_map,
                 );
@@ -42,6 +44,7 @@ impl<'ctx> CodeGen<'ctx> {
                 body_block,
                 exit_block,
             } => {
+                crate::doo_codegen_debug!("ForArray: var={} array={} index_var={}", var, array, index_var);
                 self.generate_for_array(var, array, index_var, body_block, exit_block, bb_map);
             }
             MirInstr::ForMap {
@@ -53,17 +56,21 @@ impl<'ctx> CodeGen<'ctx> {
                 body_block,
                 exit_block,
             } => {
+                crate::doo_codegen_debug!("ForMap: key_var={} value_var={} map={} index_var={}", key_var, value_var, map, index_var);
                 self.generate_for_map(
                     key_var, value_var, map, index_var, body_block, exit_block, bb_map,
                 );
             }
             MirInstr::ForInfinite { body_block } => {
+                crate::doo_codegen_debug!("ForInfinite: body_block={}", body_block);
                 self.generate_for_infinite(body_block, bb_map);
             }
             MirInstr::Break { target } => {
+                crate::doo_codegen_debug!("Break: target={}", target);
                 self.generate_break(target, bb_map);
             }
             MirInstr::Continue { target } => {
+                crate::doo_codegen_debug!("Continue: target={}", target);
                 self.generate_continue(target, bb_map);
             }
             _ => {}
