@@ -214,6 +214,13 @@ pub fn validate_pointer(ptr: *const std::ffi::c_void, context: &str) -> bool {
                 let page_size = page_size as usize;
                 let page_base = (addr / page_size) * page_size;
                 let mut vec: [u8; 1] = [0];
+                #[cfg(target_os = "macos")]
+                let rc = libc::mincore(
+                    page_base as *mut libc::c_void,
+                    page_size,
+                    vec.as_mut_ptr() as *mut i8,
+                );
+                #[cfg(not(target_os = "macos"))]
                 let rc = libc::mincore(
                     page_base as *mut libc::c_void,
                     page_size,

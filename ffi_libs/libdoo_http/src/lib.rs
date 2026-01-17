@@ -917,6 +917,9 @@ fn validate_cstr_pointer(ptr: *const c_char, context: &str) -> bool {
             let page_size = page_size as usize;
             let page_base = (addr / page_size) * page_size;
             let mut vec: [u8; 1] = [0];
+            #[cfg(target_os = "macos")]
+            let rc = libc::mincore(page_base as *mut libc::c_void, page_size, vec.as_mut_ptr() as *mut i8);
+            #[cfg(not(target_os = "macos"))]
             let rc = libc::mincore(page_base as *mut libc::c_void, page_size, vec.as_mut_ptr());
             if rc != 0 {
                 if doo_runtime::debug::is_debug_enabled() {
@@ -942,7 +945,7 @@ fn validate_cstr_pointer(ptr: *const c_char, context: &str) -> bool {
 #[no_mangle]
 pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
     doo_ffi_enter!("doo_http_next_call", "next_ptr={:p}", next);
-    
+
     // Helper to allocate DooResponse using libc::malloc
     unsafe fn alloc_response(
         status: i32,
@@ -1042,16 +1045,16 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
                 string_to_c("text/plain"),
             );
         }
-        
+
         doo_http_debug!("Processing result ptr={:p}", result);
 
         // CRITICAL: Handler results can be the 2-field LLVM layout.
         // Read tag/value via offsets to avoid UB.
         let (result_tag, result_value) = read_dooresult_tag_value(result);
-        
+
         doo_handler_result!("handler", result, result_tag);
         doo_http_debug!("Result tag={} value_ptr={:p}", result_tag, result_value);
-        
+
         if result_tag == 0 {
             doo_http_debug!("Result OK with value ptr={:p}", result_value);
             // Success - extract response body
@@ -1154,7 +1157,7 @@ unsafe fn read_dooresult_tag_value(result: *mut DooResult) -> (i32, *mut std::ff
         doo_http_debug!("USE-AFTER-FREE: read_dooresult_tag_value result_ptr={:p}", result);
         return (1, std::ptr::null_mut());
     }
-    
+
     // Fail-closed: if result pointer isn't readable/mapped, treat as error.
     if !doo_runtime::memory::validate_pointer(result as *const std::ffi::c_void, "read_dooresult") {
         doo_http_debug!("CORRUPT: read_dooresult_tag_value result_ptr={:p}", result);
