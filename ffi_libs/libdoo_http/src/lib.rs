@@ -2968,8 +2968,18 @@ unsafe fn unwrap_potential_dooresult(ptr: *const c_char) -> *const c_char {
     // DooResult only has tag 0 (Ok) or 1 (Err)
     // Any other value (like HTTP status codes 200, 400, 500) means this is NOT a DooResult
     if tag_val == 0 {
-        // This could be DooResult with tag=0 (success)
+        // Tag 0: Ok
         let res = ptr as *const DooResult;
+        
+        // Sanity check: verify if the value points to valid memory if not null?
+        // Hard to do portably without segfaulting.
+        // Let's assume if tag is 0, it MIGHT be a DooResult.
+        
+        // Double check against JSON characters to avoid false positives 
+        // if a JSON string starts with \0 (tag 0) - very unlikely for valid JSON/text
+        // But invalid/binary data could trigger false positive.
+        
+        // If it's DooResult, return the content
         let val = (*res).value as *const c_char;
 
         if !val.is_null() {
