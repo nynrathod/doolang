@@ -5,7 +5,7 @@
 //   import std::Http;
 //
 //   fn main() {
-//       let app = Server.new(":3000");
+//       let app = Server::new(":3000");
 //       app.post("/signup", signup);
 //       app.get("/profile", getProfile);
 //       app.start();
@@ -159,6 +159,16 @@ fn Server.auth(self, signupPath: Str, loginPath: Str, userStruct: Str, db: Str) 
 @ffi("doo_http")
 @extern("doo_http_crud")
 fn Server.crud(self, basePath: Str, resourceStruct: Str, db: Str) -> ! HttpError {}
+
+// === CORS and Rate Limiting Middleware ===
+
+@ffi("doo_http")
+@extern("doo_http_cors_custom")
+fn Server.cors(self, options: {Str: Str}?) -> Server {}
+
+@ffi("doo_http")
+@extern("doo_http_ratelimit_custom")
+fn Server.ratelimit(self, options: {Str: Str}?) -> Server {}
 
 // === Request Methods ===
 

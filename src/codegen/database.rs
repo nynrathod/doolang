@@ -15,6 +15,7 @@ impl<'ctx> CodeGen<'ctx> {
         object: &str,
         args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
+        crate::doo_codegen_debug!("generate_auth_routes: dest={} object={} args={:?}", dest, object, args);
         if args.len() != 4 {
             panic!(
                 "auth() requires 4 arguments: signupPath, loginPath, structName, db. Got {}",
@@ -71,6 +72,7 @@ impl<'ctx> CodeGen<'ctx> {
         object: &str,
         args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
+        crate::doo_codegen_debug!("generate_crud_routes: dest={} object={} args={:?}", dest, object, args);
         if args.len() != 3 {
             panic!(
                 "crud() requires 3 arguments: basePath, structName, db. Got {}",
@@ -143,10 +145,21 @@ impl<'ctx> CodeGen<'ctx> {
             let field_type = &metadata.field_types[i];
             let field_decorators = decorators.get(field_name).cloned().unwrap_or_default();
 
+            // Check if field is optional (type starts with "Optional(")
+            let is_optional = field_type.starts_with("Optional(");
+            // Extract inner type for optional fields
+            let actual_type = if is_optional {
+                field_type.strip_prefix("Optional(")
+                    .and_then(|s| s.strip_suffix(")"))
+                    .unwrap_or(field_type)
+            } else {
+                field_type.as_str()
+            };
+
             let mut decorator_array = Vec::new();
 
             // Check if field type is an Enum and inject @enum decorator automatically
-            if let Some(variants) = self.enum_variants.get(field_type) {
+            if let Some(variants) = self.enum_variants.get(actual_type) {
                 let variant_names: Vec<String> = variants.iter().map(|(name, _)| name.clone()).collect();
                 let args_json: Vec<String> = variant_names
                     .iter()
@@ -170,14 +183,21 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             fields.push(format!(
-                "{{\"name\":\"{}\",\"type\":\"{}\",\"decorators\":[{}]}}",
+                "{{\"name\":\"{}\",\"type\":\"{}\",\"optional\":{},\"decorators\":[{}]}}",
                 field_name,
-                field_type,
+                actual_type,
+                is_optional,
                 decorator_array.join(",")
             ));
         }
 
-        format!("{{\"fields\":[{}]}}", fields.join(","))
+        // Check for struct-level decorators (e.g., @autoTimestamp)
+        let has_auto_timestamp = self.struct_decorators
+            .get(struct_name)
+            .map(|decs| decs.iter().any(|(name, _)| name == "autoTimestamp"))
+            .unwrap_or(false);
+
+        format!("{{\"fields\":[{}],\"autoTimestamp\":{}}}", fields.join(","), has_auto_timestamp)
     }
 
     /// Build metadata JSON with noAuth flag for CRUD routes
@@ -194,10 +214,21 @@ impl<'ctx> CodeGen<'ctx> {
             let field_type = &metadata.field_types[i];
             let field_decorators = decorators.get(field_name).cloned().unwrap_or_default();
 
+            // Check if field is optional (type starts with "Optional(")
+            let is_optional = field_type.starts_with("Optional(");
+            // Extract inner type for optional fields
+            let actual_type = if is_optional {
+                field_type.strip_prefix("Optional(")
+                    .and_then(|s| s.strip_suffix(")"))
+                    .unwrap_or(field_type)
+            } else {
+                field_type.as_str()
+            };
+
             let mut decorator_array = Vec::new();
 
             // Check if field type is an Enum and inject @enum decorator automatically
-            if let Some(variants) = self.enum_variants.get(field_type) {
+            if let Some(variants) = self.enum_variants.get(actual_type) {
                 let variant_names: Vec<String> = variants.iter().map(|(name, _)| name.clone()).collect();
                 let args_json: Vec<String> = variant_names
                     .iter()
@@ -221,9 +252,10 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             fields.push(format!(
-                "{{\"name\":\"{}\",\"type\":\"{}\",\"decorators\":[{}]}}",
+                "{{\"name\":\"{}\",\"type\":\"{}\",\"optional\":{},\"decorators\":[{}]}}",
                 field_name,
-                field_type,
+                actual_type,
+                is_optional,
                 decorator_array.join(",")
             ));
         }
@@ -231,7 +263,13 @@ impl<'ctx> CodeGen<'ctx> {
         // Check if path contains "/public/" to determine noAuth
         let no_auth = base_path.contains("/public/");
         
-        format!("{{\"fields\":[{}],\"noAuth\":{}}}", fields.join(","), no_auth)
+        // Check for struct-level decorators (e.g., @autoTimestamp)
+        let has_auto_timestamp = self.struct_decorators
+            .get(struct_name)
+            .map(|decs| decs.iter().any(|(name, _)| name == "autoTimestamp"))
+            .unwrap_or(false);
+        
+        format!("{{\"fields\":[{}],\"noAuth\":{},\"autoTimestamp\":{}}}", fields.join(","), no_auth, has_auto_timestamp)
     }
 
     /// Generate FFI call to doo_http_auth

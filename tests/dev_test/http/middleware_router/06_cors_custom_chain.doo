@@ -1,0 +1,19 @@
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3116")
+        .cors({
+            origins: ["https://allowed.com"],
+            methods: ["GET", "POST"],
+            headers: ["Content-Type"],
+            credentials: true
+        });
+
+    app.get("/ping", Ping);
+
+    app.start();
+}

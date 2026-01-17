@@ -9,6 +9,8 @@ impl<'ctx> CodeGen<'ctx> {
         func: &str,
         args: &[String],
     ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
+        crate::doo_codegen_debug!("generate_call: {} ({} args)", func, args.len());
+        
         match func {
             "println" => {
                 self.generate_print(args);
@@ -302,6 +304,8 @@ impl<'ctx> CodeGen<'ctx> {
 
                     has_error_type && is_ffi && result.is_pointer_value()
                 };
+
+                 let mut result = result;
 
                 // If FFI returned a pointer to Result, load the struct</parameter>
                 let actual_result = if is_ffi_result {
@@ -890,10 +894,15 @@ impl<'ctx> CodeGen<'ctx> {
                                     value_needs_rc,
                                 },
                             );
-                        } else if return_type_str.contains("Str")
-                            || return_type_str.contains("String")
-                        {
-                            self.heap_strings.insert(dest_name.clone());
+                        } else {
+                            let rt = return_type_str.trim();
+                            let is_string_return = rt == "Str"
+                                || rt == "Str?"
+                                || rt == "String"
+                                || rt == "String?";
+                            if is_string_return {
+                                self.heap_strings.insert(dest_name.clone());
+                            }
                         }
                     }
                 }
@@ -908,8 +917,15 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.heap_arrays.insert(dest_name.clone());
                             } else if return_type_str.contains("Map") {
                                 self.heap_maps.insert(dest_name.clone());
-                            } else if return_type_str.contains("Str") {
-                                self.heap_strings.insert(dest_name.clone());
+                            } else {
+                                let rt = return_type_str.trim();
+                                let is_string_return = rt == "Str"
+                                    || rt == "Str?"
+                                    || rt == "String"
+                                    || rt == "String?";
+                                if is_string_return {
+                                    self.heap_strings.insert(dest_name.clone());
+                                }
                             }
                         }
                     }

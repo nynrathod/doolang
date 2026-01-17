@@ -506,15 +506,17 @@ impl SemanticAnalyzer {
         // Analyze function body with isolated scope.
         self.analyze_program(body)?;
 
-        // Restore previous error type
-        self.current_function_error_type = prev_error_type;
-
         // Now verify return types after body has been analyzed and local variables are in scope.
+        // NOTE: We verify BEFORE restoring current_function_error_type so that infer_type
+        // can correctly validate ? operators in return expressions.
         if let Some(ret_type) = return_type.as_ref() {
             if *ret_type != TypeNode::Void {
                 self.verify_return_types(body, ret_type, name)?;
             }
         }
+
+        // Restore previous error type AFTER verification
+        self.current_function_error_type = prev_error_type;
 
         // Restore outer scope after function analysis.
         if let Some(outer) = self.outer_symbol_table.take() {
@@ -618,27 +620,15 @@ impl SemanticAnalyzer {
                     // For Err expressions, verify the error type matches (skip for now)
                     // Just ensure it's treated as a valid return
                 }
-                AstNode::ConditionalStmt {
-                    then_block,
-                    else_branch,
-                    ..
-                } => {
-                    self.verify_return_types(then_block, expected, fn_name)?;
-                    if let Some(else_node) = else_branch {
-                        match &**else_node {
-                            AstNode::Block(nodes) => {
-                                self.verify_return_types(nodes, expected, fn_name)?
-                            }
-                            _ => self.verify_return_types(
-                                &vec![*else_node.clone()],
-                                expected,
-                                fn_name,
-                            )?,
-                        }
-                    }
+                // Note: We intentionally skip recursing into ConditionalStmt and Block nodes here.
+                // Return types inside these scopes are already verified during analyze_program()
+                // when the proper scopes are active. Recursing here would attempt to verify
+                // variables that are no longer in scope (scopes are popped after analyze_conditional_stmt).
+                AstNode::ConditionalStmt { .. } => {
+                    // Already verified during analyze_program with proper scopes
                 }
-                AstNode::Block(inner_nodes) => {
-                    self.verify_return_types(inner_nodes, expected, fn_name)?;
+                AstNode::Block(_) => {
+                    // Already verified during analyze_program with proper scopes
                 }
                 _ => {}
             }
@@ -795,6 +785,14 @@ impl SemanticAnalyzer {
                     name,
                 )?;
 
+                // Validate decorator combinations (check for conflicts)
+                super::decorators::validate_decorator_combinations(
+                    &field.decorators,
+                    field.is_optional,
+                    field_name,
+                    name,
+                )?;
+
                 // Store decorators for codegen
                 if !field.decorators.is_empty() {
                     let decorator_info: Vec<(String, Vec<String>)> = field
@@ -810,7 +808,9 @@ impl SemanticAnalyzer {
                                     AstNode::FloatLiteral(f) => f.to_string(),
                                     AstNode::BoolLiteral(b) => b.to_string(),
                                     AstNode::Identifier(id) => id.clone(),
-                                    AstNode::EnumVariant { enum_name, variant, .. } => {
+                                    AstNode::EnumVariant {
+                                        enum_name, variant, ..
+                                    } => {
                                         format!("{}::{}", enum_name, variant)
                                     }
                                     _ => String::new(),

@@ -9,3 +9,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 libc = "0.2"
+ doo_runtime = { package = "libdoo_runtime", path = "../libdoo_runtime" }

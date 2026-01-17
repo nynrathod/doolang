@@ -85,7 +85,7 @@ pub const STARTER_TEMPLATE: Template = Template {
         TemplateFile {
             path: "main.doo",
             content: r#"// 🔥 Doo - The fastest way to build and deploy production APIs
-// Template: Blog API (Posts + Comments + JWT Auth)
+// Template: Starter
 // Run: doo run | Deploy: doo deploy
 // Learn more at: https://github.com/nynrathod/doolang
 
@@ -129,7 +129,7 @@ pub const TODO_TEMPLATE: Template = Template {
         TemplateFile {
             path: "main.doo",
             content: r#"// 🔥 Doo - The fastest way to build and deploy production APIs
-// Template: Blog API (Posts + Comments + JWT Auth)
+// Template: Todo API (jwt auth & crud)
 // Run: doo run | Deploy: doo deploy
 // Learn more at: https://github.com/nynrathod/doolang
 
@@ -149,7 +149,7 @@ struct Todo {
     id: Int @primary @auto,
     Title: Str,
     Completed: Bool @default(false),
-    UserId: Int,
+    UserId: Int @foreign(User),
 }
 
 fn main() {
@@ -161,7 +161,7 @@ fn main() {
     // Authentication via JWT
     app.auth("/signup", "/login", User, db);
 
-    // Posts:    GET, POST, GET/:id, PUT/:id, DELETE/:id at /todos
+    // Todos:    GET, POST, GET/:id, PUT/:id, DELETE/:id at /todos
     app.crud("/todos", Todo, db);
 
     app.start();
@@ -225,7 +225,7 @@ fn GetFeed() -> [Post] ! DatabaseError {
     let result: [Post] = db.raw("
         SELECT p.title
         FROM posts p
-        JOIN users u ON p.authorid = u.id
+        JOIN users u ON p.author_id = u.id
         WHERE p.published = true
     ")?;
 
@@ -237,7 +237,7 @@ fn GetUserPosts(authorId: Int) -> [Post] ! DatabaseError {
 
     let result: [Post] = db.rawWithParams("
         SELECT * FROM posts
-        WHERE authorid = $1
+        WHERE author_id = $1
     ", authorId)?;
 
     Ok result;
@@ -248,7 +248,7 @@ fn GetMyPosts(userId: Int) -> [Post] ! DatabaseError {
 
     let result: [Post] = db.rawWithParams("
         SELECT * FROM posts
-        WHERE authorid = $1
+        WHERE author_id = $1
     ", userId)?;
 
     Ok result;

@@ -1,0 +1,10 @@
+// Test 4: @writeOnly + @readOnly conflict
+// This should produce a compile-time error
+
+struct Test4 {
+    field: Str @writeOnly @readOnly,
+}
+
+fn main() {
+    print("This should not compile!");
+}

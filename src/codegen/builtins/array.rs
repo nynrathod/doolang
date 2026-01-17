@@ -11,6 +11,7 @@ impl<'ctx> CodeGen<'ctx> {
         method: &str,
         args: &[String],
     ) -> Option<BasicValueEnum<'ctx>> {
+        crate::doo_array_debug!("generate_array_method: dest={} object={} method={} args={:?}", dest, object, method, args);
         match method {
             "len" => self.generate_array_len(dest, object),
             "push" => {

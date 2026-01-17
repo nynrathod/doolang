@@ -1921,19 +1921,24 @@ impl<'ctx> CodeGen<'ctx> {
             expected_type
         };
 
-
-
         if clean_type == "Int" {
             // Call json_extract_scalar_v2 to extract integer from JSON result set
             let ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
-            let extract_fn = self.module.get_function("json_extract_scalar_v2").unwrap_or_else(|| {
-                let fn_type = self.context.i32_type().fn_type(&[ptr_type.into()], false);
-                self.module.add_function("json_extract_scalar_v2", fn_type, None)
-            });
+            let extract_fn = self
+                .module
+                .get_function("json_extract_scalar_v2")
+                .unwrap_or_else(|| {
+                    let fn_type = self.context.i32_type().fn_type(&[ptr_type.into()], false);
+                    self.module
+                        .add_function("json_extract_scalar_v2", fn_type, None)
+                });
 
             // Cast json_str_ptr to i8* if needed (it usually is)
             let i8_ptr_type = self.context.ptr_type(inkwell::AddressSpace::default());
-            let json_ptr_casted = self.builder.build_bit_cast(json_str_ptr, i8_ptr_type, "json_ptr_casted").unwrap();
+            let json_ptr_casted = self
+                .builder
+                .build_bit_cast(json_str_ptr, i8_ptr_type, "json_ptr_casted")
+                .unwrap();
 
             // Call FFI -> returns i32 (Doo Int is i32)
             let int_val = self
@@ -2174,9 +2179,16 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
 
             return Some(data_ptr.into());
-        } else if expected_type.starts_with("Array(") {
-            // Extract element type from Array(ElementType)
-            let element_type = &expected_type[6..expected_type.len() - 1];
+        } else if expected_type.starts_with("Array(")
+            || (expected_type.starts_with('[') && expected_type.ends_with(']'))
+        {
+            // Extract element type from Array(ElementType) or [ElementType]
+            let element_type = if expected_type.starts_with("Array(") {
+                &expected_type[6..expected_type.len() - 1]
+            } else {
+                // [ElementType] syntax
+                &expected_type[1..expected_type.len() - 1]
+            };
 
             // Choose the right runtime parser based on element type
             let fn_name = match element_type {
@@ -2185,11 +2197,260 @@ impl<'ctx> CodeGen<'ctx> {
                 "Bool" => "json_parse_array_bool",
                 "Str" => "json_parse_array_str",
                 _ => {
-                    // Check if element type is a known struct
-                    if self.struct_metadata.contains_key(element_type) {
-                        // For struct arrays, return JSON string as-is
-                        // The HTTP handler will serialize it directly
-                        return Some(json_str_ptr.into());
+                    // Check if element type is a known struct (check both metadata and struct_table for imports)
+                    if self.struct_metadata.contains_key(element_type)
+                        || self.struct_table.contains_key(element_type)
+                    {
+                        // Struct arrays MUST be converted to a real array layout.
+                        // If we return the JSON string pointer here, array.len()/indexing will read
+                        // garbage from the string bytes as if it were an array header, causing crashes.
+
+                        use inkwell::AddressSpace;
+                        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+                        // 1) Convert JSON array -> array of JSON object strings (runtime helper)
+                        let parse_struct_array_fn = self
+                            .module
+                            .get_function("json_parse_struct_array")
+                            .unwrap_or_else(|| {
+                                let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+                                self.module
+                                    .add_function("json_parse_struct_array", fn_type, None)
+                            });
+
+                        let src_data_ptr = self
+                            .builder
+                            .build_call(
+                                parse_struct_array_fn,
+                                &[json_str_ptr.into()],
+                                "src_struct_arr",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Treat returned data pointer as an array of pointers (char**)
+                        let src_data_ptr_typed = self
+                            .builder
+                            .build_pointer_cast(src_data_ptr, ptr_type, "src_data_ptr_typed")
+                            .unwrap();
+
+                        // Read length from heap header: [RC:4][LEN:4][DATA...] where DATA ptr is returned
+                        let heap_ptr = unsafe {
+                            self.builder.build_gep(
+                                self.context.i8_type(),
+                                src_data_ptr_typed,
+                                &[self.context.i32_type().const_int((-8_i32) as u64, true)],
+                                "src_heap_ptr",
+                            )
+                        }
+                        .unwrap();
+
+                        let len_field_ptr = unsafe {
+                            self.builder.build_gep(
+                                self.context.i8_type(),
+                                heap_ptr,
+                                &[self.context.i32_type().const_int(4, false)],
+                                "src_len_field_ptr",
+                            )
+                        }
+                        .unwrap();
+
+                        let len_ptr_cast = self
+                            .builder
+                            .build_pointer_cast(len_field_ptr, ptr_type, "src_len_ptr_cast")
+                            .unwrap();
+
+                        let len_i32 = self
+                            .builder
+                            .build_load(self.context.i32_type(), len_ptr_cast, "src_len")
+                            .unwrap()
+                            .into_int_value();
+
+                        // 2) Allocate destination array (pointers to structs) with RC header and len
+                        let malloc_fn = self.get_malloc_fn();
+                        let header_size = self.context.i64_type().const_int(8, false);
+                        let len_i64 = self
+                            .builder
+                            .build_int_z_extend(len_i32, self.context.i64_type(), "len_i64")
+                            .unwrap();
+                        let elem_size = ptr_type.size_of();
+                        let data_size = self
+                            .builder
+                            .build_int_mul(len_i64, elem_size, "struct_arr_data_size")
+                            .unwrap();
+                        let total_size = self
+                            .builder
+                            .build_int_add(header_size, data_size, "struct_arr_total_size")
+                            .unwrap();
+
+                        let dst_heap_ptr = self
+                            .builder
+                            .build_call(malloc_fn, &[total_size.into()], "dst_struct_arr_heap")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Store RC = 1 at offset 0
+                        let rc_ptr = self
+                            .builder
+                            .build_pointer_cast(dst_heap_ptr, ptr_type, "dst_rc_ptr")
+                            .unwrap();
+                        self.builder
+                            .build_store(rc_ptr, self.context.i32_type().const_int(1, false))
+                            .unwrap();
+
+                        // Store len at offset 4
+                        let dst_len_ptr = unsafe {
+                            self.builder.build_gep(
+                                self.context.i8_type(),
+                                dst_heap_ptr,
+                                &[self.context.i32_type().const_int(4, false)],
+                                "dst_len_ptr",
+                            )
+                        }
+                        .unwrap();
+                        let dst_len_ptr_cast = self
+                            .builder
+                            .build_pointer_cast(dst_len_ptr, ptr_type, "dst_len_ptr_cast")
+                            .unwrap();
+                        self.builder.build_store(dst_len_ptr_cast, len_i32).unwrap();
+
+                        // Data pointer at offset 8
+                        let dst_data_ptr = unsafe {
+                            self.builder.build_gep(
+                                self.context.i8_type(),
+                                dst_heap_ptr,
+                                &[self.context.i32_type().const_int(8, false)],
+                                "dst_data_ptr",
+                            )
+                        }
+                        .unwrap();
+
+                        // Treat destination data pointer as an array of pointers (struct**)
+                        let dst_data_ptr_typed = self
+                            .builder
+                            .build_pointer_cast(dst_data_ptr, ptr_type, "dst_data_ptr_typed")
+                            .unwrap();
+
+                        // 3) Loop i=0..len-1: parse each object JSON -> struct ptr, store into dst array
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+
+                        let init_bb = self
+                            .context
+                            .append_basic_block(current_fn, "struct_arr_init");
+                        let cond_bb = self
+                            .context
+                            .append_basic_block(current_fn, "struct_arr_cond");
+                        let body_bb = self
+                            .context
+                            .append_basic_block(current_fn, "struct_arr_body");
+                        let end_bb = self
+                            .context
+                            .append_basic_block(current_fn, "struct_arr_end");
+
+                        // Jump to init
+                        self.builder.build_unconditional_branch(init_bb).unwrap();
+
+                        // i alloca
+                        self.builder.position_at_end(init_bb);
+                        let i_alloca = self
+                            .builder
+                            .build_alloca(self.context.i32_type(), "i")
+                            .unwrap();
+                        self.builder
+                            .build_store(i_alloca, self.context.i32_type().const_zero())
+                            .unwrap();
+                        self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                        // cond: i < len
+                        self.builder.position_at_end(cond_bb);
+                        let i_val = self
+                            .builder
+                            .build_load(self.context.i32_type(), i_alloca, "i_val")
+                            .unwrap()
+                            .into_int_value();
+                        let is_lt = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                i_val,
+                                len_i32,
+                                "i_lt_len",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(is_lt, body_bb, end_bb)
+                            .unwrap();
+
+                        // body
+                        self.builder.position_at_end(body_bb);
+                        let i_val2 = self
+                            .builder
+                            .build_load(self.context.i32_type(), i_alloca, "i_val2")
+                            .unwrap()
+                            .into_int_value();
+
+                        // src_elem_ptr = &src_data_ptr[i]
+                        let src_elem_ptr = unsafe {
+                            self.builder.build_in_bounds_gep(
+                                ptr_type,
+                                src_data_ptr_typed,
+                                &[i_val2],
+                                "src_elem_ptr",
+                            )
+                        }
+                        .unwrap();
+                        let obj_json_ptr = self
+                            .builder
+                            .build_load(ptr_type, src_elem_ptr, "obj_json_ptr")
+                            .unwrap()
+                            .into_pointer_value();
+
+                        // Parse JSON object into struct ptr (reuse existing struct parsing path)
+                        let struct_val = self
+                            .convert_json_string_to_type(obj_json_ptr, element_type)
+                            .unwrap();
+                        let struct_ptr_val = struct_val.into_pointer_value();
+
+                        // dst_elem_ptr = &dst_data_ptr[i]
+                        let dst_elem_ptr = unsafe {
+                            self.builder.build_in_bounds_gep(
+                                ptr_type,
+                                dst_data_ptr_typed,
+                                &[i_val2],
+                                "dst_elem_ptr",
+                            )
+                        }
+                        .unwrap();
+                        self.builder
+                            .build_store(dst_elem_ptr, struct_ptr_val)
+                            .unwrap();
+
+                        // i++
+                        let inc = self
+                            .builder
+                            .build_int_add(
+                                i_val2,
+                                self.context.i32_type().const_int(1, false),
+                                "i_inc",
+                            )
+                            .unwrap();
+                        self.builder.build_store(i_alloca, inc).unwrap();
+                        self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                        // end
+                        self.builder.position_at_end(end_bb);
+                        return Some(dst_data_ptr.into());
                     } else {
                         // Fallback - return pointer as-is for unsupported types
                         return Some(json_str_ptr.into());
@@ -2881,7 +3142,7 @@ impl<'ctx> CodeGen<'ctx> {
                                 .unwrap();
                             self.builder.build_store(field_ptr, val).unwrap();
                         }
-                        "Str" => {
+                        "Str" | "String" | "Optional(Str)" | "Optional(String)" => {
                             let val = self
                                 .builder
                                 .build_call(

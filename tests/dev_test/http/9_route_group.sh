@@ -75,3 +75,14 @@ curl -s http://127.0.0.1:$PORT/admin/users | pretty_json
 echo ""
 
 echo "✅ All route group tests completed"
+
+# --------------------------------------------------
+# Log location (like blog/test_blog.sh)
+# --------------------------------------------------
+echo ""
+echo "📝 Server logs saved in: $(cd "$SCRIPT_DIR" && pwd)/server9.log"
+echo "   To inspect: tail -200 \"$SCRIPT_DIR/server9.log\""
+if command -v wslpath >/dev/null 2>&1; then
+  WIN_LOG_PATH="$(wslpath -w "$SCRIPT_DIR/server9.log")"
+  echo "   Windows path: $WIN_LOG_PATH"
+fi

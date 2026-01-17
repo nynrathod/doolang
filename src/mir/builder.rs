@@ -5,6 +5,7 @@ use crate::mir::{
     MirProgram,
 };
 use crate::parser::ast::{AstNode, Pattern, TypeNode};
+use crate::{doo_assert, doo_mir_debug, doo_trace_enter, doo_trace_exit, doo_warn};
 use std::collections::{HashMap, HashSet};
 use std::mem::discriminant;
 use std::sync::Arc;
@@ -73,7 +74,19 @@ impl MirBuilder {
     /// Check if we've exceeded maximum recursion depth
     pub fn check_depth(&self) -> Result<(), String> {
         if self.recursion_depth >= MIR_MAX_DEPTH {
+            doo_warn!(
+                "MIR recursion depth limit exceeded: {} >= {}",
+                self.recursion_depth,
+                MIR_MAX_DEPTH
+            );
             return Err("Expression too deeply nested (recursion limit exceeded)".to_string());
+        }
+        if self.recursion_depth > MIR_MAX_DEPTH / 2 {
+            doo_mir_debug!(
+                "MIR recursion depth warning: {}/{}",
+                self.recursion_depth,
+                MIR_MAX_DEPTH
+            );
         }
         Ok(())
     }
@@ -99,7 +112,7 @@ impl MirBuilder {
 
     /// Enter a new loop context, pushing break/continue targets onto the stack.
     /// Used to resolve break/continue statements inside nested loops.
-    pub fn enter_loop(&mut self, break_target: String, continue_target: String) {
+    pub fn push_loop(&mut self, break_target: String, continue_target: String) {
         self.loop_stack.push(LoopContext {
             break_target,
             continue_target,
@@ -107,7 +120,10 @@ impl MirBuilder {
     }
 
     /// Exit the current loop context, popping it from the stack.
-    pub fn exit_loop(&mut self) {
+    pub fn pop_loop(&mut self) {
+        if self.loop_stack.is_empty() {
+            doo_warn!("Attempted to pop loop context but stack was empty");
+        }
         self.loop_stack.pop();
     }
 
@@ -119,7 +135,7 @@ impl MirBuilder {
 
     /// Enter a new reference-counted variable scope.
     /// Used to track which variables need DecRef when leaving scope.
-    pub fn enter_scope(&mut self) {
+    pub fn push_scope(&mut self) {
         self.rc_tracked_vars.push(vec![]);
     }
 
@@ -131,14 +147,18 @@ impl MirBuilder {
             for var in scope_vars.iter().rev() {
                 block.instrs.push(MirInstr::DecRef { value: var.clone() });
             }
+        } else {
+            doo_warn!("CRITICAL: exit_scope called but no scope to exit - scope stack mismatch!");
         }
     }
 
     /// Track a variable as reference-counted in the current scope.
     /// Used for arrays, maps, strings, etc.
     pub fn track_rc_var(&mut self, var: String) {
-        if let Some(current_scope) = self.rc_tracked_vars.last_mut() {
-            current_scope.push(var);
+        if let Some(scope) = self.rc_tracked_vars.last_mut() {
+            scope.push(var);
+        } else {
+            doo_warn!("CRITICAL: Attempted to track RC var {} but no scope exists - scope stack corrupted!", var);
         }
     }
 
@@ -153,7 +173,8 @@ impl MirBuilder {
     /// This is the main entry point for converting parsed code into MIR.
     /// Handles functions, globals, structs, enums, assignments, prints, loops, conditionals, and expressions.
     pub fn build_program(&mut self, nodes: &[AstNode]) {
-        for node in nodes {
+        doo_trace_enter!("build_program", "{} nodes", nodes.len());
+        for node in nodes.iter() {
             match node {
                 // Declarations
                 AstNode::LetDecl { .. } => {
@@ -206,7 +227,9 @@ impl MirBuilder {
                                             AstNode::FloatLiteral(f) => f.to_string(),
                                             AstNode::BoolLiteral(b) => b.to_string(),
                                             AstNode::Identifier(id) => id.clone(),
-                                            AstNode::EnumVariant { enum_name, variant, .. } => format!("{}::{}", enum_name, variant),
+                                            AstNode::EnumVariant {
+                                                enum_name, variant, ..
+                                            } => format!("{}::{}", enum_name, variant),
                                             _ => String::new(),
                                         })
                                         .collect();
@@ -456,11 +479,7 @@ impl MirBuilder {
                 }
 
                 _ => {
-                    // For unhandled node types, create a placeholder and print a warning.
-                    println!(
-                        "Warning: Unhandled AST node type in global scope: {:?}",
-                        discriminant(node)
-                    );
+                    // Unhandled node types are silently skipped
                 }
             }
         }
@@ -493,7 +512,7 @@ impl MirBuilder {
         // Copy enum_table and struct_table to the program so codegen has access to type metadata
         self.program.enum_table = (*self.enum_table).clone();
         self.program.enum_variant_order = (*self.enum_variant_order).clone();
-        self.program.struct_table = HashMap::new(); // TODO: populate from analyzer
+        self.program.struct_table = (*self.struct_table).clone();
 
         // 1. Remove empty blocks (blocks without instructions and no terminator)
         //    BUT: keep blocks that are referenced by other blocks

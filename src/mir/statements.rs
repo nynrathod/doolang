@@ -140,6 +140,9 @@ pub fn build_statement(builder: &mut MirBuilder, stmt: &AstNode, block: &mut Mir
 }
 
 fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut MirBlock) {
+    // Log statement type for debugging
+    crate::doo_mir_debug!("build_statement: {:?}", std::mem::discriminant(stmt));
+
     match stmt {
         // Handle variable declaration (`let` statement).
         // Supports both single variable and tuple destructuring patterns.
@@ -324,13 +327,19 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     });
 
                     // Track variable type in mir_symbol_table
-                    // Copy type from value_tmp if available
-                    if let Some(value_type) = builder.mir_symbol_table.get(&value_tmp).cloned() {
-                        builder.mir_symbol_table.insert(name.clone(), value_type);
-                    } else if let Some(type_ann) = type_annotation {
+                    // IMPORTANT: if a type annotation exists, it must win.
+                    // This is required for patterns like:
+                    //   let valRes: ValidationResult = db.rawWithParams(...)?
+                    // where the RHS is a JSON Str but the variable must be typed as the struct
+                    // so FieldAccess (valRes.valid) is safe.
+                    if let Some(type_ann) = type_annotation {
                         builder
                             .mir_symbol_table
                             .insert(name.clone(), type_ann.clone());
+                    } else if let Some(value_type) =
+                        builder.mir_symbol_table.get(&value_tmp).cloned()
+                    {
+                        builder.mir_symbol_table.insert(name.clone(), value_type);
                     }
 
                     // Insert IncRef ONLY when copying from an existing variable.
@@ -751,7 +760,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             });
 
             // Then block with scope tracking for reference counting.
-            builder.enter_scope();
+            builder.push_scope();
             let mut then_mir_block = MirBlock {
                 label: then_label,
                 instrs: vec![],
@@ -778,7 +787,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             let mut else_needs_end_jump = false;
 
             if let Some(else_stmt) = else_branch {
-                builder.enter_scope();
+                builder.push_scope();
                 let mut else_mir_block = MirBlock {
                     label: else_label,
                     instrs: vec![],
@@ -928,7 +937,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 let loop_end = builder.next_block();
 
                 // Enter loop context for break/continue handling.
-                builder.enter_loop(loop_end.clone(), loop_header.clone());
+                builder.push_loop(loop_end.clone(), loop_header.clone());
 
                 // Only set terminator if block doesn't already have one
                 if block.terminator.is_none() {
@@ -984,8 +993,8 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                     func.blocks.push(body_block);
                 }
 
-                builder.exit_loop();
-                
+                builder.pop_loop();
+
                 // CRITICAL FIX: Instead of returning early, update the current block
                 // to be the loop_end block so subsequent statements get appended there.
                 // This is the same pattern used by if/else blocks (line 846).
@@ -1034,7 +1043,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
             let loop_end = builder.next_block();
 
             // Enter loop context (continue goes to increment, break goes to end)
-            builder.enter_loop(loop_end.clone(), loop_increment.clone());
+            builder.push_loop(loop_end.clone(), loop_increment.clone());
 
             let mut blocks_to_add = Vec::new();
 
@@ -2500,7 +2509,7 @@ fn build_statement_inner(builder: &mut MirBuilder, stmt: &AstNode, block: &mut M
                 }
             }
 
-            builder.exit_loop(); // Important: exit loop context
+            builder.pop_loop(); // Important: exit loop context
 
             // Create a fresh block for subsequent statements (don't reuse the pushed block)
             let continuation_label = builder.next_block();

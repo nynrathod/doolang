@@ -6,6 +6,12 @@
 // @max
 // @enum
 
+enum UserRole {
+    Admin,
+    User,
+    Guest,
+}
+
 struct User {
     Email: Str @email,
     Username: Str @min(3) @max(20),
@@ -21,7 +27,7 @@ fn main() {
         Email: "john@example.com",
         Username: "john_doe",
         Password: "securepass123",
-        Role: "admin",
+        Role: UserRole::User,
         Age: 30,
     };
 

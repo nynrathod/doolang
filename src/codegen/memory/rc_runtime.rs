@@ -3,6 +3,11 @@
 /// and for declaring or retrieving standard memory functions (malloc, free, memcpy).
 /// All logic is designed to work with LLVM IR via the inkwell library.
 use crate::codegen::core::CodeGen;
+use crate::{
+    doo_alloc_debug, doo_codegen_debug, doo_free_debug, doo_llvm_debug, doo_mem_check,
+    doo_rc_debug, doo_refcount_debug, doo_trace_enter, doo_trace_exit, doo_warn,
+};
+use inkwell::module::Linkage;
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 
@@ -12,30 +17,89 @@ impl<'ctx> CodeGen<'ctx> {
     /// Initializes the RC runtime by creating the incref and decref functions.
     /// These functions are stored in the CodeGen context for later use.
     pub fn init_rc_runtime(&mut self) {
-        // CRITICAL: Pre-declare malloc with i64 parameter FIRST
-        // This MUST happen before any inkwell build_malloc calls, which would
-        // otherwise declare malloc with i32 parameter, causing type mismatches.
-        if self.module.get_function("malloc").is_none() {
-            let i64_type = self.context.i64_type();
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let malloc_type = ptr_type.fn_type(&[i64_type.into()], false);
-            self.module.add_function("malloc", malloc_type, None);
-        }
-        
+        doo_trace_enter!("init_rc_runtime");
+
+        // Ensure any LLVM-generated build_malloc/build_free calls use the runtime allocator
+        // (dooruntime_malloc/dooruntime_free) so allocation tracking + deallocation are consistent.
+        self.ensure_malloc_free_wrappers();
+
+        doo_rc_debug!("Creating incref function");
         self.incref_fn = Some(self.create_incref_function());
+        doo_rc_debug!("Creating decref function");
         self.decref_fn = Some(self.create_decref_function());
+        doo_trace_exit!("init_rc_runtime", "incref and decref functions created");
+    }
+
+    fn ensure_malloc_free_wrappers(&mut self) {
+        let saved_block = self.builder.get_insert_block();
+
+        let i64_type = self.context.i64_type();
+        let i8_ptr = self.context.ptr_type(AddressSpace::default());
+        let void_type = self.context.void_type();
+
+        // malloc(i64) -> i8*
+        let malloc_type = i8_ptr.fn_type(&[i64_type.into()], false);
+        let malloc_fn = self
+            .module
+            .get_function("malloc")
+            .unwrap_or_else(|| self.module.add_function("malloc", malloc_type, None));
+        if malloc_fn.count_basic_blocks() == 0 {
+            // On Windows, defining an external symbol named `malloc`/`free` can collide with the
+            // CRT symbols at native link time. Keep these wrappers internal so they are only used
+            // within the generated module.
+            malloc_fn.set_linkage(Linkage::Internal);
+            let entry = self.context.append_basic_block(malloc_fn, "entry");
+            self.builder.position_at_end(entry);
+
+            let size = malloc_fn.get_nth_param(0).unwrap().into_int_value();
+            let rt_malloc = self.get_or_declare_malloc();
+            let ptr = self
+                .builder
+                .build_call(rt_malloc, &[size.into()], "rt_malloc")
+                .unwrap()
+                .try_as_basic_value()
+                .left()
+                .unwrap()
+                .into_pointer_value();
+
+            self.builder.build_return(Some(&ptr)).unwrap();
+        }
+
+        // free(i8*) -> void
+        let free_type = void_type.fn_type(&[i8_ptr.into()], false);
+        let free_fn = self
+            .module
+            .get_function("free")
+            .unwrap_or_else(|| self.module.add_function("free", free_type, None));
+        if free_fn.count_basic_blocks() == 0 {
+            // See comment above for malloc.
+            free_fn.set_linkage(Linkage::Internal);
+            let entry = self.context.append_basic_block(free_fn, "entry");
+            self.builder.position_at_end(entry);
+
+            let ptr = free_fn.get_nth_param(0).unwrap().into_pointer_value();
+            let rt_free = self.get_or_declare_free();
+            self.builder.build_call(rt_free, &[ptr.into()], "").unwrap();
+            self.builder.build_return(None).unwrap();
+        }
+
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
     }
 
     /// Creates the LLVM function for incrementing the reference count (incref).
     /// This function takes a pointer to the RC header and increments its count.
     /// Returns the LLVM FunctionValue for later use.
     fn create_incref_function(&self) -> FunctionValue<'ctx> {
+        doo_trace_enter!("create_incref_function");
         // Define the function signature: void(i8*)
         let i8_ptr = self.context.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(&[i8_ptr.into()], false);
 
         // Add the function to the module
+        doo_llvm_debug!("Adding __incref function to module");
         let function = self.module.add_function("__incref", fn_type, None);
         let entry = self.context.append_basic_block(function, "entry");
         let check_validity = self.context.append_basic_block(function, "check_validity");
@@ -68,6 +132,27 @@ impl<'ctx> CodeGen<'ctx> {
         let rc = self
             .builder
             .build_load(self.context.i32_type(), rc_ptr_typed, "rc")
+            .unwrap()
+            .into_int_value();
+
+        // Load the length field (i32) from rc_ptr + 4
+        let len_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    rc_ptr,
+                    &[self.context.i32_type().const_int(4, false)],
+                    "len_ptr",
+                )
+                .unwrap()
+        };
+        let len_ptr_typed = self
+            .builder
+            .build_pointer_cast(len_ptr, i32_ptr_type, "len_ptr_typed")
+            .unwrap();
+        let len = self
+            .builder
+            .build_load(self.context.i32_type(), len_ptr_typed, "len")
             .unwrap()
             .into_int_value();
 
@@ -116,6 +201,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(exit_block);
         self.builder.build_return(None).unwrap();
 
+        doo_trace_exit!("create_incref_function", "function created");
         function
     }
 
@@ -124,12 +210,14 @@ impl<'ctx> CodeGen<'ctx> {
     /// Includes safety checks to prevent dereferencing invalid pointers (e.g., global constants).
     /// Returns the LLVM FunctionValue for later use.
     fn create_decref_function(&self) -> FunctionValue<'ctx> {
+        doo_trace_enter!("create_decref_function");
         // Define the function signature: void(i8*)
         let i8_ptr = self.context.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(&[i8_ptr.into()], false);
 
         // Add the function to the module
+        doo_llvm_debug!("Adding __decref function to module");
         let function = self.module.add_function("__decref", fn_type, None);
         let entry = self.context.append_basic_block(function, "entry");
         let check_validity = self.context.append_basic_block(function, "check_validity");
@@ -178,7 +266,6 @@ impl<'ctx> CodeGen<'ctx> {
                 "is_positive",
             )
             .unwrap();
-
         let is_reasonable = self
             .builder
             .build_int_compare(
@@ -188,16 +275,101 @@ impl<'ctx> CodeGen<'ctx> {
                 "is_reasonable",
             )
             .unwrap();
-
         let is_valid_rc = self
             .builder
             .build_and(is_positive, is_reasonable, "is_valid_rc")
             .unwrap();
 
+        // Load the length field (i32) from rc_ptr + 4
+        let len_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    rc_ptr,
+                    &[self.context.i32_type().const_int(4, false)],
+                    "len_ptr",
+                )
+                .unwrap()
+        };
+        let len_ptr_typed = self
+            .builder
+            .build_pointer_cast(len_ptr, i32_ptr_type, "len_ptr_typed")
+            .unwrap();
+        let len = self
+            .builder
+            .build_load(self.context.i32_type(), len_ptr_typed, "len")
+            .unwrap()
+            .into_int_value();
+
+        // SAFETY CHECK: Len should be non-negative and not absurdly large.
+        let len_is_nonneg = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGE,
+                len,
+                self.context.i32_type().const_int(0, false),
+                "len_is_nonneg",
+            )
+            .unwrap();
+        let len_is_reasonable = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLE,
+                len,
+                self.context.i32_type().const_int(100000000, false),
+                "len_is_reasonable",
+            )
+            .unwrap();
+        let len_is_valid = self
+            .builder
+            .build_and(len_is_nonneg, len_is_reasonable, "len_is_valid")
+            .unwrap();
+
+        // SAFETY CHECK: Ensure the string is null-terminated at exactly data[len].
+        // end_ptr = rc_ptr + 8 + len
+        let data_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    rc_ptr,
+                    &[self.context.i32_type().const_int(8, false)],
+                    "data_ptr",
+                )
+                .unwrap()
+        };
+        let end_ptr = unsafe {
+            self.builder
+                .build_gep(self.context.i8_type(), data_ptr, &[len], "end_ptr")
+                .unwrap()
+        };
+        let end_byte = self
+            .builder
+            .build_load(self.context.i8_type(), end_ptr, "end_byte")
+            .unwrap()
+            .into_int_value();
+        let end_is_null = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                end_byte,
+                self.context.i8_type().const_int(0, false),
+                "end_is_null",
+            )
+            .unwrap();
+
+        let is_valid_header = self
+            .builder
+            .build_and(is_valid_rc, len_is_valid, "is_valid_header")
+            .unwrap();
+        let is_valid = self
+            .builder
+            .build_and(is_valid_header, end_is_null, "is_valid")
+            .unwrap();
+
         // Branch to decrement logic only if RC is valid
         let do_decrement = self.context.append_basic_block(function, "do_decrement");
         self.builder
-            .build_conditional_branch(is_valid_rc, do_decrement, exit_block)
+            .build_conditional_branch(is_valid, do_decrement, exit_block)
             .unwrap();
 
         // Do decrement block
@@ -240,6 +412,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(exit_block);
         self.builder.build_return(None).unwrap();
 
+        doo_trace_exit!("create_decref_function", "function created");
         function
     }
 
@@ -249,15 +422,19 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn get_or_declare_free(&self) -> FunctionValue<'ctx> {
         // Check if the function is already declared
         if let Some(func) = self.module.get_function("dooruntime_free") {
+            doo_free_debug!("dooruntime_free already declared");
             return func;
         }
 
+        doo_free_debug!("Declaring dooruntime_free function");
         // Declare the function: void(i8*)
         let i8_ptr = self.context.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(&[i8_ptr.into()], false);
 
-        self.module.add_function("dooruntime_free", fn_type, None)
+        let func = self.module.add_function("dooruntime_free", fn_type, None);
+        doo_llvm_debug!("dooruntime_free function declared");
+        func
     }
 
     /// Retrieves the LLVM function for allocating memory (malloc).
@@ -266,16 +443,20 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn get_or_declare_malloc(&self) -> FunctionValue<'ctx> {
         // Check if the function is already declared
         if let Some(func) = self.module.get_function("dooruntime_malloc") {
+            doo_alloc_debug!("dooruntime_malloc already declared");
             return func;
         }
 
+        doo_alloc_debug!("Declaring dooruntime_malloc function");
         // Declare the function: i8*(i64)
         // using i64 for size_t assuming 64-bit target
         let i64_type = self.context.i64_type();
         let i8_ptr = self.context.ptr_type(AddressSpace::default());
         let fn_type = i8_ptr.fn_type(&[i64_type.into()], false);
 
-        self.module.add_function("dooruntime_malloc", fn_type, None)
+        let func = self.module.add_function("dooruntime_malloc", fn_type, None);
+        doo_llvm_debug!("dooruntime_malloc function declared");
+        func
     }
 
     /// Retrieves the LLVM function for copying memory (memcpy).
@@ -308,6 +489,7 @@ impl<'ctx> CodeGen<'ctx> {
     /// Looks up the symbol, loads its pointer, computes the RC header,
     /// and calls the incref function.
     pub fn emit_incref(&self, var_name: &str) {
+        doo_rc_debug!("emit_incref: var={}", var_name);
         if let Some(symbol) = self.symbols.get(var_name) {
             // Load the value from the symbol
             let loaded_value = self
@@ -318,10 +500,12 @@ impl<'ctx> CodeGen<'ctx> {
             // Only do RC for pointer types (strings, arrays, maps)
             // Skip integers, booleans, and other non-pointer types
             if !loaded_value.is_pointer_value() {
+                doo_rc_debug!("emit_incref: skipping non-pointer var={}", var_name);
                 return;
             }
 
             let data_ptr = loaded_value.into_pointer_value();
+            doo_refcount_debug!("INCREF", data_ptr, var_name);
 
             // Compute the RC header pointer by subtracting 8 bytes
             let rc_header = unsafe {
@@ -339,6 +523,11 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder
                 .build_call(incref, &[rc_header.into()], "")
                 .unwrap();
+        } else {
+            doo_warn!(
+                "CRITICAL: emit_incref var={} not found in symbol table!",
+                var_name
+            );
         }
     }
 
@@ -346,6 +535,7 @@ impl<'ctx> CodeGen<'ctx> {
     /// Looks up the symbol, loads its pointer, computes the RC header,
     /// and calls the decref function.
     pub fn emit_decref(&self, var_name: &str) {
+        doo_rc_debug!("emit_decref: var={}", var_name);
         if let Some(symbol) = self.symbols.get(var_name) {
             // Load the value from the symbol
             let loaded_value = self
@@ -356,10 +546,12 @@ impl<'ctx> CodeGen<'ctx> {
             // Only do RC for pointer types (strings, arrays, maps)
             // Skip integers, booleans, and other non-pointer types
             if !loaded_value.is_pointer_value() {
+                doo_rc_debug!("emit_decref: skipping non-pointer var={}", var_name);
                 return;
             }
 
             let data_ptr = loaded_value.into_pointer_value();
+            doo_refcount_debug!("DECREF", data_ptr, var_name);
 
             // Check if the pointer is null before computing RC header
             let is_null = self.builder.build_is_null(data_ptr, "is_null").unwrap();
@@ -397,8 +589,13 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_unconditional_branch(continue_block)
                 .unwrap();
 
-            // Continue with the rest of the code
+            // Continue after decref
             self.builder.position_at_end(continue_block);
+        } else {
+            doo_warn!(
+                "CRITICAL: emit_decref var={} not found in symbol table!",
+                var_name
+            );
         }
     }
 }

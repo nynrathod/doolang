@@ -61,12 +61,12 @@ fn verifyJwt(token: Str) -> Str ! AuthError {}
 // Free auth result
 @ffi("doo_auth")
 @extern("doo_auth_free_result")
-fn freeAuthResult(ptr: Int) {}
+fn freeAuthResult(ptr: Ptr) {}
 
 // Free string from auth
 @ffi("doo_auth")
 @extern("doo_auth_free_string")
-fn freeAuthString(ptr: Int) {}
+fn freeAuthString(ptr: Ptr) {}
 
 // === JWT Middleware ===
 

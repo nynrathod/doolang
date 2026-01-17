@@ -1,5 +1,9 @@
 use crate::limits::CODEGEN_MAX_DEPTH;
 use crate::parser::ast::{AstNode, TypeNode};
+use crate::{
+    doo_alloc_debug, doo_assert, doo_codegen_debug, doo_free_debug, doo_llvm_debug, doo_mem_check,
+    doo_trace_enter, doo_trace_exit, doo_warn,
+};
 use inkwell::{
     builder::Builder,
     context::Context,
@@ -166,17 +170,33 @@ impl<'ctx> CodeGen<'ctx> {
     /// Check if we've exceeded maximum recursion depth
     pub fn check_depth(&self) -> Result<(), String> {
         if self.recursion_depth >= CODEGEN_MAX_DEPTH {
+            doo_warn!(
+                "Codegen recursion depth limit exceeded: {} >= {}",
+                self.recursion_depth,
+                CODEGEN_MAX_DEPTH
+            );
             return Err("Expression too deeply nested (recursion limit exceeded)".to_string());
+        }
+        if self.recursion_depth > CODEGEN_MAX_DEPTH / 2 {
+            doo_codegen_debug!(
+                "Codegen recursion depth warning: {}/{}",
+                self.recursion_depth,
+                CODEGEN_MAX_DEPTH
+            );
         }
         Ok(())
     }
     /// Creates a new CodeGen instance, initializing LLVM structures.
     pub fn new(module_name: &str, context: &'ctx Context) -> Self {
+        doo_trace_enter!("CodeGen::new", "module_name={}", module_name);
         let module = context.create_module(module_name);
+        doo_llvm_debug!("Created LLVM module: {}", module_name);
         let builder = context.create_builder();
+        doo_llvm_debug!("Created LLVM builder");
         let fpm: PassManager<FunctionValue> = PassManager::create(&module);
+        doo_llvm_debug!("Created function pass manager");
 
-        Self {
+        let codegen = Self {
             context,
             module,
             builder,
@@ -239,11 +259,14 @@ impl<'ctx> CodeGen<'ctx> {
             current_error_type: None,
             closure_bodies: HashMap::new(),
             nullable_struct_temps: std::collections::HashSet::new(),
-        }
+        };
+        doo_trace_exit!("CodeGen::new", "initialized successfully");
+        codegen
     }
 
     /// Declare builtin string conversion functions
     pub fn declare_builtin_functions(&mut self) {
+        doo_trace_enter!("declare_builtin_functions");
         // Declare StringToInt(ptr: *const u8, len: usize) -> i32
         let i32_type = self.context.i32_type();
         let i64_type = self.context.i64_type();

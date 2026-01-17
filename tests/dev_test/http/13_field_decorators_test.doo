@@ -1,0 +1,73 @@
+// 13_field_decorators_test.doo
+// Test @writeOnly, @readOnly, @internal decorators with HTTP and Database
+
+import std::Http::Server;
+import std::Database::{DatabaseError};
+
+// User model with field visibility decorators
+struct User {
+    id: Int @primary @auto,
+    Email: Str @email @unique,
+    Password: Str @hash @writeOnly,          // In request, NOT in response
+    Name: Str,
+    Credits: Int @readOnly @default(100),     // NOT in request, in response
+    Role: Str @default("user"),
+    InternalId: Str @internal,               // NOT in request, NOT in response (backend only)
+}
+
+// Response struct for user profile
+struct UserProfile {
+    id: Int,
+    email: Str,
+    name: Str,
+    credits: Int,
+    role: Str,
+}
+
+// Convert User to UserProfile (manual mapping for response)
+fn ToProfile(user: User) -> UserProfile {
+    return UserProfile {
+        id: user.id,
+        email: user.Email,
+        name: user.Name,
+        credits: user.Credits,
+        role: user.Role,
+    };
+}
+
+// Test handler: Get all users
+fn GetUsers() -> [UserProfile] ! DatabaseError {
+    let db = Database::get()?;
+    let users: [User] = db.raw("SELECT * FROM users")?;
+    let mut profiles: [UserProfile] = [];
+
+    for user in users {
+        profiles.push(ToProfile(user));
+    }
+
+    Ok profiles;
+}
+
+// Test handler: Get single user
+fn GetUser(id: Int) -> UserProfile ! DatabaseError {
+    let db = Database::get()?;
+
+    let user: User = db.rawWithParams("SELECT * FROM users WHERE id = $1", id)?;
+    Ok ToProfile(user);
+}
+
+fn main() {
+    let db = Database::postgres()?;
+    let app = Server::new(":3113");
+
+    // Auth endpoints - will auto-handle @writeOnly password
+    app.auth("/signup", "/login", User, db);
+
+    // CRUD - will respect decorators
+    app.crud("/users", User, db);
+
+    // Custom endpoints
+    app.get("/users-all", GetUsers);
+
+    app.start();
+}

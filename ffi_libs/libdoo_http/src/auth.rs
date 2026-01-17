@@ -2,8 +2,8 @@
 //! Implements signup and login handlers based on struct metadata
 
 use crate::{
-    c_to_string, make_err, make_ok_void, string_to_c, DooHandlerFn, DooRequest, DooResponse,
-    DooResult,
+    alloc_doo_response, c_to_string, make_err, make_ok_ptr, make_ok_void, string_to_c, DooHandlerFn,
+    DooRequest, DooResponse, DooResult,
 };
 use std::collections::HashMap;
 use std::ffi::c_char;
@@ -34,9 +34,9 @@ pub fn register_auth_routes(
     struct_metadata: AuthStructMetadata,
     db_connection: *const std::ffi::c_void,
 ) -> Result<(), String> {
-    println!("✓ Generating auth routes for {}", struct_metadata.name);
-    println!("  - POST {} (signup)", signup_path);
-    println!("  - POST {} (login)", login_path);
+    crate::doo_debug!("✓ Generating auth routes for {}", struct_metadata.name);
+    crate::doo_debug!("  - POST {} (signup)", signup_path);
+    crate::doo_debug!("  - POST {} (login)", login_path);
 
     // Create and register signup handler
     let signup_handler = create_signup_handler(struct_metadata.clone(), db_connection);
@@ -77,10 +77,8 @@ fn create_signup_handler(
             content_type: string_to_c("application/json"),
         };
 
-        Box::into_raw(Box::new(DooResult {
-            tag: 0,
-            value: Box::into_raw(Box::new(response)) as *mut _,
-        }))
+        let resp_ptr = alloc_doo_response(response.status, response.body, response.content_type);
+        make_ok_ptr(resp_ptr as *mut _)
     }
 
     signup_handler
@@ -112,10 +110,8 @@ fn create_login_handler(
             content_type: string_to_c("application/json"),
         };
 
-        Box::into_raw(Box::new(DooResult {
-            tag: 0,
-            value: Box::into_raw(Box::new(response)) as *mut _,
-        }))
+        let resp_ptr = alloc_doo_response(response.status, response.body, response.content_type);
+        make_ok_ptr(resp_ptr as *mut _)
     }
 
     login_handler

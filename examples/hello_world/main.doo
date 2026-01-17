@@ -21,14 +21,14 @@ fn main() {
     print("══════════════════════════════════════════");
     print("");
     print("  Author:  Nayan Rathod");
-    print("  Version: 0.2.0 (Alpha)");
+    print("  Version: 0.3.1 (Alpha)");
     print("");
     print("══════════════════════════════════════════");
     print("");
 
     // Variables with type inference
     let language = "Doo";
-    let year = 2025;
+    let year = 2026;
     let ready = true;
 
     print("Language:", language);

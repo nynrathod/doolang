@@ -5,7 +5,7 @@ use crate::mir::mir::{CodegenBlock, MirBlock, MirFunction, MirInstr, MirProgram,
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 impl<'ctx> CodeGen<'ctx> {
     /// The main entry point for code generation. Processes the entire MIR program.
@@ -13,6 +13,9 @@ impl<'ctx> CodeGen<'ctx> {
     /// into LLVM IR, handling global variables, functions, and the main entry point.
     /// It also initializes reference counting runtime and applies optimization passes.
     pub fn generate_program(&mut self, program: &MirProgram) {
+        crate::doo_codegen_debug!("generate_program: {} functions, {} globals",
+            program.functions.len(), program.globals.len());
+        
         // Initialize RC runtime FIRST to ensure reference counting functions are available.
         self.init_rc_runtime();
         // Declare builtin string conversion functions.
@@ -275,7 +278,8 @@ impl<'ctx> CodeGen<'ctx> {
         // --- @TABLE REGISTRATION ---
         // Generate FFI calls for structs decorated with @table
         // This registers tables for creation at server startup via run_migrations()
-        let table_structs: Vec<String> = self.struct_decorators
+        let table_structs: Vec<String> = self
+            .struct_decorators
             .iter()
             .filter(|(_, decorators)| decorators.iter().any(|(name, _)| name == "table"))
             .map(|(struct_name, _)| struct_name.clone())
@@ -292,13 +296,15 @@ impl<'ctx> CodeGen<'ctx> {
             for struct_name in table_structs {
                 // Get struct metadata
                 if let Some(metadata) = self.struct_metadata.get(&struct_name).cloned() {
-                    let decorators = self.struct_field_decorators
+                    let decorators = self
+                        .struct_field_decorators
                         .get(&struct_name)
                         .cloned()
                         .unwrap_or_default();
 
                     // Build metadata JSON
-                    let metadata_json = self.build_metadata_json(&struct_name, &metadata, &decorators);
+                    let metadata_json =
+                        self.build_metadata_json(&struct_name, &metadata, &decorators);
 
                     // Generate FFI call
                     self.generate_table_ffi_call(&struct_name, &metadata_json);
@@ -318,7 +324,7 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         self.builder.position_at_end(entry_block);
                     }
-                    
+
                     self.builder.build_call(init_fn, &[], "").unwrap();
                 }
             }
@@ -407,96 +413,6 @@ impl<'ctx> CodeGen<'ctx> {
                 register_fn,
                 &[name_cstr.into(), generic_ptr.into()],
                 "register_middleware",
-            )
-            .unwrap();
-    }
-
-    /// Emit a debug print statement (eprintln in generated code)
-    fn emit_debug_print(&self, message: &str) {
-        let printf_fn_type = self.context.i32_type().fn_type(
-            &[self
-                .context
-                .ptr_type(inkwell::AddressSpace::default())
-                .into()],
-            true,
-        );
-        let printf_fn = if let Some(f) = self.module.get_function("printf") {
-            f
-        } else {
-            self.module.add_function("printf", printf_fn_type, None)
-        };
-
-        let format_str = self
-            .builder
-            .build_global_string_ptr(&format!("{}\n", message), "debug_str")
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[format_str.as_pointer_value().into()],
-                "debug_print",
-            )
-            .unwrap();
-    }
-
-    /// Emit a debug print for a pointer value
-    fn emit_debug_print_ptr(&self, message: &str, ptr: inkwell::values::PointerValue<'ctx>) {
-        let printf_fn_type = self.context.i32_type().fn_type(
-            &[self
-                .context
-                .ptr_type(inkwell::AddressSpace::default())
-                .into()],
-            true,
-        );
-        let printf_fn = if let Some(f) = self.module.get_function("printf") {
-            f
-        } else {
-            self.module.add_function("printf", printf_fn_type, None)
-        };
-
-        let i64_type = self.context.i64_type();
-        let ptr_as_int = self
-            .builder
-            .build_ptr_to_int(ptr, i64_type, "ptr_as_int")
-            .unwrap();
-
-        let format_str = self
-            .builder
-            .build_global_string_ptr(&format!("{}: %p\n", message), "debug_ptr_str")
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[format_str.as_pointer_value().into(), ptr_as_int.into()],
-                "debug_print_ptr",
-            )
-            .unwrap();
-    }
-
-    /// Emit a debug print for an integer value
-    fn emit_debug_print_int(&self, message: &str, value: inkwell::values::IntValue<'ctx>) {
-        let printf_fn_type = self.context.i32_type().fn_type(
-            &[self
-                .context
-                .ptr_type(inkwell::AddressSpace::default())
-                .into()],
-            true,
-        );
-        let printf_fn = if let Some(f) = self.module.get_function("printf") {
-            f
-        } else {
-            self.module.add_function("printf", printf_fn_type, None)
-        };
-
-        let format_str = self
-            .builder
-            .build_global_string_ptr(&format!("{}: %d\n", message), "debug_int_str")
-            .unwrap();
-        self.builder
-            .build_call(
-                printf_fn,
-                &[format_str.as_pointer_value().into(), value.into()],
-                "debug_print_int",
             )
             .unwrap();
     }
@@ -593,10 +509,6 @@ impl<'ctx> CodeGen<'ctx> {
         let param_types = middleware_fn_type.get_param_types();
 
         if param_types.len() != 2 {
-            eprintln!(
-                "Error: Middleware function {} has wrong number of parameters",
-                middleware_name
-            );
             if let Some(block) = saved_block {
                 self.builder.position_at_end(block);
             }
@@ -794,25 +706,20 @@ impl<'ctx> CodeGen<'ctx> {
                 // Don't try to load it - the pointer IS the response
                 let response_ptr = response_value.into_pointer_value();
 
-                // Build DooResult with the response pointer
+                // Build DooResult with the response pointer - MUST include owner field
+                let i8_type = self.context.i8_type();
+                let result_type = self.context.struct_type(
+                    &[i32_type.into(), ptr_type.into(), i8_type.into()], // tag, value, owner
+                    false,
+                );
                 let result_alloc = self
                     .builder
-                    .build_malloc(
-                        self.context
-                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                        "result_alloc",
-                    )
+                    .build_malloc(result_type, "result_alloc")
                     .unwrap();
 
                 let tag_ptr = self
                     .builder
-                    .build_struct_gep(
-                        self.context
-                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                        result_alloc,
-                        0,
-                        "tag_ptr",
-                    )
+                    .build_struct_gep(result_type, result_alloc, 0, "tag_ptr")
                     .unwrap();
                 self.builder
                     .build_store(tag_ptr, i32_type.const_int(0, false))
@@ -820,15 +727,18 @@ impl<'ctx> CodeGen<'ctx> {
 
                 let value_ptr = self
                     .builder
-                    .build_struct_gep(
-                        self.context
-                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                        result_alloc,
-                        1,
-                        "value_ptr",
-                    )
+                    .build_struct_gep(result_type, result_alloc, 1, "value_ptr")
                     .unwrap();
                 self.builder.build_store(value_ptr, response_ptr).unwrap();
+
+                // Set owner = 0 (LLVM) - memory managed by RC system
+                let owner_ptr = self
+                    .builder
+                    .build_struct_gep(result_type, result_alloc, 2, "owner_ptr")
+                    .unwrap();
+                self.builder
+                    .build_store(owner_ptr, i8_type.const_int(1, false))
+                    .unwrap();
 
                 self.builder.build_return(Some(&result_alloc)).unwrap();
 
@@ -1093,24 +1003,19 @@ impl<'ctx> CodeGen<'ctx> {
                         self.create_simple_http_error(401, "Unauthorized")
                     };
 
+                    // Build error DooResult with 3-field struct for FFI ownership
+                    let i8_type = self.context.i8_type();
+                    let error_result_type = self
+                        .context
+                        .struct_type(&[i32_type.into(), ptr_type.into(), i8_type.into()], false);
                     let error_result_alloc = self
                         .builder
-                        .build_malloc(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                            "error_result",
-                        )
+                        .build_malloc(error_result_type, "error_result")
                         .unwrap();
 
                     let error_tag_ptr = self
                         .builder
-                        .build_struct_gep(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                            error_result_alloc,
-                            0,
-                            "error_tag_ptr",
-                        )
+                        .build_struct_gep(error_result_type, error_result_alloc, 0, "error_tag_ptr")
                         .unwrap();
                     self.builder
                         .build_store(error_tag_ptr, i32_type.const_int(1, false))
@@ -1119,8 +1024,7 @@ impl<'ctx> CodeGen<'ctx> {
                     let error_value_ptr = self
                         .builder
                         .build_struct_gep(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                            error_result_type,
                             error_result_alloc,
                             1,
                             "error_value_ptr",
@@ -1128,6 +1032,20 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     self.builder
                         .build_store(error_value_ptr, error_http_alloc)
+                        .unwrap();
+
+                    // Set owner = 0 (LLVM-managed)
+                    let error_owner_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            error_result_type,
+                            error_result_alloc,
+                            2,
+                            "error_owner_ptr",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_store(error_owner_ptr, i8_type.const_int(1, false))
                         .unwrap();
 
                     self.builder
@@ -1142,25 +1060,20 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                         .into_pointer_value();
 
-                    // Build DooResult with the response pointer
+                    // Build DooResult with the response pointer - MUST include owner field
+                    let i8_type = self.context.i8_type();
+                    let result_type = self.context.struct_type(
+                        &[i32_type.into(), ptr_type.into(), i8_type.into()], // tag, value, owner
+                        false,
+                    );
                     let result_alloc = self
                         .builder
-                        .build_malloc(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                            "result_alloc",
-                        )
+                        .build_malloc(result_type, "result_alloc")
                         .unwrap();
 
                     let tag_ptr = self
                         .builder
-                        .build_struct_gep(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                            result_alloc,
-                            0,
-                            "tag_ptr",
-                        )
+                        .build_struct_gep(result_type, result_alloc, 0, "tag_ptr")
                         .unwrap();
                     self.builder
                         .build_store(tag_ptr, i32_type.const_int(0, false))
@@ -1168,15 +1081,18 @@ impl<'ctx> CodeGen<'ctx> {
 
                     let value_ptr = self
                         .builder
-                        .build_struct_gep(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                            result_alloc,
-                            1,
-                            "value_ptr",
-                        )
+                        .build_struct_gep(result_type, result_alloc, 1, "value_ptr")
                         .unwrap();
                     self.builder.build_store(value_ptr, response_ptr).unwrap();
+
+                    // Set owner = 0 (LLVM) - memory managed by RC system
+                    let owner_ptr = self
+                        .builder
+                        .build_struct_gep(result_type, result_alloc, 2, "owner_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(owner_ptr, i8_type.const_int(1, false))
+                        .unwrap();
 
                     self.builder.build_return(Some(&result_alloc)).unwrap();
                 } else {
@@ -1253,25 +1169,20 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     self.builder.build_store(ct_ptr, ct_val).unwrap();
 
-                    // Build DooResult with response pointer
+                    // Build DooResult with response pointer - MUST include owner field
+                    let i8_type = self.context.i8_type();
+                    let result_type = self.context.struct_type(
+                        &[i32_type.into(), ptr_type.into(), i8_type.into()], // tag, value, owner
+                        false,
+                    );
                     let result_alloc = self
                         .builder
-                        .build_malloc(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                            "result_alloc",
-                        )
+                        .build_malloc(result_type, "result_alloc")
                         .unwrap();
 
                     let tag_ptr = self
                         .builder
-                        .build_struct_gep(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                            result_alloc,
-                            0,
-                            "tag_ptr",
-                        )
+                        .build_struct_gep(result_type, result_alloc, 0, "tag_ptr")
                         .unwrap();
                     self.builder
                         .build_store(tag_ptr, i32_type.const_int(0, false))
@@ -1279,31 +1190,52 @@ impl<'ctx> CodeGen<'ctx> {
 
                     let value_ptr = self
                         .builder
-                        .build_struct_gep(
-                            self.context
-                                .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                            result_alloc,
-                            1,
-                            "value_ptr",
-                        )
+                        .build_struct_gep(result_type, result_alloc, 1, "value_ptr")
                         .unwrap();
                     self.builder.build_store(value_ptr, response_alloc).unwrap();
+
+                    // Set owner = 0 (LLVM) - memory managed by RC system
+                    let owner_ptr = self
+                        .builder
+                        .build_struct_gep(result_type, result_alloc, 2, "owner_ptr")
+                        .unwrap();
+                    self.builder
+                        .build_store(owner_ptr, i8_type.const_int(1, false))
+                        .unwrap();
 
                     self.builder.build_return(Some(&result_alloc)).unwrap();
                 }
             } else {
                 // Not a struct or pointer - this shouldn't happen
-                eprintln!(
-                    "Warning: Middleware returned unexpected type: {:?}",
-                    response_value.get_type()
-                );
                 let result_alloc = self
                     .builder
                     .build_malloc(
-                        self.context
-                            .struct_type(&[i32_type.into(), ptr_type.into()], false),
+                        self.context.struct_type(
+                            &[
+                                i32_type.into(),
+                                ptr_type.into(),
+                                self.context.i8_type().into(),
+                            ],
+                            false,
+                        ),
                         "result_alloc",
                     )
+                    .unwrap();
+                // Still need to set owner = 0 for unexpected type fallback
+                let fallback_result_type = self.context.struct_type(
+                    &[
+                        i32_type.into(),
+                        ptr_type.into(),
+                        self.context.i8_type().into(),
+                    ],
+                    false,
+                );
+                let fallback_owner_ptr = self
+                    .builder
+                    .build_struct_gep(fallback_result_type, result_alloc, 2, "owner_ptr")
+                    .unwrap();
+                self.builder
+                    .build_store(fallback_owner_ptr, self.context.i8_type().const_int(1, false))
                     .unwrap();
                 self.builder.build_return(Some(&result_alloc)).unwrap();
                 if let Some(block) = saved_block {
@@ -1313,28 +1245,30 @@ impl<'ctx> CodeGen<'ctx> {
             }
         } else {
             // No return value - return error
-            eprintln!("Warning: Middleware returned no value");
+            let i8_type = self.context.i8_type();
+            let result_type = self
+                .context
+                .struct_type(&[i32_type.into(), ptr_type.into(), i8_type.into()], false);
             let result_alloc = self
                 .builder
-                .build_malloc(
-                    self.context
-                        .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                    "result_alloc",
-                )
+                .build_malloc(result_type, "result_alloc")
                 .unwrap();
 
             let tag_ptr = self
                 .builder
-                .build_struct_gep(
-                    self.context
-                        .struct_type(&[i32_type.into(), ptr_type.into()], false),
-                    result_alloc,
-                    0,
-                    "tag_ptr",
-                )
+                .build_struct_gep(result_type, result_alloc, 0, "tag_ptr")
                 .unwrap();
             self.builder
                 .build_store(tag_ptr, i32_type.const_zero())
+                .unwrap();
+
+            // Set owner = 0 (LLVM-managed)
+            let owner_ptr = self
+                .builder
+                .build_struct_gep(result_type, result_alloc, 2, "owner_ptr")
+                .unwrap();
+            self.builder
+                .build_store(owner_ptr, i8_type.const_int(1, false))
                 .unwrap();
 
             self.builder.build_return(Some(&result_alloc)).unwrap();
@@ -1510,6 +1444,8 @@ impl<'ctx> CodeGen<'ctx> {
         } else if ret_type_str.contains("Bool") {
             // Use i32 for Bool to match internal representation
             self.context.i32_type().into()
+        } else if ret_type_str == "Ptr" {
+            self.context.ptr_type(AddressSpace::default()).into()
         } else if ret_type_str.contains("Struct(")
             || self.struct_metadata.contains_key(ret_type_str)
             || self.struct_table.contains_key(ret_type_str)
@@ -1541,6 +1477,8 @@ impl<'ctx> CodeGen<'ctx> {
             // Enums are passed as struct { i32 tag, ptr payload } by value
             if type_str == "Int" {
                 self.context.i32_type().into()
+            } else if type_str == "Ptr" {
+                self.context.ptr_type(AddressSpace::default()).into()
             } else if type_str == "Float" {
                 self.context.f64_type().into()
             } else if type_str == "Bool" {
@@ -1720,8 +1658,46 @@ impl<'ctx> CodeGen<'ctx> {
     fn type_string_to_llvm_type(&self, type_str: &str) -> BasicTypeEnum<'ctx> {
         let type_str = type_str.trim();
 
+        // Optional(T) is represented as the underlying type with a sentinel default.
+        // For pointer-like types, this is a nullable pointer.
+        if type_str.starts_with("Optional(") && type_str.ends_with(")") {
+            let inner = type_str
+                .trim_start_matches("Optional(")
+                .trim_end_matches(")")
+                .trim();
+
+            if inner == "Int" || inner == "i32" {
+                return self.context.i32_type().into();
+            } else if inner == "Float" || inner == "f64" {
+                return self.context.f64_type().into();
+            } else if inner == "Bool" {
+                // Bool is stored as i32 internally
+                return self.context.i32_type().into();
+            } else if inner == "Str" || inner == "String" {
+                return self.context.ptr_type(AddressSpace::default()).into();
+            } else if inner == "Ptr" {
+                return self.context.ptr_type(AddressSpace::default()).into();
+            } else if inner.starts_with("Array") || inner.starts_with("Map") {
+                return self.context.ptr_type(AddressSpace::default()).into();
+            } else if inner.starts_with("Struct(") {
+                // Optional nested struct is stored as a nullable pointer.
+                return self.context.ptr_type(AddressSpace::default()).into();
+            } else if self.struct_metadata.contains_key(inner) {
+                // Bare nested struct name
+                return self.context.ptr_type(AddressSpace::default()).into();
+            } else if self.enum_table.contains_key(inner) || inner.starts_with("Enum(") {
+                // Enums are stored as pointer-like payloads in many places; for Optional use ptr.
+                return self.context.ptr_type(AddressSpace::default()).into();
+            } else {
+                // Default optional unknown => pointer
+                return self.context.ptr_type(AddressSpace::default()).into();
+            }
+        }
+
         if type_str == "Int" || type_str == "i32" {
             self.context.i32_type().into()
+        } else if type_str == "Ptr" {
+            self.context.ptr_type(AddressSpace::default()).into()
         } else if type_str == "Float" || type_str == "f64" {
             self.context.f64_type().into()
         } else if type_str == "Bool" {
@@ -1939,9 +1915,12 @@ impl<'ctx> CodeGen<'ctx> {
     /// - Handles block terminators (return, jump, conditional jump).
     /// Returns the LLVM FunctionValue for further manipulation or optimization.
     pub fn generate_function(&mut self, func: &MirFunction) -> FunctionValue<'ctx> {
+        crate::doo_codegen_debug!("generate_function: {} ({} blocks)", func.name, func.blocks.len());
+        
         // FFI functions are external - don't generate body
         if func.ffi_lib.is_some() {
             let symbol_name = func.ffi_symbol.as_ref().unwrap_or(&func.name);
+            crate::doo_ffi_codegen_debug!("FFI function: {} -> {}", func.name, symbol_name);
             return self.module.get_function(symbol_name).expect(&format!(
                 "FFI function '{}' should have been predeclared",
                 func.name
@@ -3395,6 +3374,9 @@ impl<'ctx> CodeGen<'ctx> {
                 !self.loop_local_vars.contains(*name)
                     && !is_compiler_temp(name)
                     && self.heap_strings.contains(*name)
+                    && !self.heap_arrays.contains(*name)
+                    && !self.heap_maps.contains(*name)
+                    && !self.struct_instance_types.contains_key(*name)
             })
             .cloned()
             .collect();
@@ -3817,6 +3799,34 @@ impl<'ctx> CodeGen<'ctx> {
                 // SAFE COMPOSITE CLEANUP: Only decref strings from valid symbols
                 // We must NOT try to decref temporary GEP results that were created in other blocks
 
+                // Determine what value is being returned (if any) to exclude it from cleanup
+                let return_value_name = if !values.is_empty() {
+                    Some(values[0].as_str())
+                } else {
+                    None
+                };
+
+                let mut excluded_from_cleanup: HashSet<String> = HashSet::new();
+                if let Some(ret) = return_value_name {
+                    excluded_from_cleanup.insert(ret.to_string());
+                    excluded_from_cleanup.insert(ret.trim_start_matches('%').to_string());
+
+                    if let Some((_is_ok, inner)) = self
+                        .result_values
+                        .get(ret)
+                        .or_else(|| self.result_values.get(ret.trim_start_matches('%')))
+                    {
+                        for part in inner.split(',') {
+                            let name = part.trim();
+                            if !name.is_empty() {
+                                excluded_from_cleanup.insert(name.to_string());
+                                excluded_from_cleanup
+                                    .insert(name.trim_start_matches('%').to_string());
+                            }
+                        }
+                    }
+                }
+
                 // 1. Cleanup composite strings - but ONLY for variables that exist in symbols
                 for (var_name, str_ptrs) in &self.composite_string_ptrs {
                     // CRITICAL SAFETY CHECKS:
@@ -3827,6 +3837,9 @@ impl<'ctx> CodeGen<'ctx> {
                         continue;
                     }
                     if self.loop_local_vars.contains(var_name) {
+                        continue;
+                    }
+                    if excluded_from_cleanup.contains(var_name) {
                         continue;
                     }
                     if var_name.starts_with('%')
@@ -3860,13 +3873,6 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // 2. Cleanup composite strings tracked via composite_strings map
 
-                // Determine what value is being returned (if any) to exclude it from cleanup
-                let return_value_name = if !values.is_empty() {
-                    Some(values[0].as_str())
-                } else {
-                    None
-                };
-
                 // Helper to detect compiler temps (do not decref them here)
                 let is_compiler_temp = |name: &str| {
                     name.starts_with('%')
@@ -3882,13 +3888,18 @@ impl<'ctx> CodeGen<'ctx> {
                     .keys()
                     .filter(|name| {
                         self.heap_arrays.contains(*name)
-                            && return_value_name.map_or(true, |ret| ret != *name)
+                            && !excluded_from_cleanup.contains(*name)
                             && !self.struct_field_sources.contains_key(*name)
                             && !is_compiler_temp(name)
                     })
                     .cloned()
                     .collect();
                 heap_array_vars.reverse();
+
+                // Deduplicate by variable name to avoid double-decref on the same symbol
+                // (can happen due to aliasing/metadata propagation).
+                let mut seen_cleanup: HashSet<String> = HashSet::new();
+                heap_array_vars.retain(|n| seen_cleanup.insert(n.clone()));
 
                 for var_name in heap_array_vars {
                     if self.struct_field_sources.contains_key(&var_name) {
@@ -3906,11 +3917,15 @@ impl<'ctx> CodeGen<'ctx> {
                     .keys()
                     .filter(|name| {
                         self.heap_maps.contains(*name)
-                            && return_value_name.map_or(true, |ret| ret != *name)
+                            && !excluded_from_cleanup.contains(*name)
                     })
                     .cloned()
                     .collect();
                 heap_map_vars.reverse();
+
+                // Deduplicate by variable name to avoid double-decref
+                let mut seen_map_cleanup: HashSet<String> = HashSet::new();
+                heap_map_vars.retain(|n| seen_map_cleanup.insert(n.clone()));
 
                 for var_name in heap_map_vars {
                     self.emit_decref(&var_name);
@@ -3922,11 +3937,18 @@ impl<'ctx> CodeGen<'ctx> {
                     .keys()
                     .filter(|name| {
                         self.heap_strings.contains(*name)
-                            && return_value_name.map_or(true, |ret| ret != *name)
+                            && !excluded_from_cleanup.contains(*name)
+                            && !self.heap_arrays.contains(*name)
+                            && !self.heap_maps.contains(*name)
+                            && !self.struct_instance_types.contains_key(*name)
                     })
                     .cloned()
                     .collect();
                 heap_str_vars.reverse();
+
+                // Deduplicate by variable name to avoid double-decref
+                let mut seen_str_cleanup: HashSet<String> = HashSet::new();
+                heap_str_vars.retain(|n| seen_str_cleanup.insert(n.clone()));
 
                 for var_name in heap_str_vars {
                     self.emit_decref(&var_name);
@@ -4187,8 +4209,23 @@ impl<'ctx> CodeGen<'ctx> {
                         || self.heap_arrays.contains(return_value_name)
                         || self.heap_maps.contains(return_value_name);
 
-                    if is_local_heap_value {
-                        let fn_name = func.get_name().to_str().unwrap();
+                    // Check if return type is actually an RC-managed type (Str, arrays, maps)
+                    // Structs allocated with dooruntime_malloc do NOT have RC headers, so we must
+                    // NOT call incref on them (doing ptr-8 on a struct pointer corrupts the heap)
+                    let fn_name = func.get_name().to_str().unwrap();
+                    let is_rc_type_return =
+                        if let Some(return_type) = self.function_return_types.get(fn_name) {
+                            // RC-managed types: Str, [T], {K: V}
+                            return_type == "Str"
+                                || return_type.starts_with('[')
+                                || return_type.starts_with('{')
+                        } else {
+                            // If we don't know the return type, check if it's in heap_strings specifically
+                            // (structs should not be in heap_strings, only their string fields)
+                            self.heap_strings.contains(return_value_name)
+                        };
+
+                    if is_local_heap_value && is_rc_type_return {
                         self.functions_returning_heap.insert(fn_name.to_string());
 
                         // Only call incref if this is a locally-created heap value with an RC header
@@ -4812,7 +4849,11 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn generate_loop_cleanup(&mut self, loop_vars: &[String]) {
         // When exiting a loop, clean up any heap-allocated loop variables.
         for var in loop_vars {
-            if self.heap_strings.contains(var) {
+            if self.heap_strings.contains(var)
+                && !self.heap_arrays.contains(var)
+                && !self.heap_maps.contains(var)
+                && !self.struct_instance_types.contains_key(var)
+            {
                 self.emit_decref(var);
             }
             if self.heap_arrays.contains(var) {

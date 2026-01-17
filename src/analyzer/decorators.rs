@@ -10,6 +10,7 @@ use crate::parser::ast::{AstNode, Decorator, TypeNode};
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecoratorKind {
     Email,         // @email - only on Str
+    Url,           // @url - only on Str (URL validation)
     Min,           // @min(n) - Str (length), Int/Float (value)
     Max,           // @max(n) - Str (length), Int/Float (value)
     Foreign,       // @foreign(StructName) - only on Int (foreign key reference)
@@ -21,6 +22,11 @@ pub enum DecoratorKind {
     Optional,      // @optional - any type (HTTP)
     Default,       // @default(value) - any type (HTTP)
     Pattern,       // @pattern(regex) - only on Str (HTTP)
+    WriteOnly,     // @writeOnly - field only in request, never in response
+    ReadOnly,      // @readOnly - field only in response, never in request
+    Internal,      // @internal - field neither in request nor response
+    AutoTimestamp, // @autoTimestamp - struct-level decorator for createdAt/updatedAt
+    Redirect,      // @redirect - when returning this field, do HTTP 302 redirect (requires @url)
     Unknown(String),
 }
 
@@ -28,6 +34,7 @@ impl DecoratorKind {
     pub fn from_name(name: &str) -> Self {
         match name {
             "email" => DecoratorKind::Email,
+            "url" => DecoratorKind::Url,
             "min" => DecoratorKind::Min,
             "max" => DecoratorKind::Max,
             "foreign" => DecoratorKind::Foreign,
@@ -39,6 +46,11 @@ impl DecoratorKind {
             "optional" => DecoratorKind::Optional,
             "default" => DecoratorKind::Default,
             "pattern" => DecoratorKind::Pattern,
+            "writeOnly" => DecoratorKind::WriteOnly,
+            "readOnly" => DecoratorKind::ReadOnly,
+            "internal" => DecoratorKind::Internal,
+            "autoTimestamp" => DecoratorKind::AutoTimestamp,
+            "redirect" => DecoratorKind::Redirect,
             other => DecoratorKind::Unknown(other.to_string()),
         }
     }
@@ -100,6 +112,27 @@ pub fn validate_decorator(
                     decorator: "email".to_string(),
                     field: field_name.to_string(),
                     message: "email decorator takes no arguments".to_string(),
+                });
+            }
+        }
+
+        DecoratorKind::Url => {
+            // @url only valid on Str
+            if !is_string_type(field_type) {
+                return Err(SemanticError::InvalidDecoratorType {
+                    decorator: "url".to_string(),
+                    field: field_name.to_string(),
+                    struct_name: struct_name.to_string(),
+                    expected_type: "Str".to_string(),
+                    found_type: field_type.to_string(),
+                });
+            }
+            // @url takes no arguments
+            if !decorator.args.is_empty() {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "url".to_string(),
+                    field: field_name.to_string(),
+                    message: "url decorator takes no arguments".to_string(),
                 });
             }
         }
@@ -183,7 +216,9 @@ pub fn validate_decorator(
                 return Err(SemanticError::InvalidDecoratorArgs {
                     decorator: "foreign".to_string(),
                     field: field_name.to_string(),
-                    message: "foreign decorator requires exactly 1 argument: the referenced struct name".to_string(),
+                    message:
+                        "foreign decorator requires exactly 1 argument: the referenced struct name"
+                            .to_string(),
                 });
             }
             // Argument must be an identifier (struct name)
@@ -315,7 +350,8 @@ pub fn validate_decorator(
                     return Err(SemanticError::InvalidDecoratorArgs {
                         decorator: "default".to_string(),
                         field: field_name.to_string(),
-                        message: "default decorator argument must be a literal or enum variant".to_string(),
+                        message: "default decorator argument must be a literal or enum variant"
+                            .to_string(),
                     });
                 }
             }
@@ -352,6 +388,73 @@ pub fn validate_decorator(
             }
         }
 
+        DecoratorKind::WriteOnly => {
+            // @writeOnly valid on any type, takes no arguments
+            // Field is in request only, never in response
+            if !decorator.args.is_empty() {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "writeOnly".to_string(),
+                    field: field_name.to_string(),
+                    message: "writeOnly decorator takes no arguments".to_string(),
+                });
+            }
+        }
+
+        DecoratorKind::ReadOnly => {
+            // @readOnly valid on any type, takes no arguments
+            // Field is in response only, never in request
+            if !decorator.args.is_empty() {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "readOnly".to_string(),
+                    field: field_name.to_string(),
+                    message: "readOnly decorator takes no arguments".to_string(),
+                });
+            }
+        }
+
+        DecoratorKind::Internal => {
+            // @internal valid on any type, takes no arguments
+            // Field is neither in request nor response (backend only)
+            if !decorator.args.is_empty() {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "internal".to_string(),
+                    field: field_name.to_string(),
+                    message: "internal decorator takes no arguments".to_string(),
+                });
+            }
+        }
+
+        DecoratorKind::AutoTimestamp => {
+            // @autoTimestamp is a struct-level decorator
+            // It should not be on a field
+            return Err(SemanticError::InvalidDecoratorArgs {
+                decorator: "autoTimestamp".to_string(),
+                field: field_name.to_string(),
+                message: "autoTimestamp is a struct-level decorator, not a field decorator. Use it like: struct MyStruct @autoTimestamp { ... }".to_string(),
+            });
+        }
+
+        DecoratorKind::Redirect => {
+            // @redirect only valid on Str (will be checked for @url in combination validation)
+            if !is_string_type(field_type) {
+                return Err(SemanticError::InvalidDecoratorType {
+                    decorator: "redirect".to_string(),
+                    field: field_name.to_string(),
+                    struct_name: struct_name.to_string(),
+                    expected_type: "Str".to_string(),
+                    found_type: field_type.to_string(),
+                });
+            }
+            // @redirect takes no arguments
+            if !decorator.args.is_empty() {
+                return Err(SemanticError::InvalidDecoratorArgs {
+                    decorator: "redirect".to_string(),
+                    field: field_name.to_string(),
+                    message: "redirect decorator takes no arguments".to_string(),
+                });
+            }
+        }
+
         DecoratorKind::Unknown(name) => {
             return Err(SemanticError::UnknownDecorator {
                 decorator: name,
@@ -359,6 +462,86 @@ pub fn validate_decorator(
                 struct_name: struct_name.to_string(),
             });
         }
+    }
+
+    Ok(())
+}
+
+/// Validate decorator combinations on a field
+/// Checks for conflicting decorators that cannot be used together
+pub fn validate_decorator_combinations(
+    decorators: &[Decorator],
+    is_optional: bool,
+    field_name: &str,
+    struct_name: &str,
+) -> Result<(), SemanticError> {
+    let decorator_kinds: Vec<DecoratorKind> = decorators
+        .iter()
+        .map(|d| DecoratorKind::from_name(&d.name))
+        .collect();
+
+    // Check for @internal + @writeOnly conflict
+    let has_internal = decorator_kinds.contains(&DecoratorKind::Internal);
+    let has_writeOnly = decorator_kinds.contains(&DecoratorKind::WriteOnly);
+    let has_readOnly = decorator_kinds.contains(&DecoratorKind::ReadOnly);
+    let has_auto = decorator_kinds.contains(&DecoratorKind::Auto)
+        || decorator_kinds.contains(&DecoratorKind::AutoIncrement);
+
+    if has_internal && has_writeOnly {
+        return Err(SemanticError::DecoratorConflict {
+            decorator1: "internal".to_string(),
+            decorator2: "writeOnly".to_string(),
+            field: field_name.to_string(),
+            struct_name: struct_name.to_string(),
+            reason: "@writeOnly requires field in request, but @internal excludes it from both request and response".to_string(),
+        });
+    }
+
+    // Check for @internal + ? conflict
+    if has_internal && is_optional {
+        return Err(SemanticError::InvalidOptionalDecorator {
+            decorator: "internal".to_string(),
+            field: field_name.to_string(),
+            struct_name: struct_name.to_string(),
+            reason: "optional marker '?' is meaningless for internal fields that are never exposed"
+                .to_string(),
+        });
+    }
+
+    // Check for @auto + @writeOnly conflict
+    if has_auto && has_writeOnly {
+        return Err(SemanticError::DecoratorConflict {
+            decorator1: "auto".to_string(),
+            decorator2: "writeOnly".to_string(),
+            field: field_name.to_string(),
+            struct_name: struct_name.to_string(),
+            reason: "@auto fields are server-generated and cannot accept input from requests"
+                .to_string(),
+        });
+    }
+
+    // Check for @writeOnly + @readonly conflict (contradictory)
+    if has_writeOnly && has_readOnly {
+        return Err(SemanticError::DecoratorConflict {
+            decorator1: "writeOnly".to_string(),
+            decorator2: "readOnly".to_string(),
+            field: field_name.to_string(),
+            struct_name: struct_name.to_string(),
+            reason: "field cannot be both request-only and response-only".to_string(),
+        });
+    }
+
+    // Check for @redirect without @url
+    let has_redirect = decorator_kinds.contains(&DecoratorKind::Redirect);
+    let has_url = decorator_kinds.contains(&DecoratorKind::Url);
+    if has_redirect && !has_url {
+        return Err(SemanticError::DecoratorConflict {
+            decorator1: "redirect".to_string(),
+            decorator2: "url".to_string(),
+            field: field_name.to_string(),
+            struct_name: struct_name.to_string(),
+            reason: "@redirect requires @url on the same field to ensure valid redirect URLs".to_string(),
+        });
     }
 
     Ok(())

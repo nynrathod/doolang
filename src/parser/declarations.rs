@@ -344,26 +344,38 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a single struct field with decorators, optional marker, and default value
-    /// Example: `email: Str @email @unique` or `age: Int?` or `Role: Str = "user"`
+    /// Example: `email: Str @email @unique` or `age?: Int` or `Role: Str = "user"`
     fn parse_struct_field(&mut self) -> ParseResult<crate::parser::ast::StructField> {
         use crate::parser::ast::{Decorator, StructField, TypeNode};
 
         let field_name = self.expect_ident()?;
-        self.expect(TokenType::Colon)?;
-
-        // Parse the base type
-        let mut field_type = self.parse_type_annotation()?;
-
-        // Check for optional marker (?)
+        
+        // Check for optional marker (?) after field name
         let is_optional = if self.peek_is(TokenType::Question) {
             self.advance();
             true
         } else {
             false
         };
+        
+        self.expect(TokenType::Colon)?;
+
+        // Parse the base type
+        let mut field_type = self.parse_type_annotation()?;
+
+        // Also check for optional marker (?) after type for backward compatibility
+        let is_optional_after_type = if self.peek_is(TokenType::Question) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        
+        // Combine both optional checks
+        let is_optional_final = is_optional || is_optional_after_type;
 
         // Wrap in Optional type if marked optional
-        if is_optional {
+        if is_optional_final {
             field_type = TypeNode::Optional(Box::new(field_type));
         }
 
@@ -389,7 +401,7 @@ impl<'a> Parser<'a> {
             name: field_name,
             field_type,
             is_public,
-            is_optional,
+            is_optional: is_optional_final,
             default_value,
             decorators,
         })
@@ -629,7 +641,7 @@ impl<'a> Parser<'a> {
             });
         }
 
-        let result = if self.peek_is(TokenType::OpenBracket) {
+        let mut result = if self.peek_is(TokenType::OpenBracket) {
             // Array type: [Type]
             self.advance(); // consume '['
             let inner = self.parse_type_annotation()?;
@@ -662,6 +674,12 @@ impl<'a> Parser<'a> {
                 "Expected type annotation".into(),
             ))
         };
+
+        // Allow optional marker after any type: T?
+        if self.peek_is(TokenType::Question) {
+            self.advance(); // consume '?'
+            result = result.map(|t| TypeNode::Optional(Box::new(t)));
+        }
 
         self.depth -= 1;
         result

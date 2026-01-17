@@ -27,7 +27,7 @@ fn main() {
         EmailStr: "not-an-email",        // Invalid email format (no @ and .)
         Age: 16,                         // Below @min(18)
         Score: 150,                      // Above @max(100)
-        Role: "guest",                   // Not in @enum
+        Role: UserRole::User,                   // Not in @enum
         Name: "John",
     };
 

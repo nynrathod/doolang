@@ -1,0 +1,32 @@
+// Minimal test to isolate @internal LLVM error
+import std::Http::Server;
+import std::Database;
+
+struct User {
+    // Case 1: Not in req, in res (@auto)
+    id: Int @primary @auto,
+    
+    // Case 2: In req, in res (default - no visibility decorator)
+    Email: Str @email @unique,
+    Name: Str,
+    
+    // Case 3: In req, not in res (@writeOnly)
+    Password: Str @hash @writeOnly,
+    
+    // Case 4: Not in req, not in res (@internal)
+    InternalId: Str @internal @default("test"),
+    
+    // Case 5: Not in req, in res (@readOnly) with default value
+    Role: Str @readOnly @default("user"),
+    
+    // Case 6: Optional - optional in both req & res
+    Bio?: Str,
+}
+
+fn main() {
+    let db = Database::postgres()?;
+    let app = Server::new(":3114");
+    app.auth("/signup", "/login", User, db);
+    app.crud("/users", User, db);
+    app.start();
+}

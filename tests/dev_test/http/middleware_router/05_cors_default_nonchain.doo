@@ -1,0 +1,15 @@
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3115");
+
+    app.cors();
+
+    app.get("/ping", Ping);
+
+    app.start();
+}

@@ -26,7 +26,7 @@ echo "Valid Str (200)"
 curl -s http://127.0.0.1:$PORT/api/users/str/hello | pretty_json
 echo ""
 
-echo "Invalid Str (400)"
+echo "Valid Str (200)"
 curl -s http://127.0.0.1:$PORT/api/users/str/true | pretty_json
 echo ""
 

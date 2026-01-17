@@ -67,10 +67,10 @@ fn Database.rawWithParams(self, sql: Str, params: Str) -> Str ! DatabaseError {}
 
 // Free database result
 @ffi("doo_db")
-@extern("doo_db_free_result")
-fn freeDbResult(ptr: Int) {}
+@extern("doo_db_result_free")
+fn freeDbResult(ptr: Ptr) {}
 
 // Free string from database
 @ffi("doo_db")
 @extern("doo_db_free_string")
-fn freeDbString(ptr: Int) {}
+fn freeDbString(ptr: Ptr) {}

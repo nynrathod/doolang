@@ -123,6 +123,13 @@ fn try_expand_route_group(node: &AstNode) -> Option<Vec<AstNode>> {
             .map(|(http_method, path_expr, handler_expr)| {
                 // Create the full path: prefix + path
                 let full_path = create_path_concat(prefix_expr, &path_expr);
+                
+                // Convert :param to {param} syntax for matchit router compatibility
+                let full_path = if let AstNode::StringLiteral(path_str) = &full_path {
+                    AstNode::StringLiteral(convert_path_params(path_str))
+                } else {
+                    full_path
+                };
 
                 // Convert handler identifier to string literal
                 let handler_str = convert_handler_to_string(handler_expr);
@@ -222,14 +229,22 @@ fn is_route_registration_method(name: &str) -> bool {
 ///
 /// If prefix is a string literal "/api" and path is "/users",
 /// this creates a string concatenation that results in "/api/users"
+///
+/// Special case: if path is exactly "/", don't add trailing slash
 fn create_path_concat(prefix: &AstNode, path: &AstNode) -> AstNode {
     // If both are string literals, we can optimize by concatenating at compile time
     if let (AstNode::StringLiteral(prefix_str), AstNode::StringLiteral(path_str)) = (prefix, path) {
+        // Special case: if path is exactly "/", don't add trailing slash
+        // This handles `post("/", Handler)` inside a group - should register as "/api/links" not "/api/links/"
+        if path_str == "/" {
+            return AstNode::StringLiteral(prefix_str.clone());
+        }
+        
         // Ensure proper path joining (no double slashes)
         let full_path = if path_str.starts_with('/') {
-            format!("{}{}", prefix_str, path_str)
+            format!("{}{}", prefix_str.trim_end_matches('/'), path_str)
         } else {
-            format!("{}/{}", prefix_str, path_str)
+            format!("{}/{}", prefix_str.trim_end_matches('/'), path_str)
         };
         return AstNode::StringLiteral(full_path);
     }
@@ -642,6 +657,11 @@ fn transform_route_group_in_node(node: &mut AstNode) {
                 transform_route_group_in_node(value);
             }
         }
+        AstNode::ObjectLiteral(pairs) => {
+            for (_, value) in pairs {
+                transform_route_group_in_node(value);
+            }
+        }
         AstNode::StructLiteral { fields, .. } => {
             for (_, value) in fields {
                 transform_route_group_in_node(value);
@@ -764,3 +784,4 @@ fn convert_path_params(path: &str) -> String {
 
     result
 }
+

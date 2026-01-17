@@ -3,6 +3,7 @@ use inkwell::types::BasicTypeEnum;
 use inkwell::values::FunctionValue;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::AddressSpace;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Parse tuple types from a comma-separated string, respecting nested parentheses
 /// E.g., "Map(Str,Int), Int" -> ["Map(Str,Int)", "Int"]
@@ -43,6 +44,22 @@ pub fn parse_tuple_types(type_str: &str) -> Vec<String> {
 }
 
 impl<'ctx> CodeGen<'ctx> {
+    pub fn next_tmp(&self) -> String {
+        static TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("%tmp{}", id)
+    }
+
+    pub fn generate_map_get(
+        &mut self,
+        dest: &str,
+        map: &str,
+        key: &str,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let map_val = self.resolve_value(map);
+        self.generate_map_method(dest, map, map_val, "_get_internal", &[key.to_string()])
+    }
+
     /// Helper method to get struct type by name from canonical_struct_types
     pub fn get_struct_type(&self, struct_name: &str) -> inkwell::types::StructType<'ctx> {
         self.canonical_struct_types
@@ -50,10 +67,6 @@ impl<'ctx> CodeGen<'ctx> {
             .cloned()
             .unwrap_or_else(|| {
                 // Fallback: create empty struct type if not found
-                eprintln!(
-                    "Warning: Struct type '{}' not found in canonical_struct_types",
-                    struct_name
-                );
                 self.context.struct_type(&[], false)
             })
     }
@@ -111,16 +124,38 @@ impl<'ctx> CodeGen<'ctx> {
             // CRITICAL FIX: For scalar types (Int, Float, Bool), we MUST load from symbol
             // because temp_values contains the alloca pointer, not the scalar value itself
             let is_scalar_with_symbol = self.symbols.contains_key(name)
-                && self.variable_types.get(name).map(|t| matches!(t.as_str(), "Int" | "Float" | "Bool" | "Struct(Int)" | "Struct(Float)" | "Struct(Bool)")).unwrap_or(false);
-            
-            if (is_loop_var || is_heap_map || has_symbol || is_scalar_with_symbol) && self.symbols.contains_key(name) {
+                && self
+                    .variable_types
+                    .get(name)
+                    .map(|t| {
+                        matches!(
+                            t.as_str(),
+                            "Int"
+                                | "Float"
+                                | "Bool"
+                                | "Struct(Int)"
+                                | "Struct(Float)"
+                                | "Struct(Bool)"
+                        )
+                    })
+                    .unwrap_or(false);
+
+            // CRITICAL FIX: For heap_strings (JSON strings from db.raw()), we MUST return the temp_value
+            // directly because it contains the correct RC string pointer. Symbol lookup would
+            // return a stale or incorrect pointer since the symbol wasn't updated with the RC value.
+            let is_heap_string_with_temp = self.heap_strings.contains(name);
+
+            if is_heap_string_with_temp {
+                // Return the temp_value directly for JSON strings from db.raw()
+                return *val;
+            } else if (is_loop_var || is_heap_map || has_symbol || is_scalar_with_symbol)
+                && self.symbols.contains_key(name)
+            {
                 // Fall through to symbol lookup below
             } else {
                 return *val;
             }
         }
-
-
 
         if let Some(sym) = self.symbols.get(name) {
             // Special handling for array/map/struct variables - they should always be pointers
@@ -138,16 +173,15 @@ impl<'ctx> CodeGen<'ctx> {
 
             // Check for scalar wrapper types (e.g., Struct(Int) from db.rawWithParams)
             // These should NOT be treated as structs - they need scalar loading
-            let is_scalar_wrapper = var_type.map(|t| {
-                matches!(t.as_str(), "Struct(Int)" | "Struct(Float)" | "Struct(Bool)")
-            }).unwrap_or(false);
+            let is_scalar_wrapper = var_type
+                .map(|t| matches!(t.as_str(), "Struct(Int)" | "Struct(Float)" | "Struct(Bool)"))
+                .unwrap_or(false);
 
-            let is_struct = !is_scalar_wrapper && (var_type
-                .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
-                .unwrap_or(false)
-                || self.struct_instance_types.contains_key(name));
-            
-
+            let is_struct = !is_scalar_wrapper
+                && (var_type
+                    .map(|t| t.contains("Struct(") || self.struct_metadata.contains_key(t))
+                    .unwrap_or(false)
+                    || self.struct_instance_types.contains_key(name));
 
             // Check if this is an enum by looking at variable_types
             let is_enum = var_type
@@ -181,12 +215,12 @@ impl<'ctx> CodeGen<'ctx> {
                 // as their underlying scalar type, NOT as pointers. This check MUST come before is_string.
                 use inkwell::types::BasicTypeEnum;
                 let type_str = var_type.unwrap();
-                if type_str == "Struct(Int)"  {
+                if type_str == "Struct(Int)" {
                     BasicTypeEnum::IntType(self.context.i32_type())
                 } else if type_str == "Struct(Float)" {
                     BasicTypeEnum::FloatType(self.context.f64_type())
                 } else {
-                    BasicTypeEnum::IntType(self.context.i32_type())  // Struct(Bool)
+                    BasicTypeEnum::IntType(self.context.i32_type()) // Struct(Bool)
                 }
             } else if is_string {
                 // String values are pointers
@@ -271,6 +305,7 @@ impl<'ctx> CodeGen<'ctx> {
             // Use i32 for Bool to match internal representation (all Bools are stored as i32)
             "Bool" => self.context.i32_type().into(),
             "Str" => self.context.ptr_type(AddressSpace::default()).into(),
+            "Ptr" => self.context.ptr_type(AddressSpace::default()).into(),
             _ => self.context.i32_type().into(),
         }
     }

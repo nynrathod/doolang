@@ -193,6 +193,19 @@ pub enum SemanticError {
         field: String,
         struct_name: String,
     },
+    DecoratorConflict {
+        decorator1: String,
+        decorator2: String,
+        field: String,
+        struct_name: String,
+        reason: String,
+    },
+    InvalidOptionalDecorator {
+        decorator: String,
+        field: String,
+        struct_name: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for TypeNode {
@@ -324,6 +337,8 @@ impl SemanticError {
             SemanticError::InvalidDecoratorType { .. } => "E0901",
             SemanticError::InvalidDecoratorArgs { .. } => "E0902",
             SemanticError::UnknownDecorator { .. } => "E0903",
+            SemanticError::DecoratorConflict { .. } => "E0904",
+            SemanticError::InvalidOptionalDecorator { .. } => "E0905",
         }
     }
 }
@@ -667,11 +682,30 @@ impl fmt::Display for SemanticError {
             ),
             E::UnknownDecorator { decorator, field, struct_name } => write!(
                 f,
-                "error[{}]: unknown decorator @{} on field '{}' in struct '{}'. Valid decorators: @email, @required, @min, @max, @foreign, @unique, @primary, @autoIncrement, @auto, @hash, @default",
+                "error[{}]: unknown decorator @{} on field '{}' in struct '{}'. Valid decorators: @email, @url, @required, @min, @max, @foreign, @unique, @primary, @autoIncrement, @auto, @hash, @default, @writeOnly, @readOnly, @internal, @redirect",
                 self.code(),
                 decorator,
                 field,
                 struct_name
+            ),
+            E::DecoratorConflict { decorator1, decorator2, field, struct_name, reason } => write!(
+                f,
+                "error[{}]: @{} and @{} decorators cannot be used together on field '{}' in struct '{}': {}",
+                self.code(),
+                decorator1,
+                decorator2,
+                field,
+                struct_name,
+                reason
+            ),
+            E::InvalidOptionalDecorator { decorator, field, struct_name, reason } => write!(
+                f,
+                "error[{}]: optional field marker '?' cannot be used with @{} on field '{}' in struct '{}': {}",
+                self.code(),
+                decorator,
+                field,
+                struct_name,
+                reason
             ),
         }
     }

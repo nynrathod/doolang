@@ -5,13 +5,24 @@ use std::os::raw::c_char;
 use std::path::Path;
 use std::time::SystemTime;
 
-/// Doo Result struct layout: { i32 tag, void* value }
+use doo_runtime::{dooruntime_malloc, ownership::dooruntime_free_rc_string};
+
+/// Doo Result struct layout: { i32 tag, void* value, u8 owner }
 /// tag = 0 for Ok, tag = 1 for Err
 /// value = pointer to actual data (string, int, etc.)
+/// owner: 0 = LLVM (RC), 1 = FFI (libc), 2 = Rust (Box)
 #[repr(C)]
 pub struct DooResult {
     tag: i32,
     value: *mut std::ffi::c_void,
+    owner: u8,
+}
+
+/// Owner enum constants for DooResult
+pub mod owner {
+    pub const LLVM: u8 = 0;
+    pub const FFI: u8 = 1;
+    pub const RUST: u8 = 2;
 }
 
 /// File error struct layout - matches Doo's FileError struct
@@ -38,7 +49,22 @@ pub struct DooFileMetadata {
 pub extern "C" fn doo_free_result(result: *mut DooResult) {
     if !result.is_null() {
         unsafe {
-            let _ = Box::from_raw(result);
+            // Free error payloads (they are copied to response / not needed by compiler)
+            let tag = (*result).tag;
+            let value = (*result).value;
+            if tag != 0 && !value.is_null() {
+                // Error can be either a string or a FileError struct
+                let file_err = value as *mut DooFileError;
+                if !file_err.is_null() && !(*file_err).message.is_null() {
+                    dooruntime_free_rc_string((*file_err).message as *const c_char);
+                    libc::free(file_err as *mut libc::c_void);
+                } else {
+                    dooruntime_free_rc_string(value as *const c_char);
+                }
+            }
+
+            // Free wrapper
+            libc::free(result as *mut libc::c_void);
         }
     }
 }
@@ -48,16 +74,33 @@ pub extern "C" fn doo_free_result(result: *mut DooResult) {
 pub extern "C" fn doo_free_string(s: *mut c_char) {
     if !s.is_null() {
         unsafe {
-            let _ = CString::from_raw(s);
+            dooruntime_free_rc_string(s as *const c_char);
         }
     }
 }
 
-/// Helper to convert Rust String to C string pointer
+/// Helper to convert Rust String to an RC-layout C string.
 fn string_to_c(s: String) -> *mut c_char {
-    match CString::new(s) {
-        Ok(cs) => cs.into_raw(),
-        Err(_) => std::ptr::null_mut(),
+    unsafe {
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+
+        let total_size = len + 1 + 8;
+        let alloc_size = (total_size + 15) & !15;
+        let ptr = dooruntime_malloc(alloc_size) as *mut u8;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        std::ptr::write_bytes(ptr, 0, alloc_size);
+        *(ptr as *mut i32) = 1;
+        *(ptr.add(4) as *mut i32) = len as i32;
+
+        let data_ptr = ptr.add(8);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, len);
+        *data_ptr.add(len) = 0;
+
+        data_ptr as *mut c_char
     }
 }
 
@@ -76,53 +119,112 @@ fn c_to_string(s: *const c_char) -> Result<String, String> {
 
 /// Create a Result struct with Ok value (string) - returns heap pointer
 fn make_ok_string(s: String) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: string_to_c(s) as *mut std::ffi::c_void,
-    }))
+    unsafe {
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(result_size) as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 0;
+        (*ptr).value = string_to_c(s) as *mut std::ffi::c_void;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 /// Create a Result struct with Err value (string) - returns heap pointer
 fn make_err_string(s: String) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 1,
-        value: string_to_c(s) as *mut std::ffi::c_void,
-    }))
+    unsafe {
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(result_size) as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 1;
+        (*ptr).value = string_to_c(s) as *mut std::ffi::c_void;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 /// Create a Result struct with Err value (FileError struct) - returns heap pointer
 fn make_err_file_error(message: String) -> *mut DooResult {
-    let error_struct = Box::new(DooFileError {
-        message: string_to_c(message),
-    });
-    Box::into_raw(Box::new(DooResult {
-        tag: 1,
-        value: Box::into_raw(error_struct) as *mut std::ffi::c_void,
-    }))
+    unsafe {
+        // Allocate DooFileError using libc::malloc
+        let err_size = std::mem::size_of::<DooFileError>();
+        let error_struct = libc::malloc(err_size) as *mut DooFileError;
+        if error_struct.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*error_struct).message = string_to_c(message);
+
+        // Allocate DooResult using libc::malloc
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(result_size) as *mut DooResult;
+        if ptr.is_null() {
+            libc::free(error_struct as *mut libc::c_void);
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 1;
+        (*ptr).value = error_struct as *mut std::ffi::c_void;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 /// Create a Result struct with Ok value (int) - returns heap pointer
 fn make_ok_int(n: i64) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: n as *mut std::ffi::c_void,
-    }))
+    unsafe {
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(result_size) as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 0;
+        (*ptr).value = n as *mut std::ffi::c_void;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 /// Create a Result struct with Ok value (void) - returns heap pointer
 fn make_ok_void() -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: std::ptr::null_mut(),
-    }))
+    unsafe {
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(result_size) as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 0;
+        (*ptr).value = std::ptr::null_mut();
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 /// Create a Result struct with Ok value (metadata) - returns heap pointer
 fn make_ok_metadata(metadata: DooFileMetadata) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult {
-        tag: 0,
-        value: Box::into_raw(Box::new(metadata)) as *mut std::ffi::c_void,
-    }))
+    unsafe {
+        // Allocate DooFileMetadata using libc::malloc
+        let meta_size = std::mem::size_of::<DooFileMetadata>();
+        let meta_ptr = libc::malloc(meta_size) as *mut DooFileMetadata;
+        if meta_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        std::ptr::write(meta_ptr, metadata);
+
+        // Allocate DooResult using libc::malloc
+        let result_size = std::mem::size_of::<DooResult>();
+        let ptr = libc::malloc(result_size) as *mut DooResult;
+        if ptr.is_null() {
+            libc::free(meta_ptr as *mut libc::c_void);
+            return std::ptr::null_mut();
+        }
+        (*ptr).tag = 0;
+        (*ptr).value = meta_ptr as *mut std::ffi::c_void;
+        (*ptr).owner = owner::FFI;
+        ptr
+    }
 }
 
 /// Read entire file content as string
