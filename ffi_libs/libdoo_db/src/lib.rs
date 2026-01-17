@@ -563,7 +563,22 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
         Err(e) => return make_err(e),
     };
 
-    let connect_res = block_on_compat(rt, tokio_postgres::connect(&database_url, NoTls));
+    // Configure TLS based on DB URL query params (simple check)
+    let use_ssl = database_url.contains("sslmode=require") || database_url.contains("sslmode=verify");
+    let disable_verify = database_url.contains("sslmode=no-verify") || database_url.contains("sslmode=disable") || !use_ssl;
+
+    // Create TLS connector
+    // For now, we default to accepting invalid certs if not strictly required, to help with self-signed or dev setups
+    let tls_builder = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(disable_verify)
+        .build();
+
+    let connector = match tls_builder {
+        Ok(c) => postgres_native_tls::MakeTlsConnector::new(c),
+        Err(e) => return make_err_connection_failed(format!("Failed to create TLS connector: {}", e)),
+    };
+
+    let connect_res = block_on_compat(rt, tokio_postgres::connect(&database_url, connector));
     let (client, connection) = match connect_res {
         Ok(v) => v,
         Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
