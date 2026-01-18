@@ -1171,6 +1171,7 @@ name = "libdoo_http"
 version = "0.3.1"
 dependencies = [
  "chrono",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",

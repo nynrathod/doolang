@@ -20,7 +20,7 @@ const MAX_TRACKED_POINTERS: usize = 100_000;
 
 #[inline]
 fn tracking_enabled() -> bool {
-    crate::debug::is_debug_enabled()
+    true
 }
 
 /// Get next allocation ID (monotonically increasing)

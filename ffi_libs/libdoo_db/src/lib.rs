@@ -17,7 +17,9 @@ use std::sync::Mutex;
 use std::sync::Once;
 use tokio::runtime::Runtime;
 use tokio::sync::Notify;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 
 // Debug macro now imported from libdoo_runtime
 // Use doo_db_debug!("message") or doo_debug!("DB", "message")
@@ -543,6 +545,52 @@ fn get_client() -> Result<Arc<Client>, String> {
         .ok_or_else(|| "Database not connected. Call doo_db_connect_postgres() first".to_string())
 }
 
+fn redact_db_url(url: &str) -> String {
+    // Best-effort redaction: mask password in postgresql://user:pass@host/... style URLs.
+    // Avoid pulling in a URL parsing crate for this.
+    if let Some(scheme_idx) = url.find("://") {
+        let after_scheme = &url[scheme_idx + 3..];
+        if let Some(at_idx) = after_scheme.find('@') {
+            let userinfo = &after_scheme[..at_idx];
+            if let Some(colon_idx) = userinfo.find(':') {
+                let user = &userinfo[..colon_idx];
+                let rest = &after_scheme[at_idx..];
+                return format!("{}://{}:***{}", &url[..scheme_idx], user, rest);
+            }
+        }
+    }
+    url.to_string()
+}
+
+fn rewrite_supabase_pooler_url(url: &str) -> Option<String> {
+    let scheme_end = url.find("://")?;
+    let scheme = &url[..scheme_end];
+    let rest = &url[scheme_end + 3..];
+    let at_idx = rest.find('@')?;
+    let userinfo = &rest[..at_idx];
+    let after_at = &rest[at_idx + 1..];
+    let slash_idx = after_at.find('/')?;
+    let hostport = &after_at[..slash_idx];
+    let path_and_q = &after_at[slash_idx..];
+
+    if !hostport.contains("pooler.supabase.com") {
+        return None;
+    }
+
+    let (user, pass) = userinfo.split_once(':')?;
+    let ref_id = user.strip_prefix("postgres.")?;
+    if ref_id.is_empty() {
+        return None;
+    }
+
+    let direct_host = format!("db.{}.supabase.co", ref_id);
+    Some(format!(
+        "{}://postgres:{}@:5432{}",
+        scheme, pass, path_and_q
+    )
+    .replace("@:5432", &format!("@{}:5432", direct_host)))
+}
+
 #[no_mangle]
 pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
     doo_ffi_enter!("doo_db_connect_postgres");
@@ -558,53 +606,154 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
         Err(_) => return make_err_connection_failed("DATABASE_URL not set".to_string()),
     };
 
+    let (connect_url, sslmode) = if let Some(q_idx) = database_url.find('?') {
+        let base = &database_url[..q_idx];
+        let query = &database_url[q_idx + 1..];
+        let mut kept: Vec<&str> = Vec::new();
+        let mut sslmode_val: Option<String> = None;
+        for part in query.split('&') {
+            if part.is_empty() {
+                continue;
+            }
+            let (k, v) = match part.split_once('=') {
+                Some((k, v)) => (k, v),
+                None => {
+                    kept.push(part);
+                    continue;
+                }
+            };
+            if k.eq_ignore_ascii_case("sslmode") {
+                sslmode_val = Some(v.to_string());
+                continue;
+            }
+            kept.push(part);
+        }
+
+        let sanitized = if kept.is_empty() {
+            base.to_string()
+        } else {
+            format!("{}?{}", base, kept.join("&"))
+        };
+        (sanitized, sslmode_val)
+    } else {
+        (database_url.clone(), None)
+    };
+
+    let connect_url = match rewrite_supabase_pooler_url(&connect_url) {
+        Some(rewritten) => {
+            doo_db_debug!(
+                "Detected Supabase pooler URL; using direct DB host. connect_url: {}",
+                redact_db_url(&rewritten)
+            );
+            rewritten
+        }
+        None => connect_url,
+    };
+
     let rt = match runtime() {
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
 
-    // Configure TLS based on DB URL query params (simple check)
-    let use_ssl = database_url.contains("sslmode=require") || database_url.contains("sslmode=verify");
-    let disable_verify = database_url.contains("sslmode=no-verify") || database_url.contains("sslmode=disable") || !use_ssl;
+    // Parse sslmode from connection string
+    // PostgreSQL sslmode meanings:
+    // - disable: No SSL (for local dev)
+    // - require: Use SSL but DON'T verify certs (most cloud DBs like Supabase)
+    // - verify-ca/verify-full: Use SSL and verify certs
+    let sslmode_lower = sslmode.as_deref().unwrap_or("").to_ascii_lowercase();
+    let use_no_tls = sslmode.is_none() || sslmode_lower == "disable";
+    let verify_certs = sslmode_lower.starts_with("verify-");
 
-    // Create TLS connector
-    // For now, we default to accepting invalid certs if not strictly required, to help with self-signed or dev setups
-    let tls_builder = native_tls::TlsConnector::builder()
-        .danger_accept_invalid_certs(disable_verify)
-        .build();
-
-    let connector = match tls_builder {
-        Ok(c) => postgres_native_tls::MakeTlsConnector::new(c),
-        Err(e) => return make_err_connection_failed(format!("Failed to create TLS connector: {}", e)),
-    };
-
-    let connect_res = block_on_compat(rt, tokio_postgres::connect(&database_url, connector));
-    let (client, connection) = match connect_res {
-        Ok(v) => v,
-        Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
-    };
+    // Helpful early error: Supabase/pgbouncer poolers generally require TLS.
+    if use_no_tls
+        && (connect_url.contains("supabase.com") || connect_url.contains("pooler.supabase.com"))
+    {
+        return make_err_connection_failed(
+            "sslmode=disable requested but the server requires TLS. Use sslmode=require (or verify-full)."
+                .to_string(),
+        );
+    }
 
     // Initialize shutdown signal
     let shutdown = Arc::new(Notify::new());
     SHUTDOWN_SIGNAL.set(shutdown.clone()).ok();
     IS_CONNECTED.store(true, Ordering::SeqCst);
 
-    // Spawn the connection task with shutdown handling
-    rt.spawn(async move {
-        tokio::select! {
-            result = connection => {
-                if let Err(e) = result {
-                    // Only print error if not a normal shutdown
-                    if IS_CONNECTED.load(Ordering::SeqCst) {
-                        doo_db_debug!("Connection error: {}", e);
+    // Connect and spawn connection task based on SSL mode
+    doo_db_debug!(
+        "Connecting to Postgres: tls={}, verify_certs={}, sslmode={:?}",
+        !use_no_tls,
+        verify_certs,
+        sslmode
+    );
+
+    doo_db_debug!(
+        "DATABASE_URL (redacted) = {}",
+        redact_db_url(&database_url)
+    );
+
+    doo_db_debug!("connect_url (redacted) = {}", redact_db_url(&connect_url));
+
+    let client: Client = if use_no_tls {
+        // No TLS - for local PostgreSQL development
+        let connect_result =
+            block_on_compat(rt, tokio_postgres::connect(&connect_url, tokio_postgres::NoTls));
+        let (client, connection) = match connect_result {
+            Ok(v) => v,
+            Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
+        };
+        
+        // Spawn connection task
+        let shutdown_clone = shutdown.clone();
+        rt.spawn(async move {
+            tokio::select! {
+                result = connection => {
+                    if let Err(e) = result {
+                        if IS_CONNECTED.load(Ordering::SeqCst) {
+                            doo_db_debug!("Connection error: {}", e);
+                        }
                     }
                 }
+                _ = shutdown_clone.notified() => {}
             }
-            _ = shutdown.notified() => {
-                // Shutdown requested, exit cleanly
+        });
+        
+        client
+    } else {
+        // TLS enabled - for cloud databases
+        let tls_builder = TlsConnector::builder()
+            .danger_accept_invalid_certs(!verify_certs)
+            .build();
+
+        let connector = match tls_builder {
+            Ok(c) => MakeTlsConnector::new(c),
+            Err(e) => return make_err_connection_failed(format!("Failed to create TLS connector: {}", e)),
+        };
+
+        let connect_result =
+            block_on_compat(rt, tokio_postgres::connect(&connect_url, connector));
+        let (client, connection) = match connect_result {
+            Ok(v) => v,
+            Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
+        };
+        
+        // Spawn connection task
+        let shutdown_clone = shutdown.clone();
+        rt.spawn(async move {
+            tokio::select! {
+                result = connection => {
+                    if let Err(e) = result {
+                        if IS_CONNECTED.load(Ordering::SeqCst) {
+                            doo_db_debug!("Connection error: {}", e);
+                        }
+                    }
+                }
+                _ = shutdown_clone.notified() => {}
             }
-        }
-    });
+        });
+        
+        client
+    };
 
     // Store in both CLIENT (for backward compatibility) and GLOBAL_DB
     let client_arc = Arc::new(client);

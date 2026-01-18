@@ -6,16 +6,18 @@ mod error;
 use doo_runtime::{
     doo_debug, doo_ffi_enter, doo_ffi_exit, doo_handler_call, doo_handler_result, doo_http_debug,
     doo_mem_alloc, doo_mem_free, doo_mem_stats, dooruntime_malloc,
+    memory::{is_freed, track_alloc, track_free},
     ownership::dooruntime_free_rc_string,
-    memory::{track_alloc, track_free, is_freed},
 };
 use serde::Serialize;
 use serde_json::json;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
+use std::io::Write;
 use std::net::SocketAddr;
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -191,6 +193,25 @@ fn parse_json_string_or_default(raw: Option<String>, default: &str) -> String {
         }
     }
     s
+}
+
+fn string_to_rc_str(s: &str) -> *const c_char {
+    unsafe {
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+        // Layout: [rc:i32][len:i32][data...][0]
+        let total_size = len + 1 + 8;
+        let ptr = dooruntime_malloc(total_size) as *mut u8;
+        if ptr.is_null() {
+            return std::ptr::null();
+        }
+        *(ptr as *mut i32) = 1;
+        *(ptr.add(4) as *mut i32) = len as i32;
+        let data_ptr = ptr.add(8);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, len);
+        *data_ptr.add(len) = 0;
+        data_ptr as *const c_char
+    }
 }
 
 #[repr(C)]
@@ -607,8 +628,82 @@ impl Default for CorsConfig {
 
 static CORS_CONFIG: OnceLock<Arc<Mutex<Option<CorsConfig>>>> = OnceLock::new();
 
+static MIGRATIONS_READY: AtomicBool = AtomicBool::new(false);
+static STARTUP_INSTANT: OnceLock<Instant> = OnceLock::new();
+
 fn get_cors_config() -> &'static Arc<Mutex<Option<CorsConfig>>> {
     CORS_CONFIG.get_or_init(|| Arc::new(Mutex::new(None)))
+}
+
+fn effective_cors_config() -> CorsConfig {
+    get_cors_config()
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
+
+fn cors_apply_headers(
+    mut builder: hyper::http::response::Builder,
+    req_origin: Option<&str>,
+    req_ac_request_headers: Option<&str>,
+) -> hyper::http::response::Builder {
+    let cfg = effective_cors_config();
+
+    let origin_val = if cfg.origins.iter().any(|o| o == "*") {
+        if cfg.credentials {
+            req_origin.unwrap_or("*").to_string()
+        } else {
+            "*".to_string()
+        }
+    } else {
+        match req_origin {
+            Some(o) if cfg.origins.iter().any(|v| v == o) => o.to_string(),
+            _ => cfg
+                .origins
+                .get(0)
+                .cloned()
+                .unwrap_or_else(|| "*".to_string()),
+        }
+    };
+
+    let allow_methods = if cfg.methods.is_empty() {
+        "GET, POST, PUT, DELETE, PATCH, OPTIONS".to_string()
+    } else {
+        cfg.methods.join(", ")
+    };
+
+    let allow_headers = if cfg.headers.iter().any(|h| h == "*") {
+        req_ac_request_headers.unwrap_or("*").to_string()
+    } else if cfg.headers.is_empty() {
+        req_ac_request_headers.unwrap_or("*").to_string()
+    } else {
+        cfg.headers.join(", ")
+    };
+
+    builder = builder
+        .header("Access-Control-Allow-Origin", origin_val)
+        .header("Access-Control-Allow-Methods", allow_methods)
+        .header("Access-Control-Allow-Headers", allow_headers);
+
+    if cfg.credentials {
+        builder = builder.header("Access-Control-Allow-Credentials", "true");
+    }
+
+    if !cfg.expose_headers.is_empty() {
+        builder = builder.header(
+            "Access-Control-Expose-Headers",
+            cfg.expose_headers.join(", "),
+        );
+    }
+
+    if let Some(max_age) = cfg.max_age {
+        if max_age > 0 {
+            builder = builder.header("Access-Control-Max-Age", max_age.to_string());
+        }
+    }
+
+    builder
 }
 
 /// Rate Limiting Configuration
@@ -840,7 +935,10 @@ fn looks_like_doo_response(ptr: *const DooResponse) -> bool {
         return false;
     }
 
-    if !doo_runtime::memory::validate_pointer(ptr as *const std::ffi::c_void, "looks_like_doo_response") {
+    if !doo_runtime::memory::validate_pointer(
+        ptr as *const std::ffi::c_void,
+        "looks_like_doo_response",
+    ) {
         return false;
     }
 
@@ -918,7 +1016,11 @@ fn validate_cstr_pointer(ptr: *const c_char, context: &str) -> bool {
             let page_base = (addr / page_size) * page_size;
             let mut vec: [u8; 1] = [0];
             #[cfg(target_os = "macos")]
-            let rc = libc::mincore(page_base as *mut libc::c_void, page_size, vec.as_mut_ptr() as *mut i8);
+            let rc = libc::mincore(
+                page_base as *mut libc::c_void,
+                page_size,
+                vec.as_mut_ptr() as *mut i8,
+            );
             #[cfg(not(target_os = "macos"))]
             let rc = libc::mincore(page_base as *mut libc::c_void, page_size, vec.as_mut_ptr());
             if rc != 0 {
@@ -980,7 +1082,11 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
     unsafe {
         let next_ref = &mut *next;
         let request = next_ref.request;
-        doo_http_debug!("doo_http_next_call: request_ptr={:p} handler={:p}", request, next_ref.handler as *const ());
+        doo_http_debug!(
+            "doo_http_next_call: request_ptr={:p} handler={:p}",
+            request,
+            next_ref.handler as *const ()
+        );
 
         // Get the remaining middleware chain
         let middleware_vec_ptr = next_ref.remaining_middleware as *mut Vec<DooMiddlewareFn>;
@@ -1006,7 +1112,11 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
             } else {
                 // Create a new Next for the next middleware in chain
                 // Use Box for consistent allocation with the middleware Vec
-                doo_http_debug!("middleware_chain: calling middleware {} of {}", idx, middleware_vec.len());
+                doo_http_debug!(
+                    "middleware_chain: calling middleware {} of {}",
+                    idx,
+                    middleware_vec.len()
+                );
                 let new_middleware_vec = middleware_vec.clone();
 
                 let new_next = Box::new(DooNext {
@@ -1021,7 +1131,12 @@ pub extern "C" fn doo_http_next_call(next: *mut DooNext) -> *mut DooResponse {
 
                 // Call the current middleware
                 let current_middleware = middleware_vec[idx];
-                doo_ffi_enter!("middleware_chain", "req_ptr={:p}, mw_count={}", request, middleware_vec.len());
+                doo_ffi_enter!(
+                    "middleware_chain",
+                    "req_ptr={:p}, mw_count={}",
+                    request,
+                    middleware_vec.len()
+                );
                 let call_result = current_middleware(request, new_next_ptr);
                 doo_ffi_exit!("middleware_chain", "result_ptr={:p}", call_result);
 
@@ -1154,7 +1269,10 @@ fn c_to_string(ptr: *const c_char) -> String {
 unsafe fn read_dooresult_tag_value(result: *mut DooResult) -> (i32, *mut std::ffi::c_void) {
     // Check for use-after-free first
     if is_freed(result as *const std::ffi::c_void) {
-        doo_http_debug!("USE-AFTER-FREE: read_dooresult_tag_value result_ptr={:p}", result);
+        doo_http_debug!(
+            "USE-AFTER-FREE: read_dooresult_tag_value result_ptr={:p}",
+            result
+        );
         return (1, std::ptr::null_mut());
     }
 
@@ -1170,7 +1288,12 @@ unsafe fn read_dooresult_tag_value(result: *mut DooResult) -> (i32, *mut std::ff
     let value = *((result as *const u8).add(8) as *const *mut std::ffi::c_void);
 
     // DEBUG: Aggressive validation of result pointer
-    if !value.is_null() && !doo_runtime::memory::validate_pointer(value as *const std::ffi::c_void, "read_dooresult_value") {
+    if !value.is_null()
+        && !doo_runtime::memory::validate_pointer(
+            value as *const std::ffi::c_void,
+            "read_dooresult_value",
+        )
+    {
         doo_http_debug!("CORRUPT: read_dooresult_tag_value value_ptr={:p}", value);
     }
 
@@ -2096,24 +2219,82 @@ fn parse_query(query: &str) -> HashMap<String, String> {
 async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let req_start = std::time::Instant::now();
 
-    let method = req.method().to_string();
-    let path = req.uri().path().to_string();
-    let query = req.uri().query().unwrap_or("").to_string();
+    let (parts, body_incoming) = req.into_parts();
+
+    let method = parts.method.to_string();
+    let path = parts.uri.path().to_string();
+    let query = parts.uri.query().unwrap_or("").to_string();
 
     // Parse query parameters
     let query_params = parse_query(&query);
 
+    let headers = parts.headers;
+
+    let req_origin: Option<String> = headers
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let req_ac_request_headers: Option<String> = headers
+        .get("access-control-request-headers")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let req_origin_ref = req_origin.as_deref();
+    let req_ac_request_headers_ref = req_ac_request_headers.as_deref();
+
+    if method == "OPTIONS" {
+        let builder = Response::builder().status(StatusCode::NO_CONTENT);
+        let builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+        let response = builder.body(Full::new(Bytes::new())).unwrap();
+
+        let elapsed = req_start.elapsed();
+        let now = chrono::Local::now();
+        let timestamp = now.format("%H:%M:%S");
+        let duration_ms = elapsed.as_millis();
+        println!(
+            "[Doo] {} | {} | {:>3}ms | {} {}",
+            timestamp,
+            response.status().as_u16(),
+            duration_ms,
+            method,
+            path
+        );
+        return Ok(response);
+    }
+
+    let strict_migrations = std::env::var("DOO_STRICT_MIGRATIONS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let startup_elapsed = STARTUP_INSTANT
+        .get()
+        .map(|t| t.elapsed())
+        .unwrap_or(Duration::from_secs(0));
+    let migrations_block_active = strict_migrations
+        && !MIGRATIONS_READY.load(Ordering::SeqCst)
+        && startup_elapsed < Duration::from_secs(30);
+
+    if migrations_block_active && path != "/health" {
+        use error::*;
+        let err = service_unavailable("Server is initializing".to_string(), path.clone());
+        let body_json = err.to_json_string();
+        let mut builder = Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("content-type", "application/json");
+        builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+        log_request(req_start, StatusCode::SERVICE_UNAVAILABLE, &method, &path);
+        return Ok(builder.body(Full::new(Bytes::from(body_json))).unwrap());
+    }
+
     // Get headers
     let mut headers_map = HashMap::new();
-    for (key, value) in req.headers().iter() {
+    for (key, value) in headers.iter() {
         if let Ok(v) = value.to_str() {
             headers_map.insert(key.to_string(), v.to_string());
         }
     }
 
     // Get content type
-    let content_type = req
-        .headers()
+    let content_type = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("text/plain")
@@ -2135,16 +2316,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             );
             let body_json = err.to_json_string();
             set_last_error(err.status_code() as i32, body_json.clone());
-            return Ok(Response::builder()
+            let mut builder = Response::builder()
                 .status(StatusCode::BAD_REQUEST)
-                .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(body_json)))
-                .unwrap());
+                .header("content-type", "application/json");
+            builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+            return Ok(builder.body(Full::new(Bytes::from(body_json))).unwrap());
         }
     }
 
     // Read body
-    let body_bytes = req.collect().await?.to_bytes();
+    let body_bytes = body_incoming.collect().await?.to_bytes();
     let body = String::from_utf8_lossy(&body_bytes).to_string();
 
     // Find handler
@@ -2164,11 +2345,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 let error_response =
                     method_not_allowed_error(path.clone(), method.clone(), allowed_methods);
                 let error_json = error_response.to_json_string();
-                return Ok(Response::builder()
+                let mut builder = Response::builder()
                     .status(StatusCode::METHOD_NOT_ALLOWED)
-                    .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(error_json)))
-                    .unwrap());
+                    .header("content-type", "application/json");
+                builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+                return Ok(builder.body(Full::new(Bytes::from(error_json))).unwrap());
             } else {
                 // Path doesn't exist at all
                 let error_response = not_found(
@@ -2177,11 +2358,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 )
                 .with_method(method.clone());
                 let error_json = error_response.to_json_string();
-                return Ok(Response::builder()
+                let mut builder = Response::builder()
                     .status(StatusCode::NOT_FOUND)
-                    .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(error_json)))
-                    .unwrap());
+                    .header("content-type", "application/json");
+                builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+                return Ok(builder.body(Full::new(Bytes::from(error_json))).unwrap());
             }
         }
     };
@@ -2213,28 +2394,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             let body_json = err.to_json_string();
             set_last_error(err.status_code() as i32, body_json.clone());
             log_request(req_start, StatusCode::BAD_REQUEST, &method, &path);
-            return Ok(Response::builder()
+            let mut builder = Response::builder()
                 .status(StatusCode::BAD_REQUEST)
-                .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(body_json)))
-                .unwrap());
+                .header("content-type", "application/json");
+            builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+            return Ok(builder.body(Full::new(Bytes::from(body_json))).unwrap());
         }
     }
-
-    // Create Doo Request
-    let params_box = Box::new(params);
-    let query_box = Box::new(query_params);
-    let headers_box = Box::new(headers_map);
-
-    let doo_request = Box::new(DooRequest {
-        method: string_to_c(&method),
-        path: string_to_c(&path),
-        body: string_to_c(&body),
-        content_type: string_to_c(&content_type),
-        params: Box::into_raw(params_box) as *mut std::ffi::c_void,
-        query: Box::into_raw(query_box) as *mut std::ffi::c_void,
-        headers: Box::into_raw(headers_box) as *mut std::ffi::c_void,
-    });
 
     // Store current request path in thread-local storage for RFC 7807 errors
     set_current_request_path(&path);
@@ -2243,46 +2409,195 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let mut all_middleware = global_middleware.clone();
     all_middleware.extend(middleware.iter().cloned());
 
-    let req_ptr = Box::into_raw(doo_request);
+    let exec_method = method.clone();
+    let exec_path = path.clone();
+    let exec_body = body.clone();
+    let exec_content_type = content_type.clone();
+    let exec_params = params;
+    let exec_query_params = query_params;
+    let exec_headers_map = headers_map;
 
-    // If there's middleware, create Next chain and call first middleware
-    let result = if !all_middleware.is_empty() {
-        // Clone the middleware list for the chain - original owned by this scope
-        let middleware_vec = all_middleware.clone();
-        let middleware_box = Box::new(middleware_vec);
-        let mw_raw_ptr = Box::into_raw(middleware_box);
+    // Execute handler/middleware on a blocking thread.
+    // Many handlers perform DB operations that can block; running them directly on Tokio workers
+    // can stall the entire server and leave browser requests stuck in "pending".
+    let exec_all_middleware = all_middleware.clone();
+    let exec_handler = handler;
 
-        // Create Next for first middleware with current_index=1
-        // (first middleware is called directly, so next.call() goes to index 1)
-        let next_for_first = Box::new(DooNext {
-            request: req_ptr,
-            remaining_middleware: mw_raw_ptr as *mut std::ffi::c_void,
-            handler,
-            current_index: 1,
+    let handler_timeout_ms: u64 = std::env::var("DOO_HTTP_HANDLER_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60_000);
+
+    struct HandlerOutcome {
+        result_addr: usize,
+        error_status: u16,
+        error_json: Option<String>,
+    }
+
+    let blocking_task = tokio::task::spawn_blocking(move || -> HandlerOutcome {
+        let params_box = Box::new(exec_params);
+        let query_box = Box::new(exec_query_params);
+        let headers_box = Box::new(exec_headers_map);
+
+        let doo_request = Box::new(DooRequest {
+            method: string_to_c(&exec_method),
+            path: string_to_c(&exec_path),
+            body: string_to_c(&exec_body),
+            content_type: string_to_c(&exec_content_type),
+            params: Box::into_raw(params_box) as *mut std::ffi::c_void,
+            query: Box::into_raw(query_box) as *mut std::ffi::c_void,
+            headers: Box::into_raw(headers_box) as *mut std::ffi::c_void,
         });
 
-        let next_ptr = Box::into_raw(next_for_first);
+        let exec_req_ptr = Box::into_raw(doo_request);
 
-        // Call the first middleware directly
-        let first_middleware = all_middleware[0];
-        // DEBUG: Log middleware call
-        doo_ffi_enter!("middleware_chain", "req_ptr={:p}, mw_count={}", req_ptr, all_middleware.len());
-        let res = first_middleware(req_ptr, next_ptr);
-        doo_ffi_exit!("middleware_chain", "result_ptr={:p}", res);
+        let res_ptr: *mut DooResult = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            set_current_request_path(&exec_path);
+            if !exec_all_middleware.is_empty() {
+                let middleware_vec = exec_all_middleware.clone();
+                let middleware_box = Box::new(middleware_vec);
+                let mw_raw_ptr = Box::into_raw(middleware_box);
 
-        // CLEANUP DISABLED: Middleware cleanup causing double-free
-        // Let memory leak to prevent heap corruption
-        // unsafe {
-        //     let _ = Box::from_raw(next_ptr); // Free DooNext struct
-        //     let _ = Box::from_raw(mw_raw_ptr); // Free original middleware Vec
-        // }
-        res
+                let next_for_first = Box::new(DooNext {
+                    request: exec_req_ptr,
+                    remaining_middleware: mw_raw_ptr as *mut std::ffi::c_void,
+                    handler: exec_handler,
+                    current_index: 1,
+                });
+                let next_ptr = Box::into_raw(next_for_first);
+
+                let first_middleware = exec_all_middleware[0];
+                doo_ffi_enter!(
+                    "middleware_chain",
+                    "req_ptr={:p}, mw_count={}",
+                    exec_req_ptr,
+                    exec_all_middleware.len()
+                );
+                let res = first_middleware(exec_req_ptr, next_ptr);
+                doo_ffi_exit!("middleware_chain", "result_ptr={:p}", res);
+                res
+            } else {
+                doo_handler_call!("direct_handler", exec_req_ptr);
+                let res = exec_handler(exec_req_ptr);
+                doo_ffi_exit!("direct_handler", "result_ptr={:p}", res);
+                res
+            }
+        }))
+        .unwrap_or(std::ptr::null_mut());
+
+        if res_ptr.is_null() {
+            let err = error::internal_server_error(exec_path.clone());
+            return HandlerOutcome {
+                result_addr: 0,
+                error_status: 500,
+                error_json: Some(err.to_json_string()),
+            };
+        }
+
+        let (tag, value) = unsafe { read_dooresult_tag_value(res_ptr) };
+        if tag == 0 {
+            return HandlerOutcome {
+                result_addr: res_ptr as usize,
+                error_status: 0,
+                error_json: None,
+            };
+        }
+
+        if let Some((st, json)) = take_last_error() {
+            return HandlerOutcome {
+                result_addr: 0,
+                error_status: st.max(100).min(599) as u16,
+                error_json: Some(json),
+            };
+        }
+
+        let mut status_u16: u16 = 500;
+        let mut msg: Option<String> = None;
+
+        if value.is_null() {
+            msg = Some("Unknown error".to_string());
+        } else if doo_runtime::memory::validate_pointer(value as *const std::ffi::c_void, "handler_error_value") {
+            let first_i32 = unsafe { *(value as *const i32) };
+            let msg_ptr = unsafe { *((value as *const u8).add(8) as *const *const c_char) };
+
+            if (100..=599).contains(&first_i32) {
+                status_u16 = first_i32 as u16;
+            }
+
+            if validate_cstr_pointer(msg_ptr, "handler_error_message") {
+                if !msg_ptr.is_null() {
+                    msg = Some(unsafe { CStr::from_ptr(msg_ptr).to_string_lossy().to_string() });
+                }
+            }
+
+            if msg.is_none() {
+                let as_cstr = value as *const c_char;
+                if looks_like_any_cstr(as_cstr) {
+                    msg = Some(c_to_string(as_cstr));
+                }
+            }
+        }
+
+        let msg = msg.unwrap_or_else(|| "An unexpected error occurred".to_string());
+        let body_json = if msg.starts_with("{\"type\":") || msg.starts_with("{\"detail\":") {
+            msg
+        } else {
+            error::internal_error(msg, exec_path.clone()).to_json_string()
+        };
+
+        HandlerOutcome {
+            result_addr: 0,
+            error_status: status_u16,
+            error_json: Some(body_json),
+        }
+    });
+
+    let outcome: HandlerOutcome = match tokio::time::timeout(
+        Duration::from_millis(handler_timeout_ms),
+        blocking_task,
+    )
+    .await
+    {
+        Ok(Ok(out)) => out,
+        Ok(Err(_join_err)) => HandlerOutcome {
+            result_addr: 0,
+            error_status: 500,
+            error_json: Some(error::internal_server_error(path.clone()).to_json_string()),
+        },
+        Err(_elapsed) => {
+            let body_json = json!({
+                "type": "gateway_timeout",
+                "title": "Gateway Timeout",
+                "status": 504,
+                "detail": "Request timed out",
+                "instance": path.clone()
+            })
+            .to_string();
+            let mut builder = Response::builder()
+                .status(StatusCode::GATEWAY_TIMEOUT)
+                .header("content-type", "application/json");
+            builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+            log_request(req_start, StatusCode::GATEWAY_TIMEOUT, &method, &path);
+            return Ok(builder.body(Full::new(Bytes::from(body_json))).unwrap());
+        }
+    };
+
+    if let Some(body_json) = outcome.error_json {
+        let status = StatusCode::from_u16(outcome.error_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let mut builder = Response::builder()
+            .status(status)
+            .header("content-type", "application/json");
+        builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+        log_request(req_start, status, &method, &path);
+        return Ok(builder.body(Full::new(Bytes::from(body_json))).unwrap());
+    }
+
+    let result_addr: usize = outcome.result_addr;
+
+    let result: *mut DooResult = if result_addr == 0 {
+        std::ptr::null_mut()
     } else {
-        // No middleware, call handler directly
-        doo_handler_call!("direct_handler", req_ptr);
-        let res = handler(req_ptr);
-        doo_ffi_exit!("direct_handler", "result_ptr={:p}", res);
-        res
+        result_addr as *mut DooResult
     };
     // Process result
     doo_http_debug!("Processing result ptr={:p}", result);
@@ -2347,11 +2662,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                                                     get_ci(obj, "data")
                                                         .and_then(|v| v.as_object())
                                                         .and_then(|data_obj| {
-                                                            get_ci(
-                                                                data_obj,
-                                                                redirect_field_name,
-                                                            )
-                                                            .and_then(|v| v.as_str())
+                                                            get_ci(data_obj, redirect_field_name)
+                                                                .and_then(|v| v.as_str())
                                                         })
                                                 })
                                         }
@@ -2377,11 +2689,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                             format!("{{\"data\":{}}}", json_body)
                         };
 
-                        Response::builder()
+                        let mut builder = Response::builder()
                             .status(StatusCode::OK)
-                            .header("content-type", "application/json")
-                            .body(Full::new(Bytes::from(wrapped_body)))
-                            .unwrap()
+                            .header("content-type", "application/json");
+
+                        builder =
+                            cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
+                        builder.body(Full::new(Bytes::from(wrapped_body))).unwrap()
                     } else {
                         // DooResponse
                         // Response is also allocated by LLVM malloc - read directly, don't use Box
@@ -2466,8 +2780,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         // Auto redirect: for non-API GET routes, if body is a URL, return 302.
                         if method == "GET" && !path.starts_with("/api") {
                             let trimmed = body_str.trim();
-                            if trimmed.starts_with("http://") || trimmed.starts_with("https://")
-                            {
+                            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
                                 return Ok(Response::builder()
                                     .status(StatusCode::FOUND)
                                     .header("Location", trimmed)
@@ -2478,21 +2791,20 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
                         // Wrap JSON arrays and objects in {"data": ...} envelope
                         // This ensures RFC 7807 compliance for all JSON responses
-                        let final_body =
-                            if body_str.starts_with('[') || body_str.starts_with('{') {
-                                // Check if already wrapped in {"data": ...}
-                                if body_str.starts_with("{\"data\":")
-                                    || body_str.starts_with("{\"data\" :")
-                                {
-                                    body_str
-                                } else {
-                                    format!("{{\"data\":{}}}", body_str)
-                                }
-                            } else if body_str.is_empty() {
-                                "{\"data\":null}".to_string()
-                            } else {
+                        let final_body = if body_str.starts_with('[') || body_str.starts_with('{') {
+                            // Check if already wrapped in {"data": ...}
+                            if body_str.starts_with("{\"data\":")
+                                || body_str.starts_with("{\"data\" :")
+                            {
                                 body_str
-                            };
+                            } else {
+                                format!("{{\"data\":{}}}", body_str)
+                            }
+                        } else if body_str.is_empty() {
+                            "{\"data\":null}".to_string()
+                        } else {
+                            body_str
+                        };
 
                         let content_type_str = if response_ref.content_type.is_null() {
                             "application/json".to_string()
@@ -2508,33 +2820,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
                         // Auto-inject CORS headers if configured
                         // This ensures headers are present even if middleware logic handled the blocking
-                        if let Ok(config_guard) = get_cors_config().lock() {
-                            if let Some(config) = config_guard.as_ref() {
-                                // Origin: For now use the first one or * if multiple not supported by simple header injection
-                                // (Real implementation should match against request Origin)
-                                let origin_val = if config.origins.is_empty() {
-                                    "*".to_string()
-                                } else {
-                                    config.origins[0].clone()
-                                };
-
-                                builder = builder
-                                    .header("Access-Control-Allow-Origin", origin_val)
-                                    .header(
-                                        "Access-Control-Allow-Methods",
-                                        config.methods.join(", "),
-                                    )
-                                    .header(
-                                        "Access-Control-Allow-Headers",
-                                        config.headers.join(", "),
-                                    );
-
-                                if config.credentials {
-                                    builder = builder
-                                        .header("Access-Control-Allow-Credentials", "true");
-                                }
-                            }
-                        }
+                        builder =
+                            cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
 
                         builder.body(Full::new(Bytes::from(final_body))).unwrap()
                     }
@@ -2569,24 +2856,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                     .status(status)
                     .header("content-type", "application/json");
 
-                if let Ok(config_guard) = get_cors_config().lock() {
-                    if let Some(config) = config_guard.as_ref() {
-                        let origin_val = if config.origins.is_empty() {
-                            "*".to_string()
-                        } else {
-                            config.origins[0].clone()
-                        };
-
-                        builder = builder
-                            .header("Access-Control-Allow-Origin", origin_val)
-                            .header("Access-Control-Allow-Methods", config.methods.join(", "))
-                            .header("Access-Control-Allow-Headers", config.headers.join(", "));
-
-                        if config.credentials {
-                            builder = builder.header("Access-Control-Allow-Credentials", "true");
-                        }
-                    }
-                }
+                builder = cors_apply_headers(builder, req_origin_ref, req_ac_request_headers_ref);
 
                 builder.body(Full::new(Bytes::from(body_str))).unwrap()
             }
@@ -2658,7 +2928,7 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
     let host = if host_port_str.contains(':') {
         let parts: Vec<&str> = host_port_str.split(':').collect();
         if parts.len() > 1 && !parts[0].is_empty() {
-            string_to_c(parts[0])
+            string_to_rc_str(parts[0])
         } else {
             // Default to 127.0.0.1 for local dev to avoid firewall popups
             // Use 0.0.0.0 if DOO_ENV=production or configured explicitly
@@ -2666,9 +2936,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
                 .map(|v| v == "production")
                 .unwrap_or(false);
             if is_prod {
-                string_to_c("0.0.0.0")
+                string_to_rc_str("0.0.0.0")
             } else {
-                string_to_c("127.0.0.1")
+                string_to_rc_str("127.0.0.1")
             }
         }
     } else {
@@ -2676,9 +2946,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
             .map(|v| v == "production")
             .unwrap_or(false);
         if is_prod {
-            string_to_c("0.0.0.0")
+            string_to_rc_str("0.0.0.0")
         } else {
-            string_to_c("127.0.0.1")
+            string_to_rc_str("127.0.0.1")
         }
     };
 
@@ -2711,6 +2981,7 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
     // Server struct layout: { Port: i32, Host: *const c_char }
 
     let startup_start = std::time::Instant::now();
+    let _ = STARTUP_INSTANT.set(Instant::now());
 
     let (port, host_str) = if server_ptr.is_null() {
         (3000, "0.0.0.0".to_string())
@@ -2762,45 +3033,16 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
     println!(); // Ensure previous output is flushed?
     drop(registry);
 
-    runtime.block_on(async {
-        let listener = match TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                doo_http_debug!("CRITICAL ERROR: Failed to bind to {}: {}", addr, e);
-                return;
-            }
-        };
+    let local = tokio::task::LocalSet::new();
+    let listen_result: Result<(), String> = runtime.block_on(local.run_until(async {
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|e| format!("Failed to bind to {}: {}", addr, e))?;
 
         // Now that the socket is bound, compute real boot time
         let boot_time_ms = startup_start.elapsed().as_millis();
 
         init_timestamp_updater();
-
-        // Run database migrations (create tables) at startup
-        let created_tables = run_migrations();
-        if !created_tables.is_empty() {
-            doo_http_debug!(
-                "✓ Migration success: created tables: {}",
-                created_tables.join(", ")
-            );
-        } else {
-            // Check if we have registered tables (they already exist)
-            let has_tables = get_auth_metadata()
-                .lock()
-                .map(|m| !m.is_empty())
-                .unwrap_or(false)
-                || get_crud_metadata()
-                    .lock()
-                    .map(|m| !m.is_empty())
-                    .unwrap_or(false)
-                || get_table_metadata()
-                    .lock()
-                    .map(|m| !m.is_empty())
-                    .unwrap_or(false);
-            if has_tables {
-                doo_http_debug!("✓ Migration success: all tables already exist");
-            }
-        }
 
         // Print banner AFTER bind so boot_time_ms is meaningful
         // Cyan color ANSI escape code: \x1b[36m ... \x1b[0m
@@ -2818,29 +3060,78 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         println!("• Process ID:           {}", std::process::id());
         println!("-------------------------------------------");
         println!("🚀 Server Started on http://{}:{}\n", addr.ip(), port);
+        let _ = std::io::stdout().flush();
+
+        let skip_migrations = std::env::var("DOO_SKIP_MIGRATIONS")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if !skip_migrations {
+            tokio::task::spawn_blocking(|| {
+                doo_http_debug!("Starting migrations in background...");
+                let created_tables =
+                    std::panic::catch_unwind(|| run_migrations()).unwrap_or_default();
+                if !created_tables.is_empty() {
+                    doo_http_debug!(
+                        "✓ Migration success: created tables: {}",
+                        created_tables.join(", ")
+                    );
+                } else {
+                    let has_tables = get_auth_metadata()
+                        .lock()
+                        .map(|m| !m.is_empty())
+                        .unwrap_or(false)
+                        || get_crud_metadata()
+                            .lock()
+                            .map(|m| !m.is_empty())
+                            .unwrap_or(false)
+                        || get_table_metadata()
+                            .lock()
+                            .map(|m| !m.is_empty())
+                            .unwrap_or(false);
+                    if has_tables {
+                        doo_http_debug!("✓ Migration success: all tables already exist");
+                    }
+                }
+
+                MIGRATIONS_READY.store(true, Ordering::SeqCst);
+                doo_http_debug!("Migrations finished; server marked ready");
+            });
+        } else {
+            MIGRATIONS_READY.store(true, Ordering::SeqCst);
+        }
 
         loop {
-            let (stream, remote_addr) = match listener.accept().await {
+            let (stream, _remote_addr) = match listener.accept().await {
                 Ok(s) => s,
-                Err(e) => {
+                Err(_e) => {
                     continue;
                 }
             };
 
-            tokio::task::spawn(async move {
+            tokio::task::spawn_local(async move {
                 let io = TokioIo::new(stream);
                 match http1::Builder::new()
                     .serve_connection(io, service_fn(handle_request))
                     .await
                 {
                     Ok(_) => {}
-                    Err(e) => {}
+                    Err(_e) => {}
                 };
             });
         }
-    });
+        #[allow(unreachable_code)]
+        Ok(())
+    }));
 
-    make_ok_void()
+    match listen_result {
+        Ok(()) => make_ok_void(),
+        Err(e) => {
+            // IMPORTANT: returning an error here prevents the program from silently exiting
+            // when the port is already in use (or any other bind failure).
+            make_err_http(500, &e)
+        }
+    }
 }
 
 // ============================================================================
@@ -2950,7 +3241,9 @@ unsafe fn unwrap_potential_dooresult(ptr: *const c_char) -> *const c_char {
         if len_val <= 0 || len_val > 50_000_000 {
         } else {
             let data_ptr = (ptr as *const u8).add(8) as *const c_char;
-            if !data_ptr.is_null() && validate_cstr_pointer(data_ptr, "unwrap_potential_dooresult_rc") {
+            if !data_ptr.is_null()
+                && validate_cstr_pointer(data_ptr, "unwrap_potential_dooresult_rc")
+            {
                 return data_ptr;
             }
         }
@@ -2970,15 +3263,15 @@ unsafe fn unwrap_potential_dooresult(ptr: *const c_char) -> *const c_char {
     if tag_val == 0 {
         // Tag 0: Ok
         let res = ptr as *const DooResult;
-        
+
         // Sanity check: verify if the value points to valid memory if not null?
         // Hard to do portably without segfaulting.
         // Let's assume if tag is 0, it MIGHT be a DooResult.
-        
-        // Double check against JSON characters to avoid false positives 
+
+        // Double check against JSON characters to avoid false positives
         // if a JSON string starts with \0 (tag 0) - very unlikely for valid JSON/text
         // But invalid/binary data could trigger false positive.
-        
+
         // If it's DooResult, return the content
         let val = (*res).value as *const c_char;
 
@@ -3182,11 +3475,12 @@ pub extern "C" fn array_to_json_with_metadata(
                         }
                     }
                     other_type => {
-                        let enum_name = if other_type.starts_with("Enum(") && other_type.ends_with(')') {
-                            &other_type[5..other_type.len() - 1]
-                        } else {
-                            other_type
-                        };
+                        let enum_name =
+                            if other_type.starts_with("Enum(") && other_type.ends_with(')') {
+                                &other_type[5..other_type.len() - 1]
+                            } else {
+                                other_type
+                            };
 
                         if let Some(variants) = enum_variants.get(enum_name) {
                             let tag = *(field_ptr as *const i32);
@@ -5835,14 +6129,11 @@ pub extern "C" fn doohttp_populate_struct_from_request(
 
         let pick_last = effective_source_type == 0;
 
-        let mut candidates = metadata
-            .param_types
-            .iter()
-            .filter(|t| {
-                layouts_obj
-                    .map(|m| m.contains_key(t.as_str()))
-                    .unwrap_or(false)
-            });
+        let mut candidates = metadata.param_types.iter().filter(|t| {
+            layouts_obj
+                .map(|m| m.contains_key(t.as_str()))
+                .unwrap_or(false)
+        });
 
         let chosen = if pick_last {
             candidates.next_back()
@@ -5850,15 +6141,13 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             candidates.next()
         };
 
-        chosen
-            .cloned()
-            .unwrap_or_else(|| {
-                metadata
-                    .param_types
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown".to_string())
-            })
+        chosen.cloned().unwrap_or_else(|| {
+            metadata
+                .param_types
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Unknown".to_string())
+        })
     } else {
         "Unknown".to_string()
     };
@@ -9502,7 +9791,10 @@ pub extern "C" fn ratelimit_middleware_handler(
                 libc::free(next_response_ptr as *mut libc::c_void);
                 return make_err_http(500, "Memory allocation failed");
             }
-            track_alloc(result as *const std::ffi::c_void, "ratelimit_health_wrap_result");
+            track_alloc(
+                result as *const std::ffi::c_void,
+                "ratelimit_health_wrap_result",
+            );
             (*result).tag = 0;
             (*result).value = next_response_ptr as *mut std::ffi::c_void;
             (*result).owner = owner::FFI;
@@ -9567,7 +9859,10 @@ pub extern "C" fn ratelimit_middleware_handler(
             libc::free(next_response_ptr as *mut libc::c_void);
             return make_err_http(500, "Memory allocation failed");
         }
-        track_alloc(result as *const std::ffi::c_void, "ratelimit_wrap_next_result");
+        track_alloc(
+            result as *const std::ffi::c_void,
+            "ratelimit_wrap_next_result",
+        );
         (*result).tag = 0;
         (*result).value = next_response_ptr as *mut std::ffi::c_void;
         (*result).owner = owner::FFI;
