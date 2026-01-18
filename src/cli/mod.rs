@@ -319,6 +319,9 @@ pub fn run_cli(cli: Cli) -> i32 {
                 check_only: false,
             };
 
+            let compile_start = std::time::Instant::now();
+            // println!("{} Compiling...", INFO);
+
             match compile_project(opts) {
                 Ok(result) => {
                     if result.error_count > 0 || !result.success {
@@ -334,6 +337,10 @@ pub fn run_cli(cli: Cli) -> i32 {
                         return 1;
                     }
                     // No need to copy DLLs anymore!
+                    let compile_ms = compile_start.elapsed().as_millis();
+                    // println!("{} Compiled in {} ms", CHECK, compile_ms);
+                    // println!("{} Starting...", INFO);
+                    let _ = std::io::stdout().flush();
                 }
                 Err(e) => {
                     eprintln!("{} Failed to compile: {}", ERROR, e);
@@ -362,6 +369,55 @@ pub fn run_cli(cli: Cli) -> i32 {
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit());
+
+            // Ensure the child process can find the correct FFI DLLs.
+            // On Windows, DLL resolution depends heavily on PATH and the exe directory.
+            // We prepend the compiler's release output directories so the temp exe always
+            // loads the freshly built doo_*.dll without copying files around.
+            #[cfg(windows)]
+            {
+                let mut dll_dirs: Vec<std::path::PathBuf> = Vec::new();
+
+                // Main doo build output
+                dll_dirs.push(doo_compiler_root.join("target-windows").join("release"));
+                dll_dirs.push(
+                    doo_compiler_root
+                        .join("target-windows")
+                        .join("release")
+                        .join("deps"),
+                );
+
+                // Extra: any ffi_libs/*/target/release for local development
+                let ffi_root = doo_compiler_root.join("ffi_libs");
+                if let Ok(entries) = std::fs::read_dir(&ffi_root) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            let rel = path.join("target").join("release");
+                            if rel.exists() {
+                                dll_dirs.push(rel);
+                            }
+                        }
+                    }
+                }
+
+                dll_dirs.retain(|p| p.exists());
+
+                let path_sep = ';';
+                let mut new_path = String::new();
+                for d in dll_dirs {
+                    if let Some(s) = d.to_str() {
+                        new_path.push_str(s);
+                        new_path.push(path_sep);
+                    }
+                }
+                if let Ok(existing) = std::env::var("PATH") {
+                    new_path.push_str(&existing);
+                }
+                if !new_path.is_empty() {
+                    cmd.env("PATH", new_path);
+                }
+            }
 
             let env_file = run_root.join(".env");
             let env_vars = read_env_vars_from_file(&env_file);
