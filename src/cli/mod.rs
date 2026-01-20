@@ -637,6 +637,7 @@ fn run_deploy(verbose: bool) -> i32 {
     // ================================================================
     let platforms = vec![
         "Fly.io",
+        "Render",
         // "Railway"
     ];
 
@@ -663,6 +664,7 @@ fn run_deploy(verbose: bool) -> i32 {
     // ================================================================
     match platform_name {
         "Fly.io" => deploy_flyio(verbose),
+        "Render" => deploy_render(verbose),
         "Railway" => deploy_railway(verbose),
         _ => {
             println!("{} Unknown platform", ERROR);
@@ -1555,6 +1557,151 @@ fn deploy_railway(verbose: bool) -> i32 {
             1
         }
     }
+}
+
+// ============================================================================
+// RENDER DEPLOYMENT
+// ============================================================================
+
+fn deploy_render(_verbose: bool) -> i32 {
+    // Track deployment attempt
+    analytics::track_deploy_attempt("render");
+
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  🚀 Render Deployment Prep");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    // 3. Git Status Check & Monorepo Support
+    let mut git_root = None;
+    if let Ok(current_dir) = env::current_dir() {
+        let mut dir = current_dir.as_path();
+        loop {
+            if dir.join(".git").exists() {
+                git_root = Some(dir.to_path_buf());
+                break;
+            }
+            if let Some(parent) = dir.parent() {
+                dir = parent;
+            } else {
+                break;
+            }
+        }
+    }
+    
+    let is_git = git_root.is_some();
+    
+    if !is_git {
+        println!();
+        println!("{} Warning: Project is not a git repository", INFO);
+        println!("   Render Blueprints require a git repository.");
+    } else {
+        println!("{}Git repository detected", CHECK);
+    }
+
+    // 1. Check/Create render.yaml (Moved after git check for monorepo support)
+    if let Some(root) = &git_root {
+        let render_yaml = root.join("render.yaml");
+        if !render_yaml.exists() {
+            println!("→ Creating render.yaml in git root...");
+            
+            // Calculate relative path for rootDir
+            let current_dir = env::current_dir().unwrap_or_default();
+            let relative_path = current_dir.strip_prefix(root).unwrap_or(Path::new(""));
+            let relative_str = relative_path.to_string_lossy();
+            
+            // Prepare content with rootDir if needed
+            let mut content = templates::RENDER_YAML_CONTENT.to_string();
+            
+            if !relative_str.is_empty() && relative_str != "." {
+                // Determine indentation - RENDER_YAML_CONTENT uses 2 spaces
+                // We need to insert `rootDir: relative_path` under the service definition
+                // The template is:
+                // services:
+                //   - type: web
+                //     name: doo-app
+                // ...
+                
+                // Naive insertion: find "name: doo-app" and insert rootDir before it
+                // Better: find "type: web" and insert after
+                if let Some(pos) = content.find("type: web") {
+                    // Find the end of the line
+                    if let Some(newline_pos) = content[pos..].find('\n') {
+                        let insert_pos = pos + newline_pos + 1;
+                        // Assuming 4 space indent for properties under list item in current template
+                        let root_dir_line = format!("    rootDir: {}\n", relative_str.replace('\\', "/"));
+                        content.insert_str(insert_pos, &root_dir_line);
+                        println!("   (Monorepo detected: set rootDir to '{}')", relative_str.replace('\\', "/"));
+                    }
+                }
+            }
+
+            if let Err(e) = fs::write(render_yaml, content) {
+                println!("{}Failed to create render.yaml: {}", ERROR, e);
+                return 1;
+            }
+            println!("{}render.yaml created", CHECK);
+        } else {
+            println!("{}render.yaml exists in git root", CHECK);
+        }
+    } else {
+        // Fallback for non-git users (just current dir)
+        let render_yaml = Path::new("render.yaml");
+        if !render_yaml.exists() {
+             println!("→ Creating render.yaml...");
+             use templates::RENDER_YAML_CONTENT;
+             if let Err(e) = fs::write(render_yaml, RENDER_YAML_CONTENT) {
+                 println!("{}Failed to create render.yaml: {}", ERROR, e);
+                 return 1;
+             }
+             println!("{}render.yaml created", CHECK);
+        }
+    }
+
+    // 2. Check/Create Dockerfile (Always in current dir)
+    use templates::DOCKERFILE_CONTENT;
+    let dockerfile = Path::new("Dockerfile");
+    if !dockerfile.exists() {
+        println!("→ Creating Dockerfile...");
+        if let Err(e) = fs::write(dockerfile, DOCKERFILE_CONTENT) {
+            println!("{}Failed to create Dockerfile: {}", ERROR, e);
+            return 1;
+        }
+        println!("{}Dockerfile created", CHECK);
+    } else {
+        println!("{}Dockerfile exists", CHECK);
+    }
+
+    println!();
+    println!("✅ Configuration generated!");
+    println!();
+    println!("👉 Next Steps to Deploy:");
+    println!("   1. Push code to GitHub/GitLab:");
+    if !is_git {
+        println!("      git init");
+        println!("      git add .");
+        println!("      git commit -m \"Initial commit\"");
+        println!("      git remote add origin <your-repo-url>");
+        println!("      git push -u origin main");
+    } else {
+        println!("      git add .");
+        println!("      git commit -m \"Add Render config\"");
+        println!("      git push");
+    }
+    println!();
+    println!("   2. Connect to Render:");
+    println!("      Open https://dashboard.render.com/blueprints/new");
+    println!("      Select your repository and click 'Connect'.");
+    println!();
+    println!("   Render will automatically detect render.yaml and deploy.");
+    println!();
+
+    // Track success (prep phase)
+    analytics::track_deploy_success("render", 0);
+    analytics::flush();
+
+    0
 }
 
 /// Upgrade doo to the latest version

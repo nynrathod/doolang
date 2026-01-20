@@ -78,6 +78,22 @@ DATABASE_URL=postgresql://postgres:admin@localhost:5432/doo_test
 JWT_SECRET=your-secret-key-change-in-production
 "#;
 
+// Shared render.yaml content
+pub const RENDER_YAML_CONTENT: &str = r#"services:
+  - type: web
+    name: doo-app
+    env: docker
+    plan: free
+    region: ohio
+    envVars:
+      - key: DOO_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+"#;
+
 pub const STARTER_TEMPLATE: Template = Template {
     name: "starter",
     description: "Hello World API",
