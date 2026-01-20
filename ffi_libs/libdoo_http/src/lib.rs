@@ -2225,6 +2225,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().unwrap_or("").to_string();
 
+    println!("[Doo] >> {} {}", method, path);
+    let _ = std::io::stdout().flush();
+
     // Parse query parameters
     let query_params = parse_query(&query);
 
@@ -2451,7 +2454,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
         let exec_req_ptr = Box::into_raw(doo_request);
 
-        let res_ptr: *mut DooResult = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let res_ptr: *mut DooResult = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             set_current_request_path(&exec_path);
             if !exec_all_middleware.is_empty() {
                 let middleware_vec = exec_all_middleware.clone();
@@ -2482,10 +2485,35 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 doo_ffi_exit!("direct_handler", "result_ptr={:p}", res);
                 res
             }
-        }))
-        .unwrap_or(std::ptr::null_mut());
+        })) {
+            Ok(ptr) => ptr,
+            Err(panic_payload) => {
+                let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "panic".to_string()
+                };
+                let body_json = error::internal_error(
+                    format!("Panic in handler: {}", msg),
+                    exec_path.clone(),
+                )
+                .to_json_string();
+                set_last_error(500, body_json);
+                std::ptr::null_mut()
+            }
+        };
 
         if res_ptr.is_null() {
+            if let Some((st, json)) = take_last_error() {
+                return HandlerOutcome {
+                    result_addr: 0,
+                    error_status: st.max(100).min(599) as u16,
+                    error_json: Some(json),
+                };
+            }
+
             let err = error::internal_server_error(exec_path.clone());
             return HandlerOutcome {
                 result_addr: 0,
@@ -2583,7 +2611,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     };
 
     if let Some(body_json) = outcome.error_json {
-        let status = StatusCode::from_u16(outcome.error_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status = StatusCode::from_u16(outcome.error_status)
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        if status.as_u16() >= 500 {
+            eprintln!("[Doo][ERROR] {} {} -> {} {}", method, path, status.as_u16(), body_json);
+        }
         let mut builder = Response::builder()
             .status(status)
             .header("content-type", "application/json");
@@ -2916,6 +2948,45 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
         }
     };
 
+    let host_from_env = || -> Option<String> {
+        let mut v = std::env::var("HOST").ok()?;
+        v = v.trim().to_string();
+        if v.is_empty() {
+            return None;
+        }
+
+        if let Some(rest) = v.strip_prefix("http://") {
+            v = rest.to_string();
+        } else if let Some(rest) = v.strip_prefix("https://") {
+            v = rest.to_string();
+        } else if let Some(pos) = v.find("://") {
+            v = v[(pos + 3)..].to_string();
+        }
+
+        if let Some(at_pos) = v.rfind('@') {
+            v = v[(at_pos + 1)..].to_string();
+        }
+
+        if let Some(slash_pos) = v.find('/') {
+            v = v[..slash_pos].to_string();
+        }
+
+        if v.starts_with('[') {
+            if let Some(end) = v.find(']') {
+                return Some(v[1..end].to_string());
+            }
+        }
+
+        if let Some(colon_pos) = v.rfind(':') {
+            let host = &v[..colon_pos];
+            if !host.is_empty() {
+                return Some(host.to_string());
+            }
+        }
+
+        Some(v)
+    };
+
     // Parse port from ":3000" or "127.0.0.1:3000" format
     let port = if let Some(colon_pos) = host_port_str.rfind(':') {
         host_port_str[colon_pos + 1..]
@@ -2935,7 +3006,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
             let is_prod = std::env::var("DOO_ENV")
                 .map(|v| v == "production")
                 .unwrap_or(false);
-            if is_prod {
+            if let Some(env_host) = host_from_env() {
+                string_to_rc_str(&env_host)
+            } else if is_prod {
                 string_to_rc_str("0.0.0.0")
             } else {
                 string_to_rc_str("127.0.0.1")
@@ -2945,7 +3018,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
         let is_prod = std::env::var("DOO_ENV")
             .map(|v| v == "production")
             .unwrap_or(false);
-        if is_prod {
+        if let Some(env_host) = host_from_env() {
+            string_to_rc_str(&env_host)
+        } else if is_prod {
             string_to_rc_str("0.0.0.0")
         } else {
             string_to_rc_str("127.0.0.1")
@@ -3102,12 +3177,15 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         }
 
         loop {
-            let (stream, _remote_addr) = match listener.accept().await {
+            let (stream, remote_addr) = match listener.accept().await {
                 Ok(s) => s,
                 Err(_e) => {
                     continue;
                 }
             };
+
+            println!("[Doo] << accepted {}", remote_addr);
+            let _ = std::io::stdout().flush();
 
             tokio::task::spawn_local(async move {
                 let io = TokioIo::new(stream);
@@ -6915,7 +6993,7 @@ fn get_table_metadata() -> &'static Mutex<HashMap<String, TableMetadata>> {
 // ============================================================================
 
 extern "C" {
-    fn doo_db_table_exists(table_name: *const c_char) -> i32;
+    fn doo_db_table_exists(_db: *const c_char, table_name: *const c_char) -> i32;
     fn doo_db_create_table(_db: *const c_char, sql: *const c_char) -> *mut std::ffi::c_void;
     fn doo_db_insert_json(sql: *const c_char, values_json: *const c_char) -> *mut std::ffi::c_void;
     fn doo_db_query_json(sql: *const c_char) -> *mut std::ffi::c_void;
@@ -7302,9 +7380,7 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
         // Build INSERT SQL
         let table_name = &auth_meta.table_name;
         let mut field_names = Vec::new();
-        let mut placeholders = Vec::new();
         let mut values_json = Vec::new();
-        let mut param_idx = 1;
 
         for field in fields.iter() {
             let field_obj = match field.as_object() {
@@ -7338,9 +7414,7 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
             // Use hashed password for password field (case-insensitive comparison)
             if field_name.to_lowercase() == password_field_name.to_lowercase() {
                 field_names.push(to_snake_case(field_name));
-                placeholders.push(format!("${}", param_idx));
                 values_json.push(serde_json::Value::String(hashed_password.clone()));
-                param_idx += 1;
             } else {
                 // Case-insensitive lookup for the field value
                 let value = if ignore_request_value {
@@ -7351,9 +7425,7 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
 
                 if let Some(value) = value {
                     field_names.push(to_snake_case(field_name));
-                    placeholders.push(format!("${}", param_idx));
                     values_json.push(value.clone());
-                    param_idx += 1;
                 } else {
                     // Check if field has @default decorator
                     if let Some(decs) = decorators {
@@ -7368,7 +7440,6 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                         }) {
                             // Apply default value - convert to proper JSON type based on field type
                             field_names.push(to_snake_case(field_name));
-                            placeholders.push(format!("${}", param_idx));
 
                             // Get field type
                             let field_type_str = field_obj
@@ -7401,12 +7472,15 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
                             };
 
                             values_json.push(typed_value);
-                            param_idx += 1;
                         }
                     }
                 }
             }
         }
+
+        let placeholders: Vec<String> = (1..=values_json.len())
+            .map(|i| format!("${}", i))
+            .collect();
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({}) RETURNING id",
@@ -7819,8 +7893,22 @@ extern "C" fn auth_login_handler(request: *mut DooRequest) -> *mut DooResult {
         let is_error = doo_db_is_error(query_result);
 
         if is_error != 0 {
+            let err_msg_ptr = doo_db_get_error_message(query_result);
+            let err_msg = if err_msg_ptr.is_null() {
+                "Database query failed".to_string()
+            } else {
+                let msg = CStr::from_ptr(err_msg_ptr).to_string_lossy().into_owned();
+                doo_db_free_string(err_msg_ptr);
+                msg
+            };
             doo_db_result_free(query_result);
-            return create_error_result(401, "Invalid credentials");
+
+            // If no rows returned, treat as invalid credentials.
+            // Otherwise, surface DB failures as 500 so deployment issues aren't masked as 401.
+            if err_msg.to_lowercase().contains("no rows returned") {
+                return create_error_result(401, "Invalid credentials");
+            }
+            return create_error_result(500, &format!("Database query failed: {}", err_msg));
         }
 
         let user_json_str = if query_res.value.is_null() {
@@ -8139,10 +8227,8 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
         // Build INSERT SQL
         let table_name = &crud_meta.table_name;
         let mut field_names = Vec::new();
-        let mut placeholders = Vec::new();
         let mut values_json = Vec::new();
         let mut response_additions = HashMap::new();
-        let mut param_idx = 1;
         let mut all_errors: HashMap<String, error::FieldError> = HashMap::new();
 
         for field in fields.iter() {
@@ -8271,9 +8357,7 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                 }
 
                 field_names.push(to_snake_case(field_name));
-                placeholders.push(format!("${}", param_idx));
                 values_json.push(value.clone());
-                param_idx += 1;
             } else {
                 // Check if field has @foreign or @default decorator
                 let mut is_handled = false;
@@ -8310,7 +8394,6 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
 
                                     if is_auth_target {
                                         field_names.push(to_snake_case(field_name));
-                                        placeholders.push(format!("${}", param_idx));
 
                                         // Auto-convert to number if possible (for Int/Float fields)
                                         // But safely fallback to string
@@ -8325,7 +8408,6 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                                         response_additions
                                             .insert(to_snake_case(field_name), val.clone());
                                         values_json.push(val);
-                                        param_idx += 1;
                                         is_handled = true;
                                     }
                                 }
@@ -8359,7 +8441,6 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                                     .unwrap_or("Str");
 
                                 field_names.push(to_snake_case(field_name));
-                                placeholders.push(format!("${}", param_idx));
 
                                 let val = match field_type {
                                     "Int" => clean_val
@@ -8388,7 +8469,6 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
                                 response_additions.insert(to_snake_case(field_name), val.clone());
                                 values_json.push(val);
 
-                                param_idx += 1;
                                 is_handled = true;
                             }
                         }
@@ -8406,6 +8486,10 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
         if field_names.is_empty() {
             return create_error_result(400, "No valid fields provided");
         }
+
+        let placeholders: Vec<String> = (1..=values_json.len())
+            .map(|i| format!("${}", i))
+            .collect();
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({}) RETURNING id",
@@ -9552,10 +9636,18 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
     // might not be visible yet during CREATE TABLE
 
     // Check for autoTimestamp - add created_at and updated_at columns
-    let has_auto_timestamp = metadata
-        .get("autoTimestamp")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let has_auto_timestamp = match metadata.get("autoTimestamp") {
+        Some(v) => {
+            v.as_bool().unwrap_or_else(|| {
+                if let Some(s) = v.as_str() {
+                    !s.is_empty()
+                } else {
+                    v.is_object() || v.is_array()
+                }
+            })
+        }
+        None => false,
+    };
     if has_auto_timestamp {
         columns.push("created_at TIMESTAMPTZ DEFAULT NOW()".to_string());
         columns.push("updated_at TIMESTAMPTZ DEFAULT NOW()".to_string());
@@ -9955,7 +10047,22 @@ extern "C" fn jwt_middleware_handler(
         }
 
         // Verify JWT token using libdoo_auth
-        let token_c = CString::new(token.as_str()).unwrap();
+        let token_c = match CString::new(token.as_str()) {
+            Ok(v) => v,
+            Err(_) => {
+                let path = if req.path.is_null() {
+                    "/".to_string()
+                } else {
+                    CStr::from_ptr(req.path).to_string_lossy().to_string()
+                };
+
+                let error_json = format!(
+                    r#"{{"type":"unauthorized","title":"Unauthorized","status":401,"detail":"Authentication credentials are missing or invalid","instance":"{}","message":"Invalid authorization token"}}"#,
+                    path.replace("\"", "\\\"")
+                );
+                return make_err_http(401, &error_json);
+            }
+        };
         let verify_result = doo_auth_verify(token_c.as_ptr());
 
         if verify_result.is_null() {
@@ -10426,6 +10533,36 @@ fn migrate_table_columns(table_name: &str, metadata: &serde_json::Value) {
                     let res2 = doo_db_create_table(std::ptr::null(), sql_c2.as_ptr());
                     if !res2.is_null() {
                         doo_db_result_free(res2);
+                    }
+                }
+            }
+        }
+    }
+
+    let has_auto_timestamp = match metadata.get("autoTimestamp") {
+        Some(v) => {
+            v.as_bool().unwrap_or_else(|| {
+                if let Some(s) = v.as_str() {
+                    !s.is_empty()
+                } else {
+                    v.is_object() || v.is_array()
+                }
+            })
+        }
+        None => false,
+    };
+
+    if has_auto_timestamp {
+        for col in ["created_at", "updated_at"] {
+            let alter_sql = format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} TIMESTAMPTZ DEFAULT NOW()",
+                table_name, col
+            );
+            if let Ok(sql_c) = CString::new(alter_sql) {
+                unsafe {
+                    let res = doo_db_create_table(std::ptr::null(), sql_c.as_ptr());
+                    if !res.is_null() {
+                        doo_db_result_free(res);
                     }
                 }
             }
