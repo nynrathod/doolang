@@ -17,7 +17,9 @@ use std::sync::Mutex;
 use std::sync::Once;
 use tokio::runtime::Runtime;
 use tokio::sync::Notify;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 
 // Debug macro now imported from libdoo_runtime
 // Use doo_db_debug!("message") or doo_debug!("DB", "message")
@@ -247,6 +249,96 @@ fn load_env() {
             let _ = dotenvy::from_filename(".env");
         }
     });
+}
+
+fn should_disable_prepared_statements() -> bool {
+    if std::env::var("DOO_DB_DISABLE_PREPARED_STATEMENTS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let url = std::env::var("DATABASE_URL").unwrap_or_default();
+    let url_lower = url.to_ascii_lowercase();
+    url_lower.contains("pooler") || url_lower.contains("pgbouncer")
+}
+
+fn escape_sql_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "''")
+}
+
+fn sql_literal_from_json(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "NULL".to_string(),
+        serde_json::Value::Bool(true) => "TRUE".to_string(),
+        serde_json::Value::Bool(false) => "FALSE".to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => format!("'{}'", escape_sql_string(s)),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            let s = serde_json::to_string(v).unwrap_or_default();
+            format!("'{}'", escape_sql_string(&s))
+        }
+    }
+}
+
+fn inline_sql_params(sql: &str, params: &[serde_json::Value]) -> String {
+    let mut out = sql.to_string();
+    for idx in (0..params.len()).rev() {
+        let placeholder = format!("${}", idx + 1);
+        let value = sql_literal_from_json(&params[idx]);
+        out = out.replace(&placeholder, &value);
+    }
+    out
+}
+
+fn simple_value_to_json(s: &str) -> serde_json::Value {
+    let s_trim = s.trim();
+    if s_trim.is_empty() {
+        return serde_json::Value::String(String::new());
+    }
+    if s_trim.eq_ignore_ascii_case("t") || s_trim.eq_ignore_ascii_case("true") {
+        return serde_json::Value::Bool(true);
+    }
+    if s_trim.eq_ignore_ascii_case("f") || s_trim.eq_ignore_ascii_case("false") {
+        return serde_json::Value::Bool(false);
+    }
+    if let Ok(i) = s_trim.parse::<i64>() {
+        return serde_json::Value::Number(serde_json::Number::from(i));
+    }
+    if let Ok(f) = s_trim.parse::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(f) {
+            return serde_json::Value::Number(n);
+        }
+    }
+    serde_json::Value::String(s.to_string())
+}
+
+fn simple_query_messages(
+    rt: &Runtime,
+    client: &Client,
+    sql: &str,
+) -> Result<Vec<tokio_postgres::SimpleQueryMessage>, tokio_postgres::Error> {
+    block_on_compat(rt, async { client.simple_query(sql).await })
+}
+
+fn simple_messages_to_json_array(messages: Vec<tokio_postgres::SimpleQueryMessage>) -> String {
+    let mut array = Vec::new();
+    for msg in messages {
+        if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+            let mut obj = serde_json::Map::new();
+            for (i, col) in row.columns().iter().enumerate() {
+                let name = col.name();
+                let value = match row.get(i) {
+                    Some(v) => simple_value_to_json(v),
+                    None => serde_json::Value::Null,
+                };
+                obj.insert(name.to_string(), value);
+            }
+            array.push(serde_json::Value::Object(obj));
+        }
+    }
+    serde_json::Value::Array(array).to_string()
 }
 
 // Link to centralized runtime functions
@@ -543,6 +635,52 @@ fn get_client() -> Result<Arc<Client>, String> {
         .ok_or_else(|| "Database not connected. Call doo_db_connect_postgres() first".to_string())
 }
 
+fn redact_db_url(url: &str) -> String {
+    // Best-effort redaction: mask password in postgresql://user:pass@host/... style URLs.
+    // Avoid pulling in a URL parsing crate for this.
+    if let Some(scheme_idx) = url.find("://") {
+        let after_scheme = &url[scheme_idx + 3..];
+        if let Some(at_idx) = after_scheme.find('@') {
+            let userinfo = &after_scheme[..at_idx];
+            if let Some(colon_idx) = userinfo.find(':') {
+                let user = &userinfo[..colon_idx];
+                let rest = &after_scheme[at_idx..];
+                return format!("{}://{}:***{}", &url[..scheme_idx], user, rest);
+            }
+        }
+    }
+    url.to_string()
+}
+
+fn rewrite_supabase_pooler_url(url: &str) -> Option<String> {
+    let scheme_end = url.find("://")?;
+    let scheme = &url[..scheme_end];
+    let rest = &url[scheme_end + 3..];
+    let at_idx = rest.find('@')?;
+    let userinfo = &rest[..at_idx];
+    let after_at = &rest[at_idx + 1..];
+    let slash_idx = after_at.find('/')?;
+    let hostport = &after_at[..slash_idx];
+    let path_and_q = &after_at[slash_idx..];
+
+    if !hostport.contains("pooler.supabase.com") {
+        return None;
+    }
+
+    let (user, pass) = userinfo.split_once(':')?;
+    let ref_id = user.strip_prefix("postgres.")?;
+    if ref_id.is_empty() {
+        return None;
+    }
+
+    let direct_host = format!("db.{}.supabase.co", ref_id);
+    Some(format!(
+        "{}://postgres:{}@:5432{}",
+        scheme, pass, path_and_q
+    )
+    .replace("@:5432", &format!("@{}:5432", direct_host)))
+}
+
 #[no_mangle]
 pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
     doo_ffi_enter!("doo_db_connect_postgres");
@@ -558,38 +696,200 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
         Err(_) => return make_err_connection_failed("DATABASE_URL not set".to_string()),
     };
 
+    let (connect_url, sslmode) = if let Some(q_idx) = database_url.find('?') {
+        let base = &database_url[..q_idx];
+        let query = &database_url[q_idx + 1..];
+        let mut kept: Vec<&str> = Vec::new();
+        let mut sslmode_val: Option<String> = None;
+        for part in query.split('&') {
+            if part.is_empty() {
+                continue;
+            }
+            let (k, v) = match part.split_once('=') {
+                Some((k, v)) => (k, v),
+                None => {
+                    kept.push(part);
+                    continue;
+                }
+            };
+            if k.eq_ignore_ascii_case("sslmode") {
+                sslmode_val = Some(v.to_string());
+                continue;
+            }
+            kept.push(part);
+        }
+
+        let sanitized = if kept.is_empty() {
+            base.to_string()
+        } else {
+            format!("{}?{}", base, kept.join("&"))
+        };
+        (sanitized, sslmode_val)
+    } else {
+        (database_url.clone(), None)
+    };
+
+    let rewrite_pooler = std::env::var("DOO_REWRITE_SUPABASE_POOLER")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    let connect_url = if rewrite_pooler {
+        match rewrite_supabase_pooler_url(&connect_url) {
+            Some(rewritten) => {
+                doo_db_debug!(
+                    "Detected Supabase pooler URL; using direct DB host. connect_url: {}",
+                    redact_db_url(&rewritten)
+                );
+                rewritten
+            }
+            None => connect_url,
+        }
+    } else {
+        connect_url
+    };
+
     let rt = match runtime() {
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
 
-    let connect_res = block_on_compat(rt, tokio_postgres::connect(&database_url, NoTls));
-    let (client, connection) = match connect_res {
-        Ok(v) => v,
-        Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
+    fn connect_url_is_local(connect_url: &str) -> bool {
+        // Keep this intentionally simple; we only need to distinguish local dev
+        // from remote managed DBs like Supabase.
+        let lower = connect_url.to_ascii_lowercase();
+        lower.contains("localhost")
+            || lower.contains("127.0.0.1")
+            || lower.contains("[::1]")
+            || lower.contains("::1")
+    }
+
+    // Parse sslmode from connection string
+    // PostgreSQL sslmode meanings:
+    // - disable: No SSL (for local dev)
+    // - require: Use SSL but DON'T verify certs (most cloud DBs like Supabase)
+    // - verify-ca/verify-full: Use SSL and verify certs
+    let sslmode_lower = sslmode.as_deref().unwrap_or("").to_ascii_lowercase();
+    // If sslmode is omitted, default to NoTLS only for localhost connections;
+    // otherwise default to TLS (cloud DBs usually require it).
+    let use_no_tls = if sslmode.is_none() {
+        connect_url_is_local(&connect_url)
+    } else {
+        sslmode_lower == "disable"
     };
+    let verify_certs = sslmode_lower.starts_with("verify-");
+
+    // Helpful early error: Supabase/pgbouncer poolers generally require TLS.
+    if sslmode_lower == "disable"
+        && (connect_url.contains("supabase.com") || connect_url.contains("pooler.supabase.com"))
+    {
+        return make_err_connection_failed(
+            "sslmode=disable requested but the server requires TLS. Use sslmode=require (or verify-full)."
+                .to_string(),
+        );
+    }
 
     // Initialize shutdown signal
     let shutdown = Arc::new(Notify::new());
     SHUTDOWN_SIGNAL.set(shutdown.clone()).ok();
     IS_CONNECTED.store(true, Ordering::SeqCst);
 
-    // Spawn the connection task with shutdown handling
-    rt.spawn(async move {
-        tokio::select! {
-            result = connection => {
-                if let Err(e) = result {
-                    // Only print error if not a normal shutdown
-                    if IS_CONNECTED.load(Ordering::SeqCst) {
-                        doo_db_debug!("Connection error: {}", e);
+    // Connect and spawn connection task based on SSL mode
+    doo_db_debug!(
+        "Connecting to Postgres: tls={}, verify_certs={}, sslmode={:?}",
+        !use_no_tls,
+        verify_certs,
+        sslmode
+    );
+
+    doo_db_debug!(
+        "DATABASE_URL (redacted) = {}",
+        redact_db_url(&database_url)
+    );
+
+    doo_db_debug!("connect_url (redacted) = {}", redact_db_url(&connect_url));
+
+    let disable_prepared_conn = should_disable_prepared_statements();
+    doo_db_debug!(
+        "Connection settings: disable_prepared_statements={}",
+        disable_prepared_conn
+    );
+
+    let client: Client = if use_no_tls {
+        // No TLS - for local PostgreSQL development
+        let mut cfg: tokio_postgres::Config = match connect_url.parse() {
+            Ok(c) => c,
+            Err(_) => {
+                return make_err_connection_failed(
+                    "Invalid DATABASE_URL (failed to parse connection string)".to_string(),
+                )
+            }
+        };
+
+        let connect_result = block_on_compat(rt, cfg.connect(tokio_postgres::NoTls));
+        let (client, connection) = match connect_result {
+            Ok(v) => v,
+            Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
+        };
+        
+        // Spawn connection task
+        let shutdown_clone = shutdown.clone();
+        rt.spawn(async move {
+            tokio::select! {
+                result = connection => {
+                    if let Err(e) = result {
+                        if IS_CONNECTED.load(Ordering::SeqCst) {
+                            doo_db_debug!("Connection error: {}", e);
+                        }
                     }
                 }
+                _ = shutdown_clone.notified() => {}
             }
-            _ = shutdown.notified() => {
-                // Shutdown requested, exit cleanly
+        });
+        
+        client
+    } else {
+        // TLS enabled - for cloud databases
+        let mut tls_builder = TlsConnector::builder();
+        let connector = match tls_builder
+            .danger_accept_invalid_certs(!verify_certs)
+            .build()
+        {
+            Ok(c) => MakeTlsConnector::new(c),
+            Err(e) => return make_err_connection_failed(format!("Failed to create TLS connector: {}", e)),
+        };
+
+        let mut cfg: tokio_postgres::Config = match connect_url.parse() {
+            Ok(c) => c,
+            Err(_) => {
+                return make_err_connection_failed(
+                    "Invalid DATABASE_URL (failed to parse connection string)".to_string(),
+                )
             }
-        }
-    });
+        };
+
+        let connect_result = block_on_compat(rt, cfg.connect(connector));
+        let (client, connection) = match connect_result {
+            Ok(v) => v,
+            Err(e) => return make_err_connection_failed(format!("Failed to connect: {}", e)),
+        };
+        
+        // Spawn connection task
+        let shutdown_clone = shutdown.clone();
+        rt.spawn(async move {
+            tokio::select! {
+                result = connection => {
+                    if let Err(e) = result {
+                        if IS_CONNECTED.load(Ordering::SeqCst) {
+                            doo_db_debug!("Connection error: {}", e);
+                        }
+                    }
+                }
+                _ = shutdown_clone.notified() => {}
+            }
+        });
+        
+        client
+    };
 
     // Store in both CLIENT (for backward compatibility) and GLOBAL_DB
     let client_arc = Arc::new(client);
@@ -633,9 +933,27 @@ pub extern "C" fn doo_db_table_exists(_db: *const c_char, table_name: *const c_c
         Err(_) => return 0,
     };
     let query = "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)";
-    let exists = block_on_compat(rt, async { client.query_one(query, &[&table]).await })
-        .map(|row| row.get::<usize, bool>(0))
-        .unwrap_or(false);
+
+    let exists = if should_disable_prepared_statements() {
+        let q = inline_sql_params(query, &[serde_json::Value::String(table)]);
+        match simple_query_messages(rt, &client, &q) {
+            Ok(messages) => {
+                for msg in messages {
+                    if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                        if let Some(v) = row.get(0) {
+                            return if v == "t" || v.eq_ignore_ascii_case("true") { 1 } else { 0 };
+                        }
+                    }
+                }
+                false
+            }
+            Err(_) => false,
+        }
+    } else {
+        block_on_compat(rt, async { client.query_one(query, &[&table]).await })
+            .map(|row| row.get::<usize, bool>(0))
+            .unwrap_or(false)
+    };
     if exists {
         1
     } else {
@@ -657,6 +975,14 @@ pub extern "C" fn doo_db_create_table(_db: *const c_char, sql: *const c_char) ->
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
+
+    if should_disable_prepared_statements() {
+        return match simple_query_messages(rt, &client, sql.as_str()) {
+            Ok(_) => make_ok_void(),
+            Err(e) => make_err_from_pg_error(&e),
+        };
+    }
+
     let res = block_on_compat(rt, async { client.execute(sql.as_str(), &[]).await });
     match res {
         Ok(_) => make_ok_void(),
@@ -678,6 +1004,15 @@ pub extern "C" fn doo_db_query(_db: *const c_char, sql: *const c_char) -> *mut D
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
+
+    if should_disable_prepared_statements() {
+        let messages = match simple_query_messages(rt, &client, sql.as_str()) {
+            Ok(m) => m,
+            Err(e) => return make_err_from_pg_error(&e),
+        };
+        return make_ok_string(simple_messages_to_json_array(messages));
+    }
+
     let res = block_on_compat(rt, async { client.query(sql.as_str(), &[]).await });
     let rows = match res {
         Ok(r) => r,
@@ -740,6 +1075,13 @@ pub extern "C" fn doo_db_execute(_db: *const c_char, sql: *const c_char) -> *mut
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
+
+    if should_disable_prepared_statements() {
+        return match simple_query_messages(rt, &client, &sql_str) {
+            Ok(_) => make_ok_int(0),
+            Err(e) => make_err_query_failed(format!("Execute failed: {}", e)),
+        };
+    }
 
     match block_on_compat(rt, async { client.execute(&sql_str, &[]).await }) {
         Ok(rows) => make_ok_int(rows as i64),
@@ -807,6 +1149,29 @@ pub extern "C" fn doo_db_query_one(_db: *const c_char, sql: *const c_char) -> *m
         Err(e) => return make_err(e),
     };
 
+    if should_disable_prepared_statements() {
+        let messages = match simple_query_messages(rt, &client, sql.as_str()) {
+            Ok(m) => m,
+            Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
+        };
+        for msg in messages {
+            if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in row.columns().iter().enumerate() {
+                    let name = col.name();
+                    let value = match row.get(i) {
+                        Some(v) => simple_value_to_json(v),
+                        None => serde_json::Value::Null,
+                    };
+                    obj.insert(name.to_string(), value);
+                }
+                let json = serde_json::Value::Object(obj).to_string();
+                return make_ok_string(json);
+            }
+        }
+        return make_ok_string(serde_json::Value::Object(serde_json::Map::new()).to_string());
+    }
+
     let res = block_on_compat(rt, async { client.query_one(sql.as_str(), &[]).await });
     let row = match res {
         Ok(r) => r,
@@ -853,6 +1218,24 @@ pub extern "C" fn doo_db_insert_json(
             Ok(v) => v,
             Err(e) => return make_err(format!("Invalid JSON values: {e}")),
         };
+
+    if should_disable_prepared_statements() {
+        let sql_inlined = inline_sql_params(&sql, &values);
+        let messages = match simple_query_messages(rt, &client, &sql_inlined) {
+            Ok(m) => m,
+            Err(e) => return make_err_query_failed(format!("Insert failed: {}", e)),
+        };
+
+        for msg in messages {
+            if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                let id_str = row.get(0).unwrap_or("0");
+                let id = id_str.parse::<i64>().unwrap_or(0);
+                return make_ok_int(id);
+            }
+        }
+
+        return make_err_query_failed("Insert failed: no rows returned".to_string());
+    }
 
     // Convert JSON values to owned types that can be passed to PostgreSQL
     let mut string_values: Vec<String> = Vec::new();
@@ -1001,6 +1384,32 @@ pub extern "C" fn doo_db_query_one_param(
         Ok(r) => r,
         Err(e) => return make_err(e),
     };
+
+    if should_disable_prepared_statements() {
+        let sql_inlined = inline_sql_params(&sql, &[serde_json::Value::String(param)]);
+        let messages = match simple_query_messages(rt, &client, &sql_inlined) {
+            Ok(m) => m,
+            Err(e) => return make_err_query_failed(format!("Query failed: {}", e)),
+        };
+
+        for msg in messages {
+            if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in row.columns().iter().enumerate() {
+                    let name = col.name();
+                    let value = match row.get(i) {
+                        Some(v) => simple_value_to_json(v),
+                        None => serde_json::Value::Null,
+                    };
+                    obj.insert(name.to_string(), value);
+                }
+                let json = serde_json::Value::Object(obj).to_string();
+                return make_ok_string(json);
+            }
+        }
+
+        return make_err_query_failed("Query failed: no rows returned".to_string());
+    }
 
     let res = block_on_compat(rt, async { client.query_one(sql.as_str(), &[&param]).await });
     let row = match res {
@@ -1402,6 +1811,17 @@ pub extern "C" fn doo_db_raw(_db: *const c_char, sql: *const c_char) -> *mut Doo
         || sql_upper.starts_with("WITH")
         || sql_upper.contains("RETURNING");
 
+    if should_disable_prepared_statements() {
+        let messages = match simple_query_messages(rt, &client, &sql_str) {
+            Ok(m) => m,
+            Err(e) => return make_err_from_pg_error(&e),
+        };
+        if returns_rows {
+            return make_ok_string(simple_messages_to_json_array(messages));
+        }
+        return make_ok_string(String::new());
+    }
+
     if returns_rows {
         // Execute as SELECT and return JSON
         let res = block_on_compat(rt, async { client.query(&sql_str, &[]).await });
@@ -1502,11 +1922,65 @@ pub extern "C" fn doo_db_raw_param(
     // Otherwise, passing e.g. "2" (String) for an int4 param will fail with
     // "error serializing parameter N".
 
-    // Prepare statement first so we can read parameter types.
-    let prepared = block_on_compat(rt, async { client.prepare(&sql_str).await });
+    let disable_prepared = should_disable_prepared_statements();
 
-    let expected_param_types: Option<Vec<tokio_postgres::types::Type>> =
-        prepared.as_ref().ok().map(|stmt| stmt.params().to_vec());
+    let sql_upper = sql_str.to_uppercase();
+    let returns_rows = sql_upper.starts_with("SELECT")
+        || sql_upper.starts_with("WITH")
+        || sql_upper.contains("RETURNING");
+
+    if disable_prepared {
+        let params_vec: Vec<serde_json::Value> = match &params_value {
+            serde_json::Value::Array(arr) => arr.clone(),
+            _ => vec![params_value.clone()],
+        };
+        let inlined_sql = inline_sql_params(&sql_str, &params_vec);
+
+        let res = block_on_compat(rt, async { client.simple_query(&inlined_sql).await });
+        let messages = match res {
+            Ok(m) => m,
+            Err(e) => return make_err_from_pg_error(&e),
+        };
+
+        if returns_rows {
+            let mut array = Vec::new();
+            for msg in messages {
+                if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                    let mut obj = serde_json::Map::new();
+                    for (i, col) in row.columns().iter().enumerate() {
+                        let name = col.name();
+                        let value = match row.get(i) {
+                            Some(v) => simple_value_to_json(v),
+                            None => serde_json::Value::Null,
+                        };
+                        obj.insert(name.to_string(), value);
+                    }
+                    array.push(serde_json::Value::Object(obj));
+                }
+            }
+
+            let json = serde_json::Value::Array(array).to_string();
+            return make_ok_string(json);
+        }
+
+        return make_ok_string(String::new());
+    }
+
+    // Prepare statement first so we can read parameter types.
+    // NOTE: This is incompatible with poolers like pgBouncer/Supabase pooler because
+    // named prepared statements (s1, s2, ...) can collide across reused server sessions.
+    let mut expected_param_types: Option<Vec<tokio_postgres::types::Type>> = None;
+    let prepared_stmt = if disable_prepared {
+        None
+    } else {
+        match block_on_compat(rt, async { client.prepare(&sql_str).await }) {
+            Ok(stmt) => {
+                expected_param_types = Some(stmt.params().to_vec());
+                Some(stmt)
+            }
+            Err(_) => None,
+        }
+    };
 
     let coerce_param = |idx: usize,
                         v: &serde_json::Value|
@@ -1590,21 +2064,15 @@ pub extern "C" fn doo_db_raw_param(
         _ => vec![coerce_param(0, &params_value)],
     };
 
-    // Detect if this query returns rows
-    // SELECT/WITH always return rows, and INSERT/UPDATE/DELETE may return rows via RETURNING.
-    let sql_upper = sql_str.to_uppercase();
-    let returns_rows = sql_upper.starts_with("SELECT")
-        || sql_upper.starts_with("WITH")
-        || sql_upper.contains("RETURNING");
-
     if returns_rows {
         // Execute as SELECT and return JSON
         let pg_params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
             pg_params.iter().map(|p| p.as_ref()).collect();
 
-        let res = match prepared {
-            Ok(stmt) => block_on_compat(rt, async { client.query(&stmt, &pg_params_refs[..]).await }),
-            Err(_) => block_on_compat(rt, async { client.query(&sql_str, &pg_params_refs[..]).await }),
+        let res = if let Some(stmt) = &prepared_stmt {
+            block_on_compat(rt, async { client.query(stmt, &pg_params_refs[..]).await })
+        } else {
+            block_on_compat(rt, async { client.query(&sql_str, &pg_params_refs[..]).await })
         };
         let rows = match res {
             Ok(r) => r,
@@ -1638,9 +2106,10 @@ pub extern "C" fn doo_db_raw_param(
         let pg_params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
             pg_params.iter().map(|p| p.as_ref()).collect();
 
-        let res = match prepared {
-            Ok(stmt) => block_on_compat(rt, async { client.execute(&stmt, &pg_params_refs[..]).await }),
-            Err(_) => block_on_compat(rt, async { client.execute(&sql_str, &pg_params_refs[..]).await }),
+        let res = if let Some(stmt) = &prepared_stmt {
+            block_on_compat(rt, async { client.execute(stmt, &pg_params_refs[..]).await })
+        } else {
+            block_on_compat(rt, async { client.execute(&sql_str, &pg_params_refs[..]).await })
         };
         match res {
             Ok(_) => make_ok_string(String::new()),
@@ -1707,6 +2176,29 @@ pub extern "C" fn doo_db_check_unique(
     } else {
         format!("SELECT COUNT(*) FROM {} WHERE {} = $1", table, column)
     };
+
+    if should_disable_prepared_statements() {
+        let v = serde_json::Value::String(value.clone());
+        let mut sql_inlined = inline_sql_params(&sql, &[v]);
+        if exclude_id >= 0 {
+            sql_inlined = sql_inlined.replace("$2", &exclude_id.to_string());
+        }
+        let res = block_on_compat(rt, async { client.simple_query(&sql_inlined).await });
+        let messages = match res {
+            Ok(m) => m,
+            Err(_) => return -1,
+        };
+        for msg in messages {
+            if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                if let Some(v) = row.get(0) {
+                    if let Ok(count) = v.parse::<i64>() {
+                        return if count > 0 { 1 } else { 0 };
+                    }
+                }
+            }
+        }
+        return -1;
+    }
 
     let res = if exclude_id >= 0 {
         block_on_compat(rt, async { client.query_one(&sql, &[&value, &exclude_id]).await })
