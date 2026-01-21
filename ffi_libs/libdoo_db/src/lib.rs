@@ -1219,6 +1219,24 @@ pub extern "C" fn doo_db_insert_json(
             Err(e) => return make_err(format!("Invalid JSON values: {e}")),
         };
 
+    if should_disable_prepared_statements() {
+        let sql_inlined = inline_sql_params(&sql, &values);
+        let messages = match simple_query_messages(rt, &client, &sql_inlined) {
+            Ok(m) => m,
+            Err(e) => return make_err_query_failed(format!("Insert failed: {}", e)),
+        };
+
+        for msg in messages {
+            if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                let id_str = row.get(0).unwrap_or("0");
+                let id = id_str.parse::<i64>().unwrap_or(0);
+                return make_ok_int(id);
+            }
+        }
+
+        return make_err_query_failed("Insert failed: no rows returned".to_string());
+    }
+
     // Convert JSON values to owned types that can be passed to PostgreSQL
     let mut string_values: Vec<String> = Vec::new();
     let mut int32_values: Vec<i32> = Vec::new();

@@ -7521,12 +7521,12 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
         }
 
         // Extract inserted ID
-        let user_id = if insert_res.value.is_null() {
-            1i64
-        } else {
-            insert_res.value as i64
-        };
+        let user_id = insert_res.value as i64;
         doo_db_result_free(insert_result);
+
+        if user_id <= 0 {
+            return create_error_result(500, "User creation failed: invalid inserted id");
+        }
 
         // Generate JWT token
         let user_id_str = user_id.to_string();
@@ -10102,21 +10102,59 @@ extern "C" fn jwt_middleware_handler(
 
         // Token is valid - extract payload and inject into request params
         let res = &*(verify_result as *mut DooResult);
-        if res.value != std::ptr::null_mut() {
-            let json_ptr = res.value as *const c_char;
-            let json_str = CStr::from_ptr(json_ptr).to_string_lossy();
+        let path_for_unauth = if req.path.is_null() {
+            "/".to_string()
+        } else {
+            CStr::from_ptr(req.path).to_string_lossy().to_string()
+        };
 
-            // Parse payload
-            if let Ok(claims) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                // Get sub (subject/userId)
-                if let Some(sub) = claims.get("sub").and_then(|s| s.as_str()) {
-                    // Inject into params map
-                    let params_ptr = req.params as *mut HashMap<String, String>;
-                    if !params_ptr.is_null() {
-                        (*params_ptr).insert("auth_user_id".to_string(), sub.to_string());
-                    }
+        let unauthorized = |verify_result: *mut std::ffi::c_void, path: String| -> *mut DooResult {
+            doo_auth_free_result(verify_result);
+            let error_json = format!(
+                r#"{{"type":"unauthorized","title":"Unauthorized","status":401,"detail":"Authentication credentials are missing or invalid","instance":"{}","message":"Invalid JWT token"}}"#,
+                path.replace("\"", "\\\"")
+            );
+            make_err_http(401, &error_json)
+        };
+
+        if res.value == std::ptr::null_mut() {
+            return unauthorized(verify_result, path_for_unauth);
+        }
+
+        let json_ptr = res.value as *const c_char;
+        let json_str = CStr::from_ptr(json_ptr).to_string_lossy();
+
+        let claims = match serde_json::from_str::<serde_json::Value>(&json_str) {
+            Ok(v) => v,
+            Err(_) => return unauthorized(verify_result, path_for_unauth),
+        };
+
+        let mut user_id_opt: Option<i64> = None;
+
+        if let Some(sub) = claims.get("sub").and_then(|s| s.as_str()) {
+            user_id_opt = sub.trim().parse::<i64>().ok();
+        }
+
+        if user_id_opt.is_none() {
+            if let Some(data_str) = claims.get("data").and_then(|d| d.as_str()) {
+                if let Ok(data_json) = serde_json::from_str::<serde_json::Value>(data_str) {
+                    user_id_opt = data_json.get("id").and_then(|v| v.as_i64());
                 }
             }
+        }
+
+        let user_id = match user_id_opt.filter(|v| *v > 0) {
+            Some(v) => v,
+            None => return unauthorized(verify_result, path_for_unauth),
+        };
+
+        if (*request).params.is_null() {
+            (*request).params = Box::into_raw(Box::new(HashMap::<String, String>::new())) as *mut _;
+        }
+
+        let params_ptr = (*request).params as *mut HashMap<String, String>;
+        if !params_ptr.is_null() {
+            (*params_ptr).insert("auth_user_id".to_string(), user_id.to_string());
         }
 
         // Free the result and continue to next middleware/handler
