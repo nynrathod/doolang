@@ -1,0 +1,18 @@
+[package]
+name = "doo_ffi_db"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+deadpool-postgres = { version = "0.14", features = ["rt_tokio_1"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+libc = "0.2"
+doo_ffi_core = { path = "../doo_ffi_core" }
+

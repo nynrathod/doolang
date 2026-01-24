@@ -1,0 +1,25 @@
+[package]
+name = "doo_core"
+version = "0.1.0"
+edition = "2021"
+description = "Core types, traits, and utilities for the Doo compiler"
+license = "MIT"
+
+[dependencies]
+# Serialization for metadata
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Efficient string interning
+string-interner = "0.15"
+
+# For hash maps with better performance
+rustc-hash = "1.1"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+
+[features]
+default = []
+# Enable extra debug information
+debug = []

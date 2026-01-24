@@ -1,0 +1,30 @@
+[package]
+name = "doo_driver"
+version = "0.1.0"
+edition = "2021"
+description = "Doo compiler driver and CLI"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+doo_frontend = { path = "../doo_frontend" }
+doo_hir = { path = "../doo_hir" }
+doo_analysis = { path = "../doo_analysis" }
+doo_mir = { path = "../doo_mir" }
+doo_codegen = { path = "../doo_codegen" }
+
+# LLVM bindings (must match doo_codegen)
+inkwell = { version = "0.6.0", features = ["llvm18-1"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Paths
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile = "3.8"

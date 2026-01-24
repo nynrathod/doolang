@@ -1,0 +1,19 @@
+[package]
+name = "doo_mir"
+version = "0.1.0"
+edition = "2021"
+description = "Mid-Level Intermediate Representation for the Doo compiler"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+doo_hir = { path = "../doo_hir" }
+
+# Data structures
+rustc-hash = "1.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4"

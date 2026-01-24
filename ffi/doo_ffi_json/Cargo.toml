@@ -1,0 +1,10 @@
+[package]
+name = "doo_ffi_json"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libc = "0.2"
+doo_ffi_core = { path = "../doo_ffi_core" }

@@ -1,0 +1,25 @@
+[package]
+name = "doo_codegen"
+version = "0.1.0"
+edition = "2021"
+description = "LLVM code generation for the Doo compiler"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+doo_mir = { path = "../doo_mir" }
+
+# LLVM bindings
+inkwell = { version = "0.6.0", features = ["llvm18-1"] }
+
+# Data structures
+rustc-hash = "1.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+
+[features]
+default = []
