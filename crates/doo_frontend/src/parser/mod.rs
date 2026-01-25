@@ -7,6 +7,7 @@ pub mod items;
 pub mod stmt;
 pub mod expr;
 pub mod types;
+pub mod helpers;
 
 use crate::ast::*;
 use crate::lexer::{Token, TokenKind, Lexer};
@@ -173,6 +174,21 @@ impl Parser {
     /// Check if parsing succeeded without errors.
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
+    }
+
+    /// Peek at next token (for lookahead).
+    pub(super) fn peek_next(&self) -> &Token {
+        self.tokens.get(self.pos + 1).unwrap_or(&self.eof_token)
+    }
+
+    /// Parse expression with precedence (internal helper).
+    pub(super) fn parse_expression_prec(&mut self, min_prec: u8) -> ParseResult<Expr> {
+        use expr::ParserExpr;
+        let mut left = self.parse_unary()?;
+        left = self.parse_postfix(left)?;
+        left = self.parse_binary_op(left, min_prec)?;
+        left = self.parse_range(left)?;
+        Ok(left)
     }
 }
 
