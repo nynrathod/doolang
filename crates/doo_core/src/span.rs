@@ -9,6 +9,7 @@
 //! - File-relative offsets
 
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 
 /// A span in source code with file information.
 /// Uses byte offsets for O(1) substring extraction.
@@ -20,6 +21,14 @@ pub struct Span {
     pub start: u32,
     /// End byte offset (exclusive)
     pub end: u32,
+}
+
+impl Hash for Span {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.file_id.hash(state);
+        self.start.hash(state);
+        self.end.hash(state);
+    }
 }
 
 impl Span {

@@ -1,9 +1,9 @@
-use crate::ast::*;
-use crate::lexer::TokenKind;
-use doo_core::{Span, CompilerError, ErrorCode};
-use super::{Parser, ParseResult};
 use super::expr::ParserExpr;
 use super::types::ParserTypes;
+use super::{ParseResult, Parser};
+use crate::ast::*;
+use crate::lexer::TokenKind;
+use doo_core::{CompilerError, ErrorCode, Span};
 
 /// Trait for parsing statements.
 pub trait ParserStmt {
@@ -82,7 +82,7 @@ impl ParserStmt for Parser {
             let error_var = match &error_binding.kind {
                 PatternKind::Ident(name) => name.clone(),
                 PatternKind::Wildcard => "_".to_string(),
-                PatternKind::Tuple(_) => {
+                PatternKind::Tuple(_) | PatternKind::Index { .. } => {
                     return Err(CompilerError::new(
                         ErrorCode::InvalidExpression,
                         "Error binding must be an identifier or '_'",
@@ -100,7 +100,11 @@ impl ParserStmt for Parser {
             };
 
             return Ok(Stmt::new(
-                StmtKind::ManualErrorExtract { expr, ok_pattern, error_var },
+                StmtKind::ManualErrorExtract {
+                    expr,
+                    ok_pattern,
+                    error_var,
+                },
                 start.merge(&end),
             ));
         }
@@ -119,7 +123,12 @@ impl ParserStmt for Parser {
 
         let end = self.prev_span();
         Ok(Stmt::new(
-            StmtKind::Let { mutable, pattern, type_ann, value },
+            StmtKind::Let {
+                mutable,
+                pattern,
+                type_ann,
+                value,
+            },
             start.merge(&end),
         ))
     }
@@ -144,7 +153,11 @@ impl ParserStmt for Parser {
 
         let end = self.prev_span();
         Ok(Stmt::new(
-            StmtKind::If { condition, then_block, else_branch },
+            StmtKind::If {
+                condition,
+                then_block,
+                else_branch,
+            },
             start.merge(&end),
         ))
     }
@@ -153,7 +166,21 @@ impl ParserStmt for Parser {
         let start = self.current_span();
         self.expect(TokenKind::For)?;
 
-        let pattern = self.parse_pattern()?;
+        let first_pattern = self.parse_pattern()?;
+
+        let pattern = if self.check(TokenKind::Comma) {
+            let mut patterns = vec![first_pattern];
+            while self.check(TokenKind::Comma) {
+                self.advance();
+                patterns.push(self.parse_pattern()?);
+            }
+
+            let p_start = patterns.first().map(|p| p.span).unwrap_or(start);
+            let p_end = patterns.last().map(|p| p.span).unwrap_or(start);
+            Pattern::new(PatternKind::Tuple(patterns), p_start.merge(&p_end))
+        } else {
+            first_pattern
+        };
 
         let iterable = if self.check(TokenKind::In) {
             self.advance();
@@ -166,7 +193,11 @@ impl ParserStmt for Parser {
 
         let end = self.prev_span();
         Ok(Stmt::new(
-            StmtKind::For { pattern, iterable, body },
+            StmtKind::For {
+                pattern,
+                iterable,
+                body,
+            },
             start.merge(&end),
         ))
     }
@@ -224,7 +255,13 @@ impl ParserStmt for Parser {
         let mut stmts = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
             match self.parse_statement() {
-                Ok(stmt) => stmts.push(stmt),
+                Ok(stmt) => {
+                    stmts.push(stmt);
+                    // Consume optional semicolon after statement
+                    if self.check(TokenKind::Semi) {
+                        self.advance();
+                    }
+                }
                 Err(e) => {
                     self.errors.push(e);
                     self.synchronize();
@@ -252,11 +289,14 @@ impl ParserStmt for Parser {
             self.advance();
             let value = self.parse_expression()?;
             let end = self.prev_span();
-            
+
             // Convert expr to pattern
             let pattern = self.expr_to_pattern(&expr)?;
             return Ok(Stmt::new(
-                StmtKind::Assign { target: pattern, value },
+                StmtKind::Assign {
+                    target: pattern,
+                    value,
+                },
                 start.merge(&end),
             ));
         }
@@ -268,7 +308,11 @@ impl ParserStmt for Parser {
             let end = self.prev_span();
             let pattern = self.expr_to_pattern(&expr)?;
             return Ok(Stmt::new(
-                StmtKind::CompoundAssign { target: pattern, op, value },
+                StmtKind::CompoundAssign {
+                    target: pattern,
+                    op,
+                    value,
+                },
                 start.merge(&end),
             ));
         }
@@ -279,7 +323,10 @@ impl ParserStmt for Parser {
             let end = self.prev_span();
             if let ExprKind::Ident(name) = &expr.kind {
                 return Ok(Stmt::new(
-                    StmtKind::IncDec { variable: name.clone(), op },
+                    StmtKind::IncDec {
+                        variable: name.clone(),
+                        op,
+                    },
                     start.merge(&end),
                 ));
             }
@@ -293,10 +340,19 @@ impl ParserStmt for Parser {
         match &expr.kind {
             ExprKind::Ident(name) => Ok(Pattern::ident(name.clone(), expr.span)),
             ExprKind::TupleLit(items) => {
-                let patterns: Result<Vec<_>, _> = items.iter()
-                    .map(|e| self.expr_to_pattern(e))
-                    .collect();
+                let patterns: Result<Vec<_>, _> =
+                    items.iter().map(|e| self.expr_to_pattern(e)).collect();
                 Ok(Pattern::new(PatternKind::Tuple(patterns?), expr.span))
+            }
+            ExprKind::Index { object, index } => {
+                let object_pattern = self.expr_to_pattern(object)?;
+                Ok(Pattern::new(
+                    PatternKind::Index {
+                        object: Box::new(object_pattern),
+                        index: index.clone(),
+                    },
+                    expr.span,
+                ))
             }
             _ => Err(CompilerError::new(
                 ErrorCode::InvalidExpression,

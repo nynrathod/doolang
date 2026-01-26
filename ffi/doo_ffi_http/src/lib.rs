@@ -1,5 +1,5 @@
 //! doo_ffi_http - Complete HTTP FFI Library
-//! 
+//!
 //! Provides all HTTP functionality for Doo applications:
 //! - Route registration (GET, POST, PUT, DELETE, PATCH)
 //! - Middleware (JWT, CORS, Rate Limiting)
@@ -7,22 +7,22 @@
 //! - Request helpers (params, query, headers)
 //! - Server lifecycle
 
-mod types;
-mod router;
 mod error;
-mod middleware;
 mod helpers;
+mod middleware;
+mod router;
 mod server;
+mod types;
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::c_char;
-use std::collections::HashMap;
 
-pub use types::*;
-pub use router::*;
 pub use error::*;
-pub use middleware::*;
 pub use helpers::*;
+pub use middleware::*;
+pub use router::*;
+pub use types::*;
 
 // ============================================================================
 // SERVER LIFECYCLE
@@ -35,16 +35,16 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut c_void {
     } else {
         c_to_string(host_port)
     };
-    
+
     // Parse host:port
     let (host, port) = if let Some(colon) = host_port_str.rfind(':') {
         let h = &host_port_str[..colon];
-        let p = host_port_str[colon+1..].parse().unwrap_or(3000);
+        let p = host_port_str[colon + 1..].parse().unwrap_or(3000);
         (if h.is_empty() { "127.0.0.1" } else { h }.to_string(), p)
     } else {
         ("127.0.0.1".to_string(), 3000)
     };
-    
+
     // Allocate server struct
     unsafe {
         let ptr = libc::malloc(16) as *mut u8;
@@ -68,7 +68,7 @@ pub extern "C" fn doo_http_listen(server_ptr: *const c_void) -> *mut DooResult {
             (c_to_string(host_ptr), port as u16)
         }
     };
-    
+
     match server::start_server(&host, port as u16) {
         Ok(_) => make_ok_void(),
         Err(e) => make_err_http(500, &e),
@@ -80,59 +80,103 @@ pub extern "C" fn doo_http_listen(server_ptr: *const c_void) -> *mut DooResult {
 // ============================================================================
 
 #[no_mangle]
-pub extern "C" fn doo_http_get(_server: *const c_void, path: *const c_char, handler_name: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_http_get(
+    _server: *const c_void,
+    path: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
     register_route("GET", path, handler_name)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_get_fn(_server: *const c_void, path: *const c_char, handler: DooHandlerFn) -> *mut DooResult {
+pub extern "C" fn doo_http_get_fn(
+    _server: *const c_void,
+    path: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
     register_route_fn("GET", path, handler)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_post(_server: *const c_void, path: *const c_char, handler_name: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_http_post(
+    _server: *const c_void,
+    path: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
     register_route("POST", path, handler_name)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_post_fn(_server: *const c_void, path: *const c_char, handler: DooHandlerFn) -> *mut DooResult {
+pub extern "C" fn doo_http_post_fn(
+    _server: *const c_void,
+    path: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
     register_route_fn("POST", path, handler)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_put(_server: *const c_void, path: *const c_char, handler_name: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_http_put(
+    _server: *const c_void,
+    path: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
     register_route("PUT", path, handler_name)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_put_fn(_server: *const c_void, path: *const c_char, handler: DooHandlerFn) -> *mut DooResult {
+pub extern "C" fn doo_http_put_fn(
+    _server: *const c_void,
+    path: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
     register_route_fn("PUT", path, handler)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_delete(_server: *const c_void, path: *const c_char, handler_name: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_http_delete(
+    _server: *const c_void,
+    path: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
     register_route("DELETE", path, handler_name)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_delete_fn(_server: *const c_void, path: *const c_char, handler: DooHandlerFn) -> *mut DooResult {
+pub extern "C" fn doo_http_delete_fn(
+    _server: *const c_void,
+    path: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
     register_route_fn("DELETE", path, handler)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_patch(_server: *const c_void, path: *const c_char, handler_name: *const c_char) -> *mut DooResult {
+pub extern "C" fn doo_http_patch(
+    _server: *const c_void,
+    path: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
     register_route("PATCH", path, handler_name)
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_patch_fn(_server: *const c_void, path: *const c_char, handler: DooHandlerFn) -> *mut DooResult {
+pub extern "C" fn doo_http_patch_fn(
+    _server: *const c_void,
+    path: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
     register_route_fn("PATCH", path, handler)
 }
 
-fn register_route(method: &str, path: *const c_char, handler_name: *const c_char) -> *mut DooResult {
+fn register_route(
+    method: &str,
+    path: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
     let path_str = c_to_string(path);
     let handler_str = c_to_string(handler_name);
-    
+
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
     registry.register_by_name(method, &path_str, &handler_str);
@@ -141,7 +185,7 @@ fn register_route(method: &str, path: *const c_char, handler_name: *const c_char
 
 fn register_route_fn(method: &str, path: *const c_char, handler: DooHandlerFn) -> *mut DooResult {
     let path_str = c_to_string(path);
-    
+
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
     registry.register(method, &path_str, handler);
@@ -153,11 +197,14 @@ fn register_route_fn(method: &str, path: *const c_char, handler: DooHandlerFn) -
 // ============================================================================
 
 #[no_mangle]
-pub extern "C" fn doo_http_use(server: *const c_void, middleware_name: *const c_char) -> *const c_void {
+pub extern "C" fn doo_http_use(
+    server: *const c_void,
+    middleware_name: *const c_char,
+) -> *const c_void {
     let mw_str = c_to_string(middleware_name);
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
-    
+
     if let Some(&mw_fn) = registry.middleware_handlers.get(&mw_str) {
         registry.add_middleware(mw_fn);
     }
@@ -169,7 +216,9 @@ pub extern "C" fn doo_http_jwt() -> *const c_char {
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
     if !registry.middleware_handlers.contains_key("jwt") {
-        registry.middleware_handlers.insert("jwt".to_string(), jwt_middleware_handler);
+        registry
+            .middleware_handlers
+            .insert("jwt".to_string(), jwt_middleware_handler);
     }
     string_to_c("jwt")
 }
@@ -178,11 +227,13 @@ pub extern "C" fn doo_http_jwt() -> *const c_char {
 pub extern "C" fn doo_http_cors(server: *mut c_void) -> *mut c_void {
     let config = CorsConfig::default();
     *get_cors_config().lock().unwrap() = Some(config);
-    
+
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
     if !registry.middleware_handlers.contains_key("cors") {
-        registry.middleware_handlers.insert("cors".to_string(), cors_middleware_handler);
+        registry
+            .middleware_handlers
+            .insert("cors".to_string(), cors_middleware_handler);
     }
     registry.add_middleware(cors_middleware_handler);
     server
@@ -190,12 +241,84 @@ pub extern "C" fn doo_http_cors(server: *mut c_void) -> *mut c_void {
 
 #[no_mangle]
 pub extern "C" fn doo_http_cors_custom(server: *mut c_void, options: *mut c_void) -> *mut c_void {
-    // Parse options map and create CorsConfig
-    let config = CorsConfig::default(); // TODO: parse from options
+    // Parse options map for CORS configuration
+    let config = if options.is_null() {
+        CorsConfig::default()
+    } else {
+        // Parse origins - comma-separated string
+        let origins_ptr = doo_map_get_str(options, "origins");
+        let origins = if origins_ptr.is_null() {
+            vec!["*".to_string()]
+        } else {
+            parse_json_string_or_default(origins_ptr, "*")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect()
+        };
+
+        // Parse methods - comma-separated string
+        let methods_ptr = doo_map_get_str(options, "methods");
+        let methods = if methods_ptr.is_null() {
+            vec!["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        } else {
+            parse_json_string_or_default(methods_ptr, "GET,POST,PUT,DELETE,OPTIONS,PATCH")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect()
+        };
+
+        // Parse headers - comma-separated string
+        let headers_ptr = doo_map_get_str(options, "headers");
+        let headers = if headers_ptr.is_null() {
+            vec!["Content-Type", "Authorization"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        } else {
+            parse_json_string_or_default(headers_ptr, "Content-Type,Authorization")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect()
+        };
+
+        // Parse credentials - boolean
+        let credentials_ptr = doo_map_get_str(options, "credentials");
+        let credentials = parse_json_bool_or_default(credentials_ptr, false);
+
+        // Parse max_age - integer (seconds)
+        let max_age_ptr = doo_map_get_str(options, "max_age");
+        let max_age = if max_age_ptr.is_null() {
+            None
+        } else {
+            let val = parse_json_i64_or_default(max_age_ptr, 0);
+            if val > 0 {
+                Some(val as i32)
+            } else {
+                None
+            }
+        };
+
+        CorsConfig {
+            origins,
+            methods,
+            headers,
+            credentials,
+            max_age,
+        }
+    };
+
     *get_cors_config().lock().unwrap() = Some(config);
-    
+
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
+    if !registry.middleware_handlers.contains_key("cors") {
+        registry
+            .middleware_handlers
+            .insert("cors".to_string(), cors_middleware_handler);
+    }
     registry.add_middleware(cors_middleware_handler);
     server
 }
@@ -204,26 +327,63 @@ pub extern "C" fn doo_http_cors_custom(server: *mut c_void, options: *mut c_void
 pub extern "C" fn doo_http_ratelimit(server: *mut c_void) -> *mut c_void {
     let config = RateLimitConfig::default();
     *get_ratelimit_config().lock().unwrap() = Some(config);
-    
+
+    // Clear state for fresh start
+    get_ratelimit_state().lock().unwrap().clear();
+
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
+    if !registry.middleware_handlers.contains_key("ratelimit") {
+        registry
+            .middleware_handlers
+            .insert("ratelimit".to_string(), ratelimit_middleware_handler);
+    }
     registry.add_middleware(ratelimit_middleware_handler);
     server
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_ratelimit_custom(server: *mut c_void, options: *mut c_void) -> *mut c_void {
-    let config = RateLimitConfig::default(); // TODO: parse from options
+pub extern "C" fn doo_http_ratelimit_custom(
+    server: *mut c_void,
+    options: *mut c_void,
+) -> *mut c_void {
+    // Parse options map for rate limit configuration
+    let config = if options.is_null() {
+        RateLimitConfig::default()
+    } else {
+        let max = parse_json_i64_or_default(doo_map_get_str(options, "max"), 100);
+        let window = parse_json_i64_or_default(doo_map_get_str(options, "window"), 60);
+        let per_str = parse_json_string_or_default(doo_map_get_str(options, "per"), "ip");
+
+        RateLimitConfig {
+            max: if max > 0 { max as u32 } else { 100 },
+            window: if window > 0 { window as u64 } else { 60 },
+            per: per_str,
+        }
+    };
+
     *get_ratelimit_config().lock().unwrap() = Some(config);
-    
+
+    // Clear state for fresh start
+    get_ratelimit_state().lock().unwrap().clear();
+
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
+    if !registry.middleware_handlers.contains_key("ratelimit") {
+        registry
+            .middleware_handlers
+            .insert("ratelimit".to_string(), ratelimit_middleware_handler);
+    }
     registry.add_middleware(ratelimit_middleware_handler);
     server
 }
 
 #[no_mangle]
-pub extern "C" fn doo_http_group(_server: *const c_void, _prefix: *const c_char, _handler: extern "C" fn()) -> *mut DooResult {
+pub extern "C" fn doo_http_group(
+    _server: *const c_void,
+    _prefix: *const c_char,
+    _handler: extern "C" fn(),
+) -> *mut DooResult {
     // Groups handled at compile-time, no-op at runtime
     make_ok_void()
 }
@@ -234,62 +394,461 @@ pub extern "C" fn doo_http_group(_server: *const c_void, _prefix: *const c_char,
 
 #[no_mangle]
 pub extern "C" fn doo_http_req_query(req: *const DooRequest, key: *const c_char) -> *const c_char {
-    if req.is_null() { return std::ptr::null(); }
+    if req.is_null() {
+        return std::ptr::null();
+    }
     unsafe {
         let query_map = (*req).query as *const HashMap<String, String>;
-        if query_map.is_null() { return std::ptr::null(); }
+        if query_map.is_null() {
+            return std::ptr::null();
+        }
         let key_str = c_to_string(key);
-        (*query_map).get(&key_str).map(|v| string_to_c(v)).unwrap_or(std::ptr::null())
+        (*query_map)
+            .get(&key_str)
+            .map(|v| string_to_c(v))
+            .unwrap_or(std::ptr::null())
     }
 }
 
 #[no_mangle]
 pub extern "C" fn doo_http_req_param(req: *const DooRequest, key: *const c_char) -> *const c_char {
-    if req.is_null() { return std::ptr::null(); }
+    if req.is_null() {
+        return std::ptr::null();
+    }
     unsafe {
         let params_map = (*req).params as *const HashMap<String, String>;
-        if params_map.is_null() { return std::ptr::null(); }
+        if params_map.is_null() {
+            return std::ptr::null();
+        }
         let key_str = c_to_string(key);
-        (*params_map).get(&key_str).map(|v| string_to_c(v)).unwrap_or(std::ptr::null())
+        (*params_map)
+            .get(&key_str)
+            .map(|v| string_to_c(v))
+            .unwrap_or(std::ptr::null())
     }
 }
 
 #[no_mangle]
 pub extern "C" fn doo_http_req_header(req: *const DooRequest, key: *const c_char) -> *const c_char {
-    if req.is_null() { return std::ptr::null(); }
+    if req.is_null() {
+        return std::ptr::null();
+    }
     unsafe {
         let headers_map = (*req).headers as *const HashMap<String, String>;
-        if headers_map.is_null() { return std::ptr::null(); }
+        if headers_map.is_null() {
+            return std::ptr::null();
+        }
         let key_str = c_to_string(key).to_lowercase();
-        (*headers_map).get(&key_str).map(|v| string_to_c(v)).unwrap_or(string_to_c(""))
+        (*headers_map)
+            .get(&key_str)
+            .map(|v| string_to_c(v))
+            .unwrap_or(string_to_c(""))
     }
 }
 
 #[no_mangle]
-pub extern "C" fn doohttp_extract_param_int(req: *const DooRequest, param_name: *const c_char) -> i64 {
-    if req.is_null() || param_name.is_null() { return 0; }
+pub extern "C" fn doohttp_extract_param_int(
+    req: *const DooRequest,
+    param_name: *const c_char,
+) -> i64 {
+    clear_last_error();
+    if req.is_null() || param_name.is_null() {
+        return 0;
+    }
     let value_ptr = doo_http_req_param(req, param_name);
-    if value_ptr.is_null() { return 0; }
-    c_to_string(value_ptr).parse().unwrap_or(0)
+    if value_ptr.is_null() {
+        return 0;
+    }
+    let value_str = c_to_string(value_ptr);
+    match value_str.parse::<i64>() {
+        Ok(v) => v,
+        Err(_) => {
+            let err = bad_request(
+                format!(
+                    "Invalid path parameter type: expected Int, got '{}'",
+                    value_str
+                ),
+                get_current_request_path(),
+            );
+            set_last_error(400, err.to_json());
+            0
+        }
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn doohttp_extract_param_float(req: *const DooRequest, param_name: *const c_char) -> f64 {
-    if req.is_null() || param_name.is_null() { return 0.0; }
+pub extern "C" fn doohttp_extract_param_float(
+    req: *const DooRequest,
+    param_name: *const c_char,
+) -> f64 {
+    clear_last_error();
+    if req.is_null() || param_name.is_null() {
+        return 0.0;
+    }
     let value_ptr = doo_http_req_param(req, param_name);
-    if value_ptr.is_null() { return 0.0; }
-    c_to_string(value_ptr).parse().unwrap_or(0.0)
+    if value_ptr.is_null() {
+        return 0.0;
+    }
+    let value_str = c_to_string(value_ptr);
+    match value_str.parse::<f64>() {
+        Ok(v) => v,
+        Err(_) => {
+            let err = bad_request(
+                format!(
+                    "Invalid path parameter type: expected Float, got '{}'",
+                    value_str
+                ),
+                get_current_request_path(),
+            );
+            set_last_error(400, err.to_json());
+            0.0
+        }
+    }
+}
+
+/// Extract typed path parameter from request with type validation
+/// Returns: converted value as C string (caller must free), or null on error
+#[no_mangle]
+pub extern "C" fn doohttp_extract_param_typed(
+    req: *const DooRequest,
+    param_name: *const c_char,
+    param_type: *const c_char,
+) -> *const c_char {
+    clear_last_error();
+    if req.is_null() || param_name.is_null() || param_type.is_null() {
+        return std::ptr::null();
+    }
+
+    let param_name_str = c_to_string(param_name);
+    let param_type_str = c_to_string(param_type);
+    let value_ptr = doo_http_req_param(req, param_name);
+
+    if value_ptr.is_null() {
+        let err = bad_request(
+            format!("Path parameter '{}' not found", param_name_str),
+            get_current_request_path(),
+        );
+        set_last_error(400, err.to_json());
+        return std::ptr::null();
+    }
+
+    let value = c_to_string(value_ptr);
+
+    // Type conversion validation
+    match param_type_str.as_str() {
+        "Int" => {
+            if value.parse::<i64>().is_ok() {
+                string_to_c(&value)
+            } else {
+                let err = bad_request(
+                    format!(
+                        "Invalid path parameter type for '{}': expected Int, got '{}'",
+                        param_name_str, value
+                    ),
+                    get_current_request_path(),
+                );
+                set_last_error(400, err.to_json());
+                std::ptr::null()
+            }
+        }
+        "Float" => {
+            if value.parse::<f64>().is_ok() {
+                string_to_c(&value)
+            } else {
+                let err = bad_request(
+                    format!(
+                        "Invalid path parameter type for '{}': expected Float, got '{}'",
+                        param_name_str, value
+                    ),
+                    get_current_request_path(),
+                );
+                set_last_error(400, err.to_json());
+                std::ptr::null()
+            }
+        }
+        "Bool" => {
+            if value == "true" || value == "false" {
+                string_to_c(&value)
+            } else {
+                let err = bad_request(
+                    format!(
+                        "Invalid path parameter type for '{}': expected Bool, got '{}'",
+                        param_name_str, value
+                    ),
+                    get_current_request_path(),
+                );
+                set_last_error(400, err.to_json());
+                std::ptr::null()
+            }
+        }
+        _ => string_to_c(&value), // String or other types - return as-is
+    }
 }
 
 // ============================================================================
 // RFC 7807 ERROR FUNCTIONS
 // ============================================================================
 
+// Helper for map value parsing (used by populate_struct)
+fn doo_map_get_str(map_ptr: *const c_void, key: &str) -> *const c_char {
+    if map_ptr.is_null() {
+        return std::ptr::null();
+    }
+    unsafe {
+        let map = &*(map_ptr as *const HashMap<String, String>);
+        match map.get(key) {
+            Some(v) => string_to_c(v),
+            None => std::ptr::null(),
+        }
+    }
+}
+
+fn parse_json_i64_or_default(ptr: *const c_char, default: i64) -> i64 {
+    if ptr.is_null() {
+        return default;
+    }
+    let s = c_to_string(ptr);
+    // Handle JSON-encoded numbers (might be quoted or unquoted)
+    let trimmed = s.trim().trim_matches('"');
+    trimmed.parse::<i64>().unwrap_or(default)
+}
+
+fn parse_json_string_or_default(ptr: *const c_char, default: &str) -> String {
+    if ptr.is_null() {
+        return default.to_string();
+    }
+    let s = c_to_string(ptr);
+    // Remove JSON quotes if present
+    let trimmed = s.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn parse_json_bool_or_default(ptr: *const c_char, default: bool) -> bool {
+    if ptr.is_null() {
+        return default;
+    }
+    let s = c_to_string(ptr).trim().to_lowercase();
+    match s.as_str() {
+        "true" | "\"true\"" | "1" => true,
+        "false" | "\"false\"" | "0" => false,
+        _ => default,
+    }
+}
+
+/// Populate struct from request data with JSON parsing and validation
+///
+/// Parameters:
+/// - request_ptr: Pointer to DooRequest
+/// - struct_ptr: Pointer to allocated struct to populate
+/// - source_type: 0=body (JSON), 1=params, 2=query
+/// - handler_name: Name of handler (used to get metadata)
+///
+/// Returns: 0 on success, error code on failure
 #[no_mangle]
-pub extern "C" fn doohttp_error_rfc7807(status: i32, detail: *const c_char, instance: *const c_char) -> *const c_char {
+pub extern "C" fn doohttp_populate_struct_from_request(
+    request_ptr: *const c_void,
+    struct_ptr: *mut c_void,
+    source_type: i32,
+    handler_name: *const c_char,
+) -> i32 {
+    clear_last_error();
+
+    if request_ptr.is_null() || struct_ptr.is_null() {
+        return -1;
+    }
+
+    if handler_name.is_null() {
+        return 0; // No handler name, can't look up metadata
+    }
+
+    let handler_name_str = c_to_string(handler_name);
+
+    // Cast request to get fields
+    let request = unsafe { &*(request_ptr as *const DooRequest) };
+    let path_str = c_to_string(request.path);
+    set_current_request_path(&path_str);
+
+    // Get handler metadata from registry
+    let routes = get_routes();
+    let registry = routes.lock().unwrap();
+    let metadata = registry.handler_metadata.get(&handler_name_str).cloned();
+    drop(registry);
+
+    let metadata = match metadata {
+        Some(m) => m,
+        None => return 0, // No metadata, skip validation
+    };
+
+    // Get HTTP method for smart source detection
+    let method_str = c_to_string(request.method).to_uppercase();
+
+    // Smart source_type detection:
+    // For GET/DELETE with no body, automatically use query params
+    let effective_source_type = if source_type == 0 {
+        let has_body = if request.body.is_null() {
+            false
+        } else {
+            let body_str = c_to_string(request.body);
+            !body_str.is_empty()
+        };
+
+        if !has_body && (method_str == "GET" || method_str == "DELETE") {
+            2 // Use query params for GET/DELETE without body
+        } else {
+            0 // Use body for POST/PUT/PATCH or when body exists
+        }
+    } else {
+        source_type
+    };
+
+    // Parse source data based on effective_source_type
+    let source_data: serde_json::Map<String, serde_json::Value> = match effective_source_type {
+        0 => {
+            // Parse body JSON
+            if request.body.is_null() {
+                return 0;
+            }
+            let body_str = c_to_string(request.body);
+            if body_str.is_empty() {
+                return 0;
+            }
+            match serde_json::from_str::<serde_json::Value>(&body_str) {
+                Ok(serde_json::Value::Object(obj)) => obj,
+                _ => {
+                    let err = bad_request("Invalid JSON body", path_str.clone());
+                    set_last_error(400, err.to_json());
+                    return 400;
+                }
+            }
+        }
+        1 => {
+            // Extract from path params
+            if request.params.is_null() {
+                serde_json::Map::new()
+            } else {
+                let params_map = unsafe { &*(request.params as *const HashMap<String, String>) };
+                params_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .collect()
+            }
+        }
+        2 => {
+            // Extract from query params
+            if request.query.is_null() {
+                serde_json::Map::new()
+            } else {
+                let query_map = unsafe { &*(request.query as *const HashMap<String, String>) };
+                query_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .collect()
+            }
+        }
+        _ => serde_json::Map::new(),
+    };
+
+    // Get struct name from param_types
+    let struct_name = if !metadata.param_types.is_empty() {
+        metadata
+            .param_types
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Unknown".to_string())
+    } else {
+        "Unknown".to_string()
+    };
+
+    // Special types that receive raw request pointer - skip validation
+    if struct_name == "Request" || struct_name == "DooRequest" || struct_name == "Unknown" {
+        return 0;
+    }
+
+    // Validate fields and populate struct using struct_layouts
+    if let Some(struct_layout) = metadata.struct_layouts.get(&struct_name) {
+        if let Some(fields) = struct_layout.get("fields").and_then(|f| f.as_array()) {
+            let mut field_errors: HashMap<String, FieldError> = HashMap::new();
+
+            for field in fields {
+                let field_obj = match field.as_object() {
+                    Some(obj) => obj,
+                    None => continue,
+                };
+
+                let field_name = match field_obj.get("name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+
+                let field_type = match field_obj.get("type").and_then(|v| v.as_str()) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+                // Check if field is missing - Optional fields are allowed to be missing
+                if !source_data.contains_key(field_name)
+                    && !(field_type.starts_with("Optional(") && field_type.ends_with(')'))
+                {
+                    let err = FieldError::new("Field is required").with_rule("required");
+                    field_errors.insert(field_name.to_string(), err);
+                    continue;
+                }
+
+                // Type validation for path/query params
+                if effective_source_type == 1 || effective_source_type == 2 {
+                    if let Some(value) = source_data.get(field_name) {
+                        if let Some(value_str) = value.as_str() {
+                            let type_valid = match field_type {
+                                "Int" => value_str.parse::<i64>().is_ok(),
+                                "Float" => value_str.parse::<f64>().is_ok(),
+                                "Bool" => value_str == "true" || value_str == "false",
+                                "Str" | "String" => true,
+                                _ => true,
+                            };
+
+                            if !type_valid {
+                                let err = FieldError::new(format!(
+                                    "Invalid type, expected {}",
+                                    field_type
+                                ))
+                                .with_rule("type_mismatch")
+                                .with_expected(field_type.to_string())
+                                .with_received(value_str.to_string());
+                                field_errors.insert(field_name.to_string(), err);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !field_errors.is_empty() {
+                let err = validation_error("Validation failed", path_str, field_errors);
+                set_last_error(422, err.to_json());
+                return 422;
+            }
+        }
+    }
+
+    0 // Success
+}
+
+#[no_mangle]
+pub extern "C" fn doohttp_error_rfc7807(
+    status: i32,
+    detail: *const c_char,
+    instance: *const c_char,
+) -> *const c_char {
     let detail_str = c_to_string(detail);
-    let instance_str = if instance.is_null() { get_current_request_path() } else { c_to_string(instance) };
-    
+    let instance_str = if instance.is_null() {
+        get_current_request_path()
+    } else {
+        c_to_string(instance)
+    };
+
     let err = match status {
         400 => bad_request(detail_str, instance_str),
         401 => unauthorized(detail_str, instance_str),
@@ -303,7 +862,10 @@ pub extern "C" fn doohttp_error_rfc7807(status: i32, detail: *const c_char, inst
 }
 
 #[no_mangle]
-pub extern "C" fn doohttp_error_rfc7807_auto_instance(status: i32, detail: *const c_char) -> *const c_char {
+pub extern "C" fn doohttp_error_rfc7807_auto_instance(
+    status: i32,
+    detail: *const c_char,
+) -> *const c_char {
     doohttp_error_rfc7807(status, detail, std::ptr::null())
 }
 
@@ -318,7 +880,10 @@ pub extern "C" fn doohttp_last_error_json() -> *const c_char {
 }
 
 #[no_mangle]
-pub extern "C" fn doohttp_error_to_status(_error_type: *const c_char, variant: *const c_char) -> i32 {
+pub extern "C" fn doohttp_error_to_status(
+    _error_type: *const c_char,
+    variant: *const c_char,
+) -> i32 {
     let variant_str = c_to_string(variant);
     match variant_str.as_str() {
         "NotFound" => 404,
@@ -345,14 +910,14 @@ pub extern "C" fn doo_http_register_handler(name: *const c_char, handler: DooHan
 
 #[no_mangle]
 pub extern "C" fn doo_http_register_handler_with_metadata(
-    name: *const c_char, 
+    name: *const c_char,
     handler: DooHandlerFn,
-    metadata_json: *const c_char
+    metadata_json: *const c_char,
 ) {
     let name_str = c_to_string(name);
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
-    
+
     // Parse metadata (simplified)
     let metadata = HandlerMetadata::default();
     registry.register_handler_with_metadata(&name_str, handler, metadata);
@@ -370,8 +935,10 @@ pub extern "C" fn doohttp_create_response_from_result(
 ) -> *mut DooResponse {
     unsafe {
         let response = libc::malloc(std::mem::size_of::<DooResponse>()) as *mut DooResponse;
-        if response.is_null() { return std::ptr::null_mut(); }
-        
+        if response.is_null() {
+            return std::ptr::null_mut();
+        }
+
         if tag == 1 {
             // Error
             (*response).status = 500;
@@ -391,13 +958,15 @@ pub extern "C" fn doohttp_create_response_from_result(
 }
 
 // ============================================================================
-// UTILITY FUNCTIONS  
+// UTILITY FUNCTIONS
 // ============================================================================
 
 fn make_ok_void() -> *mut DooResult {
     unsafe {
         let ptr = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
-        if ptr.is_null() { return std::ptr::null_mut(); }
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
         (*ptr).tag = 0;
         (*ptr).value = std::ptr::null_mut();
         (*ptr).owner = owner::FFI;
@@ -409,7 +978,9 @@ fn make_err_http(status: i32, message: &str) -> *mut DooResult {
     set_last_error(status, message.to_string());
     unsafe {
         let ptr = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
-        if ptr.is_null() { return std::ptr::null_mut(); }
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
         (*ptr).tag = 1;
         (*ptr).value = string_to_c(message) as *mut c_void;
         (*ptr).owner = owner::FFI;

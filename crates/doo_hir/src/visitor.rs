@@ -199,6 +199,12 @@ pub trait HirVisitor {
             HirExprKind::Closure { body, .. } => {
                 self.visit_expr(body);
             }
+            HirExprKind::Spread(inner) => {
+                self.visit_expr(inner);
+            }
+            HirExprKind::Cast { value, .. } => {
+                self.visit_expr(value);
+            }
         }
     }
 
@@ -395,6 +401,12 @@ pub trait HirVisitorMut {
             }
             HirExprKind::Closure { body, .. } => {
                 self.visit_expr_mut(body);
+            }
+            HirExprKind::Spread(inner) => {
+                self.visit_expr_mut(inner);
+            }
+            HirExprKind::Cast { value, .. } => {
+                self.visit_expr_mut(value);
             }
         }
     }

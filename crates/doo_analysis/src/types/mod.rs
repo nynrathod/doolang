@@ -4,8 +4,8 @@
 //!
 //! This module works with doo_core types for centralized type definitions.
 
-pub mod infer;
 pub mod compat;
+pub mod infer;
 
-pub use infer::TypeInference;
 pub use compat::TypeCompat;
+pub use infer::{ClosureContext, InferenceError, TypeInference};

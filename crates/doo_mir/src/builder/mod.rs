@@ -2,15 +2,16 @@
 //!
 //! Converts HIR to MIR with lowering of high-level constructs.
 
-pub mod stmt;
 pub mod expr;
 pub mod pattern;
+pub mod stmt;
 
+use doo_analysis::{Decision, OwnershipResults};
+use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind, TypeRegistry};
 use doo_core::Span as CoreSpan;
-use doo_core::types::{TypeId as CoreTypeId, TypeKind, TypeRegistry, builtin};
 use doo_hir::{
-    HirProgram, HirItem, HirFunction, HirStmt, 
-    HirExpr, HirBinOp, HirUnaryOp, ConstValue, HirMatchPattern,
+    ConstValue, HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern, HirProgram,
+    HirStmt, HirUnaryOp,
 };
 
 use rustc_hash::FxHashMap;
@@ -30,6 +31,17 @@ pub struct MirBuilder<'a> {
 
     pub(crate) type_registry: &'a TypeRegistry,
     pub(crate) container_kinds: FxHashMap<String, ContainerKind>,
+
+    /// Stack of break target labels for loop control flow.
+    pub(crate) break_targets: Vec<String>,
+    /// Stack of continue target labels for loop control flow.
+    pub(crate) continue_targets: Vec<String>,
+
+    /// Ownership analysis results (decisions for each variable use).
+    pub ownership_results: Option<OwnershipResults>,
+
+    /// Temporary variable types for type propagation.
+    pub(crate) temp_types: FxHashMap<String, CoreTypeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +60,40 @@ impl<'a> MirBuilder<'a> {
             block_counter: 0,
             type_registry,
             container_kinds: FxHashMap::default(),
+            break_targets: Vec::new(),
+            continue_targets: Vec::new(),
+            ownership_results: None,
+            temp_types: FxHashMap::default(),
         }
+    }
+
+    /// Create a new MIR builder with ownership results.
+    pub fn with_ownership(
+        type_registry: &'a TypeRegistry,
+        ownership_results: OwnershipResults,
+    ) -> Self {
+        Self {
+            current_func: None,
+            current_block: 0,
+            temp_counter: 0,
+            block_counter: 0,
+            type_registry,
+            container_kinds: FxHashMap::default(),
+            break_targets: Vec::new(),
+            continue_targets: Vec::new(),
+            ownership_results: Some(ownership_results),
+            temp_types: FxHashMap::default(),
+        }
+    }
+
+    /// Set ownership results after creation.
+    pub fn set_ownership_results(&mut self, results: OwnershipResults) {
+        self.ownership_results = Some(results);
+    }
+
+    /// Get the ownership decision for a variable at a specific span.
+    pub(crate) fn get_ownership_decision(&self, name: &str, span: CoreSpan) -> Option<Decision> {
+        self.ownership_results.as_ref()?.get_decision(name, span)
     }
 
     /// Build MIR from HIR program.
@@ -64,13 +109,17 @@ impl<'a> MirBuilder<'a> {
                 HirItem::Struct(s) => {
                     let mir_struct = StructDef {
                         name: s.name.clone(),
-                        fields: s.fields.iter().map(|f| FieldDef {
-                            name: f.name.clone(),
-                            type_id: f.type_id.unwrap_or(builtin::ANY),
-                            optional: f.is_optional,
-                            decorators: Vec::new(),
-                            default_value: None,
-                        }).collect(),
+                        fields: s
+                            .fields
+                            .iter()
+                            .map(|f| FieldDef {
+                                name: f.name.clone(),
+                                type_id: f.type_id.unwrap_or(builtin::ANY),
+                                optional: f.is_optional,
+                                decorators: Vec::new(),
+                                default_value: None,
+                            })
+                            .collect(),
                         decorators: Vec::new(),
                     };
                     program.structs.insert(s.name.clone(), mir_struct);
@@ -78,11 +127,16 @@ impl<'a> MirBuilder<'a> {
                 HirItem::Enum(e) => {
                     let mir_enum = EnumDef {
                         name: e.name.clone(),
-                        variants: e.variants.iter().enumerate().map(|(i, v)| VariantDef {
-                            name: v.name.clone(),
-                            index: i as u32,
-                            payload_type: v.payload,
-                        }).collect(),
+                        variants: e
+                            .variants
+                            .iter()
+                            .enumerate()
+                            .map(|(i, v)| VariantDef {
+                                name: v.name.clone(),
+                                index: i as u32,
+                                payload_type: v.payload,
+                            })
+                            .collect(),
                     };
                     program.enums.insert(e.name.clone(), mir_enum);
                 }
@@ -102,10 +156,14 @@ impl<'a> MirBuilder<'a> {
         self.container_kinds.clear();
 
         let mut func = MirFunction::new(hir.name.clone());
-        func.params = hir.params.iter().map(|p| ParamDef {
-            name: p.name.clone(),
-            type_id: p.type_id.unwrap_or(builtin::ANY),
-        }).collect();
+        func.params = hir
+            .params
+            .iter()
+            .map(|p| ParamDef {
+                name: p.name.clone(),
+                type_id: p.type_id.unwrap_or(builtin::ANY),
+            })
+            .collect();
         func.return_type = hir.return_type;
         func.error_type = hir.error_type;
 
@@ -248,13 +306,14 @@ impl<'a> MirBuilder<'a> {
         match &expr.kind {
             HirExprKind::Array(_) => Some(ContainerKind::Array),
             HirExprKind::Map(_) => Some(ContainerKind::Map),
-            HirExprKind::Move(inner) | HirExprKind::Clone(inner) => self.infer_container_kind(inner),
+            HirExprKind::Move(inner) | HirExprKind::Clone(inner) => {
+                self.infer_container_kind(inner)
+            }
             HirExprKind::Borrow { expr: inner, .. } => self.infer_container_kind(inner),
             HirExprKind::Local { name } => self.container_kinds.get(name).copied(),
-            _ => {
-                expr.type_id
-                    .and_then(|tid| self.container_kind_from_type_id(tid))
-            }
+            _ => expr
+                .type_id
+                .and_then(|tid| self.container_kind_from_type_id(tid)),
         }
     }
 
@@ -263,25 +322,91 @@ impl<'a> MirBuilder<'a> {
     }
 
     fn container_kind_from_type_id(&self, type_id: CoreTypeId) -> Option<ContainerKind> {
-        self.type_registry.get(type_id).and_then(|info| match info.kind {
-            TypeKind::Array { .. } => Some(ContainerKind::Array),
-            TypeKind::Map { .. } => Some(ContainerKind::Map),
-            _ => None,
-        })
+        self.type_registry
+            .get(type_id)
+            .and_then(|info| match info.kind {
+                TypeKind::Array { .. } => Some(ContainerKind::Array),
+                TypeKind::Map { .. } => Some(ContainerKind::Map),
+                _ => None,
+            })
     }
 
     pub(crate) fn array_elem_type_from_type_id(&self, type_id: CoreTypeId) -> Option<CoreTypeId> {
-        self.type_registry.get(type_id).and_then(|info| match info.kind {
-            TypeKind::Array { element } => Some(element),
-            _ => None,
-        })
+        self.type_registry
+            .get(type_id)
+            .and_then(|info| match &info.kind {
+                TypeKind::Array { element } => Some(*element),
+                _ => None,
+            })
     }
 
-    pub(crate) fn map_types_from_type_id(&self, type_id: CoreTypeId) -> Option<(CoreTypeId, CoreTypeId)> {
-        self.type_registry.get(type_id).and_then(|info| match info.kind {
-            TypeKind::Map { key, value } => Some((key, value)),
-            _ => None,
-        })
+    pub(crate) fn map_types_from_type_id(
+        &self,
+        type_id: CoreTypeId,
+    ) -> Option<(CoreTypeId, CoreTypeId)> {
+        self.type_registry
+            .get(type_id)
+            .and_then(|info| match info.kind {
+                TypeKind::Map { key, value } => Some((key, value)),
+                _ => None,
+            })
+    }
+
+    /// Get the type of a struct field.
+    pub(crate) fn struct_field_type(
+        &self,
+        struct_type: CoreTypeId,
+        field_name: &str,
+    ) -> Option<CoreTypeId> {
+        self.type_registry
+            .get(struct_type)
+            .and_then(|info| match &info.kind {
+                TypeKind::Struct { fields, .. } => fields
+                    .iter()
+                    .find(|(name, _)| name == field_name)
+                    .map(|(_, t)| *t),
+                _ => None,
+            })
+    }
+
+    /// Look up the type of a local variable by name.
+    pub(crate) fn get_local_type(&self, name: &str) -> Option<CoreTypeId> {
+        self.current_func
+            .as_ref()
+            .and_then(|f| f.locals.iter().find(|l| l.name == name).map(|l| l.type_id))
+    }
+
+    /// Set the type of a temporary variable.
+    pub(crate) fn set_temp_type(&mut self, name: &str, type_id: CoreTypeId) {
+        self.temp_types.insert(name.to_string(), type_id);
+    }
+
+    /// Get the type of a temporary variable.
+    pub(crate) fn get_temp_type(&self, name: &str) -> Option<CoreTypeId> {
+        self.temp_types.get(name).copied()
+    }
+
+    /// Infer type from a MirOperand.
+    pub(crate) fn infer_operand_type(&self, operand: &MirOperand) -> CoreTypeId {
+        use crate::MirConst;
+        match operand {
+            MirOperand::Const(c) => match c {
+                MirConst::Int(_) => builtin::INT,
+                MirConst::Float(_) => builtin::FLOAT,
+                MirConst::Bool(_) => builtin::BOOL,
+                MirConst::Str(_) => builtin::STR,
+                MirConst::Nil => builtin::ANY,
+            },
+            MirOperand::Temp(name) => {
+                // Check if we have a recorded type for this temp
+                self.get_temp_type(name).unwrap_or(builtin::ANY)
+            }
+            MirOperand::Local(name) => {
+                // Check local variable type
+                self.get_local_type(name).unwrap_or(builtin::ANY)
+            }
+            MirOperand::Global(_) => builtin::ANY,
+        }
     }
 
     pub(crate) fn unaryop_to_mir(&self, op: HirUnaryOp) -> UnaryOp {

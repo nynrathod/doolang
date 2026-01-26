@@ -25,9 +25,11 @@ impl ArrayBuiltins {
         method: &str,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
-        let elem_type_id = match ctx.get_type_kind(receiver_type)? {
-            doo_core::types::TypeKind::Array { element } => element,
-            _ => return None,
+        // Get element type if available, use ANY as fallback for unknown types
+        let elem_type_id = match ctx.get_type_kind(receiver_type) {
+            Some(doo_core::types::TypeKind::Array { element }) => element,
+            Some(doo_core::types::TypeKind::Any) => doo_core::types::builtin::ANY,
+            _ => doo_core::types::builtin::ANY, // Fallback for unknown types
         };
 
         let result = match method {
@@ -935,7 +937,7 @@ impl ArrayBuiltins {
             .into_pointer_value();
         
         // Store RC=1 and len
-        store_header(ctx, result_heap, len_i32)?;
+        store_header_len_only(ctx, result_heap, len_i32)?;
         
         // Get data pointer (offset 8)
         let result_data = unsafe {
@@ -1068,7 +1070,7 @@ impl ArrayBuiltins {
         // Update result length
         let final_len = ctx.builder.build_load(ctx.context.i64_type(), res_idx_alloca, "final_len").ok()?.into_int_value();
         let final_len_i32 = ctx.builder.build_int_truncate(final_len, ctx.context.i32_type(), "len32").ok()?;
-        store_header(ctx, result_heap, final_len_i32)?;
+        store_header_len_only(ctx, result_heap, final_len_i32)?;
         
         Some(result_data.into())
     }
@@ -1130,7 +1132,11 @@ impl ArrayBuiltins {
 // Helper Functions - Use centralized layout module
 // =============================================================================
 
-use crate::layout::{alloc_with_header, data_ptr_from_header, header_ptr_from_data, int_to_i64, load_len_i32, store_len, store_header, store_len_at_header};
+use crate::layout::{
+    alloc_with_header, int_to_i64, get_array_length, get_array_data_ptr, set_array_length,
+    load_len_i32, data_ptr_from_header, header_ptr_from_data, store_len, store_len_at_header, 
+    store_header, store_header_len_only
+};
 
 fn get_or_declare_malloc<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
     ctx.module.get_function(ffi_names::MALLOC).unwrap_or_else(|| {

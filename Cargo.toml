@@ -1,25 +1,25 @@
 [workspace]
 members = [
-    ".",
-    "crates/doo_core",
-    "crates/doo_frontend",
-    "crates/doo_hir",
-    "crates/doo_analysis",
-    "crates/doo_mir",
-    "crates/doo_codegen",
-    "crates/doo_driver",
-    "crates/doo_diagnostics",
-    "ffi/doo_ffi_core",
-    "ffi/doo_ffi_http",
-    "ffi/doo_ffi_db",
-    "ffi/doo_ffi_auth",
-    "ffi/doo_ffi_file",
-    "ffi/doo_ffi_json",
-    "ffi_libs/libdoo_file",
-    "ffi_libs/libdoo_http",
-    "ffi_libs/libdoo_db",
-    "ffi_libs/libdoo_auth",
-    "ffi_libs/libdoo_runtime",
+	".",
+	"crates/doo_core",
+	"crates/doo_frontend",
+	"crates/doo_hir",
+	"crates/doo_analysis",
+	"crates/doo_mir",
+	"crates/doo_codegen",
+	"crates/doo_driver",
+	"crates/doo_diagnostics",
+	"ffi/doo_ffi_core",
+	"ffi/doo_ffi_http",
+	"ffi/doo_ffi_db",
+	"ffi/doo_ffi_auth",
+	"ffi/doo_ffi_file",
+	"ffi/doo_ffi_json",
+	# "ffi_libs/libdoo_file",
+	# "ffi_libs/libdoo_http",
+	# "ffi_libs/libdoo_db",
+	# "ffi_libs/libdoo_auth",
+	# "ffi_libs/libdoo_runtime",
 ]
 resolver = "2"
 
@@ -27,11 +27,11 @@ resolver = "2"
 incremental = true
 
 [profile.release]
-opt-level = 3        # Optimize for speed and performance
-lto = true             # Link-time optimization
-codegen-units = 1      # Better optimization
-strip = true           # Strip symbols
-panic = "abort"        # Smaller panic handler
+opt-level = 3     # Optimize for speed and performance
+lto = true        # Link-time optimization
+codegen-units = 1 # Better optimization
+strip = true      # Strip symbols
+panic = "abort"   # Smaller panic handler
 
 [workspace.package]
 version = "0.3.1"
@@ -44,6 +44,10 @@ edition.workspace = true
 default-run = "doo"
 
 [dependencies]
+# New compiler driver (Phase 10)
+doo_driver = { path = "crates/doo_driver" }
+
+# Legacy dependencies (will be phased out)
 inkwell = { version = "0.6.0", features = ["llvm18-1"] }
 llvm-sys = "=181.2.0"
 clap = { version = "4.5.53", features = ["derive"] }

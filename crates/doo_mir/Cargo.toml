@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 doo_core = { path = "../doo_core" }
 doo_hir = { path = "../doo_hir" }
+doo_analysis = { path = "../doo_analysis" }
 
 # Data structures
 rustc-hash = "1.1"

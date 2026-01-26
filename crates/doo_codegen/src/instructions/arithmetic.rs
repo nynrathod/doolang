@@ -2,22 +2,22 @@
 //!
 //! Handles: BinaryOp, UnaryOp
 
-use inkwell::values::BasicValueEnum;
-use inkwell::IntPredicate;
-use inkwell::FloatPredicate;
-use doo_core::constants::ffi_names;
-use doo_mir::{MirInstr, MirInstrKind, BinaryOp, UnaryOp, MirOperand, MirConst};
-use crate::context::CodegenContext;
 use super::InstructionHandler;
+use crate::context::CodegenContext;
+use doo_core::constants::ffi_names;
+use doo_mir::{BinaryOp, MirConst, MirInstr, MirInstrKind, MirOperand, UnaryOp};
+use inkwell::values::BasicValueEnum;
+use inkwell::FloatPredicate;
+use inkwell::IntPredicate;
 
 /// Arithmetic instruction handler.
 pub struct ArithmeticHandler;
 
 impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
     fn handles(&self, instr: &MirInstr) -> bool {
-        matches!(instr.kind, 
-            MirInstrKind::BinaryOp { .. } | 
-            MirInstrKind::UnaryOp { .. }
+        matches!(
+            instr.kind,
+            MirInstrKind::BinaryOp { .. } | MirInstrKind::UnaryOp { .. }
         )
     }
 
@@ -28,10 +28,29 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
     ) -> Option<BasicValueEnum<'ctx>> {
         match &instr.kind {
             MirInstrKind::BinaryOp { dest, op, lhs, rhs } => {
-                let lhs_val = operand_to_value(ctx, lhs)?;
-                let rhs_val = operand_to_value(ctx, rhs)?;
+                if std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!("[CODEGEN] BinaryOp: {} = {:?} {:?} {:?}", dest, lhs, op, rhs);
+                }
+                let lhs_val = operand_to_value(ctx, lhs);
+                if lhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!("[CODEGEN] BinaryOp: lhs operand_to_value failed for {:?}", lhs);
+                    return None;
+                }
+                let lhs_val = lhs_val?;
+                
+                let rhs_val = operand_to_value(ctx, rhs);
+                if rhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!("[CODEGEN] BinaryOp: rhs operand_to_value failed for {:?}", rhs);
+                    return None;
+                }
+                let rhs_val = rhs_val?;
 
-                let result = emit_binop(ctx, *op, lhs_val, rhs_val)?;
+                let result = emit_binop(ctx, *op, lhs_val, rhs_val);
+                if result.is_none() && std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!("[CODEGEN] BinaryOp: emit_binop failed for {:?} {:?} {:?}", lhs_val, op, rhs_val);
+                    return None;
+                }
+                let result = result?;
                 ctx.set_temp(dest, result);
                 Some(result)
             }
@@ -79,28 +98,92 @@ fn emit_binop<'ctx>(
     lhs: BasicValueEnum<'ctx>,
     rhs: BasicValueEnum<'ctx>,
 ) -> Option<BasicValueEnum<'ctx>> {
-    // Handle string concatenation (both operands are pointers)
-    // We assume pointers in Add are Strings for now (until Analysis types available here)
-    if matches!(op, BinaryOp::Concat) || (matches!(op, BinaryOp::Add) && lhs.is_pointer_value() && rhs.is_pointer_value()) {
+    // Handle string concatenation
+    // Case 1: Both operands are pointers (strings)
+    if matches!(op, BinaryOp::Concat)
+        || (matches!(op, BinaryOp::Add) && lhs.is_pointer_value() && rhs.is_pointer_value())
+    {
         return emit_string_concat(ctx, lhs, rhs);
     }
-    
+
+    // Case 2: String + Non-String (interpolation type conversion)
+    if matches!(op, BinaryOp::Add | BinaryOp::Concat)
+        && lhs.is_pointer_value()
+        && !rhs.is_pointer_value()
+    {
+        let rhs_str = value_to_string(ctx, rhs)?;
+        return emit_string_concat(ctx, lhs, rhs_str);
+    }
+
+    // Case 3: Non-String + String (interpolation type conversion)
+    if matches!(op, BinaryOp::Add | BinaryOp::Concat)
+        && !lhs.is_pointer_value()
+        && rhs.is_pointer_value()
+    {
+        let lhs_str = value_to_string(ctx, lhs)?;
+        return emit_string_concat(ctx, lhs_str, rhs);
+    }
+
     if lhs.is_int_value() && rhs.is_int_value() {
         let lhs_int = lhs.into_int_value();
         let rhs_int = rhs.into_int_value();
 
         let result = match op {
-            BinaryOp::Add => ctx.builder.build_int_add(lhs_int, rhs_int, "add").ok()?.into(),
-            BinaryOp::Sub => ctx.builder.build_int_sub(lhs_int, rhs_int, "sub").ok()?.into(),
-            BinaryOp::Mul => ctx.builder.build_int_mul(lhs_int, rhs_int, "mul").ok()?.into(),
-            BinaryOp::Div => ctx.builder.build_int_signed_div(lhs_int, rhs_int, "div").ok()?.into(),
-            BinaryOp::Mod => ctx.builder.build_int_signed_rem(lhs_int, rhs_int, "mod").ok()?.into(),
-            BinaryOp::Eq => ctx.builder.build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq").ok()?.into(),
-            BinaryOp::Ne => ctx.builder.build_int_compare(IntPredicate::NE, lhs_int, rhs_int, "ne").ok()?.into(),
-            BinaryOp::Lt => ctx.builder.build_int_compare(IntPredicate::SLT, lhs_int, rhs_int, "lt").ok()?.into(),
-            BinaryOp::Le => ctx.builder.build_int_compare(IntPredicate::SLE, lhs_int, rhs_int, "le").ok()?.into(),
-            BinaryOp::Gt => ctx.builder.build_int_compare(IntPredicate::SGT, lhs_int, rhs_int, "gt").ok()?.into(),
-            BinaryOp::Ge => ctx.builder.build_int_compare(IntPredicate::SGE, lhs_int, rhs_int, "ge").ok()?.into(),
+            BinaryOp::Add => ctx
+                .builder
+                .build_int_add(lhs_int, rhs_int, "add")
+                .ok()?
+                .into(),
+            BinaryOp::Sub => ctx
+                .builder
+                .build_int_sub(lhs_int, rhs_int, "sub")
+                .ok()?
+                .into(),
+            BinaryOp::Mul => ctx
+                .builder
+                .build_int_mul(lhs_int, rhs_int, "mul")
+                .ok()?
+                .into(),
+            BinaryOp::Div => ctx
+                .builder
+                .build_int_signed_div(lhs_int, rhs_int, "div")
+                .ok()?
+                .into(),
+            BinaryOp::Mod => ctx
+                .builder
+                .build_int_signed_rem(lhs_int, rhs_int, "mod")
+                .ok()?
+                .into(),
+            BinaryOp::Eq => ctx
+                .builder
+                .build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq")
+                .ok()?
+                .into(),
+            BinaryOp::Ne => ctx
+                .builder
+                .build_int_compare(IntPredicate::NE, lhs_int, rhs_int, "ne")
+                .ok()?
+                .into(),
+            BinaryOp::Lt => ctx
+                .builder
+                .build_int_compare(IntPredicate::SLT, lhs_int, rhs_int, "lt")
+                .ok()?
+                .into(),
+            BinaryOp::Le => ctx
+                .builder
+                .build_int_compare(IntPredicate::SLE, lhs_int, rhs_int, "le")
+                .ok()?
+                .into(),
+            BinaryOp::Gt => ctx
+                .builder
+                .build_int_compare(IntPredicate::SGT, lhs_int, rhs_int, "gt")
+                .ok()?
+                .into(),
+            BinaryOp::Ge => ctx
+                .builder
+                .build_int_compare(IntPredicate::SGE, lhs_int, rhs_int, "ge")
+                .ok()?
+                .into(),
             BinaryOp::And => ctx.builder.build_and(lhs_int, rhs_int, "and").ok()?.into(),
             BinaryOp::Or => ctx.builder.build_or(lhs_int, rhs_int, "or").ok()?.into(),
             BinaryOp::Concat => return None, // Handled above
@@ -111,16 +194,56 @@ fn emit_binop<'ctx>(
         let rhs_float = rhs.into_float_value();
 
         let result = match op {
-            BinaryOp::Add => ctx.builder.build_float_add(lhs_float, rhs_float, "fadd").ok()?.into(),
-            BinaryOp::Sub => ctx.builder.build_float_sub(lhs_float, rhs_float, "fsub").ok()?.into(),
-            BinaryOp::Mul => ctx.builder.build_float_mul(lhs_float, rhs_float, "fmul").ok()?.into(),
-            BinaryOp::Div => ctx.builder.build_float_div(lhs_float, rhs_float, "fdiv").ok()?.into(),
-            BinaryOp::Eq => ctx.builder.build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq").ok()?.into(),
-            BinaryOp::Ne => ctx.builder.build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne").ok()?.into(),
-            BinaryOp::Lt => ctx.builder.build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt").ok()?.into(),
-            BinaryOp::Le => ctx.builder.build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle").ok()?.into(),
-            BinaryOp::Gt => ctx.builder.build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt").ok()?.into(),
-            BinaryOp::Ge => ctx.builder.build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge").ok()?.into(),
+            BinaryOp::Add => ctx
+                .builder
+                .build_float_add(lhs_float, rhs_float, "fadd")
+                .ok()?
+                .into(),
+            BinaryOp::Sub => ctx
+                .builder
+                .build_float_sub(lhs_float, rhs_float, "fsub")
+                .ok()?
+                .into(),
+            BinaryOp::Mul => ctx
+                .builder
+                .build_float_mul(lhs_float, rhs_float, "fmul")
+                .ok()?
+                .into(),
+            BinaryOp::Div => ctx
+                .builder
+                .build_float_div(lhs_float, rhs_float, "fdiv")
+                .ok()?
+                .into(),
+            BinaryOp::Eq => ctx
+                .builder
+                .build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq")
+                .ok()?
+                .into(),
+            BinaryOp::Ne => ctx
+                .builder
+                .build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne")
+                .ok()?
+                .into(),
+            BinaryOp::Lt => ctx
+                .builder
+                .build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt")
+                .ok()?
+                .into(),
+            BinaryOp::Le => ctx
+                .builder
+                .build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle")
+                .ok()?
+                .into(),
+            BinaryOp::Gt => ctx
+                .builder
+                .build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt")
+                .ok()?
+                .into(),
+            BinaryOp::Ge => ctx
+                .builder
+                .build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge")
+                .ok()?
+                .into(),
             _ => return None,
         };
         Some(result)
@@ -138,77 +261,109 @@ fn emit_string_concat<'ctx>(
 ) -> Option<BasicValueEnum<'ctx>> {
     let str1_ptr = lhs.into_pointer_value();
     let str2_ptr = rhs.into_pointer_value();
-    
+
     // Declare external functions if needed
-    let strlen = ctx.module.get_function(ffi_names::STRLEN).unwrap_or_else(|| {
-        let i64_ty = ctx.context.i64_type();
-        let ptr_ty = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-        let fn_ty = i64_ty.fn_type(&[ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::STRLEN, fn_ty, None)
-    });
-    
-    let malloc = ctx.module.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
-        let i64_ty = ctx.context.i64_type();
-        let ptr_ty = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-        let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
-        ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
-    });
-    
-    let memcpy = ctx.module.get_function(ffi_names::MEMCPY).unwrap_or_else(|| {
-        let ptr_ty = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-        let i64_ty = ctx.context.i64_type();
-        let fn_ty = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false);
-        ctx.module.add_function(ffi_names::MEMCPY, fn_ty, None)
-    });
-    
+    let strlen = ctx
+        .module
+        .get_function(ffi_names::STRLEN)
+        .unwrap_or_else(|| {
+            let i64_ty = ctx.context.i64_type();
+            let ptr_ty = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let fn_ty = i64_ty.fn_type(&[ptr_ty.into()], false);
+            ctx.module.add_function(ffi_names::STRLEN, fn_ty, None)
+        });
+
+    let malloc = ctx
+        .module
+        .get_function(ffi_names::MALLOC)
+        .unwrap_or_else(|| {
+            let i64_ty = ctx.context.i64_type();
+            let ptr_ty = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
+            ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
+        });
+
+    let memcpy = ctx
+        .module
+        .get_function(ffi_names::MEMCPY)
+        .unwrap_or_else(|| {
+            let ptr_ty = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let i64_ty = ctx.context.i64_type();
+            let fn_ty = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false);
+            ctx.module.add_function(ffi_names::MEMCPY, fn_ty, None)
+        });
+
     // Get lengths of both strings
-    let len1 = ctx.builder
+    let len1 = ctx
+        .builder
         .build_call(strlen, &[str1_ptr.into()], "len1")
         .ok()?
         .try_as_basic_value()
         .left()?
         .into_int_value();
-    let len2 = ctx.builder
+    let len2 = ctx
+        .builder
         .build_call(strlen, &[str2_ptr.into()], "len2")
         .ok()?
         .try_as_basic_value()
         .left()?
         .into_int_value();
-    
+
     // Allocate len1 + len2 + 1 bytes
     let total_len = ctx.builder.build_int_add(len1, len2, "total").ok()?;
-    let size = ctx.builder.build_int_add(
-        total_len,
-        ctx.context.i64_type().const_int(1, false),
-        "size"
-    ).ok()?;
-    
-    let result_ptr = ctx.builder
+    let size = ctx
+        .builder
+        .build_int_add(
+            total_len,
+            ctx.context.i64_type().const_int(1, false),
+            "size",
+        )
+        .ok()?;
+
+    let result_ptr = ctx
+        .builder
         .build_call(malloc, &[size.into()], "concat")
         .ok()?
         .try_as_basic_value()
         .left()?
         .into_pointer_value();
-    
+
     // Copy first string
-    ctx.builder.build_call(memcpy, &[result_ptr.into(), str1_ptr.into(), len1.into()], "").ok()?;
-    
+    ctx.builder
+        .build_call(
+            memcpy,
+            &[result_ptr.into(), str1_ptr.into(), len1.into()],
+            "",
+        )
+        .ok()?;
+
     // Copy second string (including null terminator)
     let dest2 = unsafe {
-        ctx.builder.build_in_bounds_gep(
-            ctx.context.i8_type(),
-            result_ptr,
-            &[len1],
-            "dest2"
-        ).ok()?
+        ctx.builder
+            .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[len1], "dest2")
+            .ok()?
     };
-    let len2_plus_null = ctx.builder.build_int_add(
-        len2,
-        ctx.context.i64_type().const_int(1, false),
-        "len2p1"
-    ).ok()?;
-    ctx.builder.build_call(memcpy, &[dest2.into(), str2_ptr.into(), len2_plus_null.into()], "").ok()?;
-    
+    let len2_plus_null = ctx
+        .builder
+        .build_int_add(len2, ctx.context.i64_type().const_int(1, false), "len2p1")
+        .ok()?;
+    ctx.builder
+        .build_call(
+            memcpy,
+            &[dest2.into(), str2_ptr.into(), len2_plus_null.into()],
+            "",
+        )
+        .ok()?;
+
     Some(result_ptr.into())
 }
 
@@ -221,19 +376,139 @@ fn emit_unaryop<'ctx>(
     match op {
         UnaryOp::Neg => {
             if val.is_int_value() {
-                Some(ctx.builder.build_int_neg(val.into_int_value(), "neg").ok()?.into())
+                Some(
+                    ctx.builder
+                        .build_int_neg(val.into_int_value(), "neg")
+                        .ok()?
+                        .into(),
+                )
             } else if val.is_float_value() {
-                Some(ctx.builder.build_float_neg(val.into_float_value(), "fneg").ok()?.into())
+                Some(
+                    ctx.builder
+                        .build_float_neg(val.into_float_value(), "fneg")
+                        .ok()?
+                        .into(),
+                )
             } else {
                 None
             }
         }
         UnaryOp::Not => {
             if val.is_int_value() {
-                Some(ctx.builder.build_not(val.into_int_value(), "not").ok()?.into())
+                Some(
+                    ctx.builder
+                        .build_not(val.into_int_value(), "not")
+                        .ok()?
+                        .into(),
+                )
             } else {
                 None
             }
         }
     }
+}
+/// Convert a value to a string for interpolation.
+/// Uses snprintf to format integers and floats.
+fn value_to_string<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    val: BasicValueEnum<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    // If it's already a pointer (string), just return it
+    if val.is_pointer_value() {
+        return Some(val);
+    }
+
+    let snprintf = ctx
+        .module
+        .get_function(ffi_names::SNPRINTF)
+        .unwrap_or_else(|| {
+            let i32_ty = ctx.context.i32_type();
+            let i64_ty = ctx.context.i64_type();
+            let ptr_ty = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], true);
+            ctx.module.add_function(ffi_names::SNPRINTF, fn_ty, None)
+        });
+
+    let malloc = ctx
+        .module
+        .get_function(ffi_names::MALLOC)
+        .unwrap_or_else(|| {
+            let i64_ty = ctx.context.i64_type();
+            let ptr_ty = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
+            ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
+        });
+
+    // Determine format string and value based on type
+    let (fmt_str, args): (&str, Vec<BasicValueEnum>) = if val.is_int_value() {
+        let int_val = val.into_int_value();
+        // Check if it's a boolean (i1) or integer
+        if int_val.get_type().get_bit_width() == 1 {
+            // Boolean - need to convert to "true" or "false"
+            // For now, just use %d which will output 0 or 1
+            // TODO: Proper "true"/"false" string output
+            ("%d", vec![val])
+        } else {
+            ("%lld", vec![val])
+        }
+    } else if val.is_float_value() {
+        ("%g", vec![val]) // Use %g for more compact float representation
+    } else {
+        // Unknown type, try as integer
+        ("%lld", vec![val])
+    };
+
+    let fmt = ctx.const_string(fmt_str);
+    let null_buf = ctx
+        .context
+        .i8_type()
+        .ptr_type(inkwell::AddressSpace::default())
+        .const_null();
+    let zero_len = ctx.context.i64_type().const_zero();
+
+    // Call snprintf(null, 0, fmt, val) to get required length
+    use inkwell::values::BasicMetadataValueEnum;
+    let mut call_args: Vec<BasicMetadataValueEnum> =
+        vec![null_buf.into(), zero_len.into(), fmt.into()];
+    call_args.extend(args.iter().map(|v| BasicMetadataValueEnum::from(*v)));
+
+    let len_i32 = ctx
+        .builder
+        .build_call(snprintf, &call_args, "len")
+        .ok()?
+        .try_as_basic_value()
+        .left()?
+        .into_int_value();
+
+    let len_i64 = ctx
+        .builder
+        .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+        .ok()?;
+    let size = ctx
+        .builder
+        .build_int_add(len_i64, ctx.context.i64_type().const_int(1, false), "size")
+        .ok()?;
+
+    // Allocate buffer
+    let buf = ctx
+        .builder
+        .build_call(malloc, &[size.into()], "str_buf")
+        .ok()?
+        .try_as_basic_value()
+        .left()?
+        .into_pointer_value();
+
+    // Format the value into the buffer
+    let mut print_args: Vec<BasicMetadataValueEnum> = vec![buf.into(), size.into(), fmt.into()];
+    print_args.extend(args.iter().map(|v| BasicMetadataValueEnum::from(*v)));
+
+    ctx.builder.build_call(snprintf, &print_args, "fmt").ok()?;
+
+    Some(buf.into())
 }

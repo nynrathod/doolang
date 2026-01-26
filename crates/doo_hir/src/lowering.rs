@@ -9,13 +9,16 @@
 //! - `for x in iter` → while loop (basic structure)
 //! - Range expressions → Range construction
 
-use doo_core::{Span, types::{TypeId, TypeKind, TypeRegistry, builtin}};
-use doo_frontend::ast::{
-    self, Expr, ExprKind, Stmt, StmtKind, Program, Item,
-    BinaryOp, UnaryOp, CompoundOp, IncDecOp,
-    FunctionDecl, StructDecl, EnumDecl, ImportDecl, Decorator,
-    TypeExpr, Pattern, PatternKind, ElseBranch,
+use doo_core::{
+    types::{builtin, TypeId, TypeKind, TypeRegistry},
+    Span,
 };
+use doo_frontend::ast::{
+    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
+    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
+    TypeExpr, UnaryOp,
+};
+use rustc_hash::FxHashMap;
 
 use crate::types::*;
 
@@ -23,6 +26,8 @@ use crate::types::*;
 pub struct Lower {
     /// Collected errors during lowering.
     errors: Vec<LowerError>,
+    /// Variable type tracking for typed lowering (name -> TypeId)
+    var_types: FxHashMap<String, TypeId>,
 }
 
 /// Lowering error.
@@ -34,22 +39,30 @@ pub struct LowerError {
 
 impl LowerError {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
-        Self { message: message.into(), span }
+        Self {
+            message: message.into(),
+            span,
+        }
     }
 }
 
 impl Lower {
     /// Create a new lowering context.
     pub fn new() -> Self {
-        Self { errors: Vec::new() }
+        Self {
+            errors: Vec::new(),
+            var_types: FxHashMap::default(),
+        }
     }
 
     /// Lower an entire program.
     pub fn lower_program(&mut self, program: &Program) -> HirProgram {
-        let items = program.items.iter()
+        let items = program
+            .items
+            .iter()
             .filter_map(|item| self.lower_item(item))
             .collect();
-        
+
         HirProgram {
             items,
             span: program.span,
@@ -126,19 +139,23 @@ impl Lower {
     }
 
     fn lower_function(&mut self, f: &FunctionDecl) -> HirFunction {
-        let params = f.params.iter().map(|(name, _type_ann)| {
-            HirParam {
-                name: name.clone(),
-                type_id: None, // Type resolution in later phase
-                span: f.span,
-            }
-        }).collect();
-
-        let body = f.body.iter()
-            .map(|stmt| self.lower_stmt(stmt))
+        let params = f
+            .params
+            .iter()
+            .map(|(name, _type_ann)| {
+                HirParam {
+                    name: name.clone(),
+                    type_id: None, // Type resolution in later phase
+                    span: f.span,
+                }
+            })
             .collect();
 
-        let decorators = f.decorators.iter()
+        let body = f.body.iter().map(|stmt| self.lower_stmt(stmt)).collect();
+
+        let decorators = f
+            .decorators
+            .iter()
             .map(|d| self.lower_decorator(d))
             .collect();
 
@@ -153,20 +170,44 @@ impl Lower {
         }
     }
 
-    fn lower_function_typed(&mut self, f: &FunctionDecl, registry: &mut TypeRegistry) -> HirFunction {
-        let params = f
+    fn lower_function_typed(
+        &mut self,
+        f: &FunctionDecl,
+        registry: &mut TypeRegistry,
+    ) -> HirFunction {
+        // Clear variable types for new function scope
+        self.var_types.clear();
+
+        let params: Vec<HirParam> = f
             .params
             .iter()
-            .map(|(name, type_ann)| HirParam {
-                name: name.clone(),
-                type_id: type_ann.as_ref().map(|t| self.resolve_type_expr(t, registry)),
-                span: f.span,
+            .map(|(name, type_ann)| {
+                let type_id = type_ann
+                    .as_ref()
+                    .map(|t| self.resolve_type_expr(t, registry));
+                // Track parameter types
+                if let Some(tid) = type_id {
+                    self.var_types.insert(name.clone(), tid);
+                }
+                HirParam {
+                    name: name.clone(),
+                    type_id,
+                    span: f.span,
+                }
             })
             .collect();
 
-        let body = f.body.iter().map(|stmt| self.lower_stmt_typed(stmt, registry)).collect();
+        let body = f
+            .body
+            .iter()
+            .map(|stmt| self.lower_stmt_typed(stmt, registry))
+            .collect();
 
-        let decorators = f.decorators.iter().map(|d| self.lower_decorator(d)).collect();
+        let decorators = f
+            .decorators
+            .iter()
+            .map(|d| self.lower_decorator(d))
+            .collect();
 
         HirFunction {
             name: f.name.clone(),
@@ -186,18 +227,26 @@ impl Lower {
     }
 
     fn lower_struct(&mut self, s: &StructDecl) -> HirStruct {
-        let fields = s.fields.iter().map(|f| {
-            HirField {
+        let fields = s
+            .fields
+            .iter()
+            .map(|f| HirField {
                 name: f.name.clone(),
                 type_id: None,
                 is_optional: f.is_optional,
                 default: f.default.as_ref().map(|e| self.lower_expr(e)),
-                decorators: f.decorators.iter().map(|d| self.lower_decorator(d)).collect(),
+                decorators: f
+                    .decorators
+                    .iter()
+                    .map(|d| self.lower_decorator(d))
+                    .collect(),
                 span: f.span,
-            }
-        }).collect();
+            })
+            .collect();
 
-        let decorators = s.decorators.iter()
+        let decorators = s
+            .decorators
+            .iter()
             .map(|d| self.lower_decorator(d))
             .collect();
 
@@ -229,7 +278,10 @@ impl Lower {
                     name: f.name.clone(),
                     type_id: Some(type_id),
                     is_optional: f.is_optional,
-                    default: f.default.as_ref().map(|e| self.lower_expr_typed(e, registry)),
+                    default: f
+                        .default
+                        .as_ref()
+                        .map(|e| self.lower_expr_typed(e, registry)),
                     decorators: f
                         .decorators
                         .iter()
@@ -248,7 +300,11 @@ impl Lower {
                 .collect(),
         );
 
-        let decorators = s.decorators.iter().map(|d| self.lower_decorator(d)).collect();
+        let decorators = s
+            .decorators
+            .iter()
+            .map(|d| self.lower_decorator(d))
+            .collect();
 
         HirStruct {
             name: s.name.clone(),
@@ -259,13 +315,15 @@ impl Lower {
     }
 
     fn lower_enum(&mut self, e: &EnumDecl) -> HirEnum {
-        let variants = e.variants.iter().map(|v| {
-            HirVariant {
+        let variants = e
+            .variants
+            .iter()
+            .map(|v| HirVariant {
                 name: v.name.clone(),
                 payload: None,
                 span: v.span,
-            }
-        }).collect();
+            })
+            .collect();
 
         HirEnum {
             name: e.name.clone(),
@@ -304,15 +362,18 @@ impl Lower {
     }
 
     fn lower_import(&mut self, i: &ImportDecl) -> HirImport {
-        let items = i.items.iter().map(|item| {
-            match item {
+        let items = i
+            .items
+            .iter()
+            .map(|item| match item {
                 ast::ImportItem::Symbol(s) => HirImportItem::Symbol(s.clone()),
-                ast::ImportItem::Alias { name, alias } => {
-                    HirImportItem::Alias { name: name.clone(), alias: alias.clone() }
-                }
+                ast::ImportItem::Alias { name, alias } => HirImportItem::Alias {
+                    name: name.clone(),
+                    alias: alias.clone(),
+                },
                 ast::ImportItem::Wildcard => HirImportItem::Wildcard,
-            }
-        }).collect();
+            })
+            .collect();
 
         HirImport {
             path: i.path.clone(),
@@ -335,7 +396,12 @@ impl Lower {
 
     fn lower_stmt(&mut self, stmt: &Stmt) -> HirStmt {
         let kind = match &stmt.kind {
-            StmtKind::Let { mutable, pattern, type_ann: _, value } => {
+            StmtKind::Let {
+                mutable,
+                pattern,
+                type_ann: _,
+                value,
+            } => {
                 let name = self.pattern_to_name(pattern);
                 HirStmtKind::Let {
                     name,
@@ -360,7 +426,7 @@ impl Lower {
                 let target_expr = self.pattern_to_expr(target);
                 let target_read = self.pattern_to_expr(target);
                 let hir_op = self.compound_op_to_binop(*op);
-                
+
                 let binop_expr = HirExpr::new(
                     HirExprKind::BinOp {
                         op: hir_op,
@@ -381,17 +447,18 @@ impl Lower {
             // `x--` → `x = x - 1`
             StmtKind::IncDec { variable, op } => {
                 let target = HirExpr::new(
-                    HirExprKind::Local { name: variable.clone() },
+                    HirExprKind::Local {
+                        name: variable.clone(),
+                    },
                     stmt.span,
                 );
                 let target_read = HirExpr::new(
-                    HirExprKind::Local { name: variable.clone() },
+                    HirExprKind::Local {
+                        name: variable.clone(),
+                    },
                     stmt.span,
                 );
-                let one = HirExpr::new(
-                    HirExprKind::Const(ConstValue::Int(1)),
-                    stmt.span,
-                );
+                let one = HirExpr::new(HirExprKind::Const(ConstValue::Int(1)), stmt.span);
                 let hir_op = match op {
                     IncDecOp::Inc => HirBinOp::Add,
                     IncDecOp::Dec => HirBinOp::Sub,
@@ -412,9 +479,7 @@ impl Lower {
                 }
             }
 
-            StmtKind::Expr(expr) => {
-                HirStmtKind::Expr(self.lower_expr(expr))
-            }
+            StmtKind::Expr(expr) => HirStmtKind::Expr(self.lower_expr(expr)),
 
             StmtKind::Return(values) => {
                 HirStmtKind::Return(values.iter().map(|e| self.lower_expr(e)).collect())
@@ -423,16 +488,16 @@ impl Lower {
             StmtKind::Break => HirStmtKind::Break,
             StmtKind::Continue => HirStmtKind::Continue,
 
-            StmtKind::If { condition, then_block, else_branch } => {
+            StmtKind::If {
+                condition,
+                then_block,
+                else_branch,
+            } => {
                 let then_stmts = then_block.iter().map(|s| self.lower_stmt(s)).collect();
-                let else_stmts = else_branch.as_ref().map(|eb| {
-                    match eb {
-                        ElseBranch::Block(stmts) => {
-                            stmts.iter().map(|s| self.lower_stmt(s)).collect()
-                        }
-                        ElseBranch::ElseIf(if_stmt) => {
-                            vec![self.lower_stmt(if_stmt)]
-                        }
+                let else_stmts = else_branch.as_ref().map(|eb| match eb {
+                    ElseBranch::Block(stmts) => stmts.iter().map(|s| self.lower_stmt(s)).collect(),
+                    ElseBranch::ElseIf(if_stmt) => {
+                        vec![self.lower_stmt(if_stmt)]
                     }
                 });
 
@@ -444,35 +509,16 @@ impl Lower {
             }
 
             // === Desugaring: For Loop ===
-            // `for x in iter { body }` → `while iterator pattern { body }`
-            // Simplified: just convert to while with iter expression
-            StmtKind::For { pattern, iterable, body } => {
-                let iter_name = self.pattern_to_name(pattern);
-                
-                // For now, we create a simple while-true with the body
-                // Full iterator desugaring requires runtime support
-                let body_stmts: Vec<_> = body.iter().map(|s| self.lower_stmt(s)).collect();
-                
-                // If there's an iterable, we'd need proper iterator protocol
-                // For now, treat as conditional loop structure
-                if let Some(iter_expr) = iterable {
-                    // Create: let __iter = iterable; while __iter.has_next() { let x = __iter.next(); ... }
-                    // Simplified: just preserve structure for now
-                    HirStmtKind::While {
-                        condition: self.lower_expr(iter_expr),
-                        body: body_stmts,
-                    }
-                } else {
-                    // Infinite loop: for { ... }
-                    HirStmtKind::While {
-                        condition: HirExpr::new(
-                            HirExprKind::Const(ConstValue::Bool(true)),
-                            stmt.span,
-                        ),
-                        body: body_stmts,
-                    }
-                }
-            }
+            // Three cases:
+            // 1. `for i in start..end` → range-based index loop
+            // 2. `for x in array` → index-based array iteration
+            // 3. `for i, x in array` → index + element iteration
+            // 4. `for { ... }` → infinite loop
+            StmtKind::For {
+                pattern,
+                iterable,
+                body,
+            } => self.lower_for_loop(pattern, iterable.as_ref(), body, stmt.span),
 
             StmtKind::Block(stmts) => {
                 // Lower block as expression statement
@@ -482,7 +528,10 @@ impl Lower {
                 }
                 // Represent as nested block via expression
                 HirStmtKind::Expr(HirExpr::new(
-                    HirExprKind::Block { stmts: lowered, expr: None },
+                    HirExprKind::Block {
+                        stmts: lowered,
+                        expr: None,
+                    },
                     stmt.span,
                 ))
             }
@@ -493,7 +542,9 @@ impl Lower {
                 HirStmtKind::Expr(HirExpr::new(
                     HirExprKind::Call {
                         func: Box::new(HirExpr::new(
-                            HirExprKind::Global { name: "print".to_string() },
+                            HirExprKind::Global {
+                                name: "print".to_string(),
+                            },
                             stmt.span,
                         )),
                         args,
@@ -502,7 +553,11 @@ impl Lower {
                 ))
             }
 
-            StmtKind::ElementAssign { array, index, value } => {
+            StmtKind::ElementAssign {
+                array,
+                index,
+                value,
+            } => {
                 // array[idx] = value → __array_set(array, idx, value)
                 // For now, lower as method call
                 HirStmtKind::Expr(HirExpr::new(
@@ -515,7 +570,11 @@ impl Lower {
                 ))
             }
 
-            StmtKind::FieldAssign { object, field, value } => {
+            StmtKind::FieldAssign {
+                object,
+                field,
+                value,
+            } => {
                 // obj.field = value → direct assignment
                 let target = HirExpr::new(
                     HirExprKind::Field {
@@ -530,7 +589,11 @@ impl Lower {
                 }
             }
 
-            StmtKind::ManualErrorExtract { expr, ok_pattern, error_var } => {
+            StmtKind::ManualErrorExtract {
+                expr,
+                ok_pattern,
+                error_var,
+            } => {
                 let ok_names = self.pattern_to_names(ok_pattern);
                 HirStmtKind::ManualErrorExtract {
                     ok_names,
@@ -553,10 +616,16 @@ impl Lower {
             } => {
                 let name = self.pattern_to_name(pattern);
                 let mut value_hir = self.lower_expr_typed(value, registry);
-                let annotated_type_id = type_ann.as_ref().map(|t| self.resolve_type_expr(t, registry));
+                let annotated_type_id = type_ann
+                    .as_ref()
+                    .map(|t| self.resolve_type_expr(t, registry));
                 let inferred_type_id = annotated_type_id.or(value_hir.type_id);
                 if annotated_type_id.is_some() {
                     value_hir.type_id = inferred_type_id;
+                }
+                // Track variable type for later lookups
+                if let Some(tid) = inferred_type_id {
+                    self.var_types.insert(name.clone(), tid);
                 }
                 HirStmtKind::Let {
                     name,
@@ -597,11 +666,15 @@ impl Lower {
 
             StmtKind::IncDec { variable, op } => {
                 let target = HirExpr::new(
-                    HirExprKind::Local { name: variable.clone() },
+                    HirExprKind::Local {
+                        name: variable.clone(),
+                    },
                     stmt.span,
                 );
                 let target_read = HirExpr::new(
-                    HirExprKind::Local { name: variable.clone() },
+                    HirExprKind::Local {
+                        name: variable.clone(),
+                    },
                     stmt.span,
                 );
                 let one = HirExpr::with_type(
@@ -631,9 +704,12 @@ impl Lower {
 
             StmtKind::Expr(expr) => HirStmtKind::Expr(self.lower_expr_typed(expr, registry)),
 
-            StmtKind::Return(values) => {
-                HirStmtKind::Return(values.iter().map(|e| self.lower_expr_typed(e, registry)).collect())
-            }
+            StmtKind::Return(values) => HirStmtKind::Return(
+                values
+                    .iter()
+                    .map(|e| self.lower_expr_typed(e, registry))
+                    .collect(),
+            ),
 
             StmtKind::Break => HirStmtKind::Break,
             StmtKind::Continue => HirStmtKind::Continue,
@@ -666,30 +742,7 @@ impl Lower {
                 pattern,
                 iterable,
                 body,
-            } => {
-                let _iter_name = self.pattern_to_name(pattern);
-
-                let body_stmts: Vec<_> = body
-                    .iter()
-                    .map(|s| self.lower_stmt_typed(s, registry))
-                    .collect();
-
-                if let Some(iter_expr) = iterable {
-                    HirStmtKind::While {
-                        condition: self.lower_expr_typed(iter_expr, registry),
-                        body: body_stmts,
-                    }
-                } else {
-                    HirStmtKind::While {
-                        condition: HirExpr::with_type(
-                            HirExprKind::Const(ConstValue::Bool(true)),
-                            builtin::BOOL,
-                            stmt.span,
-                        ),
-                        body: body_stmts,
-                    }
-                }
-            }
+            } => self.lower_for_loop_typed(pattern, iterable.as_ref(), body, stmt.span, registry),
 
             StmtKind::Block(stmts) => {
                 let lowered: Vec<_> = stmts
@@ -700,17 +753,25 @@ impl Lower {
                     return lowered.into_iter().next().unwrap();
                 }
                 HirStmtKind::Expr(HirExpr::new(
-                    HirExprKind::Block { stmts: lowered, expr: None },
+                    HirExprKind::Block {
+                        stmts: lowered,
+                        expr: None,
+                    },
                     stmt.span,
                 ))
             }
 
             StmtKind::Print(exprs) => {
-                let args = exprs.iter().map(|e| self.lower_expr_typed(e, registry)).collect();
+                let args = exprs
+                    .iter()
+                    .map(|e| self.lower_expr_typed(e, registry))
+                    .collect();
                 HirStmtKind::Expr(HirExpr::new(
                     HirExprKind::Call {
                         func: Box::new(HirExpr::new(
-                            HirExprKind::Global { name: "print".to_string() },
+                            HirExprKind::Global {
+                                name: "print".to_string(),
+                            },
                             stmt.span,
                         )),
                         args,
@@ -719,7 +780,11 @@ impl Lower {
                 ))
             }
 
-            StmtKind::ElementAssign { array, index, value } => HirStmtKind::Expr(HirExpr::new(
+            StmtKind::ElementAssign {
+                array,
+                index,
+                value,
+            } => HirStmtKind::Expr(HirExpr::new(
                 HirExprKind::MethodCall {
                     receiver: Box::new(self.lower_expr_typed(array, registry)),
                     method: "__set".to_string(),
@@ -731,7 +796,11 @@ impl Lower {
                 stmt.span,
             )),
 
-            StmtKind::FieldAssign { object, field, value } => {
+            StmtKind::FieldAssign {
+                object,
+                field,
+                value,
+            } => {
                 let target = HirExpr::new(
                     HirExprKind::Field {
                         object: Box::new(self.lower_expr_typed(object, registry)),
@@ -776,62 +845,52 @@ impl Lower {
 
             ExprKind::Ident(name) => HirExprKind::Local { name: name.clone() },
 
-            ExprKind::Binary { left, op, right } => {
-                HirExprKind::BinOp {
-                    op: self.lower_binop(*op),
-                    lhs: Box::new(self.lower_expr(left)),
-                    rhs: Box::new(self.lower_expr(right)),
-                }
-            }
+            ExprKind::Binary { left, op, right } => HirExprKind::BinOp {
+                op: self.lower_binop(*op),
+                lhs: Box::new(self.lower_expr(left)),
+                rhs: Box::new(self.lower_expr(right)),
+            },
 
-            ExprKind::Unary { op, expr: inner } => {
-                HirExprKind::UnaryOp {
-                    op: self.lower_unaryop(*op),
-                    operand: Box::new(self.lower_expr(inner)),
-                }
-            }
+            ExprKind::Unary { op, expr: inner } => HirExprKind::UnaryOp {
+                op: self.lower_unaryop(*op),
+                operand: Box::new(self.lower_expr(inner)),
+            },
 
-            ExprKind::Call { func, args } => {
-                HirExprKind::Call {
-                    func: Box::new(self.lower_expr(func)),
-                    args: args.iter().map(|a| self.lower_expr(a)).collect(),
-                }
-            }
+            ExprKind::Call { func, args } => HirExprKind::Call {
+                func: Box::new(self.lower_expr(func)),
+                args: args.iter().map(|a| self.lower_expr(a)).collect(),
+            },
 
-            ExprKind::MethodCall { object, method, args } => {
-                HirExprKind::MethodCall {
-                    receiver: Box::new(self.lower_expr(object)),
-                    method: method.clone(),
-                    args: args.iter().map(|a| self.lower_expr(a)).collect(),
-                }
-            }
+            ExprKind::MethodCall {
+                object,
+                method,
+                args,
+            } => HirExprKind::MethodCall {
+                receiver: Box::new(self.lower_expr(object)),
+                method: method.clone(),
+                args: args.iter().map(|a| self.lower_expr(a)).collect(),
+            },
 
-            ExprKind::Field { object, field } => {
-                HirExprKind::Field {
-                    object: Box::new(self.lower_expr(object)),
-                    field: field.clone(),
-                }
-            }
+            ExprKind::Field { object, field } => HirExprKind::Field {
+                object: Box::new(self.lower_expr(object)),
+                field: field.clone(),
+            },
 
-            ExprKind::Index { object, index } => {
-                HirExprKind::Index {
-                    object: Box::new(self.lower_expr(object)),
-                    index: Box::new(self.lower_expr(index)),
-                }
-            }
+            ExprKind::Index { object, index } => HirExprKind::Index {
+                object: Box::new(self.lower_expr(object)),
+                index: Box::new(self.lower_expr(index)),
+            },
 
             ExprKind::ArrayLit(elements) => {
                 HirExprKind::Array(elements.iter().map(|e| self.lower_expr(e)).collect())
             }
 
-            ExprKind::MapLit(entries) => {
-                HirExprKind::Map(
-                    entries
-                        .iter()
-                        .map(|(k, v)| (self.lower_expr(k), self.lower_expr(v)))
-                        .collect(),
-                )
-            }
+            ExprKind::MapLit(entries) => HirExprKind::Map(
+                entries
+                    .iter()
+                    .map(|(k, v)| (self.lower_expr(k), self.lower_expr(v)))
+                    .collect(),
+            ),
 
             ExprKind::TupleLit(elements) => {
                 HirExprKind::Tuple(elements.iter().map(|e| self.lower_expr(e)).collect())
@@ -845,40 +904,47 @@ impl Lower {
                 };
                 HirExprKind::Struct {
                     name,
-                    fields: fields.iter().map(|(k, v)| (k.clone(), self.lower_expr(v))).collect(),
+                    fields: fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), self.lower_expr(v)))
+                        .collect(),
                 }
             }
 
-            ExprKind::EnumVariant { enum_name, variant, payload } => {
-                HirExprKind::EnumVariant {
-                    enum_name: enum_name.clone(),
-                    variant: variant.clone(),
-                    payload: payload.iter().map(|e| self.lower_expr(e)).collect(),
-                }
-            }
+            ExprKind::EnumVariant {
+                enum_name,
+                variant,
+                payload,
+            } => HirExprKind::EnumVariant {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                payload: payload.iter().map(|e| self.lower_expr(e)).collect(),
+            },
 
-            ExprKind::Range { start, end, inclusive } => {
-                HirExprKind::Range {
-                    start: Box::new(self.lower_expr(start)),
-                    end: Box::new(self.lower_expr(end)),
-                    inclusive: *inclusive,
-                }
-            }
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => HirExprKind::Range {
+                start: Box::new(self.lower_expr(start)),
+                end: Box::new(self.lower_expr(end)),
+                inclusive: *inclusive,
+            },
 
-            ExprKind::IfExpr { condition, then_branch, else_branch } => {
-                HirExprKind::If {
-                    condition: Box::new(self.lower_expr(condition)),
-                    then_expr: Box::new(self.lower_expr(then_branch)),
-                    else_expr: else_branch.as_ref().map(|e| Box::new(self.lower_expr(e))),
-                }
-            }
+            ExprKind::IfExpr {
+                condition,
+                then_branch,
+                else_branch,
+            } => HirExprKind::If {
+                condition: Box::new(self.lower_expr(condition)),
+                then_expr: Box::new(self.lower_expr(then_branch)),
+                else_expr: else_branch.as_ref().map(|e| Box::new(self.lower_expr(e))),
+            },
 
-            ExprKind::Block(stmts, final_expr) => {
-                HirExprKind::Block {
-                    stmts: stmts.iter().map(|s| self.lower_stmt(s)).collect(),
-                    expr: final_expr.as_ref().map(|e| Box::new(self.lower_expr(e))),
-                }
-            }
+            ExprKind::Block(stmts, final_expr) => HirExprKind::Block {
+                stmts: stmts.iter().map(|s| self.lower_stmt(s)).collect(),
+                expr: final_expr.as_ref().map(|e| Box::new(self.lower_expr(e))),
+            },
 
             ExprKind::Ok(values) => {
                 let inner = if values.len() == 1 {
@@ -892,39 +958,35 @@ impl Lower {
                 HirExprKind::Ok(Box::new(inner))
             }
 
-            ExprKind::Err(inner) => {
-                HirExprKind::Err(Box::new(self.lower_expr(inner)))
-            }
+            ExprKind::Err(inner) => HirExprKind::Err(Box::new(self.lower_expr(inner))),
 
-            ExprKind::Try(inner) => {
-                HirExprKind::Try(Box::new(self.lower_expr(inner)))
-            }
+            ExprKind::Try(inner) => HirExprKind::Try(Box::new(self.lower_expr(inner))),
 
-             ExprKind::UnwrapOrPanic { expr: inner, message } => {
-                 HirExprKind::UnwrapOrPanic {
-                     expr: Box::new(self.lower_expr(inner)),
-                     message: Box::new(self.lower_expr(message)),
-                 }
-             }
+            ExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => HirExprKind::UnwrapOrPanic {
+                expr: Box::new(self.lower_expr(inner)),
+                message: Box::new(self.lower_expr(message)),
+            },
 
-            ExprKind::Closure { params, body, .. } => {
-                HirExprKind::Closure {
-                    params: params.iter().map(|(n, _)| (n.clone(), None)).collect(),
-                    body: Box::new(self.lower_expr(body)),
-                }
-            }
+            ExprKind::Closure { params, body, .. } => HirExprKind::Closure {
+                params: params.iter().map(|(n, _)| (n.clone(), None)).collect(),
+                body: Box::new(self.lower_expr(body)),
+            },
 
-            ExprKind::Match { values, arms } => {
-                HirExprKind::Match {
-                    values: values.iter().map(|v| self.lower_expr(v)).collect(),
-                    arms: arms.iter().map(|a| HirMatchArm {
+            ExprKind::Match { values, arms } => HirExprKind::Match {
+                values: values.iter().map(|v| self.lower_expr(v)).collect(),
+                arms: arms
+                    .iter()
+                    .map(|a| HirMatchArm {
                         pattern: self.lower_match_pattern(&a.pattern),
                         guard: a.guard.as_ref().map(|g| self.lower_expr(g)),
                         body: self.lower_expr(&a.body),
                         span: a.span,
-                    }).collect(),
-                }
-            }
+                    })
+                    .collect(),
+            },
 
             ExprKind::Spread(inner) => HirExprKind::Spread(Box::new(self.lower_expr(inner))),
 
@@ -974,7 +1036,14 @@ impl Lower {
             ExprKind::StrLit(v) => HirExprKind::Const(ConstValue::Str(v.clone())),
             ExprKind::Nil => HirExprKind::Const(ConstValue::Nil),
 
-            ExprKind::Ident(name) => HirExprKind::Local { name: name.clone() },
+            ExprKind::Ident(name) => {
+                // Look up the variable type if tracked
+                let kind = HirExprKind::Local { name: name.clone() };
+                if let Some(&type_id) = self.var_types.get(name) {
+                    return HirExpr::with_type(kind, type_id, expr.span);
+                }
+                kind
+            }
 
             ExprKind::Binary { left, op, right } => HirExprKind::BinOp {
                 op: self.lower_binop(*op),
@@ -989,13 +1058,23 @@ impl Lower {
 
             ExprKind::Call { func, args } => HirExprKind::Call {
                 func: Box::new(self.lower_expr_typed(func, registry)),
-                args: args.iter().map(|a| self.lower_expr_typed(a, registry)).collect(),
+                args: args
+                    .iter()
+                    .map(|a| self.lower_expr_typed(a, registry))
+                    .collect(),
             },
 
-            ExprKind::MethodCall { object, method, args } => HirExprKind::MethodCall {
+            ExprKind::MethodCall {
+                object,
+                method,
+                args,
+            } => HirExprKind::MethodCall {
                 receiver: Box::new(self.lower_expr_typed(object, registry)),
                 method: method.clone(),
-                args: args.iter().map(|a| self.lower_expr_typed(a, registry)).collect(),
+                args: args
+                    .iter()
+                    .map(|a| self.lower_expr_typed(a, registry))
+                    .collect(),
             },
 
             ExprKind::Field { object, field } => HirExprKind::Field {
@@ -1008,20 +1087,31 @@ impl Lower {
                 index: Box::new(self.lower_expr_typed(index, registry)),
             },
 
-            ExprKind::ArrayLit(elements) => {
-                HirExprKind::Array(elements.iter().map(|e| self.lower_expr_typed(e, registry)).collect())
-            }
+            ExprKind::ArrayLit(elements) => HirExprKind::Array(
+                elements
+                    .iter()
+                    .map(|e| self.lower_expr_typed(e, registry))
+                    .collect(),
+            ),
 
             ExprKind::MapLit(entries) => HirExprKind::Map(
                 entries
                     .iter()
-                    .map(|(k, v)| (self.lower_expr_typed(k, registry), self.lower_expr_typed(v, registry)))
+                    .map(|(k, v)| {
+                        (
+                            self.lower_expr_typed(k, registry),
+                            self.lower_expr_typed(v, registry),
+                        )
+                    })
                     .collect(),
             ),
 
-            ExprKind::TupleLit(elements) => {
-                HirExprKind::Tuple(elements.iter().map(|e| self.lower_expr_typed(e, registry)).collect())
-            }
+            ExprKind::TupleLit(elements) => HirExprKind::Tuple(
+                elements
+                    .iter()
+                    .map(|e| self.lower_expr_typed(e, registry))
+                    .collect(),
+            ),
 
             ExprKind::ObjectLit(fields) | ExprKind::StructLit { fields, .. } => {
                 let name = if let ExprKind::StructLit { name, .. } = &expr.kind {
@@ -1045,10 +1135,17 @@ impl Lower {
             } => HirExprKind::EnumVariant {
                 enum_name: enum_name.clone(),
                 variant: variant.clone(),
-                payload: payload.iter().map(|e| self.lower_expr_typed(e, registry)).collect(),
+                payload: payload
+                    .iter()
+                    .map(|e| self.lower_expr_typed(e, registry))
+                    .collect(),
             },
 
-            ExprKind::Range { start, end, inclusive } => HirExprKind::Range {
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => HirExprKind::Range {
                 start: Box::new(self.lower_expr_typed(start, registry)),
                 end: Box::new(self.lower_expr_typed(end, registry)),
                 inclusive: *inclusive,
@@ -1067,7 +1164,10 @@ impl Lower {
             },
 
             ExprKind::Block(stmts, final_expr) => HirExprKind::Block {
-                stmts: stmts.iter().map(|s| self.lower_stmt_typed(s, registry)).collect(),
+                stmts: stmts
+                    .iter()
+                    .map(|s| self.lower_stmt_typed(s, registry))
+                    .collect(),
                 expr: final_expr
                     .as_ref()
                     .map(|e| Box::new(self.lower_expr_typed(e, registry))),
@@ -1078,22 +1178,39 @@ impl Lower {
                     self.lower_expr_typed(&values[0], registry)
                 } else {
                     HirExpr::new(
-                        HirExprKind::Tuple(values.iter().map(|e| self.lower_expr_typed(e, registry)).collect()),
+                        HirExprKind::Tuple(
+                            values
+                                .iter()
+                                .map(|e| self.lower_expr_typed(e, registry))
+                                .collect(),
+                        ),
                         expr.span,
                     )
                 };
                 HirExprKind::Ok(Box::new(inner))
             }
 
-            ExprKind::Err(inner) => HirExprKind::Err(Box::new(self.lower_expr_typed(inner, registry))),
-            ExprKind::Try(inner) => HirExprKind::Try(Box::new(self.lower_expr_typed(inner, registry))),
+            ExprKind::Err(inner) => {
+                HirExprKind::Err(Box::new(self.lower_expr_typed(inner, registry)))
+            }
+            ExprKind::Try(inner) => {
+                HirExprKind::Try(Box::new(self.lower_expr_typed(inner, registry)))
+            }
 
-            ExprKind::UnwrapOrPanic { expr: inner, message } => HirExprKind::UnwrapOrPanic {
+            ExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => HirExprKind::UnwrapOrPanic {
                 expr: Box::new(self.lower_expr_typed(inner, registry)),
                 message: Box::new(self.lower_expr_typed(message, registry)),
             },
 
-            ExprKind::Closure { params, body, return_type, .. } => {
+            ExprKind::Closure {
+                params,
+                body,
+                return_type,
+                ..
+            } => {
                 let mut body_hir = self.lower_expr_typed(body, registry);
                 if let Some(ret_type) = return_type {
                     body_hir.type_id = Some(self.resolve_type_expr(ret_type, registry));
@@ -1101,14 +1218,22 @@ impl Lower {
                 HirExprKind::Closure {
                     params: params
                         .iter()
-                        .map(|(n, t)| (n.clone(), t.as_ref().map(|tt| self.resolve_type_expr(tt, registry))))
+                        .map(|(n, t)| {
+                            (
+                                n.clone(),
+                                t.as_ref().map(|tt| self.resolve_type_expr(tt, registry)),
+                            )
+                        })
                         .collect(),
                     body: Box::new(body_hir),
                 }
             }
 
             ExprKind::Match { values, arms } => HirExprKind::Match {
-                values: values.iter().map(|v| self.lower_expr_typed(v, registry)).collect(),
+                values: values
+                    .iter()
+                    .map(|v| self.lower_expr_typed(v, registry))
+                    .collect(),
                 arms: arms
                     .iter()
                     .map(|a| HirMatchArm {
@@ -1120,7 +1245,9 @@ impl Lower {
                     .collect(),
             },
 
-            ExprKind::Spread(inner) => HirExprKind::Spread(Box::new(self.lower_expr_typed(inner, registry))),
+            ExprKind::Spread(inner) => {
+                HirExprKind::Spread(Box::new(self.lower_expr_typed(inner, registry)))
+            }
 
             ExprKind::StringInterpolation(parts) => {
                 if parts.is_empty() {
@@ -1143,7 +1270,10 @@ impl Lower {
                 }
             }
 
-            ExprKind::Cast { expr: inner, target } => {
+            ExprKind::Cast {
+                expr: inner,
+                target,
+            } => {
                 let inner_hir = self.lower_expr_typed(inner, registry);
                 let target_type = self.resolve_type_expr(target, registry);
                 HirExprKind::Cast {
@@ -1168,7 +1298,8 @@ impl Lower {
 
         match &mut out.kind {
             HirExprKind::Array(elements) => {
-                let elem_type = self.common_type_or_any(elements);
+                // Get element type, handling Spread elements specially
+                let elem_type = self.common_array_elem_type(elements, registry);
                 out.type_id = Some(registry.register_array(elem_type));
             }
             HirExprKind::Map(entries) => {
@@ -1186,7 +1317,11 @@ impl Lower {
                 out.type_id = Some(registry.register_tuple(element_types));
             }
             HirExprKind::Struct { name, .. } => {
-                out.type_id = Some(registry.lookup(name).unwrap_or_else(|| registry.declare_named(name)));
+                out.type_id = Some(
+                    registry
+                        .lookup(name)
+                        .unwrap_or_else(|| registry.declare_named(name)),
+                );
             }
             HirExprKind::EnumVariant { enum_name, .. } => {
                 out.type_id = Some(
@@ -1203,13 +1338,20 @@ impl Lower {
                 let return_type = body.type_id.unwrap_or(builtin::ANY);
                 out.type_id = Some(registry.register_function(param_types, return_type));
             }
-            HirExprKind::MethodCall { receiver, method, args } => {
+            HirExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
                 let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
                 if let Some(return_type) =
                     self.infer_method_call_type(receiver_type, method, args, registry)
                 {
                     out.type_id = Some(return_type);
                 }
+            }
+            HirExprKind::Cast { to_type, .. } => {
+                out.type_id = Some(*to_type);
             }
             _ => {}
         }
@@ -1220,6 +1362,1473 @@ impl Lower {
     // ========================================================================
     // Helpers
     // ========================================================================
+
+    // ========================================================================
+    // For-Loop Desugaring
+    // ========================================================================
+
+    /// Lower a for-loop to HIR.
+    ///
+    /// ## Desugaring Rules
+    ///
+    /// ### Range iteration: `for i in start..end { body }`
+    /// ```text
+    /// let __i = start
+    /// while __i < end {
+    ///     let i = __i
+    ///     body
+    ///     __i = __i + 1
+    /// }
+    /// ```
+    ///
+    /// ### Array iteration: `for x in array { body }`
+    /// ```text
+    /// let __arr = array
+    /// let __idx = 0
+    /// while __idx < __arr.len() {
+    ///     let x = __arr[__idx]
+    ///     body
+    ///     __idx = __idx + 1
+    /// }
+    /// ```
+    ///
+    /// ### Array iteration with index: `for i, x in array { body }`
+    /// ```text
+    /// let __arr = array
+    /// let __idx = 0
+    /// while __idx < __arr.len() {
+    ///     let i = __idx
+    ///     let x = __arr[__idx]
+    ///     body
+    ///     __idx = __idx + 1
+    /// }
+    /// ```
+    fn lower_for_loop(
+        &mut self,
+        pattern: &Pattern,
+        iterable: Option<&Expr>,
+        body: &[Stmt],
+        span: Span,
+    ) -> HirStmtKind {
+        // No iterable = infinite loop
+        let Some(iter_expr) = iterable else {
+            let body_stmts: Vec<_> = body.iter().map(|s| self.lower_stmt(s)).collect();
+            return HirStmtKind::While {
+                condition: HirExpr::new(HirExprKind::Const(ConstValue::Bool(true)), span),
+                body: body_stmts,
+            };
+        };
+
+        // Check if iterating over a range expression
+        if let ExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } = &iter_expr.kind
+        {
+            return self.lower_range_for_loop(pattern, start, end, *inclusive, body, span);
+        }
+
+        // Check if iterating over a map literal
+        if matches!(&iter_expr.kind, ExprKind::MapLit(_)) {
+            return self.lower_map_for_loop(pattern, iter_expr, body, span);
+        }
+
+        // Array/collection iteration
+        self.lower_array_for_loop(pattern, iter_expr, body, span)
+    }
+
+    /// Lower range-based for-loop: `for i in start..end`
+    fn lower_range_for_loop(
+        &mut self,
+        pattern: &Pattern,
+        start: &Expr,
+        end: &Expr,
+        inclusive: bool,
+        body: &[Stmt],
+        span: Span,
+    ) -> HirStmtKind {
+        let iter_var = self.pattern_to_name(pattern);
+        let internal_idx = format!("__{}_idx", iter_var);
+
+        // Lower body statements
+        let mut body_stmts: Vec<_> = body.iter().map(|s| self.lower_stmt(s)).collect();
+
+        // Prepend: let iter_var = __idx
+        body_stmts.insert(
+            0,
+            HirStmt::new(
+                HirStmtKind::Let {
+                    name: iter_var.clone(),
+                    type_id: None,
+                    value: HirExpr::new(
+                        HirExprKind::Local {
+                            name: internal_idx.clone(),
+                        },
+                        span,
+                    ),
+                    mutable: false,
+                    ownership: Ownership::Owned,
+                },
+                span,
+            ),
+        );
+
+        // Append: __idx = __idx + 1
+        body_stmts.push(HirStmt::new(
+            HirStmtKind::Assign {
+                target: HirExpr::new(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    span,
+                ),
+                value: HirExpr::new(
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        lhs: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            span,
+                        )),
+                        rhs: Box::new(HirExpr::new(HirExprKind::Const(ConstValue::Int(1)), span)),
+                    },
+                    span,
+                ),
+            },
+            span,
+        ));
+
+        // Condition: __idx < end (or __idx <= end for inclusive)
+        let cmp_op = if inclusive {
+            HirBinOp::LtEq
+        } else {
+            HirBinOp::Lt
+        };
+        let condition = HirExpr::new(
+            HirExprKind::BinOp {
+                op: cmp_op,
+                lhs: Box::new(HirExpr::new(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    span,
+                )),
+                rhs: Box::new(self.lower_expr(end)),
+            },
+            span,
+        );
+
+        // Build desugared block:
+        // {
+        //     let __idx = start
+        //     while __idx < end { let i = __idx; body; __idx++ }
+        // }
+        let init_stmt = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_idx,
+                type_id: None,
+                value: self.lower_expr(start),
+                mutable: true,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let while_stmt = HirStmt::new(
+            HirStmtKind::While {
+                condition,
+                body: body_stmts,
+            },
+            span,
+        );
+
+        // Return as block expression containing init + while
+        HirStmtKind::Expr(HirExpr::new(
+            HirExprKind::Block {
+                stmts: vec![init_stmt, while_stmt],
+                expr: None,
+            },
+            span,
+        ))
+    }
+
+    /// Lower array-based for-loop: `for x in array` or `for i, x in array`
+    fn lower_array_for_loop(
+        &mut self,
+        pattern: &Pattern,
+        array_expr: &Expr,
+        body: &[Stmt],
+        span: Span,
+    ) -> HirStmtKind {
+        // Check if pattern is tuple (i, x) or single (x)
+        let (index_var, elem_var) = match &pattern.kind {
+            PatternKind::Tuple(patterns) if patterns.len() == 2 => {
+                let idx = self.pattern_to_name(&patterns[0]);
+                let elem = self.pattern_to_name(&patterns[1]);
+                (Some(idx), elem)
+            }
+            _ => (None, self.pattern_to_name(pattern)),
+        };
+
+        let internal_idx = format!("__{}_idx", elem_var);
+        let internal_arr = format!("__{}_arr", elem_var);
+
+        // Lower body statements
+        let mut body_stmts: Vec<_> = body.iter().map(|s| self.lower_stmt(s)).collect();
+
+        // Prepend index assignment if pattern has index: let i = __idx
+        if let Some(idx_name) = &index_var {
+            body_stmts.insert(
+                0,
+                HirStmt::new(
+                    HirStmtKind::Let {
+                        name: idx_name.clone(),
+                        type_id: None,
+                        value: HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            span,
+                        ),
+                        mutable: false,
+                        ownership: Ownership::Owned,
+                    },
+                    span,
+                ),
+            );
+        }
+
+        // Prepend element extraction: let x = __arr[__idx]
+        let elem_extraction = HirStmt::new(
+            HirStmtKind::Let {
+                name: elem_var.clone(),
+                type_id: None,
+                value: HirExpr::new(
+                    HirExprKind::Index {
+                        object: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_arr.clone(),
+                            },
+                            span,
+                        )),
+                        index: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            span,
+                        )),
+                    },
+                    span,
+                ),
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+        // Insert after index assignment if present, else at start
+        let insert_pos = if index_var.is_some() { 1 } else { 0 };
+        body_stmts.insert(insert_pos, elem_extraction);
+
+        // Append: __idx = __idx + 1
+        body_stmts.push(HirStmt::new(
+            HirStmtKind::Assign {
+                target: HirExpr::new(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    span,
+                ),
+                value: HirExpr::new(
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        lhs: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            span,
+                        )),
+                        rhs: Box::new(HirExpr::new(HirExprKind::Const(ConstValue::Int(1)), span)),
+                    },
+                    span,
+                ),
+            },
+            span,
+        ));
+
+        // Condition: __idx < __arr.len()
+        let condition = HirExpr::new(
+            HirExprKind::BinOp {
+                op: HirBinOp::Lt,
+                lhs: Box::new(HirExpr::new(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    span,
+                )),
+                rhs: Box::new(HirExpr::new(
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_arr.clone(),
+                            },
+                            span,
+                        )),
+                        method: "len".to_string(),
+                        args: vec![],
+                    },
+                    span,
+                )),
+            },
+            span,
+        );
+
+        // Build desugared block:
+        // {
+        //     let __arr = array
+        //     let __idx = 0
+        //     while __idx < __arr.len() { ... }
+        // }
+        let arr_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_arr,
+                type_id: None,
+                value: self.lower_expr(array_expr),
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let idx_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_idx,
+                type_id: None,
+                value: HirExpr::new(HirExprKind::Const(ConstValue::Int(0)), span),
+                mutable: true,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let while_stmt = HirStmt::new(
+            HirStmtKind::While {
+                condition,
+                body: body_stmts,
+            },
+            span,
+        );
+
+        HirStmtKind::Expr(HirExpr::new(
+            HirExprKind::Block {
+                stmts: vec![arr_init, idx_init, while_stmt],
+                expr: None,
+            },
+            span,
+        ))
+    }
+
+    /// Lower map-based for-loop: `for key, value in map` or `for key in map`
+    ///
+    /// Desugars to:
+    /// ```text
+    /// let __map = map
+    /// let __keys = __map.keys()
+    /// let __idx = 0
+    /// while __idx < __keys.len() {
+    ///     let key = __keys[__idx]
+    ///     let value = __map.get(key)
+    ///     body
+    ///     __idx = __idx + 1
+    /// }
+    /// ```
+    fn lower_map_for_loop(
+        &mut self,
+        pattern: &Pattern,
+        map_expr: &Expr,
+        body: &[Stmt],
+        span: Span,
+    ) -> HirStmtKind {
+        // Check if pattern is tuple (key, value) or single (key)
+        let (key_var, value_var) = match &pattern.kind {
+            PatternKind::Tuple(patterns) if patterns.len() == 2 => {
+                let key = self.pattern_to_name(&patterns[0]);
+                let val = self.pattern_to_name(&patterns[1]);
+                (key, Some(val))
+            }
+            _ => (self.pattern_to_name(pattern), None),
+        };
+
+        let internal_map = format!("__{}map", key_var);
+        let internal_keys = format!("__{}keys", key_var);
+        let internal_idx = format!("__{}idx", key_var);
+
+        // Lower body statements
+        let mut body_stmts: Vec<_> = body.iter().map(|s| self.lower_stmt(s)).collect();
+
+        // Prepend: let key = __keys[__idx]
+        body_stmts.insert(
+            0,
+            HirStmt::new(
+                HirStmtKind::Let {
+                    name: key_var.clone(),
+                    type_id: None,
+                    value: HirExpr::new(
+                        HirExprKind::Index {
+                            object: Box::new(HirExpr::new(
+                                HirExprKind::Local {
+                                    name: internal_keys.clone(),
+                                },
+                                span,
+                            )),
+                            index: Box::new(HirExpr::new(
+                                HirExprKind::Local {
+                                    name: internal_idx.clone(),
+                                },
+                                span,
+                            )),
+                        },
+                        span,
+                    ),
+                    mutable: false,
+                    ownership: Ownership::Owned,
+                },
+                span,
+            ),
+        );
+
+        // Prepend: let value = __map.get(key) if we have a value variable
+        if let Some(val_name) = &value_var {
+            body_stmts.insert(
+                1,
+                HirStmt::new(
+                    HirStmtKind::Let {
+                        name: val_name.clone(),
+                        type_id: None,
+                        value: HirExpr::new(
+                            HirExprKind::Index {
+                                object: Box::new(HirExpr::new(
+                                    HirExprKind::Local {
+                                        name: internal_map.clone(),
+                                    },
+                                    span,
+                                )),
+                                index: Box::new(HirExpr::new(
+                                    HirExprKind::Local {
+                                        name: key_var.clone(),
+                                    },
+                                    span,
+                                )),
+                            },
+                            span,
+                        ),
+                        mutable: false,
+                        ownership: Ownership::Owned,
+                    },
+                    span,
+                ),
+            );
+        }
+
+        // Append: __idx = __idx + 1
+        body_stmts.push(HirStmt::new(
+            HirStmtKind::Assign {
+                target: HirExpr::new(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    span,
+                ),
+                value: HirExpr::new(
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        lhs: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            span,
+                        )),
+                        rhs: Box::new(HirExpr::new(HirExprKind::Const(ConstValue::Int(1)), span)),
+                    },
+                    span,
+                ),
+            },
+            span,
+        ));
+
+        // Condition: __idx < __keys.len()
+        let condition = HirExpr::new(
+            HirExprKind::BinOp {
+                op: HirBinOp::Lt,
+                lhs: Box::new(HirExpr::new(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    span,
+                )),
+                rhs: Box::new(HirExpr::new(
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_keys.clone(),
+                            },
+                            span,
+                        )),
+                        method: "len".to_string(),
+                        args: vec![],
+                    },
+                    span,
+                )),
+            },
+            span,
+        );
+
+        // Build desugared block:
+        // {
+        //     let __map = map
+        //     let __keys = __map.keys()
+        //     let __idx = 0
+        //     while __idx < __keys.len() { ... }
+        // }
+        let map_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_map.clone(),
+                type_id: None,
+                value: self.lower_expr(map_expr),
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let keys_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_keys,
+                type_id: None,
+                value: HirExpr::new(
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(HirExpr::new(
+                            HirExprKind::Local { name: internal_map },
+                            span,
+                        )),
+                        method: "keys".to_string(),
+                        args: vec![],
+                    },
+                    span,
+                ),
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let idx_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_idx,
+                type_id: None,
+                value: HirExpr::new(HirExprKind::Const(ConstValue::Int(0)), span),
+                mutable: true,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let while_stmt = HirStmt::new(
+            HirStmtKind::While {
+                condition,
+                body: body_stmts,
+            },
+            span,
+        );
+
+        HirStmtKind::Expr(HirExpr::new(
+            HirExprKind::Block {
+                stmts: vec![map_init, keys_init, idx_init, while_stmt],
+                expr: None,
+            },
+            span,
+        ))
+    }
+
+    /// Lower a for-loop with type information.
+    fn lower_for_loop_typed(
+        &mut self,
+        pattern: &Pattern,
+        iterable: Option<&Expr>,
+        body: &[Stmt],
+        span: Span,
+        registry: &mut TypeRegistry,
+    ) -> HirStmtKind {
+        // No iterable = infinite loop
+        let Some(iter_expr) = iterable else {
+            let body_stmts: Vec<_> = body
+                .iter()
+                .map(|s| self.lower_stmt_typed(s, registry))
+                .collect();
+            return HirStmtKind::While {
+                condition: HirExpr::with_type(
+                    HirExprKind::Const(ConstValue::Bool(true)),
+                    builtin::BOOL,
+                    span,
+                ),
+                body: body_stmts,
+            };
+        };
+
+        // Check if iterating over a range expression
+        if let ExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } = &iter_expr.kind
+        {
+            return self
+                .lower_range_for_loop_typed(pattern, start, end, *inclusive, body, span, registry);
+        }
+
+        // Check if iterating over a map - either by literal or by type
+        // First check for map literal
+        if matches!(&iter_expr.kind, ExprKind::MapLit(_)) {
+            return self.lower_map_for_loop_typed(pattern, iter_expr, body, span, registry);
+        }
+
+        // Then check if the iterable expression has a Map type
+        // We need to lower it first to get its type
+        let lowered = self.lower_expr_typed(iter_expr, registry);
+        let is_map = lowered.type_id.map_or(false, |tid| {
+            registry
+                .get(tid)
+                .map_or(false, |info| matches!(info.kind, TypeKind::Map { .. }))
+        });
+
+        if is_map {
+            // Re-lower using map-specific lowering
+            // Since we already lowered, we can use that result
+            return self
+                .lower_map_for_loop_typed_with_lowered(pattern, lowered, body, span, registry);
+        }
+
+        // Array/collection iteration
+        self.lower_array_for_loop_typed(pattern, iter_expr, body, span, registry)
+    }
+
+    /// Lower range-based for-loop with type info: `for i in start..end`
+    fn lower_range_for_loop_typed(
+        &mut self,
+        pattern: &Pattern,
+        start: &Expr,
+        end: &Expr,
+        inclusive: bool,
+        body: &[Stmt],
+        span: Span,
+        registry: &mut TypeRegistry,
+    ) -> HirStmtKind {
+        let iter_var = self.pattern_to_name(pattern);
+        let internal_idx = format!("__{}_idx", iter_var);
+
+        // Lower body statements
+        let mut body_stmts: Vec<_> = body
+            .iter()
+            .map(|s| self.lower_stmt_typed(s, registry))
+            .collect();
+
+        // Prepend: let iter_var = __idx
+        body_stmts.insert(
+            0,
+            HirStmt::new(
+                HirStmtKind::Let {
+                    name: iter_var.clone(),
+                    type_id: Some(builtin::INT),
+                    value: HirExpr::with_type(
+                        HirExprKind::Local {
+                            name: internal_idx.clone(),
+                        },
+                        builtin::INT,
+                        span,
+                    ),
+                    mutable: false,
+                    ownership: Ownership::Owned,
+                },
+                span,
+            ),
+        );
+
+        // Append: __idx = __idx + 1
+        body_stmts.push(HirStmt::new(
+            HirStmtKind::Assign {
+                target: HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                ),
+                value: HirExpr::with_type(
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        lhs: Box::new(HirExpr::with_type(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            builtin::INT,
+                            span,
+                        )),
+                        rhs: Box::new(HirExpr::with_type(
+                            HirExprKind::Const(ConstValue::Int(1)),
+                            builtin::INT,
+                            span,
+                        )),
+                    },
+                    builtin::INT,
+                    span,
+                ),
+            },
+            span,
+        ));
+
+        // Condition: __idx < end (or __idx <= end for inclusive)
+        let cmp_op = if inclusive {
+            HirBinOp::LtEq
+        } else {
+            HirBinOp::Lt
+        };
+        let condition = HirExpr::with_type(
+            HirExprKind::BinOp {
+                op: cmp_op,
+                lhs: Box::new(HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                )),
+                rhs: Box::new(self.lower_expr_typed(end, registry)),
+            },
+            builtin::BOOL,
+            span,
+        );
+
+        // Build desugared block
+        let init_stmt = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_idx,
+                type_id: Some(builtin::INT),
+                value: self.lower_expr_typed(start, registry),
+                mutable: true,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let while_stmt = HirStmt::new(
+            HirStmtKind::While {
+                condition,
+                body: body_stmts,
+            },
+            span,
+        );
+
+        HirStmtKind::Expr(HirExpr::new(
+            HirExprKind::Block {
+                stmts: vec![init_stmt, while_stmt],
+                expr: None,
+            },
+            span,
+        ))
+    }
+
+    /// Lower array-based for-loop with type info: `for x in array` or `for i, x in array`
+    fn lower_array_for_loop_typed(
+        &mut self,
+        pattern: &Pattern,
+        array_expr: &Expr,
+        body: &[Stmt],
+        span: Span,
+        registry: &mut TypeRegistry,
+    ) -> HirStmtKind {
+        // Check if pattern is tuple (i, x) or single (x)
+        let (index_var, elem_var) = match &pattern.kind {
+            PatternKind::Tuple(patterns) if patterns.len() == 2 => {
+                let idx = self.pattern_to_name(&patterns[0]);
+                let elem = self.pattern_to_name(&patterns[1]);
+                (Some(idx), elem)
+            }
+            _ => (None, self.pattern_to_name(pattern)),
+        };
+
+        let internal_idx = format!("__{}_idx", elem_var);
+        let internal_arr = format!("__{}_arr", elem_var);
+
+        // Lower the array expression to get its type
+        let lowered_arr = self.lower_expr_typed(array_expr, registry);
+        let arr_type = lowered_arr.type_id;
+
+        // Infer element type from array type
+        let elem_type = arr_type.and_then(|tid| {
+            registry.get(tid).and_then(|info| match &info.kind {
+                TypeKind::Array { element } => Some(*element),
+                _ => None,
+            })
+        });
+
+        // Lower body statements
+        let mut body_stmts: Vec<_> = body
+            .iter()
+            .map(|s| self.lower_stmt_typed(s, registry))
+            .collect();
+
+        // Prepend index assignment if pattern has index: let i = __idx
+        if let Some(idx_name) = &index_var {
+            body_stmts.insert(
+                0,
+                HirStmt::new(
+                    HirStmtKind::Let {
+                        name: idx_name.clone(),
+                        type_id: Some(builtin::INT),
+                        value: HirExpr::with_type(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            builtin::INT,
+                            span,
+                        ),
+                        mutable: false,
+                        ownership: Ownership::Owned,
+                    },
+                    span,
+                ),
+            );
+        }
+
+        // Prepend element extraction: let x = __arr[__idx]
+        // Create array reference with proper type
+        let arr_ref = if let Some(t) = arr_type {
+            HirExpr::with_type(
+                HirExprKind::Local {
+                    name: internal_arr.clone(),
+                },
+                t,
+                span,
+            )
+        } else {
+            HirExpr::new(
+                HirExprKind::Local {
+                    name: internal_arr.clone(),
+                },
+                span,
+            )
+        };
+
+        // Create index expression with proper element type
+        let index_expr = if let Some(t) = elem_type {
+            HirExpr::with_type(
+                HirExprKind::Index {
+                    object: Box::new(arr_ref.clone()),
+                    index: Box::new(HirExpr::with_type(
+                        HirExprKind::Local {
+                            name: internal_idx.clone(),
+                        },
+                        builtin::INT,
+                        span,
+                    )),
+                },
+                t,
+                span,
+            )
+        } else {
+            HirExpr::new(
+                HirExprKind::Index {
+                    object: Box::new(arr_ref.clone()),
+                    index: Box::new(HirExpr::with_type(
+                        HirExprKind::Local {
+                            name: internal_idx.clone(),
+                        },
+                        builtin::INT,
+                        span,
+                    )),
+                },
+                span,
+            )
+        };
+
+        let elem_extraction = HirStmt::new(
+            HirStmtKind::Let {
+                name: elem_var.clone(),
+                type_id: elem_type,
+                value: index_expr,
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+        let insert_pos = if index_var.is_some() { 1 } else { 0 };
+        body_stmts.insert(insert_pos, elem_extraction);
+
+        // Append: __idx = __idx + 1
+        body_stmts.push(HirStmt::new(
+            HirStmtKind::Assign {
+                target: HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                ),
+                value: HirExpr::with_type(
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        lhs: Box::new(HirExpr::with_type(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            builtin::INT,
+                            span,
+                        )),
+                        rhs: Box::new(HirExpr::with_type(
+                            HirExprKind::Const(ConstValue::Int(1)),
+                            builtin::INT,
+                            span,
+                        )),
+                    },
+                    builtin::INT,
+                    span,
+                ),
+            },
+            span,
+        ));
+
+        // Condition: __idx < __arr.len()
+        // Create array reference with proper type for len() call
+        let arr_ref_for_len = if let Some(t) = arr_type {
+            HirExpr::with_type(
+                HirExprKind::Local {
+                    name: internal_arr.clone(),
+                },
+                t,
+                span,
+            )
+        } else {
+            HirExpr::new(
+                HirExprKind::Local {
+                    name: internal_arr.clone(),
+                },
+                span,
+            )
+        };
+
+        let condition = HirExpr::with_type(
+            HirExprKind::BinOp {
+                op: HirBinOp::Lt,
+                lhs: Box::new(HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                )),
+                rhs: Box::new(HirExpr::with_type(
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(arr_ref_for_len),
+                        method: "len".to_string(),
+                        args: vec![],
+                    },
+                    builtin::INT,
+                    span,
+                )),
+            },
+            builtin::BOOL,
+            span,
+        );
+
+        // Build desugared block
+        let arr_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_arr,
+                type_id: arr_type,
+                value: lowered_arr,
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let idx_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_idx,
+                type_id: Some(builtin::INT),
+                value: HirExpr::with_type(
+                    HirExprKind::Const(ConstValue::Int(0)),
+                    builtin::INT,
+                    span,
+                ),
+                mutable: true,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let while_stmt = HirStmt::new(
+            HirStmtKind::While {
+                condition,
+                body: body_stmts,
+            },
+            span,
+        );
+
+        HirStmtKind::Expr(HirExpr::new(
+            HirExprKind::Block {
+                stmts: vec![arr_init, idx_init, while_stmt],
+                expr: None,
+            },
+            span,
+        ))
+    }
+
+    /// Lower map-based for-loop with type info: `for key, value in map` or `for key in map`
+    fn lower_map_for_loop_typed(
+        &mut self,
+        pattern: &Pattern,
+        map_expr: &Expr,
+        body: &[Stmt],
+        span: Span,
+        registry: &mut TypeRegistry,
+    ) -> HirStmtKind {
+        // Check if pattern is tuple (key, value) or single (key)
+        let (key_var, value_var) = match &pattern.kind {
+            PatternKind::Tuple(patterns) if patterns.len() == 2 => {
+                let key = self.pattern_to_name(&patterns[0]);
+                let val = self.pattern_to_name(&patterns[1]);
+                (key, Some(val))
+            }
+            _ => (self.pattern_to_name(pattern), None),
+        };
+
+        let internal_map = format!("__{}map", key_var);
+        let internal_keys = format!("__{}keys", key_var);
+        let internal_idx = format!("__{}idx", key_var);
+
+        // Lower body statements
+        let mut body_stmts: Vec<_> = body
+            .iter()
+            .map(|s| self.lower_stmt_typed(s, registry))
+            .collect();
+
+        // Prepend: let key = __keys[__idx]
+        body_stmts.insert(
+            0,
+            HirStmt::new(
+                HirStmtKind::Let {
+                    name: key_var.clone(),
+                    type_id: None,
+                    value: HirExpr::new(
+                        HirExprKind::Index {
+                            object: Box::new(HirExpr::new(
+                                HirExprKind::Local {
+                                    name: internal_keys.clone(),
+                                },
+                                span,
+                            )),
+                            index: Box::new(HirExpr::with_type(
+                                HirExprKind::Local {
+                                    name: internal_idx.clone(),
+                                },
+                                builtin::INT,
+                                span,
+                            )),
+                        },
+                        span,
+                    ),
+                    mutable: false,
+                    ownership: Ownership::Owned,
+                },
+                span,
+            ),
+        );
+
+        // Prepend: let value = __map[key] if we have a value variable
+        if let Some(val_name) = &value_var {
+            body_stmts.insert(
+                1,
+                HirStmt::new(
+                    HirStmtKind::Let {
+                        name: val_name.clone(),
+                        type_id: None,
+                        value: HirExpr::new(
+                            HirExprKind::Index {
+                                object: Box::new(HirExpr::new(
+                                    HirExprKind::Local {
+                                        name: internal_map.clone(),
+                                    },
+                                    span,
+                                )),
+                                index: Box::new(HirExpr::new(
+                                    HirExprKind::Local {
+                                        name: key_var.clone(),
+                                    },
+                                    span,
+                                )),
+                            },
+                            span,
+                        ),
+                        mutable: false,
+                        ownership: Ownership::Owned,
+                    },
+                    span,
+                ),
+            );
+        }
+
+        // Append: __idx = __idx + 1
+        body_stmts.push(HirStmt::new(
+            HirStmtKind::Assign {
+                target: HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                ),
+                value: HirExpr::with_type(
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        lhs: Box::new(HirExpr::with_type(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            builtin::INT,
+                            span,
+                        )),
+                        rhs: Box::new(HirExpr::with_type(
+                            HirExprKind::Const(ConstValue::Int(1)),
+                            builtin::INT,
+                            span,
+                        )),
+                    },
+                    builtin::INT,
+                    span,
+                ),
+            },
+            span,
+        ));
+
+        // Condition: __idx < __keys.len()
+        let condition = HirExpr::with_type(
+            HirExprKind::BinOp {
+                op: HirBinOp::Lt,
+                lhs: Box::new(HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                )),
+                rhs: Box::new(HirExpr::with_type(
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_keys.clone(),
+                            },
+                            span,
+                        )),
+                        method: "len".to_string(),
+                        args: vec![],
+                    },
+                    builtin::INT,
+                    span,
+                )),
+            },
+            builtin::BOOL,
+            span,
+        );
+
+        // Build desugared block
+        let map_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_map.clone(),
+                type_id: None,
+                value: self.lower_expr_typed(map_expr, registry),
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let keys_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_keys,
+                type_id: None,
+                value: HirExpr::new(
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(HirExpr::new(
+                            HirExprKind::Local { name: internal_map },
+                            span,
+                        )),
+                        method: "keys".to_string(),
+                        args: vec![],
+                    },
+                    span,
+                ),
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let idx_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_idx,
+                type_id: Some(builtin::INT),
+                value: HirExpr::with_type(
+                    HirExprKind::Const(ConstValue::Int(0)),
+                    builtin::INT,
+                    span,
+                ),
+                mutable: true,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let while_stmt = HirStmt::new(
+            HirStmtKind::While {
+                condition,
+                body: body_stmts,
+            },
+            span,
+        );
+
+        HirStmtKind::Expr(HirExpr::new(
+            HirExprKind::Block {
+                stmts: vec![map_init, keys_init, idx_init, while_stmt],
+                expr: None,
+            },
+            span,
+        ))
+    }
+
+    /// Lower map-based for-loop with an already-lowered map expression
+    /// This variant is used when we detect the map type after lowering the expression
+    fn lower_map_for_loop_typed_with_lowered(
+        &mut self,
+        pattern: &Pattern,
+        lowered_map: HirExpr,
+        body: &[Stmt],
+        span: Span,
+        registry: &mut TypeRegistry,
+    ) -> HirStmtKind {
+        // Check if pattern is tuple (key, value) or single (key)
+        let (key_var, value_var) = match &pattern.kind {
+            PatternKind::Tuple(patterns) if patterns.len() == 2 => {
+                let key = self.pattern_to_name(&patterns[0]);
+                let val = self.pattern_to_name(&patterns[1]);
+                (key, Some(val))
+            }
+            _ => (self.pattern_to_name(pattern), None),
+        };
+
+        let internal_map = format!("__{}map", key_var);
+        let internal_keys = format!("__{}keys", key_var);
+        let internal_idx = format!("__{}idx", key_var);
+
+        // Lower body statements
+        let mut body_stmts: Vec<_> = body
+            .iter()
+            .map(|s| self.lower_stmt_typed(s, registry))
+            .collect();
+
+        // Prepend: let key = __keys[__idx]
+        body_stmts.insert(
+            0,
+            HirStmt::new(
+                HirStmtKind::Let {
+                    name: key_var.clone(),
+                    type_id: None,
+                    value: HirExpr::new(
+                        HirExprKind::Index {
+                            object: Box::new(HirExpr::new(
+                                HirExprKind::Local {
+                                    name: internal_keys.clone(),
+                                },
+                                span,
+                            )),
+                            index: Box::new(HirExpr::with_type(
+                                HirExprKind::Local {
+                                    name: internal_idx.clone(),
+                                },
+                                builtin::INT,
+                                span,
+                            )),
+                        },
+                        span,
+                    ),
+                    mutable: false,
+                    ownership: Ownership::Owned,
+                },
+                span,
+            ),
+        );
+
+        // Prepend: let value = __map[key] if we have a value variable
+        if let Some(val_name) = &value_var {
+            body_stmts.insert(
+                1,
+                HirStmt::new(
+                    HirStmtKind::Let {
+                        name: val_name.clone(),
+                        type_id: None,
+                        value: HirExpr::new(
+                            HirExprKind::Index {
+                                object: Box::new(HirExpr::new(
+                                    HirExprKind::Local {
+                                        name: internal_map.clone(),
+                                    },
+                                    span,
+                                )),
+                                index: Box::new(HirExpr::new(
+                                    HirExprKind::Local {
+                                        name: key_var.clone(),
+                                    },
+                                    span,
+                                )),
+                            },
+                            span,
+                        ),
+                        mutable: false,
+                        ownership: Ownership::Owned,
+                    },
+                    span,
+                ),
+            );
+        }
+
+        // Append: __idx = __idx + 1
+        body_stmts.push(HirStmt::new(
+            HirStmtKind::Assign {
+                target: HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                ),
+                value: HirExpr::with_type(
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        lhs: Box::new(HirExpr::with_type(
+                            HirExprKind::Local {
+                                name: internal_idx.clone(),
+                            },
+                            builtin::INT,
+                            span,
+                        )),
+                        rhs: Box::new(HirExpr::with_type(
+                            HirExprKind::Const(ConstValue::Int(1)),
+                            builtin::INT,
+                            span,
+                        )),
+                    },
+                    builtin::INT,
+                    span,
+                ),
+            },
+            span,
+        ));
+
+        // Condition: __idx < __keys.len()
+        let condition = HirExpr::with_type(
+            HirExprKind::BinOp {
+                op: HirBinOp::Lt,
+                lhs: Box::new(HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                )),
+                rhs: Box::new(HirExpr::with_type(
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_keys.clone(),
+                            },
+                            span,
+                        )),
+                        method: "len".to_string(),
+                        args: vec![],
+                    },
+                    builtin::INT,
+                    span,
+                )),
+            },
+            builtin::BOOL,
+            span,
+        );
+
+        // Build desugared block using the already-lowered map expression
+        let map_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_map.clone(),
+                type_id: lowered_map.type_id,
+                value: lowered_map,
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let keys_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_keys,
+                type_id: None,
+                value: HirExpr::new(
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(HirExpr::new(
+                            HirExprKind::Local { name: internal_map },
+                            span,
+                        )),
+                        method: "keys".to_string(),
+                        args: vec![],
+                    },
+                    span,
+                ),
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let idx_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_idx,
+                type_id: Some(builtin::INT),
+                value: HirExpr::with_type(
+                    HirExprKind::Const(ConstValue::Int(0)),
+                    builtin::INT,
+                    span,
+                ),
+                mutable: true,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        let while_stmt = HirStmt::new(
+            HirStmtKind::While {
+                condition,
+                body: body_stmts,
+            },
+            span,
+        );
+
+        HirStmtKind::Expr(HirExpr::new(
+            HirExprKind::Block {
+                stmts: vec![map_init, keys_init, idx_init, while_stmt],
+                expr: None,
+            },
+            span,
+        ))
+    }
 
     fn infer_method_call_type(
         &mut self,
@@ -1252,18 +2861,16 @@ impl Lower {
             "slice" => Some(registry.register_array(elem_type)),
             "push" | "clear" | "sort" | "reverse" => Some(builtin::VOID),
             "map" => {
-                let closure_return = args
-                    .get_mut(0)
-                    .and_then(|arg| self.apply_closure_signature(arg, &[elem_type], None, registry));
+                let closure_return = args.get_mut(0).and_then(|arg| {
+                    self.apply_closure_signature(arg, &[elem_type], None, registry)
+                });
                 let out_elem = closure_return.unwrap_or(builtin::ANY);
                 Some(registry.register_array(out_elem))
             }
             "filter" => {
-                let _ = args
-                    .get_mut(0)
-                    .and_then(|arg| {
-                        self.apply_closure_signature(arg, &[elem_type], Some(builtin::BOOL), registry)
-                    });
+                let _ = args.get_mut(0).and_then(|arg| {
+                    self.apply_closure_signature(arg, &[elem_type], Some(builtin::BOOL), registry)
+                });
                 Some(registry.register_array(elem_type))
             }
             "reduce" => {
@@ -1271,16 +2878,14 @@ impl Lower {
                     .get(0)
                     .and_then(|arg| arg.type_id)
                     .unwrap_or(builtin::ANY);
-                let closure_return = args
-                    .get_mut(1)
-                    .and_then(|arg| {
-                        self.apply_closure_signature(
-                            arg,
-                            &[init_type, elem_type],
-                            Some(init_type),
-                            registry,
-                        )
-                    });
+                let closure_return = args.get_mut(1).and_then(|arg| {
+                    self.apply_closure_signature(
+                        arg,
+                        &[init_type, elem_type],
+                        Some(init_type),
+                        registry,
+                    )
+                });
                 if init_type != builtin::ANY {
                     Some(init_type)
                 } else {
@@ -1339,6 +2944,10 @@ impl Lower {
             PatternKind::Ident(name) => name.clone(),
             PatternKind::Wildcard => "_".to_string(),
             PatternKind::Tuple(_) => "__tuple".to_string(),
+            PatternKind::Index { object, .. } => {
+                // For index patterns, use the base object name
+                self.pattern_to_name(object)
+            }
         }
     }
 
@@ -1347,22 +2956,38 @@ impl Lower {
             PatternKind::Ident(name) => {
                 HirExpr::new(HirExprKind::Local { name: name.clone() }, pattern.span)
             }
-            PatternKind::Wildcard => {
-                HirExpr::new(HirExprKind::Local { name: "_".to_string() }, pattern.span)
-            }
+            PatternKind::Wildcard => HirExpr::new(
+                HirExprKind::Local {
+                    name: "_".to_string(),
+                },
+                pattern.span,
+            ),
             PatternKind::Tuple(patterns) => {
                 let exprs = patterns.iter().map(|p| self.pattern_to_expr(p)).collect();
                 HirExpr::new(HirExprKind::Tuple(exprs), pattern.span)
             }
+            PatternKind::Index { object, index } => {
+                let object_expr = self.pattern_to_expr(object);
+                let index_expr = self.lower_expr(index);
+                HirExpr::new(
+                    HirExprKind::Index {
+                        object: Box::new(object_expr),
+                        index: Box::new(index_expr),
+                    },
+                    pattern.span,
+                )
+            }
         }
     }
 
-     fn pattern_to_names(&self, pattern: &Pattern) -> Vec<String> {
-         match &pattern.kind {
-             PatternKind::Tuple(patterns) => patterns.iter().map(|p| self.pattern_to_name(p)).collect(),
-             _ => vec![self.pattern_to_name(pattern)],
-         }
-     }
+    fn pattern_to_names(&self, pattern: &Pattern) -> Vec<String> {
+        match &pattern.kind {
+            PatternKind::Tuple(patterns) => {
+                patterns.iter().map(|p| self.pattern_to_name(p)).collect()
+            }
+            _ => vec![self.pattern_to_name(pattern)],
+        }
+    }
 
     fn lower_binop(&self, op: BinaryOp) -> HirBinOp {
         match op {
@@ -1389,21 +3014,23 @@ impl Lower {
     fn lower_match_pattern(&mut self, p: &ast::MatchPattern) -> HirMatchPattern {
         match p {
             ast::MatchPattern::Literal(e) => HirMatchPattern::Literal(Box::new(self.lower_expr(e))),
-            ast::MatchPattern::Condition(e) => HirMatchPattern::Condition(Box::new(self.lower_expr(e))),
+            ast::MatchPattern::Condition(e) => {
+                HirMatchPattern::Condition(Box::new(self.lower_expr(e)))
+            }
             ast::MatchPattern::Wildcard => HirMatchPattern::Wildcard,
-            ast::MatchPattern::EnumVariant { enum_name, variant } => {
-                HirMatchPattern::EnumVariant {
-                    enum_name: enum_name.clone(),
-                    variant: variant.clone(),
-                }
-            }
-            ast::MatchPattern::EnumVariantPayload { enum_name, variant, bindings } => {
-                HirMatchPattern::EnumVariantPayload {
-                    enum_name: enum_name.clone(),
-                    variant: variant.clone(),
-                    bindings: bindings.clone(),
-                }
-            }
+            ast::MatchPattern::EnumVariant { enum_name, variant } => HirMatchPattern::EnumVariant {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+            },
+            ast::MatchPattern::EnumVariantPayload {
+                enum_name,
+                variant,
+                bindings,
+            } => HirMatchPattern::EnumVariantPayload {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                bindings: bindings.clone(),
+            },
             ast::MatchPattern::Tuple(parts) => {
                 HirMatchPattern::Tuple(parts.iter().map(|x| self.lower_match_pattern(x)).collect())
             }
@@ -1447,7 +3074,9 @@ impl Lower {
 
     fn resolve_type_expr(&mut self, ty: &TypeExpr, registry: &mut TypeRegistry) -> TypeId {
         match &ty.kind {
-            doo_frontend::ast::TypeExprKind::Named(name) => registry.lookup(name).unwrap_or_else(|| registry.declare_named(name)),
+            doo_frontend::ast::TypeExprKind::Named(name) => registry
+                .lookup(name)
+                .unwrap_or_else(|| registry.declare_named(name)),
             doo_frontend::ast::TypeExprKind::Array(inner) => {
                 let elem = self.resolve_type_expr(inner, registry);
                 registry.register_array(elem)
@@ -1458,7 +3087,10 @@ impl Lower {
                 registry.register_map(key, value)
             }
             doo_frontend::ast::TypeExprKind::Tuple(parts) => {
-                let elements = parts.iter().map(|p| self.resolve_type_expr(p, registry)).collect();
+                let elements = parts
+                    .iter()
+                    .map(|p| self.resolve_type_expr(p, registry))
+                    .collect();
                 registry.register_tuple(elements)
             }
             doo_frontend::ast::TypeExprKind::Optional(inner) => {
@@ -1471,7 +3103,10 @@ impl Lower {
                 registry.register_result(ok_id, err_id)
             }
             doo_frontend::ast::TypeExprKind::Function { params, returns } => {
-                let params_ids = params.iter().map(|p| self.resolve_type_expr(p, registry)).collect();
+                let params_ids = params
+                    .iter()
+                    .map(|p| self.resolve_type_expr(p, registry))
+                    .collect();
                 let returns_id = self.resolve_type_expr(returns, registry);
                 registry.register_function(params_ids, returns_id)
             }
@@ -1480,6 +3115,40 @@ impl Lower {
             doo_frontend::ast::TypeExprKind::Void => builtin::VOID,
             doo_frontend::ast::TypeExprKind::Error => builtin::ERROR,
         }
+    }
+
+    /// Determine the common element type for an array literal.
+    /// Handles Spread elements by extracting the element type from the spread source.
+    fn common_array_elem_type(&self, elements: &[HirExpr], registry: &TypeRegistry) -> TypeId {
+        let mut current: Option<TypeId> = None;
+        for e in elements {
+            // For Spread elements, extract the element type from the inner array
+            let elem_type = if let HirExprKind::Spread(inner) = &e.kind {
+                // Get the inner expression's type (should be an array)
+                inner.type_id.and_then(|arr_type| {
+                    registry.get(arr_type).and_then(|info| {
+                        if let TypeKind::Array { element } = &info.kind {
+                            Some(*element)
+                        } else {
+                            None
+                        }
+                    })
+                })
+            } else {
+                // For non-spread elements, use the element's type directly
+                e.type_id
+            };
+
+            let Some(t) = elem_type else {
+                return builtin::ANY;
+            };
+            match current {
+                None => current = Some(t),
+                Some(existing) if existing == t => {}
+                Some(_) => return builtin::ANY,
+            }
+        }
+        current.unwrap_or(builtin::ANY)
     }
 
     fn common_type_or_any(&self, exprs: &[HirExpr]) -> TypeId {
@@ -1618,7 +3287,13 @@ mod tests {
             // Second statement should be desugared assignment
             assert_eq!(f.body.len(), 2);
             if let HirStmtKind::Assign { value, .. } = &f.body[1].kind {
-                assert!(matches!(value.kind, HirExprKind::BinOp { op: HirBinOp::Add, .. }));
+                assert!(matches!(
+                    value.kind,
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        ..
+                    }
+                ));
             } else {
                 panic!("Expected assign");
             }
@@ -1631,9 +3306,154 @@ mod tests {
         if let HirItem::Function(f) = &hir.items[0] {
             assert_eq!(f.body.len(), 2);
             if let HirStmtKind::Assign { value, .. } = &f.body[1].kind {
-                assert!(matches!(value.kind, HirExprKind::BinOp { op: HirBinOp::Add, .. }));
+                assert!(matches!(
+                    value.kind,
+                    HirExprKind::BinOp {
+                        op: HirBinOp::Add,
+                        ..
+                    }
+                ));
             } else {
                 panic!("Expected assign from increment");
+            }
+        }
+    }
+
+    #[test]
+    fn test_desugar_infinite_for_loop() {
+        // Note: New parser requires pattern; infinite loop uses wildcard or ident + no iterable
+        let hir = parse_and_lower("fn test() { for _ { break } }");
+        if let HirItem::Function(f) = &hir.items[0] {
+            assert_eq!(f.body.len(), 1);
+            if let HirStmtKind::While { condition, body } = &f.body[0].kind {
+                // Infinite loop has condition = true
+                assert!(matches!(
+                    condition.kind,
+                    HirExprKind::Const(ConstValue::Bool(true))
+                ));
+                // Body contains break
+                assert_eq!(body.len(), 1);
+                assert!(matches!(body[0].kind, HirStmtKind::Break));
+            } else {
+                panic!("Expected while loop for desugared for loop");
+            }
+        }
+    }
+
+    #[test]
+    fn test_desugar_range_for_loop() {
+        let hir = parse_and_lower("fn test() { for i in 0..10 { print(i) } }");
+        if let HirItem::Function(f) = &hir.items[0] {
+            assert_eq!(f.body.len(), 1);
+            // Desugared to block expression containing: let __idx = 0; while __idx < 10 { ... }
+            if let HirStmtKind::Expr(expr) = &f.body[0].kind {
+                if let HirExprKind::Block { stmts, .. } = &expr.kind {
+                    // First stmt: let __i_idx = 0
+                    assert_eq!(stmts.len(), 2);
+                    if let HirStmtKind::Let { name, mutable, .. } = &stmts[0].kind {
+                        assert!(name.contains("_idx"));
+                        assert!(*mutable); // Index is mutable
+                    } else {
+                        panic!("Expected let statement for index initialization");
+                    }
+                    // Second stmt: while loop
+                    assert!(matches!(stmts[1].kind, HirStmtKind::While { .. }));
+                } else {
+                    panic!("Expected block expression");
+                }
+            } else {
+                panic!("Expected expression statement");
+            }
+        }
+    }
+
+    #[test]
+    fn test_desugar_inclusive_range_for_loop() {
+        let hir = parse_and_lower("fn test() { for i in 0..=5 { print(i) } }");
+        if let HirItem::Function(f) = &hir.items[0] {
+            if let HirStmtKind::Expr(expr) = &f.body[0].kind {
+                if let HirExprKind::Block { stmts, .. } = &expr.kind {
+                    // Check while condition uses LtEq for inclusive range
+                    if let HirStmtKind::While { condition, .. } = &stmts[1].kind {
+                        if let HirExprKind::BinOp { op, .. } = &condition.kind {
+                            assert_eq!(*op, HirBinOp::LtEq);
+                        } else {
+                            panic!("Expected BinOp condition");
+                        }
+                    } else {
+                        panic!("Expected while loop");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_desugar_array_for_loop() {
+        let hir = parse_and_lower("fn test() { let arr = [1, 2, 3]\n for x in arr { print(x) } }");
+        if let HirItem::Function(f) = &hir.items[0] {
+            assert_eq!(f.body.len(), 2); // let arr; for x in arr
+                                         // Second statement is desugared for loop
+            if let HirStmtKind::Expr(expr) = &f.body[1].kind {
+                if let HirExprKind::Block { stmts, .. } = &expr.kind {
+                    // Should have: let __arr = arr; let __idx = 0; while __idx < __arr.len() { ... }
+                    assert_eq!(stmts.len(), 3);
+                    // First: let __arr = arr
+                    if let HirStmtKind::Let { name, mutable, .. } = &stmts[0].kind {
+                        assert!(name.contains("_arr"));
+                        assert!(!*mutable);
+                    }
+                    // Second: let __idx = 0
+                    if let HirStmtKind::Let { name, mutable, .. } = &stmts[1].kind {
+                        assert!(name.contains("_idx"));
+                        assert!(*mutable);
+                    }
+                    // Third: while loop
+                    if let HirStmtKind::While { condition, body } = &stmts[2].kind {
+                        // Condition should be __idx < __arr.len()
+                        if let HirExprKind::BinOp { op, .. } = &condition.kind {
+                            assert_eq!(*op, HirBinOp::Lt);
+                        }
+                        // Body should have: let x = __arr[__idx]; print(x); __idx++
+                        assert!(body.len() >= 2);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_desugar_indexed_array_for_loop() {
+        let hir = parse_and_lower(
+            "fn test() { let arr = [10, 20, 30]\n for i, x in arr { print(i, x) } }",
+        );
+        if let HirItem::Function(f) = &hir.items[0] {
+            if let HirStmtKind::Expr(expr) = &f.body[1].kind {
+                if let HirExprKind::Block { stmts, .. } = &expr.kind {
+                    if let HirStmtKind::While { body, .. } = &stmts[2].kind {
+                        // Body should have:
+                        // 1. let i = __idx
+                        // 2. let x = __arr[__idx]
+                        // 3. print(i, x)
+                        // 4. __idx++
+                        assert!(body.len() >= 3);
+
+                        // First should be index assignment
+                        if let HirStmtKind::Let { name, .. } = &body[0].kind {
+                            assert_eq!(name, "i");
+                        } else {
+                            panic!("Expected let statement for index");
+                        }
+
+                        // Second should be element extraction
+                        if let HirStmtKind::Let { name, value, .. } = &body[1].kind {
+                            assert_eq!(name, "x");
+                            assert!(matches!(value.kind, HirExprKind::Index { .. }));
+                        } else {
+                            panic!("Expected let statement for element");
+                        }
+                    }
+                }
             }
         }
     }

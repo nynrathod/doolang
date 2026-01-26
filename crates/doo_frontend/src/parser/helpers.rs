@@ -3,14 +3,18 @@
 //! Centralized parsing utilities following single-source-of-truth principle.
 //! All repetitive parsing logic is extracted here to avoid duplication.
 
+use super::{ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
-use doo_core::{Span, CompilerError, ErrorCode};
-use super::{Parser, ParseResult};
+use doo_core::{CompilerError, ErrorCode, Span};
 
 impl Parser {
     /// Parse comma-separated items until end token.
-    pub(super) fn parse_list<T, F>(&mut self, end: TokenKind, mut parse_fn: F) -> ParseResult<Vec<T>>
+    pub(super) fn parse_list<T, F>(
+        &mut self,
+        end: TokenKind,
+        mut parse_fn: F,
+    ) -> ParseResult<Vec<T>>
     where
         F: FnMut(&mut Self) -> ParseResult<T>,
     {
@@ -51,12 +55,12 @@ impl Parser {
         if !self.check(TokenKind::DotDot) && !self.check(TokenKind::DotDotEq) {
             return Ok(left);
         }
-        
+
         let inclusive = self.check(TokenKind::DotDotEq);
         self.advance();
         let end = self.parse_expression_prec(8)?;
         let span = left.span.merge(&end.span);
-        
+
         Ok(Expr::new(
             ExprKind::Range {
                 start: Box::new(left),
@@ -71,7 +75,7 @@ impl Parser {
     pub(super) fn process_escapes(s: &str) -> String {
         let mut result = String::new();
         let mut chars = s.chars().peekable();
-        
+
         while let Some(c) = chars.next() {
             if c == '\\' {
                 if let Some(&next) = chars.peek() {
@@ -134,21 +138,61 @@ impl Parser {
         }
         self.advance();
 
+        // Empty braces `{}` → Map
         if self.check(TokenKind::RBrace) {
             self.pos = saved;
             return BraceType::Map;
         }
 
+        // Spread operator `{...x}` → Map
         if self.check(TokenKind::Spread) {
             self.pos = saved;
             return BraceType::Map;
         }
 
+        // String key `{"key": value}` → Map
         if self.check(TokenKind::String) {
             self.pos = saved;
             return BraceType::Map;
         }
 
+        // Integer key `{1: value}` → Map
+        if self.check(TokenKind::Integer) {
+            // Look ahead for colon to confirm it's a map
+            self.advance();
+            if self.check(TokenKind::Colon) {
+                self.pos = saved;
+                return BraceType::Map;
+            }
+            self.pos = saved;
+            return BraceType::Block;
+        }
+
+        // Float key `{1.5: value}` → Map
+        if self.check(TokenKind::Float) {
+            // Look ahead for colon to confirm it's a map
+            self.advance();
+            if self.check(TokenKind::Colon) {
+                self.pos = saved;
+                return BraceType::Map;
+            }
+            self.pos = saved;
+            return BraceType::Block;
+        }
+
+        // Bool key `{true: value}` → Map
+        if self.check(TokenKind::True) || self.check(TokenKind::False) {
+            // Look ahead for colon to confirm it's a map
+            self.advance();
+            if self.check(TokenKind::Colon) {
+                self.pos = saved;
+                return BraceType::Map;
+            }
+            self.pos = saved;
+            return BraceType::Block;
+        }
+
+        // Identifier - could be Object or Block
         if !self.check(TokenKind::Ident) {
             self.pos = saved;
             return BraceType::Block;
@@ -225,7 +269,7 @@ impl Parser {
 
 /// Brace disambiguation result.
 pub enum BraceType {
-    Object,  // {key: value}
-    Map,     // {"str": value} or {...}
-    Block,   // { stmt; }
+    Object, // {key: value}
+    Map,    // {"str": value} or {...}
+    Block,  // { stmt; }
 }

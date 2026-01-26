@@ -9,7 +9,7 @@ use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, PointerValue, IntValue};
 use inkwell::{AddressSpace, IntPredicate};
 use doo_core::types::{TypeId, TypeKind};
-use crate::instructions::collections::emit_eq;
+use crate::utils::emit_eq;
 
 pub struct MapBuiltins;
 
@@ -87,7 +87,7 @@ impl MapBuiltins {
     // =========================================================================
     // keys() -> [K] (returns array of keys)
     // =========================================================================
-    fn emit_keys<'ctx>(
+    pub fn emit_keys<'ctx>(
         ctx: &mut CodegenContext<'ctx>,
         key_type: TypeId,
         val_type: TypeId,
@@ -495,5 +495,8 @@ impl MapBuiltins {
 // Helper Functions - Use centralized layout module
 // =============================================================================
 
-use crate::layout::{alloc_with_header, data_ptr_from_header, header_ptr_from_data, load_len_i32, store_len, store_len_at_header};
+use crate::layout::{
+    alloc_with_header, get_map_length, get_map_data_ptr, set_map_length,
+    load_len_i32, data_ptr_from_header, header_ptr_from_data, store_len, store_len_at_header
+};
 

@@ -30,7 +30,7 @@
 
 use doo_core::Span;
 use doo_frontend::ast::{
-    Expr, ExprKind, Stmt, StmtKind, Item, Program, FunctionDecl, Param, TypeExpr,
+    Expr, ExprKind, Stmt, StmtKind, Item, Program, FunctionDecl, TypeExpr,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -486,18 +486,14 @@ fn extract_closures_from_expr(expr: &mut Expr, generated: &mut Vec<FunctionDecl>
                     let func_decl = FunctionDecl {
                         name: func_name.clone(),
                         is_public: false,
-                        params: params.iter().map(|(name, ty)| Param {
-                            name: name.clone(),
-                            type_ann: ty.clone(),
-                            is_optional: false,
-                            default: None,
-                        }).collect(),
+                        params: params.iter().map(|(name, ty)| (name.clone(), ty.clone())).collect(),
                         return_type: return_type.clone(),
                         error_type: error_type.clone(),
                         body: body_stmts,
                         decorators: vec![],
-                        receiver_type: None,
+                        receiver: None,
                         associated_type: None,
+                        is_expr_fn: false,
                         span: body.span,
                     };
 

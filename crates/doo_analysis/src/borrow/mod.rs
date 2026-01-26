@@ -19,10 +19,7 @@
 //! - At scope end: release all borrows from that scope
 
 use doo_core::Span;
-use doo_hir::{
-    HirProgram, HirItem, HirFunction, HirStmt, HirStmtKind,
-    HirExpr, HirExprKind,
-};
+use doo_hir::{HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind};
 use rustc_hash::FxHashMap;
 
 /// Borrow checking error.
@@ -46,10 +43,7 @@ pub enum BorrowErrorKind {
         mutable_borrow_span: Span,
     },
     /// Modifying a borrowed variable.
-    ModifyWhileBorrowed {
-        variable: String,
-        borrow_span: Span,
-    },
+    ModifyWhileBorrowed { variable: String, borrow_span: Span },
 }
 
 impl BorrowError {
@@ -160,7 +154,11 @@ impl BorrowChecker {
                 self.active_borrows.remove(name);
             }
 
-            HirStmtKind::ManualErrorExtract { ok_names, error_name, expr } => {
+            HirStmtKind::ManualErrorExtract {
+                ok_names,
+                error_name,
+                expr,
+            } => {
                 self.check_expr(expr, false);
                 for name in ok_names {
                     if name != "_" {
@@ -203,9 +201,13 @@ impl BorrowChecker {
                 }
             }
 
-            HirStmtKind::If { condition, then_block, else_block } => {
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.check_expr(condition, false);
-                
+
                 // Enter scope for then block
                 self.enter_scope();
                 for s in then_block {
@@ -225,7 +227,7 @@ impl BorrowChecker {
 
             HirStmtKind::While { condition, body } => {
                 self.check_expr(condition, false);
-                
+
                 // Enter scope for loop body
                 self.enter_scope();
                 for s in body {
@@ -311,7 +313,11 @@ impl BorrowChecker {
                 }
             }
 
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.check_expr(condition, false);
                 self.check_expr(then_expr, false);
                 if let Some(e) = else_expr {
@@ -348,20 +354,28 @@ impl BorrowChecker {
                 self.check_expr(end, false);
             }
 
-            HirExprKind::Ok(inner) | HirExprKind::Err(inner) |
-            HirExprKind::Try(inner) | HirExprKind::Move(inner) |
-            HirExprKind::Clone(inner) => {
+            HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner)
+            | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Clone(inner) => {
                 self.check_expr(inner, false);
             }
 
-             HirExprKind::UnwrapOrPanic { expr: inner, message } => {
-                 self.enter_scope();
-                 self.check_expr(inner, false);
-                 self.check_expr(message, false);
-                 self.exit_scope();
-             }
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
+                self.enter_scope();
+                self.check_expr(inner, false);
+                self.check_expr(message, false);
+                self.exit_scope();
+            }
 
-            HirExprKind::Borrow { expr: inner, mutable } => {
+            HirExprKind::Borrow {
+                expr: inner,
+                mutable,
+            } => {
                 self.check_expr(inner, *mutable);
             }
 
@@ -370,6 +384,14 @@ impl BorrowChecker {
                 self.enter_scope();
                 self.check_expr(body, false);
                 self.exit_scope();
+            }
+
+            HirExprKind::Spread(inner) => {
+                self.check_expr(inner, false);
+            }
+
+            HirExprKind::Cast { value, .. } => {
+                self.check_expr(value, false);
             }
 
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
@@ -398,6 +420,11 @@ impl BorrowChecker {
 
     /// Try to take an immutable borrow.
     fn try_immutable_borrow(&mut self, name: &str, span: Span) {
+        // Skip borrow tracking for internal/synthetic variables (e.g., __i_idx from for-loop desugaring)
+        if name.starts_with("__") {
+            return;
+        }
+
         if let Some(borrows) = self.active_borrows.get(name) {
             // Check for existing mutable borrow
             for borrow in borrows {
@@ -418,6 +445,11 @@ impl BorrowChecker {
 
     /// Try to take a mutable borrow.
     fn try_mutable_borrow(&mut self, name: &str, span: Span) {
+        // Skip borrow tracking for internal/synthetic variables (e.g., __i_idx from for-loop desugaring)
+        if name.starts_with("__") {
+            return;
+        }
+
         if let Some(borrows) = self.active_borrows.get(name) {
             // Any existing borrow blocks mutable borrow
             if !borrows.is_empty() {
@@ -495,27 +527,23 @@ mod tests {
     fn test_scope_enter_exit() {
         let mut checker = BorrowChecker::new();
         assert_eq!(checker.scope_depth, 0);
-        
+
         checker.enter_scope();
         assert_eq!(checker.scope_depth, 1);
-        
+
         checker.enter_scope();
         assert_eq!(checker.scope_depth, 2);
-        
+
         checker.exit_scope();
         assert_eq!(checker.scope_depth, 1);
-        
+
         checker.exit_scope();
         assert_eq!(checker.scope_depth, 0);
     }
 
     #[test]
     fn test_error_message() {
-        let err = BorrowError::concurrent_mut(
-            "x".to_string(),
-            Span::dummy(),
-            Span::dummy(),
-        );
+        let err = BorrowError::concurrent_mut("x".to_string(), Span::dummy(), Span::dummy());
         assert!(err.message().contains("mutably borrow"));
     }
 }

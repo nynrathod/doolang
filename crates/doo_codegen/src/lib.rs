@@ -9,16 +9,23 @@
 //! - `instructions` - Per-category instruction handlers
 //! - `memory` - Memory management (alloca, load, store, drop)
 //! - `optimize` - LLVM optimization passes
+//!
+//! ## Multi-File Support
+//!
+//! - `ModuleLinker` - Links multiple LLVM modules together
+//! - `CrossModuleResolver` - Resolves cross-module function references
+//! - `ExternalFunction` - Metadata for external function declarations
 
-pub mod context;
-pub mod types;
-pub mod instructions;
-pub mod memory;
-pub mod optimize;
 pub mod builder;
 pub mod builtins;
+pub mod context;
+pub mod instructions;
 pub mod layout;
+pub mod memory;
+pub mod optimize;
+pub mod types;
+pub mod utils;
 
-pub use context::CodegenContext;
 pub use builder::CodegenBuilder;
+pub use context::{CodegenContext, CrossModuleResolver, ExternalFunction, LinkError, ModuleLinker};
 pub use optimize::{optimize_module, OptLevel};

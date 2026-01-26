@@ -199,6 +199,13 @@ pub enum HirExprKind {
         params: Vec<(String, Option<TypeId>)>,
         body: Box<HirExpr>,
     },
+
+    // === Cast ===
+    /// Type cast expression.
+    Cast {
+        value: Box<HirExpr>,
+        to_type: TypeId,
+    },
 }
 
 /// Binary operators (simplified set).

@@ -1,158 +1,113 @@
-//! CLI Module
+//! CLI structures for the driver.
 //!
-//! Command line interface for the Doo compiler.
+//! Single source of truth for CLI commands and flags.
+//! Phase 10: Clean compilation orchestration with debug/explain support.
 
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
-use anyhow::Result;
+use std::path::PathBuf;
 
-use crate::compile::{compile_file, CompileOptions};
-
-/// Doo programming language compiler
-#[derive(Parser, Debug)]
+/// CLI definition for the doo language tool.
+#[derive(Parser)]
 #[command(name = "doo")]
-#[command(author, version, about, long_about = None)]
+#[command(about = "doo language CLI")]
+#[command(version)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
+
+    /// Enable debug output
+    #[arg(long, global = true)]
+    pub debug: bool,
+
+    /// Explain error codes in detail
+    #[arg(long, global = true)]
+    pub explain: Option<String>,
 }
 
-/// Available commands
-#[derive(Subcommand, Debug)]
+/// Supported subcommands for the doo CLI.
+#[derive(Subcommand)]
 pub enum Commands {
-    /// Run a Doo file
-    Run {
-        /// Source file to run
-        file: PathBuf,
-        
-        /// Keep LLVM IR file
+    /// Initialize a new project from a template
+    Init {
+        /// Name of the project (optional, interactive if missing)
+        name: Option<String>,
+
+        /// Template to use (optional, interactive if missing)
+        #[arg(long, short)]
+        template: Option<String>,
+    },
+
+    /// Deploy the project to Fly.io or Railway
+    Deploy {
+        /// Show detailed build and deployment logs
+        #[arg(long, short)]
+        verbose: bool,
+    },
+
+    /// Build the project to a persistent binary
+    Build {
+        /// Path to the project directory or .doo file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Name of the output binary
+        #[arg(short, long, default_value = "output")]
+        output: String,
+
+        /// Keep the generated LLVM IR (.ll) file
         #[arg(long)]
         keep_ll: bool,
-        
-        /// Run database migrations
-        #[arg(long)]
-        migrate: bool,
-    },
-    
-    /// Build a Doo file to executable
-    Build {
-        /// Source file to build
-        file: PathBuf,
-        
-        /// Output file path
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-        
-        /// Keep intermediate files
-        #[arg(long)]
-        keep_intermediates: bool,
-    },
-    
-    /// Run database migrations only
-    Migrate {
-        /// Source file with models
-        file: PathBuf,
-    },
-    
-    /// Check a Doo file for errors
-    Check {
-        /// Source file to check
-        file: PathBuf,
-    },
-    
-    /// Format a Doo file
-    Fmt {
-        /// Source file to format
-        file: PathBuf,
-    },
-    
-    /// Show version information
-    Version,
-}
 
-/// Run the CLI
-pub fn run_cli() -> Result<()> {
-    let cli = Cli::parse();
-    
-    match cli.command {
-        Commands::Run { file, keep_ll, migrate } => {
-            let options = CompileOptions {
-                keep_intermediates: keep_ll,
-                migrate,
-                ..Default::default()
-            };
-            let result = compile_file(&file, &options)?;
-            
-            if result.success {
-                println!("✓ Compiled successfully");
-                // Would execute the binary here
-            } else {
-                for err in &result.errors {
-                    eprintln!("❌ {}", err);
-                }
-                std::process::exit(1);
-            }
-        }
-        
-        Commands::Build { file, output, keep_intermediates } => {
-            let options = CompileOptions {
-                keep_intermediates,
-                output: output.map(|p| p.to_string_lossy().to_string()),
-                ..Default::default()
-            };
-            let result = compile_file(&file, &options)?;
-            
-            if result.success {
-                if let Some(out) = result.output_path {
-                    println!("✓ Built: {}", out);
-                }
-            } else {
-                for err in &result.errors {
-                    eprintln!("❌ {}", err);
-                }
-                std::process::exit(1);
-            }
-        }
-        
-        Commands::Migrate { file } => {
-            let options = CompileOptions {
-                migrate: true,
-                ..Default::default()
-            };
-            let result = compile_file(&file, &options)?;
-            
-            if result.success {
-                println!("✓ Migrations complete");
-            } else {
-                for err in &result.errors {
-                    eprintln!("❌ {}", err);
-                }
-                std::process::exit(1);
-            }
-        }
-        
-        Commands::Check { file } => {
-            let options = CompileOptions::default();
-            let result = compile_file(&file, &options)?;
-            
-            if result.success {
-                println!("✓ No errors found");
-            } else {
-                for err in &result.errors {
-                    eprintln!("❌ {}", err);
-                }
-                std::process::exit(1);
-            }
-        }
-        
-        Commands::Fmt { file: _ } => {
-            println!("Format command not yet implemented");
-        }
-        
-        Commands::Version => {
-            println!("doo {}", env!("CARGO_PKG_VERSION"));
-        }
-    }
-    
-    Ok(())
+        /// Keep the object file (.o)
+        #[arg(long)]
+        keep_obj: bool,
+
+        /// Print AST (debug)
+        #[arg(long)]
+        print_ast: bool,
+
+        /// Print MIR (debug)
+        #[arg(long)]
+        print_mir: bool,
+    },
+
+    /// Compile and run immediately (auto-cleanup)
+    Run {
+        /// Path to the project directory or main.doo file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Keep the generated LLVM IR (.ll) file
+        #[arg(long)]
+        keep_ll: bool,
+
+        /// Enable debug output (temporary, session-only)
+        #[arg(long)]
+        debug: bool,
+
+        /// Arguments to pass to the program
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Check for errors without compiling
+    Check {
+        /// Path to the project directory or main.doo file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+
+    /// Run database migrations
+    Migrate {
+        /// Path to the project directory or main.doo file with models
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Show migration SQL without executing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Upgrade doo to the latest version
+    Upgrade,
 }

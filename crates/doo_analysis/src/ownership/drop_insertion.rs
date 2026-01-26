@@ -226,6 +226,12 @@ impl DropInserter {
             HirExprKind::Closure { body, .. } => {
                 self.scan_expr_for_uses(body);
             }
+            HirExprKind::Spread(inner) => {
+                self.scan_expr_for_uses(inner);
+            }
+            HirExprKind::Cast { value, .. } => {
+                self.scan_expr_for_uses(value);
+            }
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
     }

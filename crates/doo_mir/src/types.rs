@@ -195,12 +195,12 @@ impl MirFunction {
     pub fn validate(&self) -> Result<(), MirError> {
         // Collect all defined values
         let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
-        
+
         // Parameters are pre-defined
         for param in &self.params {
             defined.insert(param.name.clone());
         }
-        
+
         // Check each block
         for block in &self.blocks {
             for instr in &block.instructions {
@@ -215,14 +215,14 @@ impl MirFunction {
                         }
                     }
                 }
-                
+
                 // Add defined value
                 if let Some(dest) = instr.destination() {
                     defined.insert(dest.clone());
                 }
             }
         }
-        
+
         Ok(())
     }
 }
@@ -311,7 +311,7 @@ pub enum MirConst {
 // ============================================================================
 
 /// MIR instruction with pure ownership semantics.
-/// 
+///
 /// ## Key Differences from Legacy
 /// - NO IncRef/DecRef - ownership is compile-time
 /// - Uses MirOperand for all values
@@ -322,33 +322,34 @@ pub enum MirInstrKind {
     // ========================================================================
     // Ownership Operations (NEW - replaces RC)
     // ========================================================================
-    
     /// Move value to destination (zero-cost, transfers ownership)
     Move { dest: String, src: MirOperand },
-    
+
     /// Copy value (for primitives or explicit Copy types)
     Copy { dest: String, src: MirOperand },
-    
+
     /// Clone value (deep copy for non-Copy types)
     Clone { dest: String, src: MirOperand },
-    
+
     /// Drop value (cleanup, inserted by analysis)
     Drop { value: String },
-    
+
     /// Borrow value (create reference for function call)
-    Borrow { dest: String, src: String, mutable: bool },
+    Borrow {
+        dest: String,
+        src: String,
+        mutable: bool,
+    },
 
     // ========================================================================
     // Assignment
     // ========================================================================
-    
     /// Assign constant or operand to local
     Assign { dest: String, value: MirOperand },
 
     // ========================================================================
     // Arithmetic & Logic
     // ========================================================================
-    
     /// Binary operation
     BinaryOp {
         dest: String,
@@ -356,7 +357,7 @@ pub enum MirInstrKind {
         lhs: MirOperand,
         rhs: MirOperand,
     },
-    
+
     /// Unary operation
     UnaryOp {
         dest: String,
@@ -367,14 +368,13 @@ pub enum MirInstrKind {
     // ========================================================================
     // Collections
     // ========================================================================
-    
     /// Create array
     ArrayCreate {
         dest: String,
         elements: Vec<MirOperand>,
         elem_type: TypeId,
     },
-    
+
     /// Get array element
     ArrayGet {
         dest: String,
@@ -382,7 +382,7 @@ pub enum MirInstrKind {
         index: MirOperand,
         elem_type: TypeId,
     },
-    
+
     /// Set array element
     ArraySet {
         array: MirOperand,
@@ -390,13 +390,10 @@ pub enum MirInstrKind {
         value: MirOperand,
         elem_type: TypeId,
     },
-    
+
     /// Get array length
-    ArrayLen {
-        dest: String,
-        array: MirOperand,
-    },
-    
+    ArrayLen { dest: String, array: MirOperand },
+
     /// Check if array contains value
     ArrayContains {
         dest: String,
@@ -427,7 +424,6 @@ pub enum MirInstrKind {
         elem_type: TypeId,
     },
 
-    
     /// Create map
     MapCreate {
         dest: String,
@@ -435,7 +431,7 @@ pub enum MirInstrKind {
         key_type: TypeId,
         val_type: TypeId,
     },
-    
+
     /// Get map value
     MapGet {
         dest: String,
@@ -444,7 +440,7 @@ pub enum MirInstrKind {
         key_type: TypeId,
         val_type: TypeId,
     },
-    
+
     /// Set map value
     MapSet {
         map: MirOperand,
@@ -453,7 +449,7 @@ pub enum MirInstrKind {
         key_type: TypeId,
         val_type: TypeId,
     },
-    
+
     /// Check if map contains key
     MapHas {
         dest: String,
@@ -466,21 +462,20 @@ pub enum MirInstrKind {
     // ========================================================================
     // Structs
     // ========================================================================
-    
     /// Create struct instance
     StructCreate {
         dest: String,
         struct_name: String,
         fields: Vec<(String, MirOperand)>,
     },
-    
+
     /// Get struct field
     FieldGet {
         dest: String,
         object: MirOperand,
         field: String,
     },
-    
+
     /// Set struct field
     FieldSet {
         object: MirOperand,
@@ -491,7 +486,6 @@ pub enum MirInstrKind {
     // ========================================================================
     // Enums
     // ========================================================================
-    
     /// Create enum variant
     EnumCreate {
         dest: String,
@@ -499,20 +493,17 @@ pub enum MirInstrKind {
         variant: String,
         payload: Option<MirOperand>,
     },
-    
+
     /// Get enum discriminant (tag)
-    EnumTag {
-        dest: String,
-        value: MirOperand,
-    },
-    
+    EnumTag { dest: String, value: MirOperand },
+
     /// Get enum discriminant (tag) with enum name for type lookup
     EnumGetTag {
         dest: String,
         value: MirOperand,
         enum_name: String,
     },
-    
+
     /// Compare enum tag with expected variant
     EnumTagEquals {
         dest: String,
@@ -520,14 +511,14 @@ pub enum MirInstrKind {
         variant_name: String,
         enum_name: String,
     },
-    
+
     /// Extract enum payload
     EnumPayload {
         dest: String,
         value: MirOperand,
         variant: String,
     },
-    
+
     /// Extract enum payload with index (for ADT pattern matching)
     EnumGetPayload {
         dest: String,
@@ -540,13 +531,12 @@ pub enum MirInstrKind {
     // ========================================================================
     // Tuples
     // ========================================================================
-    
     /// Create tuple
     TupleCreate {
         dest: String,
         elements: Vec<MirOperand>,
     },
-    
+
     /// Extract tuple element
     TupleGet {
         dest: String,
@@ -557,14 +547,13 @@ pub enum MirInstrKind {
     // ========================================================================
     // Calls
     // ========================================================================
-    
     /// Function call
     Call {
         dest: Option<String>,
         func: String,
         args: Vec<MirOperand>,
     },
-    
+
     /// Method call
     MethodCall {
         dest: Option<String>,
@@ -574,7 +563,7 @@ pub enum MirInstrKind {
         args: Vec<MirOperand>,
         arg_types: Vec<TypeId>,
     },
-    
+
     /// FFI call
     FfiCall {
         dest: Option<String>,
@@ -586,14 +575,13 @@ pub enum MirInstrKind {
     // ========================================================================
     // Closures
     // ========================================================================
-    
     /// Create closure
     ClosureCreate {
         dest: String,
         func: String,
         captures: Vec<MirOperand>,
     },
-    
+
     /// Call closure
     ClosureCall {
         dest: Option<String>,
@@ -604,41 +592,34 @@ pub enum MirInstrKind {
     // ========================================================================
     // Result/Error Handling
     // ========================================================================
-    
     /// Wrap value in Ok
-    WrapOk {
-        dest: String,
-        value: MirOperand,
-    },
-    
+    WrapOk { dest: String, value: MirOperand },
+
     /// Wrap value in Err
-    WrapErr {
-        dest: String,
-        value: MirOperand,
-    },
-    
+    WrapErr { dest: String, value: MirOperand },
+
     /// Check if result is Ok
-    IsOk {
-        dest: String,
-        value: MirOperand,
-    },
-    
+    IsOk { dest: String, value: MirOperand },
+
     /// Unwrap Ok value
-    UnwrapOk {
-        dest: String,
-        value: MirOperand,
-    },
-    
+    UnwrapOk { dest: String, value: MirOperand },
+
     /// Unwrap Err value
-    UnwrapErr {
-        dest: String,
-        value: MirOperand,
+    UnwrapErr { dest: String, value: MirOperand },
+
+    /// Extract Ok and Error values from Result (manual error handling)
+    /// let a, b, err = expr;
+    ManualErrorExtract {
+        ok_names: Vec<String>, // Names for Ok values (single or tuple)
+        error_name: String,    // Name for error variable (or "_" to ignore)
+        result: MirOperand,    // Result to extract from
+        ok_type: TypeId,       // Type of the Ok value
+        err_type: TypeId,      // Type of the Error value
     },
 
     // ========================================================================
     // Cast & Conversion
     // ========================================================================
-    
     /// Type cast
     Cast {
         dest: String,
@@ -649,11 +630,20 @@ pub enum MirInstrKind {
     // ========================================================================
     // I/O
     // ========================================================================
-    
     /// Print values
     Print {
         values: Vec<MirOperand>,
         value_types: Vec<TypeId>,
+    },
+
+    // ========================================================================
+    // Intrinsics
+    // ========================================================================
+    /// Get runtime type name as string
+    TypeOf {
+        dest: String,
+        value: MirOperand,
+        value_type: TypeId,
     },
 }
 
@@ -661,11 +651,21 @@ pub enum MirInstrKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     // Arithmetic
-    Add, Sub, Mul, Div, Mod,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
     // Comparison
-    Eq, Ne, Lt, Le, Gt, Ge,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
     // Logical
-    And, Or,
+    And,
+    Or,
     // String
     Concat,
 }
@@ -673,8 +673,8 @@ pub enum BinaryOp {
 /// Unary operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    Neg,    // -x
-    Not,    // !x
+    Neg, // -x
+    Not, // !x
 }
 
 // ============================================================================
@@ -690,9 +690,12 @@ pub struct MirInstr {
 
 impl MirInstr {
     pub fn new(kind: MirInstrKind) -> Self {
-        Self { kind, span: Span::default() }
+        Self {
+            kind,
+            span: Span::default(),
+        }
     }
-    
+
     /// Get operands used by this instruction
     pub fn operands(&self) -> Vec<&MirOperand> {
         match &self.kind {
@@ -704,43 +707,59 @@ impl MirInstr {
             MirInstrKind::UnaryOp { operand, .. } => vec![operand],
             MirInstrKind::ArrayCreate { elements, .. } => elements.iter().collect(),
             MirInstrKind::ArrayGet { array, index, .. } => vec![array, index],
-            MirInstrKind::ArraySet { array, index, value, .. } => vec![array, index, value],
+            MirInstrKind::ArraySet {
+                array,
+                index,
+                value,
+                ..
+            } => vec![array, index, value],
             MirInstrKind::ArrayLen { array, .. } => vec![array],
             MirInstrKind::ArrayContains { array, value, .. } => vec![array, value],
             MirInstrKind::ArrayPush { array, value } => vec![array, value],
             MirInstrKind::ArrayExtend { array, other, .. } => vec![array, other],
-            MirInstrKind::ArraySlice { array, start, end, .. } => vec![array, start, end],
-
+            MirInstrKind::ArraySlice {
+                array, start, end, ..
+            } => vec![array, start, end],
 
             MirInstrKind::MapCreate { entries, .. } => {
                 entries.iter().flat_map(|(k, v)| vec![k, v]).collect()
             }
             MirInstrKind::MapGet { map, key, .. } => vec![map, key],
-            MirInstrKind::MapSet { map, key, value, .. } => vec![map, key, value],
+            MirInstrKind::MapSet {
+                map, key, value, ..
+            } => vec![map, key, value],
             MirInstrKind::MapHas { map, key, .. } => vec![map, key],
-            MirInstrKind::StructCreate { fields, .. } => {
-                fields.iter().map(|(_, v)| v).collect()
-            }
+            MirInstrKind::StructCreate { fields, .. } => fields.iter().map(|(_, v)| v).collect(),
             MirInstrKind::FieldGet { object, .. } => vec![object],
             MirInstrKind::FieldSet { object, value, .. } => vec![object, value],
-            MirInstrKind::EnumCreate { payload: Some(p), .. } => vec![p],
+            MirInstrKind::EnumCreate {
+                payload: Some(p), ..
+            } => vec![p],
             MirInstrKind::EnumTag { value, .. } => vec![value],
             MirInstrKind::EnumPayload { value, .. } => vec![value],
             MirInstrKind::TupleCreate { elements, .. } => elements.iter().collect(),
             MirInstrKind::TupleGet { tuple, .. } => vec![tuple],
             MirInstrKind::Call { args, .. } => args.iter().collect(),
-            MirInstrKind::MethodCall { receiver, receiver_type: _, method: _, args, .. } => {
-                std::iter::once(receiver).chain(args.iter()).collect()
-            }
+            MirInstrKind::MethodCall {
+                receiver,
+                receiver_type: _,
+                method: _,
+                args,
+                ..
+            } => std::iter::once(receiver).chain(args.iter()).collect(),
             MirInstrKind::FfiCall { args, .. } => args.iter().collect(),
             // ...
             MirInstrKind::UnwrapErr { value, .. } => vec![value],
             MirInstrKind::Cast { value, .. } => vec![value],
-            MirInstrKind::Print { values, value_types: _ } => values.iter().collect(),
+            MirInstrKind::Print {
+                values,
+                value_types: _,
+            } => values.iter().collect(),
+            MirInstrKind::TypeOf { value, .. } => vec![value],
             _ => vec![],
         }
     }
-    
+
     /// Get destination (defined value) if any
     pub fn destination(&self) -> Option<&String> {
         match &self.kind {
@@ -772,7 +791,8 @@ impl MirInstr {
             | MirInstrKind::IsOk { dest, .. }
             | MirInstrKind::UnwrapOk { dest, .. }
             | MirInstrKind::UnwrapErr { dest, .. }
-            | MirInstrKind::Cast { dest, .. } => Some(dest),
+            | MirInstrKind::Cast { dest, .. }
+            | MirInstrKind::TypeOf { dest, .. } => Some(dest),
             MirInstrKind::Call { dest, .. }
             | MirInstrKind::MethodCall { dest, .. }
             | MirInstrKind::FfiCall { dest, .. }
@@ -829,14 +849,14 @@ mod tests {
             src: MirOperand::Local("x".to_string()),
         });
         assert_eq!(move_instr.destination(), Some(&"%1".to_string()));
-        
+
         // Clone - deep copy
         let clone_instr = MirInstr::new(MirInstrKind::Clone {
             dest: "%2".to_string(),
             src: MirOperand::Local("y".to_string()),
         });
         assert_eq!(clone_instr.destination(), Some(&"%2".to_string()));
-        
+
         // Drop - cleanup
         let drop_instr = MirInstr::new(MirInstrKind::Drop {
             value: "z".to_string(),
@@ -849,20 +869,45 @@ mod tests {
         // Verify we have NO reference counting instructions
         // This is intentional - pure ownership model
         let valid_kinds = vec![
-            "Move", "Copy", "Clone", "Drop", "Borrow",
-            "Assign", "BinaryOp", "UnaryOp",
-            "ArrayCreate", "ArrayGet", "ArraySet", "ArrayLen",
+            "Move",
+            "Copy",
+            "Clone",
+            "Drop",
+            "Borrow",
+            "Assign",
+            "BinaryOp",
+            "UnaryOp",
+            "ArrayCreate",
+            "ArrayGet",
+            "ArraySet",
+            "ArrayLen",
             "ArrayContains",
-            "MapCreate", "MapGet", "MapSet", "MapHas",
-            "StructCreate", "FieldGet", "FieldSet",
-            "EnumCreate", "EnumTag", "EnumPayload",
-            "TupleCreate", "TupleGet",
-            "Call", "MethodCall", "FfiCall",
-            "ClosureCreate", "ClosureCall",
-            "WrapOk", "WrapErr", "IsOk", "UnwrapOk", "UnwrapErr",
-            "Cast", "Print",
+            "MapCreate",
+            "MapGet",
+            "MapSet",
+            "MapHas",
+            "StructCreate",
+            "FieldGet",
+            "FieldSet",
+            "EnumCreate",
+            "EnumTag",
+            "EnumPayload",
+            "TupleCreate",
+            "TupleGet",
+            "Call",
+            "MethodCall",
+            "FfiCall",
+            "ClosureCreate",
+            "ClosureCall",
+            "WrapOk",
+            "WrapErr",
+            "IsOk",
+            "UnwrapOk",
+            "UnwrapErr",
+            "Cast",
+            "Print",
         ];
-        
+
         // No "IncRef" or "DecRef" in the list
         assert!(!valid_kinds.contains(&"IncRef"));
         assert!(!valid_kinds.contains(&"DecRef"));
@@ -875,19 +920,21 @@ mod tests {
             name: "x".to_string(),
             type_id: TypeId(100),
         });
-        
+
         let mut block = MirBlock::new("entry".to_string());
-        block.instructions.push(MirInstr::new(MirInstrKind::BinaryOp {
-            dest: "%1".to_string(),
-            op: BinaryOp::Add,
-            lhs: MirOperand::Local("x".to_string()),
-            rhs: MirOperand::Const(MirConst::Int(1)),
-        }));
+        block
+            .instructions
+            .push(MirInstr::new(MirInstrKind::BinaryOp {
+                dest: "%1".to_string(),
+                op: BinaryOp::Add,
+                lhs: MirOperand::Local("x".to_string()),
+                rhs: MirOperand::Const(MirConst::Int(1)),
+            }));
         block.terminator = MirTerminator::Return {
             values: vec![MirOperand::Temp("%1".to_string())],
         };
         func.blocks.push(block);
-        
+
         assert!(func.validate().is_ok());
     }
 }

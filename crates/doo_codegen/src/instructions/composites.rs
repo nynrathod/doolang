@@ -2,23 +2,35 @@
 //!
 //! Handles: TupleCreate, TupleGet, StructCreate, FieldGet, FieldSet
 
-use inkwell::values::{BasicValueEnum};
-use doo_mir::{MirInstr, MirInstrKind};
-use crate::context::CodegenContext;
-use crate::utils::{operand_to_value};
 use super::InstructionHandler;
+use crate::context::CodegenContext;
+use crate::utils::operand_to_value;
+use doo_core::types::builtin;
+use doo_mir::{MirInstr, MirInstrKind, MirOperand};
+use inkwell::values::BasicValueEnum;
 
 /// Composite instruction handler.
 pub struct CompositeHandler;
 
+impl CompositeHandler {
+    /// Extract variable name from MirOperand for struct type lookup.
+    fn get_operand_name(operand: &MirOperand) -> Option<&str> {
+        match operand {
+            MirOperand::Local(name) | MirOperand::Temp(name) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+}
+
 impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
     fn handles(&self, instr: &MirInstr) -> bool {
-        matches!(instr.kind,
-            MirInstrKind::TupleCreate { .. } |
-            MirInstrKind::TupleGet { .. } |
-            MirInstrKind::StructCreate { .. } |
-            MirInstrKind::FieldGet { .. } |
-            MirInstrKind::FieldSet { .. }
+        matches!(
+            instr.kind,
+            MirInstrKind::TupleCreate { .. }
+                | MirInstrKind::TupleGet { .. }
+                | MirInstrKind::StructCreate { .. }
+                | MirInstrKind::FieldGet { .. }
+                | MirInstrKind::FieldSet { .. }
         )
     }
 
@@ -29,31 +41,37 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
     ) -> Option<BasicValueEnum<'ctx>> {
         match &instr.kind {
             MirInstrKind::TupleCreate { dest, elements } => {
-                let types: Vec<_> = elements.iter()
-                    .map(|_| ctx.i64_type().into())
-                    .collect();
+                let types: Vec<_> = elements.iter().map(|_| ctx.i64_type().into()).collect();
                 let tuple_type = ctx.context.struct_type(&types, false);
                 let alloca = ctx.builder.build_alloca(tuple_type, dest).ok()?;
-                
+
                 for (i, elem) in elements.iter().enumerate() {
                     if let Some(val) = operand_to_value(ctx, elem) {
-                        if let Ok(ptr) = ctx.builder.build_struct_gep(tuple_type, alloca, i as u32, "field_ptr") {
+                        if let Ok(ptr) =
+                            ctx.builder
+                                .build_struct_gep(tuple_type, alloca, i as u32, "field_ptr")
+                        {
                             ctx.builder.build_store(ptr, val).ok();
                         }
                     }
                 }
-                
+
                 ctx.set_temp(dest, alloca.into());
                 Some(alloca.into())
             }
 
             MirInstrKind::TupleGet { dest, tuple, index } => {
                 if let Some(tup) = operand_to_value(ctx, tuple) {
+                    let tup: inkwell::values::BasicValueEnum = tup;
                     if tup.is_pointer_value() {
                         let ptr = tup.into_pointer_value();
                         let tuple_ty = ctx.context.struct_type(&[ctx.i64_type().into()], false);
-                        if let Ok(field_ptr) = ctx.builder.build_struct_gep(tuple_ty, ptr, *index as u32, "field") {
-                            if let Ok(val) = ctx.builder.build_load(ctx.i64_type(), field_ptr, dest) {
+                        if let Ok(field_ptr) =
+                            ctx.builder
+                                .build_struct_gep(tuple_ty, ptr, *index as u32, "field")
+                        {
+                            if let Ok(val) = ctx.builder.build_load(ctx.i64_type(), field_ptr, dest)
+                            {
                                 ctx.set_temp(dest, val);
                                 return Some(val);
                             }
@@ -63,36 +81,146 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 None
             }
 
-            MirInstrKind::StructCreate { dest, struct_name, fields } => {
-                let field_types: Vec<_> = fields.iter()
-                    .map(|_| ctx.i64_type().into())
-                    .collect();
+            MirInstrKind::StructCreate {
+                dest,
+                struct_name,
+                fields,
+            } => {
+                // Collect field names in order for metadata
+                let field_names: Vec<String> =
+                    fields.iter().map(|(name, _)| name.clone()).collect();
+
+                // Register struct metadata for field lookups
+                ctx.register_struct_metadata(struct_name, field_names);
+
+                // Build LLVM struct type with correct field types from type registry
+                let field_types: Vec<inkwell::types::BasicTypeEnum> = 
+                    if let Some(field_type_ids) = ctx.get_struct_field_types(struct_name) {
+                        field_type_ids.iter().map(|type_id| {
+                            // Map TypeId to LLVM type
+                            if *type_id == builtin::STR {
+                                ctx.ptr_type().into()
+                            } else if *type_id == builtin::FLOAT {
+                                ctx.f64_type().into()
+                            } else if *type_id == builtin::BOOL {
+                                ctx.bool_type().into()
+                            } else {
+                                ctx.i64_type().into() // Int and default
+                            }
+                        }).collect()
+                    } else {
+                        // Fallback: all i64
+                        fields.iter().map(|_| ctx.i64_type().into()).collect()
+                    };
                 let struct_type = ctx.get_struct_type(struct_name, &field_types);
-                let alloca = ctx.builder.build_alloca(struct_type, dest).ok()?;
                 
+                // Calculate struct size (8 bytes per field for alignment)
+                let struct_size = (fields.len() * 8) as u64;
+                let i64_type = ctx.context.i64_type();
+                let ptr_type = ctx.ptr_type();
+                
+                // Get or declare malloc for heap allocation
+                let malloc_fn = ctx
+                    .module
+                    .get_function(doo_core::constants::ffi_names::MALLOC)
+                    .unwrap_or_else(|| {
+                        let fn_ty = ptr_type.fn_type(&[i64_type.into()], false);
+                        ctx.module.add_function(doo_core::constants::ffi_names::MALLOC, fn_ty, None)
+                    });
+                
+                // Heap allocate the struct (so Drop can free it)
+                let struct_ptr = ctx
+                    .builder
+                    .build_call(
+                        malloc_fn,
+                        &[i64_type.const_int(struct_size, false).into()],
+                        dest,
+                    )
+                    .ok()?
+                    .try_as_basic_value()
+                    .left()?
+                    .into_pointer_value();
+
+                // Store field values
                 for (i, (_, value)) in fields.iter().enumerate() {
                     if let Some(val) = operand_to_value(ctx, value) {
-                        if let Ok(ptr) = ctx.builder.build_struct_gep(struct_type, alloca, i as u32, "field_ptr") {
+                        if let Ok(ptr) =
+                            ctx.builder
+                                .build_struct_gep(struct_type, struct_ptr, i as u32, "field_ptr")
+                        {
                             ctx.builder.build_store(ptr, val).ok();
                         }
                     }
                 }
-                
-                ctx.set_temp(dest, alloca.into());
-                Some(alloca.into())
+
+                // Track that this dest variable holds a struct of this type
+                ctx.set_temp_struct_type(dest, struct_name);
+                ctx.set_temp(dest, struct_ptr.into());
+                Some(struct_ptr.into())
             }
 
-            MirInstrKind::FieldGet { dest, object, field } => {
+            MirInstrKind::FieldGet {
+                dest,
+                object,
+                field,
+            } => {
                 if let Some(obj_ptr) = operand_to_value(ctx, object) {
                     if obj_ptr.is_pointer_value() {
-                        let idx = field.parse::<u32>().unwrap_or(0);
                         let ptr = obj_ptr.into_pointer_value();
-                        
-                        if let Some(struct_type) = ctx.lookup_struct_type("_default") {
-                            if let Ok(field_ptr) = ctx.builder.build_struct_gep(struct_type, ptr, idx, "field_ptr") {
-                                if let Ok(val) = ctx.builder.build_load(ctx.i64_type(), field_ptr, dest) {
-                                    ctx.set_temp(dest, val);
-                                    return Some(val);
+
+                        // Get struct name from the object operand
+                        let var_name = Self::get_operand_name(object);
+                        let struct_name = var_name
+                            .and_then(|name| ctx.get_temp_struct_type(name).cloned());
+
+                        if let Some(struct_name) = struct_name {
+                            // Look up field index by name from struct metadata
+                            let field_index =
+                                ctx.get_field_index(&struct_name, field).unwrap_or_else(|| {
+                                    // Fallback: try parsing field as numeric index
+                                    field.parse::<u32>().unwrap_or(0)
+                                });
+
+                            // Get the struct type from cache
+                            if let Some(struct_type) = ctx.lookup_struct_type(&struct_name) {
+                                if let Ok(field_ptr) = ctx.builder.build_struct_gep(
+                                    struct_type,
+                                    ptr,
+                                    field_index,
+                                    "field_ptr",
+                                ) {
+                                    // Determine the correct LLVM type based on field's Doo type
+                                    let field_type_id = ctx.get_struct_field_type(&struct_name, field);
+                                    let load_type: inkwell::types::BasicTypeEnum = match field_type_id {
+                                        Some(t) if t == builtin::STR => ctx.ptr_type().into(),
+                                        Some(t) if t == builtin::FLOAT => ctx.f64_type().into(),
+                                        Some(t) if t == builtin::BOOL => ctx.bool_type().into(),
+                                        _ => ctx.i64_type().into(), // Int and default
+                                    };
+                                    
+                                    if let Ok(val) =
+                                        ctx.builder.build_load(load_type, field_ptr, dest)
+                                    {
+                                        ctx.set_temp(dest, val);
+                                        return Some(val);
+                                    }
+                                }
+                            }
+                        } else {
+                            // Fallback: numeric index with default struct type
+                            let idx = field.parse::<u32>().unwrap_or(0);
+                            // Try to find any cached struct type
+                            if let Some(struct_type) = ctx.lookup_struct_type("_default") {
+                                if let Ok(field_ptr) =
+                                    ctx.builder
+                                        .build_struct_gep(struct_type, ptr, idx, "field_ptr")
+                                {
+                                    if let Ok(val) =
+                                        ctx.builder.build_load(ctx.i64_type(), field_ptr, dest)
+                                    {
+                                        ctx.set_temp(dest, val);
+                                        return Some(val);
+                                    }
                                 }
                             }
                         }
@@ -101,15 +229,50 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 None
             }
 
-            MirInstrKind::FieldSet { object, field, value } => {
-                if let (Some(obj_ptr), Some(val)) = (operand_to_value(ctx, object), operand_to_value(ctx, value)) {
+            MirInstrKind::FieldSet {
+                object,
+                field,
+                value,
+            } => {
+                if let (Some(obj_ptr), Some(val)) =
+                    (operand_to_value(ctx, object), operand_to_value(ctx, value))
+                {
                     if obj_ptr.is_pointer_value() {
-                        let idx = field.parse::<u32>().unwrap_or(0);
                         let ptr = obj_ptr.into_pointer_value();
-                        
-                        if let Some(struct_type) = ctx.lookup_struct_type("_default") {
-                            if let Ok(field_ptr) = ctx.builder.build_struct_gep(struct_type, ptr, idx, "field_ptr") {
-                                ctx.builder.build_store(field_ptr, val).ok();
+
+                        // Get struct name from the object operand
+                        let struct_name = Self::get_operand_name(object)
+                            .and_then(|var_name| ctx.get_temp_struct_type(var_name).cloned());
+
+                        if let Some(struct_name) = struct_name {
+                            // Look up field index by name from struct metadata
+                            let field_index =
+                                ctx.get_field_index(&struct_name, field).unwrap_or_else(|| {
+                                    // Fallback: try parsing field as numeric index
+                                    field.parse::<u32>().unwrap_or(0)
+                                });
+
+                            // Get the struct type from cache
+                            if let Some(struct_type) = ctx.lookup_struct_type(&struct_name) {
+                                if let Ok(field_ptr) = ctx.builder.build_struct_gep(
+                                    struct_type,
+                                    ptr,
+                                    field_index,
+                                    "field_ptr",
+                                ) {
+                                    ctx.builder.build_store(field_ptr, val).ok();
+                                }
+                            }
+                        } else {
+                            // Fallback: numeric index with default struct type
+                            let idx = field.parse::<u32>().unwrap_or(0);
+                            if let Some(struct_type) = ctx.lookup_struct_type("_default") {
+                                if let Ok(field_ptr) =
+                                    ctx.builder
+                                        .build_struct_gep(struct_type, ptr, idx, "field_ptr")
+                                {
+                                    ctx.builder.build_store(field_ptr, val).ok();
+                                }
                             }
                         }
                     }

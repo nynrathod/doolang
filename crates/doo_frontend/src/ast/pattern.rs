@@ -34,4 +34,9 @@ pub enum PatternKind {
     Tuple(Vec<Pattern>),
     /// Wildcard: `_`
     Wildcard,
+    /// Index pattern for array assignment: `arr[i]`
+    Index {
+        object: Box<Pattern>,
+        index: Box<crate::ast::expr::Expr>,
+    },
 }

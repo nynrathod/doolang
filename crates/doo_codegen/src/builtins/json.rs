@@ -1,4 +1,4 @@
-use inkwell::types::BasicTypeEnum;
+use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, IntValue};
 use inkwell::{AddressSpace, IntPredicate};
 use doo_core::types::{TypeId, TypeKind, builtin};
@@ -162,7 +162,7 @@ impl JsonBuiltins {
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
             },
-            TypeKind::Struct(name, fields) => {
+            TypeKind::Struct { name, fields } => {
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
                 let key_fn = Self::get_or_declare_write_key(ctx);
@@ -194,7 +194,8 @@ impl JsonBuiltins {
                     
                     // Read Field
                     let field_ptr = ctx.builder.build_struct_gep(struct_llvm_type, typed_ptr, i as u32, "field_ptr").ok()?;
-                    let field_val = ctx.builder.build_load(ctx.get_llvm_type(*fty), field_ptr, "field_val").ok()?;
+                    let field_ty = ctx.get_llvm_type(*fty);
+                    let field_val = ctx.builder.build_load(field_ty, field_ptr, "field_val").ok()?;
                     
                     // Write Value
                     Self::emit_write_value(ctx, writer, field_val, *fty)?;
@@ -202,7 +203,7 @@ impl JsonBuiltins {
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
             },
-            TypeKind::Tuple(elem_types) => {
+            TypeKind::Tuple { elements } => {
                 // Tuples -> JSON Array
                 let start_fn = Self::get_or_declare_start_array(ctx);
                 let end_fn = Self::get_or_declare_end_array(ctx);
@@ -213,24 +214,25 @@ impl JsonBuiltins {
                 if !val.is_pointer_value() { return None; }
                 let tuple_ptr = val.into_pointer_value();
                 
-                let llvm_elem_types: Vec<_> = elem_types.iter().map(|t| ctx.get_llvm_type(*t).into()).collect();
+                let llvm_elem_types: Vec<_> = elements.iter().map(|t| ctx.get_llvm_type(*t).into()).collect();
                 let tuple_llvm_type = ctx.context.struct_type(&llvm_elem_types, false);
                 let typed_ptr = ctx.builder.build_pointer_cast(tuple_ptr, tuple_llvm_type.ptr_type(AddressSpace::default()), "tuple_cast").ok()?;
 
-                for (i, ty) in elem_types.iter().enumerate() {
+                for (i, ty) in elements.iter().enumerate() {
                     if i > 0 {
                          ctx.builder.build_call(comma_fn, &[writer.into()], "").ok()?;
                     }
                     
                     let field_ptr = ctx.builder.build_struct_gep(tuple_llvm_type, typed_ptr, i as u32, "elem_ptr").ok()?;
-                    let field_val = ctx.builder.build_load(ctx.get_llvm_type(*ty), field_ptr, "elem_val").ok()?;
+                    let elem_ty = ctx.get_llvm_type(*ty);
+                    let field_val = ctx.builder.build_load(elem_ty, field_ptr, "elem_val").ok()?;
                     
                     Self::emit_write_value(ctx, writer, field_val, *ty)?;
                 }
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
             },
-            TypeKind::Enum(name, variants) => {
+            TypeKind::Enum { name, variants } => {
                 // Enum -> {"Variant": Payload} or "Variant"
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
@@ -285,7 +287,8 @@ impl JsonBuiltins {
                          let base_ptr_i8 = unsafe { ctx.builder.build_gep(ctx.context.i8_type(), enum_ptr, &[ctx.context.i64_type().const_int(payload_offset, false)], "base").ok()? };
                          
                          let llvm_pty = ctx.get_llvm_type(*pty);
-                         let pptr = ctx.builder.build_pointer_cast(base_ptr_i8, llvm_pty.ptr_type(AddressSpace::default()), "pptr").ok()?;
+                         let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+                         let pptr = ctx.builder.build_pointer_cast(base_ptr_i8, ptr_ty, "pptr").ok()?;
                          let pval = ctx.builder.build_load(llvm_pty, pptr, "pval").ok()?;
                          
                          Self::emit_write_value(ctx, writer, pval, *pty)?;
@@ -365,8 +368,8 @@ impl JsonBuiltins {
         
         // Load Elem
         let elem_llvm_ty = ctx.get_llvm_type(elem_ty);
-        let ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
-        let base_typed = ctx.builder.build_pointer_cast(array_ptr, ptr_ty, "base").ok()?;
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+        let base_typed = ctx.builder.build_pointer_cast(array_ptr, ptr_ty, "base").ok()?;;
         let elem_ptr = unsafe { ctx.builder.build_gep(elem_llvm_ty, base_typed, &[idx], "elem_p").ok()? };
         let elem_val = ctx.builder.build_load(elem_llvm_ty, elem_ptr, "elem_val").ok()?;
         
@@ -438,7 +441,7 @@ impl JsonBuiltins {
         
         // Get Key
         let key_llvm_ty = ctx.get_llvm_type(key_ty); // Should be Str
-        let key_arr_elem_ptr_ty = key_llvm_ty.ptr_type(AddressSpace::default());
+        let key_arr_elem_ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let arr_base = ctx.builder.build_pointer_cast(keys_arr_ptr, key_arr_elem_ptr_ty, "base").ok()?;
         let k_ptr = unsafe { ctx.builder.build_gep(key_llvm_ty, arr_base, &[idx], "k_ptr").ok()? };
         let k_val = ctx.builder.build_load(key_llvm_ty, k_ptr, "k_val").ok()?;
@@ -473,9 +476,10 @@ impl JsonBuiltins {
         // Actually `builtins/map.rs` calls `doo_map_*`.
         // I can just call `doo_map_get`.
         
-        let get_fn_name = format!("doo_map_{}_{}_get", 
-            builtin::type_name(key_ty).to_lowercase(),
-            builtin::type_name(val_ty).to_lowercase()
+        // TODO: Proper type name lookup for map key/value types
+        let _get_fn_name = format!("doo_map_{}_{}_get", 
+            "str", // builtin::type_name(key_ty) - placeholder
+            "str"  // builtin::type_name(val_ty) - placeholder  
         ); 
         // Name mangling for map functions is tricky without the logic from `map.rs`.
         // Skip for now: assume user maps are string-string for simple test or similar.

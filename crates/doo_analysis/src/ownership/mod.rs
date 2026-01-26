@@ -18,12 +18,90 @@ pub mod drop_insertion;
 
 pub use drop_insertion::DropInserter;
 
-use doo_core::{Span, types::{TypeId, builtin}};
+use doo_core::{
+    types::{builtin, TypeId},
+    Span,
+};
 use doo_hir::{
-    HirProgram, HirItem, HirFunction, HirStmt, HirStmtKind,
-    HirExpr, HirExprKind, Ownership,
+    HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind, Ownership,
 };
 use rustc_hash::FxHashMap;
+
+/// Key for identifying a specific variable use location.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UseLocation {
+    /// Variable name
+    pub name: String,
+    /// Span of the use site
+    pub span: Span,
+}
+
+impl UseLocation {
+    pub fn new(name: impl Into<String>, span: Span) -> Self {
+        Self {
+            name: name.into(),
+            span,
+        }
+    }
+}
+
+/// Results from ownership analysis.
+/// Maps each variable use to its ownership decision.
+#[derive(Debug, Clone, Default)]
+pub struct OwnershipResults {
+    /// Decision for each variable use, keyed by (variable_name, use_span)
+    decisions: FxHashMap<UseLocation, Decision>,
+}
+
+impl OwnershipResults {
+    /// Create empty ownership results.
+    pub fn new() -> Self {
+        Self {
+            decisions: FxHashMap::default(),
+        }
+    }
+
+    /// Record a decision for a variable use.
+    pub fn record(&mut self, name: impl Into<String>, span: Span, decision: Decision) {
+        let loc = UseLocation::new(name, span);
+        self.decisions.insert(loc, decision);
+    }
+
+    /// Get the decision for a variable use at a specific span.
+    pub fn get_decision(&self, name: &str, span: Span) -> Option<Decision> {
+        let loc = UseLocation {
+            name: name.to_string(),
+            span,
+        };
+        self.decisions.get(&loc).copied()
+    }
+
+    /// Get the decision for a variable, searching by name only (returns first match).
+    /// This is useful when you don't have the exact span.
+    pub fn get_decision_by_name(&self, name: &str) -> Option<Decision> {
+        for (loc, decision) in &self.decisions {
+            if loc.name == name {
+                return Some(*decision);
+            }
+        }
+        None
+    }
+
+    /// Get all decisions.
+    pub fn all_decisions(&self) -> &FxHashMap<UseLocation, Decision> {
+        &self.decisions
+    }
+
+    /// Check if results are empty.
+    pub fn is_empty(&self) -> bool {
+        self.decisions.is_empty()
+    }
+
+    /// Number of recorded decisions.
+    pub fn len(&self) -> usize {
+        self.decisions.len()
+    }
+}
 
 /// Ownership decision for a variable use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +125,10 @@ pub struct OwnershipError {
 
 impl OwnershipError {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
-        Self { message: message.into(), span }
+        Self {
+            message: message.into(),
+            span,
+        }
     }
 }
 
@@ -74,6 +155,8 @@ pub struct OwnershipAnalyzer {
     current_idx: usize,
     /// Collected errors.
     errors: Vec<OwnershipError>,
+    /// Collected ownership decisions for each variable use.
+    results: OwnershipResults,
 }
 
 impl OwnershipAnalyzer {
@@ -83,11 +166,15 @@ impl OwnershipAnalyzer {
             vars: FxHashMap::default(),
             current_idx: 0,
             errors: Vec::new(),
+            results: OwnershipResults::new(),
         }
     }
 
     /// Analyze a program for ownership.
-    pub fn analyze(&mut self, program: &HirProgram) -> Result<(), Vec<OwnershipError>> {
+    pub fn analyze(
+        &mut self,
+        program: &HirProgram,
+    ) -> Result<OwnershipResults, Vec<OwnershipError>> {
         for item in &program.items {
             if let HirItem::Function(func) = item {
                 self.analyze_function(func);
@@ -95,10 +182,20 @@ impl OwnershipAnalyzer {
         }
 
         if self.errors.is_empty() {
-            Ok(())
+            Ok(self.results.clone())
         } else {
             Err(self.errors.clone())
         }
+    }
+
+    /// Get the collected ownership results (call after analyze).
+    pub fn results(&self) -> &OwnershipResults {
+        &self.results
+    }
+
+    /// Take ownership of the results.
+    pub fn take_results(&mut self) -> OwnershipResults {
+        std::mem::take(&mut self.results)
     }
 
     /// Analyze a function.
@@ -109,12 +206,15 @@ impl OwnershipAnalyzer {
 
         // Register parameters
         for param in &func.params {
-            self.vars.insert(param.name.clone(), VarInfo {
-                uses: Vec::new(),
-                type_id: param.type_id,
-                mutable: false, // Params immutable by default
-                ownership: Ownership::Owned,
-            });
+            self.vars.insert(
+                param.name.clone(),
+                VarInfo {
+                    uses: Vec::new(),
+                    type_id: param.type_id,
+                    mutable: false, // Params immutable by default
+                    ownership: Ownership::Owned,
+                },
+            );
         }
 
         // Pass 1: Count uses
@@ -137,34 +237,53 @@ impl OwnershipAnalyzer {
 
     fn count_uses_in_stmt(&mut self, stmt: &HirStmt) {
         match &stmt.kind {
-            HirStmtKind::Let { name, value, mutable, type_id, .. } => {
+            HirStmtKind::Let {
+                name,
+                value,
+                mutable,
+                type_id,
+                ..
+            } => {
                 // Register new variable
-                self.vars.insert(name.clone(), VarInfo {
-                    uses: Vec::new(),
-                    type_id: *type_id,
-                    mutable: *mutable,
-                    ownership: Ownership::Owned,
-                });
+                self.vars.insert(
+                    name.clone(),
+                    VarInfo {
+                        uses: Vec::new(),
+                        type_id: *type_id,
+                        mutable: *mutable,
+                        ownership: Ownership::Owned,
+                    },
+                );
                 self.count_uses_in_expr(value);
             }
-            HirStmtKind::ManualErrorExtract { ok_names, error_name, expr } => {
+            HirStmtKind::ManualErrorExtract {
+                ok_names,
+                error_name,
+                expr,
+            } => {
                 for name in ok_names {
                     if name != "_" {
-                        self.vars.insert(name.clone(), VarInfo {
+                        self.vars.insert(
+                            name.clone(),
+                            VarInfo {
+                                uses: Vec::new(),
+                                type_id: None,
+                                mutable: false,
+                                ownership: Ownership::Owned,
+                            },
+                        );
+                    }
+                }
+                if error_name != "_" {
+                    self.vars.insert(
+                        error_name.clone(),
+                        VarInfo {
                             uses: Vec::new(),
                             type_id: None,
                             mutable: false,
                             ownership: Ownership::Owned,
-                        });
-                    }
-                }
-                if error_name != "_" {
-                    self.vars.insert(error_name.clone(), VarInfo {
-                        uses: Vec::new(),
-                        type_id: None,
-                        mutable: false,
-                        ownership: Ownership::Owned,
-                    });
+                        },
+                    );
                 }
                 self.count_uses_in_expr(expr);
             }
@@ -180,7 +299,11 @@ impl OwnershipAnalyzer {
                     self.count_uses_in_expr(v);
                 }
             }
-            HirStmtKind::If { condition, then_block, else_block } => {
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.count_uses_in_expr(condition);
                 for s in then_block {
                     self.count_uses_in_stmt(s);
@@ -255,7 +378,11 @@ impl OwnershipAnalyzer {
                     self.count_uses_in_expr(e);
                 }
             }
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.count_uses_in_expr(condition);
                 self.count_uses_in_expr(then_expr);
                 if let Some(e) = else_expr {
@@ -286,12 +413,17 @@ impl OwnershipAnalyzer {
                 self.count_uses_in_expr(start);
                 self.count_uses_in_expr(end);
             }
-            HirExprKind::Ok(inner) | HirExprKind::Err(inner) | 
-            HirExprKind::Try(inner) | HirExprKind::Move(inner) | 
-            HirExprKind::Clone(inner) => {
+            HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner)
+            | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Clone(inner) => {
                 self.count_uses_in_expr(inner);
             }
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.count_uses_in_expr(inner);
                 self.count_uses_in_expr(message);
             }
@@ -300,6 +432,12 @@ impl OwnershipAnalyzer {
             }
             HirExprKind::Closure { body, .. } => {
                 self.count_uses_in_expr(body);
+            }
+            HirExprKind::Spread(inner) => {
+                self.count_uses_in_expr(inner);
+            }
+            HirExprKind::Cast { value, .. } => {
+                self.count_uses_in_expr(value);
             }
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
@@ -355,7 +493,11 @@ impl OwnershipAnalyzer {
                     self.analyze_expr(v);
                 }
             }
-            HirStmtKind::If { condition, then_block, else_block } => {
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.analyze_expr(condition);
                 for s in then_block {
                     self.analyze_stmt(s);
@@ -430,7 +572,11 @@ impl OwnershipAnalyzer {
                     self.analyze_expr(e);
                 }
             }
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.analyze_expr(condition);
                 self.analyze_expr(then_expr);
                 if let Some(e) = else_expr {
@@ -461,12 +607,17 @@ impl OwnershipAnalyzer {
                 self.analyze_expr(start);
                 self.analyze_expr(end);
             }
-            HirExprKind::Ok(inner) | HirExprKind::Err(inner) | 
-            HirExprKind::Try(inner) | HirExprKind::Move(inner) | 
-            HirExprKind::Clone(inner) => {
+            HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner)
+            | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Clone(inner) => {
                 self.analyze_expr(inner);
             }
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.analyze_expr(inner);
                 self.analyze_expr(message);
             }
@@ -475,6 +626,12 @@ impl OwnershipAnalyzer {
             }
             HirExprKind::Closure { body, .. } => {
                 self.analyze_expr(body);
+            }
+            HirExprKind::Spread(inner) => {
+                self.analyze_expr(inner);
+            }
+            HirExprKind::Cast { value, .. } => {
+                self.analyze_expr(value);
             }
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
@@ -504,15 +661,21 @@ impl OwnershipAnalyzer {
     fn decide_use(&mut self, name: &str, use_span: Span) -> Decision {
         let info = match self.vars.get(name) {
             Some(info) => info.clone(),
-            None => return Decision::Move, // Unknown var, assume move
+            None => {
+                let decision = Decision::Move; // Unknown var, assume move
+                self.results.record(name, use_span, decision);
+                return decision;
+            }
         };
 
         // Count uses after this point
-        let future_uses = info.uses.iter()
+        let future_uses = info
+            .uses
+            .iter()
             .filter(|s| s.start > use_span.start)
             .count();
 
-        if future_uses == 0 {
+        let decision = if future_uses == 0 {
             // Last use - move is zero-cost
             Decision::Move
         } else if self.is_copy_type(info.type_id) {
@@ -521,7 +684,12 @@ impl OwnershipAnalyzer {
         } else {
             // Non-primitive with future uses - auto-clone
             Decision::Clone
-        }
+        };
+
+        // Record the decision for later use by MIR builder
+        self.results.record(name, use_span, decision);
+
+        decision
     }
 
     /// Check if a type is Copy (primitives).
@@ -529,8 +697,10 @@ impl OwnershipAnalyzer {
         match type_id {
             Some(id) => {
                 // Primitives are Copy - compare against builtin type IDs
-                id == builtin::INT || id == builtin::FLOAT || id == builtin::BOOL ||
-                id == builtin::VOID
+                id == builtin::INT
+                    || id == builtin::FLOAT
+                    || id == builtin::BOOL
+                    || id == builtin::VOID
             }
             None => false, // Unknown type, assume not Copy
         }

@@ -9,15 +9,46 @@
 //! - **Validation**: Check declarations, mutability, decorators
 //! - **Visibility**: Check pub access across modules
 //! - **Decorators**: Validate decorator usage on fields
+//! - **Import Resolution**: Build import graph, detect circular imports
+//! - **Cross-Module Resolution**: Resolve symbols across module boundaries
+//! - **Exhaustiveness**: Check match expressions for missing patterns
+//! - **Error Flow**: Track Result flows, ensure errors are handled
+//! - **Method Resolution**: Resolve methods by receiver type (TASK-017)
 
+pub mod decorators;
+pub mod error_flow;
+pub mod exhaustiveness;
+pub mod resolve;
 pub mod scope;
 pub mod type_check;
-pub mod resolve;
 pub mod visibility;
-pub mod decorators;
 
-pub use scope::{ScopeManager, Scope, Symbol, SymbolKind};
+pub use decorators::{DecoratorError, DecoratorKind, DecoratorValidator};
+pub use error_flow::{ErrorFlowChecker, ErrorFlowError, ErrorFlowErrorKind};
+pub use exhaustiveness::{ExhaustivenessChecker, ExhaustivenessError, ExhaustivenessErrorKind};
+pub use resolve::{
+    CircularImportDetector,
+    CircularImportError,
+    // Cross-module resolution
+    CrossModuleResolver,
+    ImportEdge,
+    ImportGraph,
+    ImportItemKind,
+    ImportKind,
+    ImportStack,
+    ImportedModule,
+    // Method resolution (TASK-017)
+    MethodResolver,
+    MethodSignature,
+    MethodTable,
+    NameResolver,
+    ResolveError,
+    ResolvedMethod,
+    ResolvedSymbol,
+    SymbolDef,
+    SymbolKindDef,
+    SymbolTable,
+};
+pub use scope::{Scope, ScopeManager, Symbol, SymbolKind};
 pub use type_check::{TypeChecker, TypeError, TypeErrorKind};
-pub use resolve::{NameResolver, ResolveError};
-pub use visibility::{VisibilityChecker, Visibility, VisibilityError, visibility_from_flag};
-pub use decorators::{DecoratorValidator, DecoratorError, DecoratorKind};
+pub use visibility::{visibility_from_flag, Visibility, VisibilityChecker, VisibilityError};
