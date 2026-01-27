@@ -59,7 +59,10 @@ impl JsonBuiltins {
         if let Some(ty) = target_type {
             let kind = ctx.get_type_kind(ty);
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!("[CODEGEN] emit_parse: target_type={:?}, kind={:?}", ty, kind);
+                eprintln!(
+                    "[CODEGEN] emit_parse: target_type={:?}, kind={:?}",
+                    ty, kind
+                );
             }
             match kind {
                 Some(TypeKind::Struct { name, fields }) => {
@@ -201,6 +204,8 @@ impl JsonBuiltins {
         fields: &[(String, TypeId)],
     ) -> Option<BasicValueEnum<'ctx>> {
         let i8_ptr = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i64_type = ctx.i64_type();
+        let ptr_type = ctx.ptr_type();
 
         // Get doo_json_get_field function
         let get_field_fn = Self::get_or_declare_get_field(ctx);
@@ -209,11 +214,39 @@ impl JsonBuiltins {
         let field_types: Vec<_> = fields.iter().map(|(_, t)| ctx.get_llvm_type(*t)).collect();
         let struct_llvm_type = ctx.get_struct_type(name, &field_types);
 
-        // Allocate struct
+        // CRITICAL: Use HEAP allocation (malloc) NOT stack allocation (alloca)
+        // Stack allocations become invalid when the pointer escapes the function.
+        // This must match StructCreate which uses malloc for consistency.
+        // CRITICAL FIX: Use LLVM's size_of() to get the correct struct size including padding.
+        // The old calculation (fields.len() * 8) was WRONG because:
+        // - Enum fields are { i32, ptr } = 16 bytes (not 8)
+        // - Struct padding can vary
+        let struct_size = struct_llvm_type
+            .size_of()
+            .map(|v| v.get_zero_extended_constant().unwrap_or(64))
+            .unwrap_or(64);
+
+        // Get or declare malloc
+        let malloc_fn = ctx
+            .module
+            .get_function(ffi_names::MALLOC)
+            .unwrap_or_else(|| {
+                let fn_ty = ptr_type.fn_type(&[i64_type.into()], false);
+                ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
+            });
+
+        // Heap allocate the struct
         let struct_ptr = ctx
             .builder
-            .build_alloca(struct_llvm_type, "parsed_struct")
-            .ok()?;
+            .build_call(
+                malloc_fn,
+                &[i64_type.const_int(struct_size.max(16), false).into()], // min 16 bytes
+                "parsed_struct",
+            )
+            .ok()?
+            .try_as_basic_value()
+            .left()?
+            .into_pointer_value();
 
         // For each field, extract JSON and recursively parse
         for (i, (fname, fty)) in fields.iter().enumerate() {
@@ -248,7 +281,10 @@ impl JsonBuiltins {
             // Check if this is an enum type (returns struct type, not pointer)
             let kind = ctx.get_type_kind(*fty);
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!("[CODEGEN] emit_parse_struct field '{}': type_id={:?}, kind={:?}", fname, fty, kind);
+                eprintln!(
+                    "[CODEGEN] emit_parse_struct field '{}': type_id={:?}, kind={:?}",
+                    fname, fty, kind
+                );
             }
             if matches!(kind, Some(TypeKind::Enum { .. })) {
                 // Enum: emit_parse returns ptr to { i32, ptr }, need to load the value
@@ -283,6 +319,8 @@ impl JsonBuiltins {
     ) -> Option<BasicValueEnum<'ctx>> {
         let i8_ptr = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let i32_type = ctx.context.i32_type();
+        let i64_type = ctx.i64_type();
+        let ptr_type = ctx.ptr_type();
 
         // Use proper enum struct type { i32 tag, ptr payload }
         let enum_struct_type = ctx
@@ -302,11 +340,32 @@ impl JsonBuiltins {
             .try_as_basic_value()
             .left()?;
 
-        // Allocate enum storage using proper struct type
+        // CRITICAL: Use HEAP allocation (malloc) NOT stack allocation (alloca)
+        // Stack allocations become invalid when the pointer escapes the function.
+        // Enum struct size: i32 (4 bytes padded to 8) + ptr (8 bytes) = 16 bytes
+        let enum_size = 16u64;
+
+        // Get or declare malloc
+        let malloc_fn = ctx
+            .module
+            .get_function(ffi_names::MALLOC)
+            .unwrap_or_else(|| {
+                let fn_ty = ptr_type.fn_type(&[i64_type.into()], false);
+                ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
+            });
+
+        // Heap allocate the enum
         let enum_ptr = ctx
             .builder
-            .build_alloca(enum_struct_type, "parsed_enum")
-            .ok()?;
+            .build_call(
+                malloc_fn,
+                &[i64_type.const_int(enum_size, false).into()],
+                "parsed_enum",
+            )
+            .ok()?
+            .try_as_basic_value()
+            .left()?
+            .into_pointer_value();
 
         // Build comparison chain for each variant
         let parent = ctx.builder.get_insert_block()?.get_parent()?;
@@ -381,16 +440,37 @@ impl JsonBuiltins {
                 // For consistency with EnumCreate, we need to store a POINTER to the payload
                 // at the payload field, not the value itself.
                 // For pointer types (Str, Array, etc.), store the pointer directly.
-                // For value types (Int, Float, Bool), allocate and store pointer to alloca.
+                // For value types (Int, Float, Bool), allocate on HEAP and store pointer.
+                // CRITICAL: Use malloc NOT alloca - alloca memory becomes invalid when pointer escapes.
                 let llvm_pty = ctx.get_llvm_type(*pty);
                 let payload_ptr_to_store = if llvm_pty.is_pointer_type() {
                     // Pointer type: the value IS a pointer, store it directly
                     payload_val.into_pointer_value()
                 } else {
-                    // Value type: allocate and store, then use alloca as the pointer
-                    let alloca = ctx.builder.build_alloca(llvm_pty, "payload_alloca").ok()?;
-                    ctx.builder.build_store(alloca, payload_val).ok()?;
-                    alloca
+                    // Value type: HEAP allocate and store, then use heap ptr as the pointer
+                    // Get the size of the value type
+                    let value_size = match llvm_pty {
+                        inkwell::types::BasicTypeEnum::IntType(it) => it.get_bit_width() as u64 / 8,
+                        inkwell::types::BasicTypeEnum::FloatType(_) => 8, // f64
+                        _ => 8,                                           // Default to 8 bytes
+                    }
+                    .max(8); // Minimum 8 bytes for alignment
+
+                    let payload_heap_ptr = ctx
+                        .builder
+                        .build_call(
+                            malloc_fn,
+                            &[i64_type.const_int(value_size, false).into()],
+                            "payload_heap",
+                        )
+                        .ok()?
+                        .try_as_basic_value()
+                        .left()?
+                        .into_pointer_value();
+                    ctx.builder
+                        .build_store(payload_heap_ptr, payload_val)
+                        .ok()?;
+                    payload_heap_ptr
                 };
 
                 // Store the payload pointer at field 1 (payload field is a pointer)

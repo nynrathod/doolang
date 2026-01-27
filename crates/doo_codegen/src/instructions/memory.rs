@@ -338,8 +338,14 @@ fn clone_struct<'ctx>(
     // Get or create struct type
     let struct_type = ctx.lookup_struct_type(struct_name)?;
 
-    // Calculate struct size (simplified: assume 8 bytes per field)
-    let struct_size = (fields.len() * 8) as u64;
+    // Calculate struct size using LLVM's size_of() for correct padding
+    // CRITICAL FIX: The old calculation (fields.len() * 8) was WRONG because:
+    // - Enum fields are { i32, ptr } = 16 bytes (not 8)
+    // - Struct padding can vary based on field alignment requirements
+    let struct_size = struct_type
+        .size_of()
+        .map(|v| v.get_zero_extended_constant().unwrap_or(64))
+        .unwrap_or((fields.len() * 8) as u64); // Fallback for safety
 
     // Get or declare malloc
     let malloc_fn = ctx
@@ -355,7 +361,7 @@ fn clone_struct<'ctx>(
         .builder
         .build_call(
             malloc_fn,
-            &[i64_type.const_int(struct_size, false).into()],
+            &[i64_type.const_int(struct_size.max(16), false).into()], // min 16 bytes
             "clone_struct",
         )
         .ok()?

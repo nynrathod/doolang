@@ -6,11 +6,66 @@
 //! MEMORY MODEL: Pure Ownership/Borrow - No RC, No GC
 //! All allocations use doo_alloc_* from memory.rs (single source of truth).
 //! CRITICAL: Never use CString::into_raw() - it uses Rust allocator causing heap corruption.
+//! CRITICAL: Never return null_mut() for collection types - always return valid empty collection.
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use crate::memory::{doo_alloc, doo_alloc_empty_string, doo_alloc_string};
+use crate::memory::{doo_alloc, doo_alloc_empty_string, doo_alloc_string, MIN_ALLOCATION_SIZE};
+
+/// Check if debug mode is enabled (cached)
+#[inline]
+fn is_debug() -> bool {
+    std::env::var("DOO_DEBUG_FFI").is_ok()
+}
+
+/// Debug print helper
+macro_rules! debug_println {
+    ($($arg:tt)*) => {
+        if is_debug() {
+            eprintln!($($arg)*);
+            // Force flush to ensure output before potential crash
+            use std::io::Write;
+            let _ = std::io::stderr().flush();
+        }
+    };
+}
+
+/// Allocate an empty array with proper header [len=0, cap=0][data...]
+/// Returns pointer to data section (header is at ptr-16)
+/// CRITICAL: Never returns null - crashes calling code
+#[inline]
+fn alloc_empty_array() -> *mut u8 {
+    debug_println!(
+        "[FFI] alloc_empty_array: allocating {} bytes",
+        MIN_ALLOCATION_SIZE
+    );
+    let ptr = doo_alloc(MIN_ALLOCATION_SIZE);
+    if ptr.is_null() {
+        eprintln!("[FFI] CRITICAL: alloc_empty_array got null from doo_alloc!");
+        std::process::abort();
+    }
+    debug_println!("[FFI] alloc_empty_array: got ptr={:p}", ptr);
+    unsafe {
+        *(ptr as *mut i64) = 0; // length
+        *(ptr.add(8) as *mut i64) = 0; // capacity
+        let data_ptr = ptr.add(16);
+        debug_println!(
+            "[FFI] alloc_empty_array: header={:p}, data={:p}, len=0, cap=0",
+            ptr,
+            data_ptr
+        );
+        data_ptr
+    }
+}
+
+/// Allocate an empty map with proper header [len=0, cap=0][data...]
+/// Returns pointer to data section (header is at ptr-16)
+/// CRITICAL: Never returns null - crashes calling code
+#[inline]
+fn alloc_empty_map() -> *mut u8 {
+    alloc_empty_array() // Same layout as array
+}
 
 // ============================================================================
 // JSON Writer
@@ -50,10 +105,11 @@ pub extern "C" fn doo_json_writer_free(writer: *mut JsonWriter) {
 
 /// Finish writing and return the JSON string (consumes writer)
 /// OWNERSHIP: Caller owns the returned string.
+/// Returns "null" JSON if writer is null (never returns null ptr)
 #[no_mangle]
 pub extern "C" fn doo_json_writer_finish(writer: *mut JsonWriter) -> *mut c_char {
     if writer.is_null() {
-        return std::ptr::null_mut();
+        return doo_alloc_string("null");
     }
     unsafe {
         let writer_box = Box::from_raw(writer);
@@ -264,7 +320,7 @@ fn json_value_to_doo_ptr(v: serde_json::Value) -> *mut std::ffi::c_void {
             let ptr_size = std::mem::size_of::<*mut std::ffi::c_void>();
             let total_size = 16 + (len * ptr_size); // 16-byte header + element pointers
 
-            let ptr = doo_alloc(total_size.max(24));
+            let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
             if ptr.is_null() {
                 return std::ptr::null_mut();
             }
@@ -292,7 +348,7 @@ fn json_value_to_doo_ptr(v: serde_json::Value) -> *mut std::ffi::c_void {
             let entry_size = 16; // ptr(8) + value(8)
             let total_size = 16 + (len * entry_size);
 
-            let ptr = doo_alloc(total_size.max(24));
+            let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
             if ptr.is_null() {
                 return std::ptr::null_mut();
             }
@@ -402,18 +458,23 @@ pub extern "C" fn doo_json_parse_str(json_str: *const c_char) -> *mut c_char {
 /// Layout: [Len: i64][Cap: i64][elements...]
 /// Returns pointer to data section (after 16-byte header)
 /// OWNERSHIP: Caller owns the returned array.
+/// NEVER returns null - returns empty array on error
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 {
+    debug_println!("[FFI] doo_json_parse_array_int: ENTER");
+
     if json_str.is_null() {
-        if std::env::var("DOO_DEBUG_FFI").is_ok() {
-            eprintln!("[FFI] doo_json_parse_array_int: null input");
-        }
-        return std::ptr::null_mut();
+        debug_println!("[FFI] doo_json_parse_array_int: null input -> empty array");
+        let result = alloc_empty_array() as *mut i64;
+        debug_println!(
+            "[FFI] doo_json_parse_array_int: returning empty={:p}",
+            result
+        );
+        return result;
     }
+
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    if std::env::var("DOO_DEBUG_FFI").is_ok() {
-        eprintln!("[FFI] doo_json_parse_array_int: input={:?}", s);
-    }
+    debug_println!("[FFI] doo_json_parse_array_int: input={:?}", s);
 
     let elements: Vec<i64> = serde_json::from_str::<serde_json::Value>(&s)
         .ok()
@@ -423,16 +484,29 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
         })
         .unwrap_or_default();
 
-    if std::env::var("DOO_DEBUG_FFI").is_ok() {
-        eprintln!("[FFI] doo_json_parse_array_int: parsed {} elements", elements.len());
-    }
+    debug_println!(
+        "[FFI] doo_json_parse_array_int: parsed {} elements: {:?}",
+        elements.len(),
+        elements
+    );
 
     let data_size = elements.len() * std::mem::size_of::<i64>();
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(32)); // Minimum 32 bytes
+    let alloc_size = total_size.max(MIN_ALLOCATION_SIZE);
+    debug_println!(
+        "[FFI] doo_json_parse_array_int: allocating {} bytes (data={}, total={}, min={})",
+        alloc_size,
+        data_size,
+        total_size,
+        MIN_ALLOCATION_SIZE
+    );
+
+    let ptr = doo_alloc(alloc_size);
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        debug_println!("[FFI] doo_json_parse_array_int: alloc failed -> empty array");
+        return alloc_empty_array() as *mut i64;
     }
+    debug_println!("[FFI] doo_json_parse_array_int: got header_ptr={:p}", ptr);
 
     unsafe {
         // Header: [len: i64][cap: i64]
@@ -440,22 +514,37 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
         *(ptr.add(8) as *mut i64) = elements.len() as i64; // Capacity at offset 8
 
         let data_ptr = ptr.add(16) as *mut i64; // Data at offset 16
+        debug_println!(
+            "[FFI] doo_json_parse_array_int: data_ptr={:p}, writing {} elements",
+            data_ptr,
+            elements.len()
+        );
+
         for (i, val) in elements.iter().enumerate() {
             *data_ptr.add(i) = *val;
         }
-        if std::env::var("DOO_DEBUG_FFI").is_ok() {
-            eprintln!("[FFI] doo_json_parse_array_int: returning ptr={:p}", data_ptr);
-        }
+
+        // Verify header is accessible
+        let verify_len = *(data_ptr.offset(-2) as *const i64);
+        let verify_cap = *(data_ptr.offset(-1) as *const i64);
+        debug_println!(
+            "[FFI] doo_json_parse_array_int: RETURN data_ptr={:p}, verified len={}, cap={}",
+            data_ptr,
+            verify_len,
+            verify_cap
+        );
+
         data_ptr
     }
 }
 
 /// Parse JSON array to [Float]
 /// OWNERSHIP: Caller owns the returned array.
+/// NEVER returns null - returns empty array on error
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_float(json_str: *const c_char) -> *mut f64 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_array() as *mut f64;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -469,9 +558,9 @@ pub extern "C" fn doo_json_parse_array_float(json_str: *const c_char) -> *mut f6
 
     let data_size = elements.len() * std::mem::size_of::<f64>();
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(32));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_array() as *mut f64;
     }
 
     unsafe {
@@ -491,10 +580,14 @@ pub extern "C" fn doo_json_parse_array_float(json_str: *const c_char) -> *mut f6
 /// OWNERSHIP: Caller owns the returned array.
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 {
+    debug_println!("[FFI] doo_json_parse_array_bool: ENTER");
+
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        debug_println!("[FFI] doo_json_parse_array_bool: null input -> empty array");
+        return alloc_empty_array() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    debug_println!("[FFI] doo_json_parse_array_bool: input={:?}", s);
 
     let elements: Vec<u8> = serde_json::from_str::<serde_json::Value>(&s)
         .ok()
@@ -508,12 +601,24 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
         })
         .unwrap_or_default();
 
+    debug_println!(
+        "[FFI] doo_json_parse_array_bool: parsed {} elements",
+        elements.len()
+    );
+
     // Doo uses i1 (1 byte) for bools in arrays
     let data_size = elements.len() * std::mem::size_of::<u8>();
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(32));
+    let alloc_size = total_size.max(MIN_ALLOCATION_SIZE);
+    debug_println!(
+        "[FFI] doo_json_parse_array_bool: allocating {} bytes",
+        alloc_size
+    );
+
+    let ptr = doo_alloc(alloc_size);
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        debug_println!("[FFI] doo_json_parse_array_bool: alloc failed -> empty array");
+        return alloc_empty_array() as *mut u8;
     }
 
     unsafe {
@@ -525,6 +630,11 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
         for (i, val) in elements.iter().enumerate() {
             *data_ptr.add(i) = *val;
         }
+        debug_println!(
+            "[FFI] doo_json_parse_array_bool: RETURN data_ptr={:p}, len={}",
+            data_ptr,
+            elements.len()
+        );
         data_ptr
     }
 }
@@ -534,10 +644,14 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
 /// OWNERSHIP: Caller owns the returned array and all strings in it.
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut c_char {
+    debug_println!("[FFI] doo_json_parse_array_str: ENTER");
+
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        debug_println!("[FFI] doo_json_parse_array_str: null input -> empty array");
+        return alloc_empty_array() as *mut *mut c_char;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    debug_println!("[FFI] doo_json_parse_array_str: input={:?}", s);
 
     let elements: Vec<String> = serde_json::from_str::<serde_json::Value>(&s)
         .ok()
@@ -550,11 +664,23 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
         })
         .unwrap_or_default();
 
+    debug_println!(
+        "[FFI] doo_json_parse_array_str: parsed {} elements",
+        elements.len()
+    );
+
     let data_size = elements.len() * std::mem::size_of::<*mut c_char>();
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(32));
+    let alloc_size = total_size.max(MIN_ALLOCATION_SIZE);
+    debug_println!(
+        "[FFI] doo_json_parse_array_str: allocating {} bytes",
+        alloc_size
+    );
+
+    let ptr = doo_alloc(alloc_size);
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        debug_println!("[FFI] doo_json_parse_array_str: alloc failed -> empty array");
+        return alloc_empty_array() as *mut *mut c_char;
     }
 
     unsafe {
@@ -567,6 +693,11 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
             // Use centralized string allocation - NOT CString::into_raw()!
             *data_ptr.add(i) = doo_alloc_string(val);
         }
+        debug_println!(
+            "[FFI] doo_json_parse_array_str: RETURN data_ptr={:p}, len={}",
+            data_ptr,
+            elements.len()
+        );
         data_ptr
     }
 }
@@ -582,7 +713,7 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_str_int(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -600,9 +731,9 @@ pub extern "C" fn doo_json_parse_map_str_int(json_str: *const c_char) -> *mut u8
     let pair_size = 16; // ptr(8) + i64(8)
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -626,7 +757,7 @@ pub extern "C" fn doo_json_parse_map_str_int(json_str: *const c_char) -> *mut u8
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_str_float(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -644,9 +775,9 @@ pub extern "C" fn doo_json_parse_map_str_float(json_str: *const c_char) -> *mut 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -670,7 +801,7 @@ pub extern "C" fn doo_json_parse_map_str_float(json_str: *const c_char) -> *mut 
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_str_bool(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -691,9 +822,9 @@ pub extern "C" fn doo_json_parse_map_str_bool(json_str: *const c_char) -> *mut u
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -718,7 +849,7 @@ pub extern "C" fn doo_json_parse_map_str_bool(json_str: *const c_char) -> *mut u
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_str_str(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -736,9 +867,9 @@ pub extern "C" fn doo_json_parse_map_str_str(json_str: *const c_char) -> *mut u8
     let pair_size = 16; // ptr(8) + ptr(8)
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -766,7 +897,7 @@ pub extern "C" fn doo_json_parse_map_str_str(json_str: *const c_char) -> *mut u8
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_int_int(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -788,9 +919,9 @@ pub extern "C" fn doo_json_parse_map_int_int(json_str: *const c_char) -> *mut u8
     let pair_size = 16; // i64(8) + i64(8)
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -814,7 +945,7 @@ pub extern "C" fn doo_json_parse_map_int_int(json_str: *const c_char) -> *mut u8
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_int_float(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -836,9 +967,9 @@ pub extern "C" fn doo_json_parse_map_int_float(json_str: *const c_char) -> *mut 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -862,7 +993,7 @@ pub extern "C" fn doo_json_parse_map_int_float(json_str: *const c_char) -> *mut 
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_int_bool(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -885,9 +1016,9 @@ pub extern "C" fn doo_json_parse_map_int_bool(json_str: *const c_char) -> *mut u
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -912,7 +1043,7 @@ pub extern "C" fn doo_json_parse_map_int_bool(json_str: *const c_char) -> *mut u
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_int_str(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -934,9 +1065,9 @@ pub extern "C" fn doo_json_parse_map_int_str(json_str: *const c_char) -> *mut u8
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -964,7 +1095,7 @@ pub extern "C" fn doo_json_parse_map_int_str(json_str: *const c_char) -> *mut u8
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_float_int(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -986,9 +1117,9 @@ pub extern "C" fn doo_json_parse_map_float_int(json_str: *const c_char) -> *mut 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -1012,7 +1143,7 @@ pub extern "C" fn doo_json_parse_map_float_int(json_str: *const c_char) -> *mut 
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_float_float(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1034,9 +1165,9 @@ pub extern "C" fn doo_json_parse_map_float_float(json_str: *const c_char) -> *mu
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -1060,7 +1191,7 @@ pub extern "C" fn doo_json_parse_map_float_float(json_str: *const c_char) -> *mu
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_float_bool(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1083,9 +1214,9 @@ pub extern "C" fn doo_json_parse_map_float_bool(json_str: *const c_char) -> *mut
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -1110,7 +1241,7 @@ pub extern "C" fn doo_json_parse_map_float_bool(json_str: *const c_char) -> *mut
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_float_str(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1132,9 +1263,9 @@ pub extern "C" fn doo_json_parse_map_float_str(json_str: *const c_char) -> *mut 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -1162,7 +1293,7 @@ pub extern "C" fn doo_json_parse_map_float_str(json_str: *const c_char) -> *mut 
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_bool_int(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1189,9 +1320,9 @@ pub extern "C" fn doo_json_parse_map_bool_int(json_str: *const c_char) -> *mut u
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -1217,7 +1348,7 @@ pub extern "C" fn doo_json_parse_map_bool_int(json_str: *const c_char) -> *mut u
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_bool_float(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1244,9 +1375,9 @@ pub extern "C" fn doo_json_parse_map_bool_float(json_str: *const c_char) -> *mut
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -1272,7 +1403,7 @@ pub extern "C" fn doo_json_parse_map_bool_float(json_str: *const c_char) -> *mut
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_bool_bool(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1298,9 +1429,9 @@ pub extern "C" fn doo_json_parse_map_bool_bool(json_str: *const c_char) -> *mut 
     let pair_size = 2;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -1326,7 +1457,7 @@ pub extern "C" fn doo_json_parse_map_bool_bool(json_str: *const c_char) -> *mut 
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_bool_str(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1353,9 +1484,9 @@ pub extern "C" fn doo_json_parse_map_bool_str(json_str: *const c_char) -> *mut u
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
     let total_size = 16 + data_size; // 16-byte header
-    let ptr = doo_alloc(total_size.max(24));
+    let ptr = doo_alloc(total_size.max(MIN_ALLOCATION_SIZE));
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return alloc_empty_map() as *mut u8;
     }
 
     unsafe {
@@ -1383,13 +1514,15 @@ pub extern "C" fn doo_json_parse_map_bool_str(json_str: *const c_char) -> *mut u
 /// Extract a field from a JSON object by name, returning it as a JSON string
 /// This allows recursive parsing of complex types
 /// OWNERSHIP: Caller owns the returned string.
+/// Returns empty JSON string "{}" if field not found or invalid JSON (never returns null)
 #[no_mangle]
 pub extern "C" fn doo_json_get_field(
     json_str: *const c_char,
     field_name: *const c_char,
 ) -> *mut c_char {
     if json_str.is_null() || field_name.is_null() {
-        return std::ptr::null_mut();
+        // Return empty JSON object instead of null to prevent crashes
+        return doo_alloc_string("{}");
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     let field = unsafe { CStr::from_ptr(field_name).to_string_lossy() };
@@ -1402,7 +1535,7 @@ pub extern "C" fn doo_json_get_field(
         })
         .and_then(|field_val| serde_json::to_string(&field_val).ok())
         .map(|s| doo_alloc_string(&s))
-        .unwrap_or(std::ptr::null_mut())
+        .unwrap_or_else(|| doo_alloc_string("null"))
 }
 
 /// Get enum variant name from JSON
@@ -1411,10 +1544,11 @@ pub extern "C" fn doo_json_get_field(
 /// - An object: {"VariantName": payload} (for variants with data)
 /// Returns the variant name as a C string
 /// OWNERSHIP: Caller owns the returned string.
+/// Returns empty string if invalid JSON or not a variant (never returns null)
 #[no_mangle]
 pub extern "C" fn doo_json_get_variant_name(json_str: *const c_char) -> *mut c_char {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return doo_alloc_string("");
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1428,17 +1562,18 @@ pub extern "C" fn doo_json_get_variant_name(json_str: *const c_char) -> *mut c_c
             _ => None,
         })
         .map(|s| doo_alloc_string(&s))
-        .unwrap_or(std::ptr::null_mut())
+        .unwrap_or_else(|| doo_alloc_string(""))
 }
 
 /// Get enum variant payload from JSON
 /// JSON should be: {"VariantName": payload}
 /// Returns the payload as a JSON string for recursive parsing
 /// OWNERSHIP: Caller owns the returned string.
+/// Returns "null" JSON if invalid input (never returns null ptr)
 #[no_mangle]
 pub extern "C" fn doo_json_get_variant_payload(json_str: *const c_char) -> *mut c_char {
     if json_str.is_null() {
-        return std::ptr::null_mut();
+        return doo_alloc_string("null");
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
@@ -1450,7 +1585,7 @@ pub extern "C" fn doo_json_get_variant_payload(json_str: *const c_char) -> *mut 
         })
         .and_then(|payload| serde_json::to_string(&payload).ok())
         .map(|s| doo_alloc_string(&s))
-        .unwrap_or(std::ptr::null_mut())
+        .unwrap_or_else(|| doo_alloc_string("null"))
 }
 
 /// Check if JSON represents a unit variant (plain string like "VariantName")

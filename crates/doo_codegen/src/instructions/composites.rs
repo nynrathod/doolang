@@ -136,8 +136,14 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     };
                 let struct_type = ctx.get_struct_type(struct_name, &field_types);
                 
-                // Calculate struct size (8 bytes per field for alignment)
-                let struct_size = (fields.len() * 8) as u64;
+                // Calculate struct size using LLVM's size_of() for correct padding
+                // CRITICAL FIX: The old calculation (fields.len() * 8) was WRONG because:
+                // - Enum fields are { i32, ptr } = 16 bytes (not 8)
+                // - Struct padding can vary based on field alignment requirements
+                let struct_size = struct_type
+                    .size_of()
+                    .map(|v| v.get_zero_extended_constant().unwrap_or(64))
+                    .unwrap_or((fields.len() * 8) as u64); // Fallback for safety
                 let i64_type = ctx.context.i64_type();
                 let ptr_type = ctx.ptr_type();
                 
@@ -155,7 +161,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     .builder
                     .build_call(
                         malloc_fn,
-                        &[i64_type.const_int(struct_size, false).into()],
+                        &[i64_type.const_int(struct_size.max(16), false).into()], // min 16 bytes
                         dest,
                     )
                     .ok()?

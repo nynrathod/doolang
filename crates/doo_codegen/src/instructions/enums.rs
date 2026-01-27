@@ -17,6 +17,7 @@
 
 use super::InstructionHandler;
 use crate::context::CodegenContext;
+use doo_core::constants::ffi_names;
 use doo_mir::{MirConst, MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
@@ -187,18 +188,48 @@ fn emit_enum_create<'ctx>(
     if let Some(payload_operand) = payload {
         // Get payload value
         if let Some(payload_val) = operand_to_value(ctx, payload_operand) {
-            // Box the payload value - allocate and store
+            // Box the payload value - allocate on HEAP and store
+            // CRITICAL: Use malloc NOT alloca - stack allocations become invalid
+            // when the enum escapes the function scope.
             let payload_ptr = if payload_val.is_pointer_value() {
-                // Already a pointer - use directly
+                // Already a pointer (Str, Array, Map, etc.) - use directly
                 payload_val.into_pointer_value()
             } else {
-                // Value type - allocate and store
-                let alloca = ctx
+                // Value type (Int, Float, Bool) - HEAP allocate and store
+                let i64_type = ctx.i64_type();
+                let heap_ptr_type = ctx.ptr_type();
+
+                // Get or declare malloc
+                let malloc_fn = ctx
+                    .module
+                    .get_function(ffi_names::MALLOC)
+                    .unwrap_or_else(|| {
+                        let fn_ty = heap_ptr_type.fn_type(&[i64_type.into()], false);
+                        ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
+                    });
+
+                // Determine size based on type (minimum 8 bytes for alignment)
+                let value_size = match payload_val.get_type() {
+                    inkwell::types::BasicTypeEnum::IntType(it) => {
+                        (it.get_bit_width() as u64 / 8).max(8)
+                    }
+                    inkwell::types::BasicTypeEnum::FloatType(_) => 8, // f64
+                    _ => 8,                                           // Default to 8 bytes
+                };
+
+                let heap_ptr = ctx
                     .builder
-                    .build_alloca(payload_val.get_type(), "payload_alloca")
-                    .ok()?;
-                ctx.builder.build_store(alloca, payload_val).ok()?;
-                alloca
+                    .build_call(
+                        malloc_fn,
+                        &[i64_type.const_int(value_size, false).into()],
+                        "payload_heap",
+                    )
+                    .ok()?
+                    .try_as_basic_value()
+                    .left()?
+                    .into_pointer_value();
+                ctx.builder.build_store(heap_ptr, payload_val).ok()?;
+                heap_ptr
             };
             ctx.builder
                 .build_store(payload_ptr_field, payload_ptr)

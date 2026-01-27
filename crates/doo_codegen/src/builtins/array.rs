@@ -685,6 +685,18 @@ impl ArrayBuiltins {
             .left()?
             .into_pointer_value();
 
+        // Calculate buffer end for bounds checking with snprintf
+        let buf_end = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ctx.context.i8_type(), out_ptr, &[total], "buf_end")
+        }
+        .ok()?;
+        let buf_end_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i8_type().ptr_type(AddressSpace::default()), "buf_end")
+            .ok()?;
+        ctx.builder.build_store(buf_end_alloca, buf_end).ok()?;
+
         let cursor_alloca = ctx
             .builder
             .build_alloca(ctx.context.i8_type().ptr_type(AddressSpace::default()), "cursor")
@@ -754,7 +766,7 @@ impl ArrayBuiltins {
             .ok()?;
             ctx.builder.build_store(cursor_alloca, cursor2).ok()?;
         } else {
-            let sprintf = get_or_declare_sprintf(ctx);
+            let snprintf = get_or_declare_snprintf(ctx);
             let fmt = if elem_type == builtin::INT {
                 ctx.builder
                     .build_global_string_ptr("%lld", "fmt_i64")
@@ -786,8 +798,23 @@ impl ArrayBuiltins {
                 .ok()?;
             let raw_elem = ctx.builder.build_load(elem_llvm, elem_ptr, "elem").ok()?;
 
-            let mut sprintf_args: Vec<inkwell::values::BasicMetadataValueEnum> =
-                vec![cursor.into(), fmt.into()];
+            // Calculate remaining buffer space for snprintf
+            let buf_end = ctx
+                .builder
+                .build_load(
+                    ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                    buf_end_alloca,
+                    "buf_end",
+                )
+                .ok()?
+                .into_pointer_value();
+            let remaining = ctx
+                .builder
+                .build_ptr_diff(ctx.context.i8_type(), buf_end, cursor, "remaining")
+                .ok()?;
+
+            let mut snprintf_args: Vec<inkwell::values::BasicMetadataValueEnum> =
+                vec![cursor.into(), remaining.into(), fmt.into()];
             if elem_type == builtin::BOOL {
                 let b = if raw_elem.is_int_value() {
                     raw_elem.into_int_value()
@@ -809,14 +836,14 @@ impl ArrayBuiltins {
                     .ok()?
                     .as_pointer_value();
                 let s = ctx.builder.build_select(is_true, t, f, "bstr").ok()?;
-                sprintf_args.push(s.into());
+                snprintf_args.push(s.into());
             } else {
-                sprintf_args.push(raw_elem.into());
+                snprintf_args.push(raw_elem.into());
             }
 
             let written = ctx
                 .builder
-                .build_call(sprintf, &sprintf_args, "sprintf")
+                .build_call(snprintf, &snprintf_args, "snprintf")
                 .ok()?
                 .try_as_basic_value()
                 .left()?
@@ -1162,11 +1189,13 @@ fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx
     })
 }
 
-fn get_or_declare_sprintf<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-    ctx.module.get_function("sprintf").unwrap_or_else(|| {
+fn get_or_declare_snprintf<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+    ctx.module.get_function("snprintf").unwrap_or_else(|| {
         let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
-        let fn_type = ctx.context.i32_type().fn_type(&[ptr_type.into(), ptr_type.into()], true);
-        ctx.module.add_function("sprintf", fn_type, None)
+        let i64_type = ctx.context.i64_type();
+        // snprintf(char *str, size_t size, const char *format, ...)
+        let fn_type = ctx.context.i32_type().fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], true);
+        ctx.module.add_function("snprintf", fn_type, None)
     })
 }
 

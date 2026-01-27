@@ -8,9 +8,25 @@
 //! 2. Ownership transfers to caller on return
 //! 3. Caller is responsible for calling doo_free
 //! 4. NEVER use CString::into_raw() - it uses Rust allocator, not libc
+//!
+//! IMPORTANT: Minimum allocation size ensures data pointer is always within
+//! valid memory, even for empty arrays/maps.
 
 use std::ffi::c_void;
 use std::os::raw::c_char;
+
+// ============================================================================
+// Memory Layout Constants - Single Source of Truth
+// ============================================================================
+
+/// Array/Map header size (len: i64, cap: i64)
+pub const HEADER_SIZE: usize = 16;
+
+/// Minimum allocation size for arrays/maps.
+/// Even empty arrays need header (16 bytes) + minimum data space to ensure
+/// the data pointer (header + 16) is within allocated memory.
+/// This prevents crashes when accessing empty arrays via data_ptr - 16.
+pub const MIN_ALLOCATION_SIZE: usize = 32;
 
 // ============================================================================
 // Core Allocation - Single Source of Truth
@@ -22,9 +38,30 @@ use std::os::raw::c_char;
 #[inline]
 pub extern "C" fn doo_alloc(size: usize) -> *mut u8 {
     if size == 0 {
+        if std::env::var("DOO_DEBUG_FFI").is_ok() {
+            eprintln!("[MEMORY] doo_alloc: size=0 -> returning null");
+        }
         return std::ptr::null_mut();
     }
-    unsafe { libc::malloc(size) as *mut u8 }
+
+    if std::env::var("DOO_DEBUG_FFI").is_ok() {
+        eprintln!("[MEMORY] doo_alloc: requesting {} bytes...", size);
+    }
+
+    let ptr = unsafe { libc::malloc(size) as *mut u8 };
+
+    if std::env::var("DOO_DEBUG_FFI").is_ok() {
+        if ptr.is_null() {
+            eprintln!("[MEMORY] doo_alloc: FAILED to allocate {} bytes!", size);
+        } else {
+            eprintln!("[MEMORY] doo_alloc: allocated {} bytes at {:p}", size, ptr);
+        }
+        // Force flush
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+    }
+
+    ptr
 }
 
 /// Reallocate memory using libc realloc.
@@ -117,9 +154,6 @@ pub fn doo_clone_string(src: *const c_char) -> *mut c_char {
 // Array/Map Header Allocation
 // ============================================================================
 
-/// Array/Map header size (len: i64, cap: i64)
-pub const HEADER_SIZE: usize = 16;
-
 /// Allocate array with header: [len: i64][cap: i64][data...]
 /// OWNERSHIP: Caller owns the returned pointer (points to data section).
 /// To get header, subtract HEADER_SIZE from returned pointer.
@@ -128,8 +162,8 @@ pub fn doo_alloc_array(element_count: usize, element_size: usize) -> *mut u8 {
     let data_size = element_count * element_size;
     let total_size = HEADER_SIZE + data_size;
 
-    // Minimum allocation to prevent issues
-    let alloc_size = total_size.max(32);
+    // Minimum allocation to prevent empty array crashes
+    let alloc_size = total_size.max(MIN_ALLOCATION_SIZE);
 
     let ptr = doo_alloc(alloc_size);
     if ptr.is_null() {

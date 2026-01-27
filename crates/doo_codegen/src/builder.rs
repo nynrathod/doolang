@@ -5,7 +5,7 @@
 use crate::context::CodegenContext;
 use crate::instructions::InstructionDispatcher;
 use crate::utils::operand_to_value;
-use doo_core::types::{builtin, TypeRegistry};
+use doo_core::types::{builtin, TypeKind, TypeRegistry};
 use doo_mir::{MirBlock, MirConst, MirFunction, MirInstr, MirOperand, MirProgram, MirTerminator};
 use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
@@ -240,6 +240,16 @@ impl<'ctx> CodegenBuilder<'ctx> {
             ctx.builder.build_store(alloca, param_value).unwrap();
             // Track parameter type for Clone/Drop
             ctx.set_variable_type(&param.name, param.type_id);
+            
+            // CRITICAL: For struct parameters, register the struct type association
+            // This is needed for FieldGet/FieldSet to work correctly when the parameter
+            // is passed to another function or when its fields are accessed
+            if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(param.type_id) {
+                ctx.set_temp_struct_type(&param.name, &name);
+                if std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!("[CODEGEN] Registered struct param {} as type {}", param.name, name);
+                }
+            }
         }
 
         // Create allocas for local variables from MIR

@@ -157,7 +157,8 @@ pub fn header_ptr_from_data<'ctx>(
     data_ptr: PointerValue<'ctx>,
 ) -> Option<PointerValue<'ctx>> {
     // -16 to go from data to header
-    let offset = ctx.context.i32_type().const_int((-16_i32) as u64, true);
+    // CRITICAL: Use i64 for negative offset, cast -16i64 to u64 preserves two's complement representation
+    let offset = ctx.context.i64_type().const_int(-16i64 as u64, true);
     unsafe {
         ctx.builder
             .build_in_bounds_gep(ctx.context.i8_type(), data_ptr, &[offset], "header_ptr")
@@ -566,11 +567,20 @@ pub fn realloc_array_capacity<'ctx>(
     Some(result_data_ptr)
 }
 
+/// Minimum allocation size for arrays/maps.
+/// Even empty arrays need header (16 bytes) + some data space to ensure
+/// the data pointer (header + 16) is within allocated memory.
+/// This prevents crashes when accessing empty arrays.
+pub const MIN_ALLOCATION_SIZE: u64 = 32;
+
 /// Allocate array with header (length + capacity fields)
 /// Returns the DATA pointer (offset +16 from header), NOT the header pointer.
 /// This allows consumers to directly index elements at [0], [1], etc.
 /// Layout: [header: 16 bytes][data...]
 ///         ^header_ptr      ^data_ptr (returned)
+///
+/// IMPORTANT: Always allocates at least MIN_ALLOCATION_SIZE bytes to ensure
+/// the returned data pointer is within valid allocated memory, even for empty arrays.
 pub fn alloc_with_header<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     len: IntValue<'ctx>,
@@ -593,10 +603,23 @@ pub fn alloc_with_header<'ctx>(
         .builder
         .build_int_mul(len_i64, elem_size, "data_size")
         .ok()?;
+    let computed_size = ctx
+        .builder
+        .build_int_add(header_size, data_size, "computed_size")
+        .ok()?;
+
+    // Ensure minimum allocation size to prevent empty array crash
+    // The data pointer (header + 16) must be within allocated memory
+    let min_size = ctx.context.i64_type().const_int(MIN_ALLOCATION_SIZE, false);
+    let needs_min = ctx
+        .builder
+        .build_int_compare(IntPredicate::ULT, computed_size, min_size, "needs_min")
+        .ok()?;
     let total_size = ctx
         .builder
-        .build_int_add(header_size, data_size, "total_size")
-        .ok()?;
+        .build_select(needs_min, min_size, computed_size, "total_size")
+        .ok()?
+        .into_int_value();
 
     let header_ptr = alloc_memory(ctx, total_size, &format!("{}_header", name))?;
 
