@@ -48,7 +48,7 @@ default-run = "doo"
 doo_driver = { path = "crates/doo_driver" }
 
 # Legacy dependencies (will be phased out)
-inkwell = { version = "0.6.0", features = ["llvm18-1"] }
+inkwell = { version = "0.8.0", features = ["llvm18-1"] }
 llvm-sys = "=181.2.0"
 clap = { version = "4.5.53", features = ["derive"] }
 regex = "1"

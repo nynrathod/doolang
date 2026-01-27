@@ -503,7 +503,7 @@ dependencies = [
  "ctrlc",
  "dialoguer",
  "doo_driver",
- "inkwell",
+ "inkwell 0.8.0",
  "llvm-sys",
  "regex",
  "serde",
@@ -529,7 +529,7 @@ version = "0.1.0"
 dependencies = [
  "doo_core",
  "doo_mir",
- "inkwell",
+ "inkwell 0.6.0",
  "pretty_assertions",
  "rustc-hash 1.1.0",
  "serde",
@@ -573,7 +573,7 @@ dependencies = [
  "doo_frontend",
  "doo_hir",
  "doo_mir",
- "inkwell",
+ "inkwell 0.6.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -1088,7 +1088,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67349bd7578d4afebbe15eaa642a80b884e8623db74b1716611b131feb1deef"
 dependencies = [
  "either",
- "inkwell_internals",
+ "inkwell_internals 0.11.0",
  "libc",
  "llvm-sys",
  "once_cell",
@@ -1096,10 +1096,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "inkwell"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1def4112dfb2ce2993db7027f7acdb43c1f4ee1c70a082a2eef306ed5d0df365"
+dependencies = [
+ "inkwell_internals 0.13.0",
+ "libc",
+ "llvm-sys",
+ "once_cell",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "inkwell_internals"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f365c8de536236cfdebd0ba2130de22acefed18b1fb99c32783b3840aec5fb46"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "inkwell_internals"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63736175c9a30ea123f7018de9f26163e0b39cd6978990ae486b510c4f3bad69"
 dependencies = [
  "proc-macro2",
  "quote",
