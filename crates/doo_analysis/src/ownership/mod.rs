@@ -256,6 +256,27 @@ impl OwnershipAnalyzer {
                 );
                 self.count_uses_in_expr(value);
             }
+            HirStmtKind::TupleLet {
+                names,
+                type_ids,
+                value,
+                mutable,
+            } => {
+                // Register each variable from tuple unpacking
+                for (i, name) in names.iter().enumerate() {
+                    let type_id = type_ids.get(i).and_then(|t| *t);
+                    self.vars.insert(
+                        name.clone(),
+                        VarInfo {
+                            uses: Vec::new(),
+                            type_id,
+                            mutable: *mutable,
+                            ownership: Ownership::Owned,
+                        },
+                    );
+                }
+                self.count_uses_in_expr(value);
+            }
             HirStmtKind::ManualErrorExtract {
                 ok_names,
                 error_name,
@@ -466,6 +487,9 @@ impl OwnershipAnalyzer {
     fn analyze_stmt(&mut self, stmt: &HirStmt) {
         match &stmt.kind {
             HirStmtKind::Let { value, .. } => {
+                self.analyze_expr(value);
+            }
+            HirStmtKind::TupleLet { value, .. } => {
                 self.analyze_expr(value);
             }
             HirStmtKind::ManualErrorExtract { expr, .. } => {

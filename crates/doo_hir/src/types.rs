@@ -3,7 +3,10 @@
 //! All HIR node types - expressions, statements, items.
 //! Every node carries a TypeId for type information (initially unknown).
 
-use doo_core::{Span, types::{TypeId, builtin}};
+use doo_core::{
+    types::{builtin, TypeId},
+    Span,
+};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -66,11 +69,19 @@ pub struct HirExpr {
 
 impl HirExpr {
     pub fn new(kind: HirExprKind, span: Span) -> Self {
-        Self { kind, type_id: None, span }
+        Self {
+            kind,
+            type_id: None,
+            span,
+        }
     }
 
     pub fn with_type(kind: HirExprKind, type_id: TypeId, span: Span) -> Self {
-        Self { kind, type_id: Some(type_id), span }
+        Self {
+            kind,
+            type_id: Some(type_id),
+            span,
+        }
     }
 }
 
@@ -83,9 +94,13 @@ pub enum HirExprKind {
 
     // === Variables ===
     /// Local variable reference.
-    Local { name: String },
+    Local {
+        name: String,
+    },
     /// Function/global reference.
-    Global { name: String },
+    Global {
+        name: String,
+    },
 
     // === Operations ===
     /// Binary operation (desugared from all compound assignments).
@@ -137,16 +152,15 @@ pub enum HirExprKind {
         fields: Vec<(String, HirExpr)>,
     },
 
-     EnumVariant {
-         enum_name: String,
-         variant: String,
-         payload: Vec<HirExpr>,
-     },
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        payload: Vec<HirExpr>,
+    },
 
     // === Spread ===
     /// Spread operator: `...expr`
     Spread(Box<HirExpr>),
-
 
     // === Control Flow ===
     /// Conditional expression.
@@ -160,10 +174,10 @@ pub enum HirExprKind {
         expr: Option<Box<HirExpr>>,
     },
 
-     Match {
-         values: Vec<HirExpr>,
-         arms: Vec<HirMatchArm>,
-     },
+    Match {
+        values: Vec<HirExpr>,
+        arms: Vec<HirMatchArm>,
+    },
 
     // === Range (desugared from `..` and `..=`) ===
     /// Range construction.
@@ -181,16 +195,19 @@ pub enum HirExprKind {
     /// Try operator (propagate error).
     Try(Box<HirExpr>),
 
-     UnwrapOrPanic {
-         expr: Box<HirExpr>,
-         message: Box<HirExpr>,
-     },
+    UnwrapOrPanic {
+        expr: Box<HirExpr>,
+        message: Box<HirExpr>,
+    },
 
     // === Ownership Annotations (filled by analysis) ===
     /// Move value.
     Move(Box<HirExpr>),
     /// Borrow value.
-    Borrow { expr: Box<HirExpr>, mutable: bool },
+    Borrow {
+        expr: Box<HirExpr>,
+        mutable: bool,
+    },
     /// Clone value (inserted by ownership analysis).
     Clone(Box<HirExpr>),
 
@@ -212,21 +229,32 @@ pub enum HirExprKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HirBinOp {
     // Arithmetic
-    Add, Sub, Mul, Div, Mod,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
     // Comparison
-    Eq, NotEq, Lt, Gt, LtEq, GtEq,
+    Eq,
+    NotEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
     In,
     // Logical
-    And, Or,
+    And,
+    Or,
     // Bitwise
-    BitAnd, BitOr,
+    BitAnd,
+    BitOr,
 }
 
 /// Unary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HirUnaryOp {
-    Neg,    // -x
-    Not,    // !x
+    Neg, // -x
+    Not, // !x
 }
 
 // ============================================================================
@@ -258,11 +286,17 @@ pub enum HirStmtKind {
         ownership: Ownership,
     },
 
-    /// Assignment (desugared from compound assignments).
-    Assign {
-        target: HirExpr,
+    /// Tuple unpacking declaration (desugared from `let a, b, c = tuple_expr`).
+    /// Each name gets bound to the corresponding tuple element.
+    TupleLet {
+        names: Vec<String>,
+        type_ids: Vec<Option<TypeId>>,
         value: HirExpr,
+        mutable: bool,
     },
+
+    /// Assignment (desugared from compound assignments).
+    Assign { target: HirExpr, value: HirExpr },
 
     /// Expression statement.
     Expr(HirExpr),
@@ -292,11 +326,11 @@ pub enum HirStmtKind {
         body: Vec<HirStmt>,
     },
 
-     ManualErrorExtract {
-         ok_names: Vec<String>,
-         error_name: String,
-         expr: HirExpr,
-     },
+    ManualErrorExtract {
+        ok_names: Vec<String>,
+        error_name: String,
+        expr: HirExpr,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -312,8 +346,15 @@ pub enum HirMatchPattern {
     Literal(Box<HirExpr>),
     Condition(Box<HirExpr>),
     Wildcard,
-    EnumVariant { enum_name: String, variant: String },
-    EnumVariantPayload { enum_name: String, variant: String, bindings: Vec<String> },
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+    },
+    EnumVariantPayload {
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
+    },
     Tuple(Vec<HirMatchPattern>),
 }
 

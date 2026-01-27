@@ -25,6 +25,71 @@ fn get_operand_name(operand: &MirOperand) -> Option<&str> {
     }
 }
 
+/// Convert a return value to the expected function return type.
+/// Handles cases where JSON.parse returns a pointer but the function expects Int/Float/Bool.
+fn convert_return_value<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    val: BasicValueEnum<'ctx>,
+) -> BasicValueEnum<'ctx> {
+    use doo_core::types::TypeKind;
+
+    // Get expected return type from context
+    let expected_type = match ctx.current_function_return_type {
+        Some(t) => t,
+        None => return val, // No conversion needed
+    };
+
+    // Get the expected type kind
+    let expected_kind = match ctx.get_type_kind(expected_type) {
+        Some(k) => k,
+        None => return val,
+    };
+
+    // If value is already the right type, return as-is
+    // Only convert when we have a pointer but expect a primitive
+    if !val.is_pointer_value() {
+        return val;
+    }
+
+    let ptr = val.into_pointer_value();
+
+    match expected_kind {
+        TypeKind::Int => {
+            // Load i64 from pointer
+            if let Ok(loaded) = ctx
+                .builder
+                .build_load(ctx.context.i64_type(), ptr, "ret_int")
+            {
+                return loaded;
+            }
+        }
+        TypeKind::Float => {
+            // Load f64 from pointer
+            if let Ok(loaded) = ctx
+                .builder
+                .build_load(ctx.context.f64_type(), ptr, "ret_float")
+            {
+                return loaded;
+            }
+        }
+        TypeKind::Bool => {
+            // Load i1 from pointer
+            if let Ok(loaded) = ctx
+                .builder
+                .build_load(ctx.context.bool_type(), ptr, "ret_bool")
+            {
+                return loaded;
+            }
+        }
+        _ => {
+            // For other types (Str, Array, Map, etc.), pointer is the correct return type
+        }
+    }
+
+    // If conversion failed, return original value
+    BasicValueEnum::PointerValue(ptr)
+}
+
 /// Main code generation builder.
 pub struct CodegenBuilder<'ctx> {
     context: &'ctx Context,
@@ -72,6 +137,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
             .map(|p| ctx.get_llvm_type(p.type_id))
             .collect();
 
+        // Collect Doo TypeIds for parameter types (for argument coercion)
+        let param_type_ids: Vec<_> = func.params.iter().map(|p| p.type_id).collect();
+        ctx.register_function_param_types(&func.name, param_type_ids);
+
         // Build return type
         let return_type = func.return_type.map(|t| ctx.get_llvm_type(t));
 
@@ -111,6 +180,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // Clear locals for this function
         ctx.clear_locals();
+
+        // Set current function's return type for proper return value conversion
+        ctx.current_function_return_type = func.return_type;
 
         if std::env::var("DOO_DEBUG").is_ok() {
             eprintln!(
@@ -171,11 +243,14 @@ impl<'ctx> CodegenBuilder<'ctx> {
         }
 
         // Create allocas for local variables from MIR
+        // Skip if a variable with this name already exists (e.g., from parameters)
         for local in &func.locals {
-            let local_type = ctx.get_llvm_type(local.type_id);
-            ctx.create_local(&local.name, local_type);
-            // Track local type for Clone/Drop
-            ctx.set_variable_type(&local.name, local.type_id);
+            if ctx.get_local(&local.name).is_none() {
+                let local_type = ctx.get_llvm_type(local.type_id);
+                ctx.create_local(&local.name, local_type);
+                // Track local type for Clone/Drop
+                ctx.set_variable_type(&local.name, local.type_id);
+            }
         }
 
         // Create allocas for all assigned variables (for proper loop handling)
@@ -273,7 +348,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
         match term {
             MirTerminator::Return { values } => {
                 // Check if we're in main function - main returns i32 0
-                let is_main = ctx.builder.get_insert_block()
+                let is_main = ctx
+                    .builder
+                    .get_insert_block()
                     .and_then(|bb| bb.get_parent())
                     .map(|f| f.get_name().to_str().unwrap_or("") == "main")
                     .unwrap_or(false);
@@ -293,7 +370,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             let zero = ctx.context.i32_type().const_int(0, false);
                             ctx.builder.build_return(Some(&zero)).ok();
                         } else {
-                            ctx.builder.build_return(Some(&val)).ok();
+                            // Convert value to expected return type if needed
+                            let final_val = convert_return_value(ctx, val);
+                            ctx.builder.build_return(Some(&final_val)).ok();
                         }
                     } else if is_main {
                         let zero = ctx.context.i32_type().const_int(0, false);
@@ -302,12 +381,71 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         ctx.builder.build_return(None).ok();
                     }
                 } else {
-                    // Multiple return values - TODO: return as tuple
+                    // Multiple return values - return as tuple
                     if is_main {
                         let zero = ctx.context.i32_type().const_int(0, false);
                         ctx.builder.build_return(Some(&zero)).ok();
                     } else {
-                        ctx.builder.build_return(None).ok();
+                        // Convert all values to LLVM values
+                        let llvm_values: Vec<_> = values
+                            .iter()
+                            .filter_map(|v| operand_to_value(ctx, v))
+                            .collect();
+
+                        if llvm_values.len() != values.len() {
+                            // Some values couldn't be converted
+                            if std::env::var("DOO_DEBUG").is_ok() {
+                                eprintln!(
+                                    "[CODEGEN] WARNING: Could not convert all tuple return values"
+                                );
+                            }
+                            ctx.builder.build_return(None).ok();
+                        } else {
+                            // Get element types
+                            let element_types: Vec<_> =
+                                llvm_values.iter().map(|v| v.get_type()).collect();
+
+                            // Create tuple struct type
+                            let tuple_type = ctx.context.struct_type(&element_types, false);
+
+                            // Allocate space for tuple on heap (so pointer is valid after return)
+                            let ptr_type = ctx.context.ptr_type(inkwell::AddressSpace::default());
+                            let size = tuple_type.size_of().unwrap();
+                            let malloc_fn = ctx.get_function("malloc").unwrap_or_else(|| {
+                                let fn_type =
+                                    ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
+                                ctx.module.add_function(
+                                    "malloc",
+                                    fn_type,
+                                    Some(inkwell::module::Linkage::External),
+                                )
+                            });
+                            let tuple_ptr = ctx
+                                .builder
+                                .build_call(malloc_fn, &[size.into()], "tuple_alloc")
+                                .ok()
+                                .and_then(|call| call.try_as_basic_value().left())
+                                .map(|v| v.into_pointer_value());
+
+                            if let Some(tuple_ptr) = tuple_ptr {
+                                // Store each value in the tuple
+                                for (i, val) in llvm_values.iter().enumerate() {
+                                    if let Ok(field_ptr) = ctx.builder.build_struct_gep(
+                                        tuple_type,
+                                        tuple_ptr,
+                                        i as u32,
+                                        &format!("field_{}", i),
+                                    ) {
+                                        ctx.builder.build_store(field_ptr, *val).ok();
+                                    }
+                                }
+
+                                // Return the tuple pointer
+                                ctx.builder.build_return(Some(&tuple_ptr)).ok();
+                            } else {
+                                ctx.builder.build_return(None).ok();
+                            }
+                        }
                     }
                 }
             }

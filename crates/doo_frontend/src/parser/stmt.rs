@@ -49,9 +49,102 @@ impl ParserStmt for Parser {
             false
         };
 
+        // Parse the first pattern
         let first_pattern = self.parse_pattern()?;
 
+        // Check for comma-separated patterns (tuple unpacking without parentheses)
+        // Syntax: `let a, b, c = tuple_expr;`
         if self.check(TokenKind::Comma) {
+            let mut patterns = vec![first_pattern];
+            while self.check(TokenKind::Comma) {
+                self.advance(); // consume ','
+
+                // Check for ?? operator (manual error extraction)
+                // Syntax: `let a, b ?? err = result_expr;`
+                if self.check(TokenKind::QuestionQuestion) {
+                    self.advance(); // consume '??'
+
+                    if mutable {
+                        return Err(CompilerError::new(
+                            ErrorCode::InvalidExpression,
+                            "Manual error extraction cannot be mutable",
+                            start,
+                        ));
+                    }
+
+                    // Parse the error variable name (or _ to ignore)
+                    let error_var = if self.check(TokenKind::Underscore) {
+                        self.advance();
+                        "_".to_string()
+                    } else if self.check(TokenKind::Ident) {
+                        let name = self.current().text.clone();
+                        self.advance();
+                        name
+                    } else {
+                        return Err(CompilerError::new(
+                            ErrorCode::InvalidExpression,
+                            "Expected identifier or '_' for error binding after '??'",
+                            self.current_span(),
+                        ));
+                    };
+
+                    self.expect(TokenKind::Eq)?;
+                    let expr = self.parse_expression()?;
+                    let end = self.prev_span();
+
+                    // Build ok_pattern as tuple if multiple patterns, or single if just one
+                    let ok_pattern = if patterns.len() == 1 {
+                        patterns.into_iter().next().unwrap()
+                    } else {
+                        let ok_start = patterns.first().map(|p| p.span).unwrap_or(start);
+                        let ok_end = patterns.last().map(|p| p.span).unwrap_or(start);
+                        Pattern::new(PatternKind::Tuple(patterns), ok_start.merge(&ok_end))
+                    };
+
+                    return Ok(Stmt::new(
+                        StmtKind::ManualErrorExtract {
+                            expr,
+                            ok_pattern,
+                            error_var,
+                        },
+                        start.merge(&end),
+                    ));
+                }
+
+                // Otherwise, continue parsing tuple patterns
+                patterns.push(self.parse_pattern()?);
+            }
+
+            // Build the tuple pattern
+            let pattern_start = patterns.first().map(|p| p.span).unwrap_or(start);
+            let pattern_end = patterns.last().map(|p| p.span).unwrap_or(start);
+            let pattern = Pattern::new(PatternKind::Tuple(patterns), pattern_start.merge(&pattern_end));
+
+            let type_ann = if self.check(TokenKind::Colon) {
+                self.advance();
+                Some(self.parse_type_expr()?)
+            } else {
+                None
+            };
+
+            self.expect(TokenKind::Eq)?;
+            let value = self.parse_expression()?;
+
+            let end = self.prev_span();
+            return Ok(Stmt::new(
+                StmtKind::Let {
+                    mutable,
+                    pattern,
+                    type_ann,
+                    value,
+                },
+                start.merge(&end),
+            ));
+        }
+
+        // Check for ?? operator (manual error extraction with single ok pattern)
+        // Syntax: `let ok_pattern ?? err_var = expr;`
+        if self.check(TokenKind::QuestionQuestion) {
             if mutable {
                 return Err(CompilerError::new(
                     ErrorCode::InvalidExpression,
@@ -60,49 +153,32 @@ impl ParserStmt for Parser {
                 ));
             }
 
-            let mut bindings = vec![first_pattern];
-            while self.check(TokenKind::Comma) {
-                self.advance();
-                bindings.push(self.parse_pattern()?);
-            }
+            self.advance(); // consume '??'
 
-            if bindings.len() < 2 {
+            // Parse the error variable name (or _ to ignore)
+            let error_var = if self.check(TokenKind::Underscore) {
+                self.advance();
+                "_".to_string()
+            } else if self.check(TokenKind::Ident) {
+                let name = self.current().text.clone();
+                self.advance();
+                name
+            } else {
                 return Err(CompilerError::new(
                     ErrorCode::InvalidExpression,
-                    "Manual error extraction requires at least one ok binding and one error binding",
-                    start,
+                    "Expected identifier or '_' for error binding after '??'",
+                    self.current_span(),
                 ));
-            }
+            };
 
             self.expect(TokenKind::Eq)?;
             let expr = self.parse_expression()?;
             let end = self.prev_span();
 
-            let error_binding = bindings.pop().unwrap();
-            let error_var = match &error_binding.kind {
-                PatternKind::Ident(name) => name.clone(),
-                PatternKind::Wildcard => "_".to_string(),
-                PatternKind::Tuple(_) | PatternKind::Index { .. } => {
-                    return Err(CompilerError::new(
-                        ErrorCode::InvalidExpression,
-                        "Error binding must be an identifier or '_'",
-                        error_binding.span,
-                    ));
-                }
-            };
-
-            let ok_pattern = if bindings.len() == 1 {
-                bindings.into_iter().next().unwrap()
-            } else {
-                let ok_start = bindings.first().map(|p| p.span).unwrap_or(start);
-                let ok_end = bindings.last().map(|p| p.span).unwrap_or(start);
-                Pattern::new(PatternKind::Tuple(bindings), ok_start.merge(&ok_end))
-            };
-
             return Ok(Stmt::new(
                 StmtKind::ManualErrorExtract {
                     expr,
-                    ok_pattern,
+                    ok_pattern: first_pattern,
                     error_var,
                 },
                 start.merge(&end),

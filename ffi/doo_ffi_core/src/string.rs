@@ -1,9 +1,13 @@
 //! String Type
 //!
 //! The ONE string type for FFI.
+//! MEMORY MODEL: Pure Ownership/Borrow - No RC, No GC
+//! All string data uses doo_alloc_string from memory.rs (single source of truth).
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::os::raw::c_char;
+
+use crate::memory::{doo_alloc_string, doo_alloc_empty_string, doo_free};
 
 /// FFI string type - length-prefixed for safety.
 #[repr(C)]
@@ -12,17 +16,18 @@ pub struct DooString {
     pub len: u32,
     /// Capacity
     pub cap: u32,
-    /// Pointer to null-terminated string data
+    /// Pointer to null-terminated string data (allocated with libc)
     pub data: *mut c_char,
 }
 
 impl DooString {
     /// Create a DooString from a Rust string.
+    /// OWNERSHIP: Allocates string using libc malloc (centralized).
     pub fn from_str(s: &str) -> Self {
-        let c_string = CString::new(s).unwrap_or_else(|_| CString::new("").unwrap());
-        let len = c_string.as_bytes().len() as u32;
+        let len = s.len() as u32;
         let cap = len;
-        let data = c_string.into_raw();
+        // Use centralized string allocation - NOT CString::into_raw()!
+        let data = doo_alloc_string(s);
         Self { len, cap, data }
     }
 
@@ -31,7 +36,7 @@ impl DooString {
         Self {
             len: 0,
             cap: 0,
-            data: std::ptr::null_mut(),
+            data: doo_alloc_empty_string(),
         }
     }
 
@@ -75,6 +80,7 @@ pub extern "C" fn doo_string_new(ptr: *const u8, len: u32) -> DooString {
 }
 
 /// Free a DooString.
+/// OWNERSHIP: Takes ownership of the DooString and frees all memory.
 #[no_mangle]
 pub extern "C" fn doo_string_free(s: *mut DooString) {
     if s.is_null() {
@@ -83,7 +89,8 @@ pub extern "C" fn doo_string_free(s: *mut DooString) {
     unsafe {
         let string = Box::from_raw(s);
         if !string.data.is_null() {
-            drop(CString::from_raw(string.data));
+            // Use centralized free - NOT CString::from_raw()!
+            doo_free(string.data as *mut u8);
         }
     }
 }
@@ -111,9 +118,9 @@ mod tests {
         assert_eq!(s.len, 5);
         unsafe {
             assert_eq!(s.to_str(), Some("hello"));
-            // Clean up
+            // Clean up using centralized free
             if !s.data.is_null() {
-                drop(CString::from_raw(s.data));
+                doo_free(s.data as *mut u8);
             }
         }
     }
@@ -122,6 +129,12 @@ mod tests {
     fn test_empty_string() {
         let s = DooString::empty();
         assert_eq!(s.len, 0);
-        assert!(s.data.is_null());
+        // Now empty() allocates a single-byte empty string
+        unsafe {
+            assert_eq!(s.to_str(), Some(""));
+            if !s.data.is_null() {
+                doo_free(s.data as *mut u8);
+            }
+        }
     }
 }

@@ -241,7 +241,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     // 5.1: Type Checking
     // Validates type compatibility across the program
-    let mut type_checker = TypeChecker::new();
+    let mut type_checker = TypeChecker::new(type_registry.clone());
     if let Err(errors) = type_checker.check(&hir) {
         for err in &errors {
             analysis_errors.push(format_type_error(err));
@@ -1324,7 +1324,8 @@ mod tests {
 
     #[test]
     fn test_type_checker_new() {
-        let _checker = TypeChecker::new();
+        let registry = Arc::new(TypeRegistry::new());
+        let _checker = TypeChecker::new(registry);
         // Should not panic
     }
 
@@ -1367,7 +1368,8 @@ mod tests {
     #[test]
     fn test_type_checker_empty_program() {
         let hir = empty_program();
-        let mut checker = TypeChecker::new();
+        let registry = Arc::new(TypeRegistry::new());
+        let mut checker = TypeChecker::new(registry);
         let result = checker.check(&hir);
         assert!(result.is_ok(), "Type checker should pass on empty program");
     }
@@ -1524,7 +1526,8 @@ mod tests {
         };
 
         // Run all analysis passes
-        let mut type_checker = TypeChecker::new();
+        let registry = Arc::new(TypeRegistry::new());
+        let mut type_checker = TypeChecker::new(registry);
         assert!(type_checker.check(&hir).is_ok(), "Type checker should pass");
 
         let mut ownership_analyzer = OwnershipAnalyzer::new();
@@ -1592,7 +1595,8 @@ mod tests {
         };
 
         // Run analysis passes
-        let mut type_checker = TypeChecker::new();
+        let registry = Arc::new(TypeRegistry::new());
+        let mut type_checker = TypeChecker::new(registry);
         assert!(type_checker.check(&hir).is_ok());
 
         let mut ownership_analyzer = OwnershipAnalyzer::new();

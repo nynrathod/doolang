@@ -245,6 +245,8 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 .ok()?;
                 let val = ctx.builder.build_load(elem_llvm_ty, elem_ptr, dest).ok()?;
                 ctx.set_temp(dest, val);
+                // Set the type for the temp so Clone knows the correct element type
+                ctx.set_variable_type(dest, *elem_type);
                 Some(val)
             }
 

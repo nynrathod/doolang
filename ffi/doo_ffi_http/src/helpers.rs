@@ -9,9 +9,7 @@ pub fn c_to_string(ptr: *const c_char) -> String {
     if ptr.is_null() {
         return String::new();
     }
-    unsafe {
-        CStr::from_ptr(ptr).to_string_lossy().to_string()
-    }
+    unsafe { CStr::from_ptr(ptr).to_string_lossy().to_string() }
 }
 
 /// Convert Rust string to C string (libc allocated)
@@ -25,35 +23,6 @@ pub fn string_to_c(s: &str) -> *const c_char {
         std::ptr::copy_nonoverlapping(s.as_ptr(), ptr, len);
         *ptr.add(len) = 0;
         ptr as *const c_char
-    }
-}
-
-/// Convert Rust String to RC-compatible C string
-/// Layout: [rc:i32][len:i32][data...][0]
-/// Returns pointer to data (base + 8)
-pub fn string_to_rc_str(s: &str) -> *const c_char {
-    unsafe {
-        let len = s.len();
-        let total_size = len + 1 + 8;
-        let alloc_size = (total_size + 15) & !15;
-        
-        let ptr = libc::malloc(alloc_size) as *mut u8;
-        if ptr.is_null() {
-            return std::ptr::null();
-        }
-        
-        std::ptr::write_bytes(ptr, 0, alloc_size);
-        
-        // Write RC header
-        *(ptr as *mut i32) = 1;  // refcount
-        *(ptr.add(4) as *mut i32) = len as i32;  // length
-        
-        // Write data
-        let data_ptr = ptr.add(8);
-        std::ptr::copy_nonoverlapping(s.as_ptr(), data_ptr, len);
-        *data_ptr.add(len) = 0;  // null terminator
-        
-        data_ptr as *const c_char
     }
 }
 

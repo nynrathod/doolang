@@ -1,9 +1,11 @@
 //! JWT Token Management
 //!
 //! Sign and verify JSON Web Tokens.
+//! MEMORY MODEL: Pure Ownership/Borrow - No RC, No GC
+//! All string data uses doo_alloc_string from doo_ffi_core::memory (single source of truth).
 
 use serde::{Deserialize, Serialize};
-use doo_ffi_core::DooResult;
+use doo_ffi_core::{DooResult, doo_alloc_string};
 use crate::error::AuthError;
 
 /// JWT claims.
@@ -80,6 +82,7 @@ pub fn verify_token(token: &str, secret: &str) -> Result<JwtClaims, AuthError> {
 // ============================================================================
 
 /// Sign a JWT token.
+/// OWNERSHIP: Returns DooResult with string allocated using libc.
 #[no_mangle]
 pub extern "C" fn doo_jwt_sign(
     sub: *const i8,
@@ -98,8 +101,8 @@ pub extern "C" fn doo_jwt_sign(
         match sign_token(&claims, secret_str) {
             Ok(token) => {
                 let len = token.len() as u32;
-                let ptr = token.as_ptr() as *mut std::ffi::c_void;
-                std::mem::forget(token);
+                // Use centralized string allocation - NOT std::mem::forget!
+                let ptr = doo_alloc_string(&token) as *mut std::ffi::c_void;
                 DooResult::ok(ptr, len)
             }
             Err(e) => DooResult::err_str(500, &format!("{:?}", e)),
@@ -108,6 +111,7 @@ pub extern "C" fn doo_jwt_sign(
 }
 
 /// Verify a JWT token.
+/// OWNERSHIP: Returns DooResult with string allocated using libc.
 #[no_mangle]
 pub extern "C" fn doo_jwt_verify(token: *const i8, secret: *const i8) -> DooResult {
     if token.is_null() || secret.is_null() {
@@ -122,8 +126,8 @@ pub extern "C" fn doo_jwt_verify(token: *const i8, secret: *const i8) -> DooResu
             Ok(claims) => {
                 let json = serde_json::to_string(&claims).unwrap_or_default();
                 let len = json.len() as u32;
-                let ptr = json.as_ptr() as *mut std::ffi::c_void;
-                std::mem::forget(json);
+                // Use centralized string allocation - NOT std::mem::forget!
+                let ptr = doo_alloc_string(&json) as *mut std::ffi::c_void;
                 DooResult::ok(ptr, len)
             }
             Err(e) => DooResult::err_str(401, &format!("{:?}", e)),

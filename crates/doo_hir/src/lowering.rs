@@ -28,6 +28,8 @@ pub struct Lower {
     errors: Vec<LowerError>,
     /// Variable type tracking for typed lowering (name -> TypeId)
     var_types: FxHashMap<String, TypeId>,
+    /// Counter for generating unique internal variable names
+    unique_counter: u64,
 }
 
 /// Lowering error.
@@ -52,6 +54,200 @@ impl Lower {
         Self {
             errors: Vec::new(),
             var_types: FxHashMap::default(),
+            unique_counter: 0,
+        }
+    }
+
+    /// Generate a unique suffix for internal variable names.
+    fn unique_suffix(&mut self) -> u64 {
+        let id = self.unique_counter;
+        self.unique_counter += 1;
+        id
+    }
+
+    /// Recursively substitute a local variable name in a statement.
+    fn substitute_local_in_stmt(&self, stmt: &mut HirStmt, old_name: &str, new_name: &str) {
+        self.substitute_local_in_stmt_kind(&mut stmt.kind, old_name, new_name);
+    }
+
+    fn substitute_local_in_stmt_kind(
+        &self,
+        kind: &mut HirStmtKind,
+        old_name: &str,
+        new_name: &str,
+    ) {
+        match kind {
+            HirStmtKind::Let { value, .. } => {
+                self.substitute_local_in_expr(value, old_name, new_name);
+            }
+            HirStmtKind::TupleLet { value, .. } => {
+                self.substitute_local_in_expr(value, old_name, new_name);
+            }
+            HirStmtKind::Expr(expr) => {
+                self.substitute_local_in_expr(expr, old_name, new_name);
+            }
+            HirStmtKind::Assign { target, value, .. } => {
+                self.substitute_local_in_expr(target, old_name, new_name);
+                self.substitute_local_in_expr(value, old_name, new_name);
+            }
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+                ..
+            } => {
+                self.substitute_local_in_expr(condition, old_name, new_name);
+                for s in then_block {
+                    self.substitute_local_in_stmt(s, old_name, new_name);
+                }
+                if let Some(else_stmts) = else_block {
+                    for s in else_stmts {
+                        self.substitute_local_in_stmt(s, old_name, new_name);
+                    }
+                }
+            }
+            HirStmtKind::While {
+                condition, body, ..
+            } => {
+                self.substitute_local_in_expr(condition, old_name, new_name);
+                for s in body {
+                    self.substitute_local_in_stmt(s, old_name, new_name);
+                }
+            }
+            HirStmtKind::Return(exprs) => {
+                for expr in exprs {
+                    self.substitute_local_in_expr(expr, old_name, new_name);
+                }
+            }
+            HirStmtKind::ManualErrorExtract { expr, .. } => {
+                self.substitute_local_in_expr(expr, old_name, new_name);
+            }
+            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}
+        }
+    }
+
+    fn substitute_local_in_expr(&self, expr: &mut HirExpr, old_name: &str, new_name: &str) {
+        match &mut expr.kind {
+            HirExprKind::Local { name, .. } => {
+                if name == old_name {
+                    *name = new_name.to_string();
+                }
+            }
+            HirExprKind::BinOp { lhs, rhs, .. } => {
+                self.substitute_local_in_expr(lhs, old_name, new_name);
+                self.substitute_local_in_expr(rhs, old_name, new_name);
+            }
+            HirExprKind::UnaryOp { operand, .. } => {
+                self.substitute_local_in_expr(operand, old_name, new_name);
+            }
+            HirExprKind::Call { func, args, .. } => {
+                self.substitute_local_in_expr(func, old_name, new_name);
+                for arg in args {
+                    self.substitute_local_in_expr(arg, old_name, new_name);
+                }
+            }
+            HirExprKind::MethodCall { receiver, args, .. } => {
+                self.substitute_local_in_expr(receiver, old_name, new_name);
+                for arg in args {
+                    self.substitute_local_in_expr(arg, old_name, new_name);
+                }
+            }
+            HirExprKind::Field { object, .. } => {
+                self.substitute_local_in_expr(object, old_name, new_name);
+            }
+            HirExprKind::Index { object, index, .. } => {
+                self.substitute_local_in_expr(object, old_name, new_name);
+                self.substitute_local_in_expr(index, old_name, new_name);
+            }
+            HirExprKind::Array(elements) => {
+                for el in elements {
+                    self.substitute_local_in_expr(el, old_name, new_name);
+                }
+            }
+            HirExprKind::Map(entries) => {
+                for (k, v) in entries {
+                    self.substitute_local_in_expr(k, old_name, new_name);
+                    self.substitute_local_in_expr(v, old_name, new_name);
+                }
+            }
+            HirExprKind::Tuple(elements) => {
+                for el in elements {
+                    self.substitute_local_in_expr(el, old_name, new_name);
+                }
+            }
+            HirExprKind::Struct { fields, .. } => {
+                for (_, val) in fields {
+                    self.substitute_local_in_expr(val, old_name, new_name);
+                }
+            }
+            HirExprKind::EnumVariant { payload, .. } => {
+                for p in payload {
+                    self.substitute_local_in_expr(p, old_name, new_name);
+                }
+            }
+            HirExprKind::Spread(inner) => {
+                self.substitute_local_in_expr(inner, old_name, new_name);
+            }
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                self.substitute_local_in_expr(condition, old_name, new_name);
+                self.substitute_local_in_expr(then_expr, old_name, new_name);
+                if let Some(el) = else_expr {
+                    self.substitute_local_in_expr(el, old_name, new_name);
+                }
+            }
+            HirExprKind::Block { stmts, expr, .. } => {
+                for s in stmts {
+                    self.substitute_local_in_stmt(s, old_name, new_name);
+                }
+                if let Some(e) = expr {
+                    self.substitute_local_in_expr(e, old_name, new_name);
+                }
+            }
+            HirExprKind::Match { values, arms, .. } => {
+                for v in values {
+                    self.substitute_local_in_expr(v, old_name, new_name);
+                }
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        self.substitute_local_in_expr(guard, old_name, new_name);
+                    }
+                    self.substitute_local_in_expr(&mut arm.body, old_name, new_name);
+                }
+            }
+            HirExprKind::Range { start, end, .. } => {
+                self.substitute_local_in_expr(start, old_name, new_name);
+                self.substitute_local_in_expr(end, old_name, new_name);
+            }
+            HirExprKind::Closure { body, .. } => {
+                self.substitute_local_in_expr(body, old_name, new_name);
+            }
+            HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner)
+            | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Clone(inner) => {
+                self.substitute_local_in_expr(inner, old_name, new_name);
+            }
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
+                self.substitute_local_in_expr(inner, old_name, new_name);
+                self.substitute_local_in_expr(message, old_name, new_name);
+            }
+            HirExprKind::Borrow { expr: inner, .. } => {
+                self.substitute_local_in_expr(inner, old_name, new_name);
+            }
+            HirExprKind::Cast { value, .. } => {
+                self.substitute_local_in_expr(value, old_name, new_name);
+            }
+            // Literals and constants don't have local references
+            HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
     }
 
@@ -402,13 +598,26 @@ impl Lower {
                 type_ann: _,
                 value,
             } => {
-                let name = self.pattern_to_name(pattern);
-                HirStmtKind::Let {
-                    name,
-                    type_id: None,
-                    value: self.lower_expr(value),
-                    mutable: *mutable,
-                    ownership: Ownership::Owned,
+                // Check if this is a tuple pattern - if so, use TupleLet
+                if let PatternKind::Tuple(patterns) = &pattern.kind {
+                    let names: Vec<String> =
+                        patterns.iter().map(|p| self.pattern_to_name(p)).collect();
+                    let type_ids: Vec<Option<TypeId>> = vec![None; names.len()];
+                    HirStmtKind::TupleLet {
+                        names,
+                        type_ids,
+                        value: self.lower_expr(value),
+                        mutable: *mutable,
+                    }
+                } else {
+                    let name = self.pattern_to_name(pattern);
+                    HirStmtKind::Let {
+                        name,
+                        type_id: None,
+                        value: self.lower_expr(value),
+                        mutable: *mutable,
+                        ownership: Ownership::Owned,
+                    }
                 }
             }
 
@@ -614,25 +823,55 @@ impl Lower {
                 type_ann,
                 value,
             } => {
-                let name = self.pattern_to_name(pattern);
-                let mut value_hir = self.lower_expr_typed(value, registry);
-                let annotated_type_id = type_ann
-                    .as_ref()
-                    .map(|t| self.resolve_type_expr(t, registry));
-                let inferred_type_id = annotated_type_id.or(value_hir.type_id);
-                if annotated_type_id.is_some() {
-                    value_hir.type_id = inferred_type_id;
-                }
-                // Track variable type for later lookups
-                if let Some(tid) = inferred_type_id {
-                    self.var_types.insert(name.clone(), tid);
-                }
-                HirStmtKind::Let {
-                    name,
-                    type_id: inferred_type_id,
-                    value: value_hir,
-                    mutable: *mutable,
-                    ownership: Ownership::Owned,
+                // Check if this is a tuple pattern
+                if let PatternKind::Tuple(patterns) = &pattern.kind {
+                    let names: Vec<String> =
+                        patterns.iter().map(|p| self.pattern_to_name(p)).collect();
+                    let mut value_hir = self.lower_expr_typed(value, registry);
+
+                    // Try to get element types from the value's tuple type
+                    let mut type_ids: Vec<Option<TypeId>> = vec![None; names.len()];
+                    if let Some(val_type_id) = value_hir.type_id {
+                        if let Some(info) = registry.get(val_type_id) {
+                            if let TypeKind::Tuple { elements } = &info.kind {
+                                for (i, elem_type) in elements.iter().enumerate() {
+                                    if i < type_ids.len() {
+                                        type_ids[i] = Some(*elem_type);
+                                        // Track each element's type
+                                        self.var_types.insert(names[i].clone(), *elem_type);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HirStmtKind::TupleLet {
+                        names,
+                        type_ids,
+                        value: value_hir,
+                        mutable: *mutable,
+                    }
+                } else {
+                    let name = self.pattern_to_name(pattern);
+                    let mut value_hir = self.lower_expr_typed(value, registry);
+                    let annotated_type_id = type_ann
+                        .as_ref()
+                        .map(|t| self.resolve_type_expr(t, registry));
+                    let inferred_type_id = annotated_type_id.or(value_hir.type_id);
+                    if annotated_type_id.is_some() {
+                        value_hir.type_id = inferred_type_id;
+                    }
+                    // Track variable type for later lookups
+                    if let Some(tid) = inferred_type_id {
+                        self.var_types.insert(name.clone(), tid);
+                    }
+                    HirStmtKind::Let {
+                        name,
+                        type_id: inferred_type_id,
+                        value: value_hir,
+                        mutable: *mutable,
+                        ownership: Ownership::Owned,
+                    }
                 }
             }
 
@@ -1343,11 +1582,17 @@ impl Lower {
                 method,
                 args,
             } => {
-                let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
-                if let Some(return_type) =
-                    self.infer_method_call_type(receiver_type, method, args, registry)
+                // Check if this is a module method call (e.g., JSON.parse, JSON.stringify)
+                if let Some(return_type) = self.infer_module_method_type(receiver, method, registry)
                 {
                     out.type_id = Some(return_type);
+                } else {
+                    let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
+                    if let Some(return_type) =
+                        self.infer_method_call_type(receiver_type, method, args, registry)
+                    {
+                        out.type_id = Some(return_type);
+                    }
                 }
             }
             HirExprKind::Cast { to_type, .. } => {
@@ -1760,9 +2005,11 @@ impl Lower {
             _ => (self.pattern_to_name(pattern), None),
         };
 
-        let internal_map = format!("__{}map", key_var);
-        let internal_keys = format!("__{}keys", key_var);
-        let internal_idx = format!("__{}idx", key_var);
+        // Generate unique internal variable names to avoid conflicts with multiple loops
+        let uid = self.unique_suffix();
+        let internal_map = format!("__{}map{}", key_var, uid);
+        let internal_keys = format!("__{}keys{}", key_var, uid);
+        let internal_idx = format!("__{}idx{}", key_var, uid);
 
         // Lower body statements
         let mut body_stmts: Vec<_> = body.iter().map(|s| self.lower_stmt(s)).collect();
@@ -2395,7 +2642,7 @@ impl Lower {
         registry: &mut TypeRegistry,
     ) -> HirStmtKind {
         // Check if pattern is tuple (key, value) or single (key)
-        let (key_var, value_var) = match &pattern.kind {
+        let (orig_key_var, orig_value_var) = match &pattern.kind {
             PatternKind::Tuple(patterns) if patterns.len() == 2 => {
                 let key = self.pattern_to_name(&patterns[0]);
                 let val = self.pattern_to_name(&patterns[1]);
@@ -2404,14 +2651,32 @@ impl Lower {
             _ => (self.pattern_to_name(pattern), None),
         };
 
-        let internal_map = format!("__{}map", key_var);
-        let internal_keys = format!("__{}keys", key_var);
-        let internal_idx = format!("__{}idx", key_var);
+        // Generate unique internal variable names to avoid conflicts with multiple loops
+        let uid = self.unique_suffix();
+        let internal_map = format!("__{}map{}", orig_key_var, uid);
+        let internal_keys = format!("__{}keys{}", orig_key_var, uid);
+        let internal_idx = format!("__{}idx{}", orig_key_var, uid);
 
-        // Lower body statements
+        // Also make the iteration variables unique to avoid type conflicts
+        let key_var = format!("__{}_{}", orig_key_var, uid);
+        let value_var = orig_value_var.as_ref().map(|v| format!("__{}_{}", v, uid));
+
+        // Lower the map expression FIRST to get its type for proper propagation in body
+        let lowered_map_early = self.lower_expr_typed(map_expr, registry);
+        let map_type_early = lowered_map_early.type_id;
+
+        // Lower body statements, substituting the original variable names with unique ones
         let mut body_stmts: Vec<_> = body
             .iter()
-            .map(|s| self.lower_stmt_typed(s, registry))
+            .map(|s| {
+                let mut lowered = self.lower_stmt_typed(s, registry);
+                // Substitute variable references
+                self.substitute_local_in_stmt(&mut lowered, &orig_key_var, &key_var);
+                if let (Some(ref orig_val), Some(ref new_val)) = (&orig_value_var, &value_var) {
+                    self.substitute_local_in_stmt(&mut lowered, orig_val, new_val);
+                }
+                lowered
+            })
             .collect();
 
         // Prepend: let key = __keys[__idx]
@@ -2456,12 +2721,21 @@ impl Lower {
                         type_id: None,
                         value: HirExpr::new(
                             HirExprKind::Index {
-                                object: Box::new(HirExpr::new(
-                                    HirExprKind::Local {
-                                        name: internal_map.clone(),
-                                    },
-                                    span,
-                                )),
+                                object: Box::new(match map_type_early {
+                                    Some(t) => HirExpr::with_type(
+                                        HirExprKind::Local {
+                                            name: internal_map.clone(),
+                                        },
+                                        t,
+                                        span,
+                                    ),
+                                    None => HirExpr::new(
+                                        HirExprKind::Local {
+                                            name: internal_map.clone(),
+                                        },
+                                        span,
+                                    ),
+                                }),
                                 index: Box::new(HirExpr::new(
                                     HirExprKind::Local {
                                         name: key_var.clone(),
@@ -2542,12 +2816,12 @@ impl Lower {
             span,
         );
 
-        // Build desugared block
+        // Build desugared block - use the already lowered map expression
         let map_init = HirStmt::new(
             HirStmtKind::Let {
                 name: internal_map.clone(),
-                type_id: None,
-                value: self.lower_expr_typed(map_expr, registry),
+                type_id: map_type_early,
+                value: lowered_map_early.clone(),
                 mutable: false,
                 ownership: Ownership::Owned,
             },
@@ -2556,19 +2830,47 @@ impl Lower {
 
         let keys_init = HirStmt::new(
             HirStmtKind::Let {
-                name: internal_keys,
+                name: internal_keys.clone(),
                 type_id: None,
-                value: HirExpr::new(
-                    HirExprKind::MethodCall {
-                        receiver: Box::new(HirExpr::new(
-                            HirExprKind::Local { name: internal_map },
+                value: {
+                    // CRITICAL: The receiver must have the map type set for proper type propagation
+                    let receiver = match map_type_early {
+                        Some(t) => HirExpr::with_type(
+                            HirExprKind::Local {
+                                name: internal_map.clone(),
+                            },
+                            t,
                             span,
-                        )),
-                        method: "keys".to_string(),
-                        args: vec![],
-                    },
-                    span,
-                ),
+                        ),
+                        None => HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_map.clone(),
+                            },
+                            span,
+                        ),
+                    };
+                    let keys_call = HirExpr::new(
+                        HirExprKind::MethodCall {
+                            receiver: Box::new(receiver),
+                            method: "keys".to_string(),
+                            args: vec![],
+                        },
+                        span,
+                    );
+
+                    // Infer the return type of keys() method
+                    if let Some(map_ty) = map_type_early {
+                        if let Some(keys_ty) =
+                            self.infer_method_call_type(map_ty, "keys", &mut [], registry)
+                        {
+                            HirExpr::with_type(keys_call.kind, keys_ty, span)
+                        } else {
+                            keys_call
+                        }
+                    } else {
+                        keys_call
+                    }
+                },
                 mutable: false,
                 ownership: Ownership::Owned,
             },
@@ -2618,7 +2920,7 @@ impl Lower {
         registry: &mut TypeRegistry,
     ) -> HirStmtKind {
         // Check if pattern is tuple (key, value) or single (key)
-        let (key_var, value_var) = match &pattern.kind {
+        let (orig_key_var, orig_value_var) = match &pattern.kind {
             PatternKind::Tuple(patterns) if patterns.len() == 2 => {
                 let key = self.pattern_to_name(&patterns[0]);
                 let val = self.pattern_to_name(&patterns[1]);
@@ -2627,14 +2929,31 @@ impl Lower {
             _ => (self.pattern_to_name(pattern), None),
         };
 
-        let internal_map = format!("__{}map", key_var);
-        let internal_keys = format!("__{}keys", key_var);
-        let internal_idx = format!("__{}idx", key_var);
+        // Generate unique internal variable names to avoid conflicts with multiple loops
+        let uid = self.unique_suffix();
+        let internal_map = format!("__{}map{}", orig_key_var, uid);
+        let internal_keys = format!("__{}keys{}", orig_key_var, uid);
+        let internal_idx = format!("__{}idx{}", orig_key_var, uid);
 
-        // Lower body statements
+        // Also make the iteration variables unique to avoid type conflicts
+        let key_var = format!("__{}_{}", orig_key_var, uid);
+        let value_var = orig_value_var.as_ref().map(|v| format!("__{}_{}", v, uid));
+
+        // Get the map type from the already-lowered map expression
+        let map_type = lowered_map.type_id;
+
+        // Lower body statements, substituting the original variable names with unique ones
         let mut body_stmts: Vec<_> = body
             .iter()
-            .map(|s| self.lower_stmt_typed(s, registry))
+            .map(|s| {
+                let mut lowered = self.lower_stmt_typed(s, registry);
+                // Substitute variable references
+                self.substitute_local_in_stmt(&mut lowered, &orig_key_var, &key_var);
+                if let (Some(ref orig_val), Some(ref new_val)) = (&orig_value_var, &value_var) {
+                    self.substitute_local_in_stmt(&mut lowered, orig_val, new_val);
+                }
+                lowered
+            })
             .collect();
 
         // Prepend: let key = __keys[__idx]
@@ -2679,12 +2998,21 @@ impl Lower {
                         type_id: None,
                         value: HirExpr::new(
                             HirExprKind::Index {
-                                object: Box::new(HirExpr::new(
-                                    HirExprKind::Local {
-                                        name: internal_map.clone(),
-                                    },
-                                    span,
-                                )),
+                                object: Box::new(match map_type {
+                                    Some(t) => HirExpr::with_type(
+                                        HirExprKind::Local {
+                                            name: internal_map.clone(),
+                                        },
+                                        t,
+                                        span,
+                                    ),
+                                    None => HirExpr::new(
+                                        HirExprKind::Local {
+                                            name: internal_map.clone(),
+                                        },
+                                        span,
+                                    ),
+                                }),
                                 index: Box::new(HirExpr::new(
                                     HirExprKind::Local {
                                         name: key_var.clone(),
@@ -2766,11 +3094,12 @@ impl Lower {
         );
 
         // Build desugared block using the already-lowered map expression
+        let map_type = lowered_map.type_id;
         let map_init = HirStmt::new(
             HirStmtKind::Let {
                 name: internal_map.clone(),
-                type_id: lowered_map.type_id,
-                value: lowered_map,
+                type_id: map_type,
+                value: lowered_map.clone(),
                 mutable: false,
                 ownership: Ownership::Owned,
             },
@@ -2779,19 +3108,47 @@ impl Lower {
 
         let keys_init = HirStmt::new(
             HirStmtKind::Let {
-                name: internal_keys,
+                name: internal_keys.clone(),
                 type_id: None,
-                value: HirExpr::new(
-                    HirExprKind::MethodCall {
-                        receiver: Box::new(HirExpr::new(
-                            HirExprKind::Local { name: internal_map },
+                value: {
+                    // CRITICAL: The receiver must have the map type set for proper type propagation
+                    let receiver = match map_type {
+                        Some(t) => HirExpr::with_type(
+                            HirExprKind::Local {
+                                name: internal_map.clone(),
+                            },
+                            t,
                             span,
-                        )),
-                        method: "keys".to_string(),
-                        args: vec![],
-                    },
-                    span,
-                ),
+                        ),
+                        None => HirExpr::new(
+                            HirExprKind::Local {
+                                name: internal_map.clone(),
+                            },
+                            span,
+                        ),
+                    };
+                    let keys_call = HirExpr::new(
+                        HirExprKind::MethodCall {
+                            receiver: Box::new(receiver),
+                            method: "keys".to_string(),
+                            args: vec![],
+                        },
+                        span,
+                    );
+
+                    // Infer the return type of keys() method
+                    if let Some(map_ty) = map_type {
+                        if let Some(keys_ty) =
+                            self.infer_method_call_type(map_ty, "keys", &mut [], registry)
+                        {
+                            HirExpr::with_type(keys_call.kind, keys_ty, span)
+                        } else {
+                            keys_call
+                        }
+                    } else {
+                        keys_call
+                    }
+                },
                 mutable: false,
                 ownership: Ownership::Owned,
             },
@@ -2830,6 +3187,44 @@ impl Lower {
         ))
     }
 
+    /// Infer the return type of module-level method calls (e.g., JSON.stringify, JSON.parse)
+    fn infer_module_method_type(
+        &self,
+        receiver: &HirExpr,
+        method: &str,
+        registry: &mut TypeRegistry,
+    ) -> Option<TypeId> {
+        // Check if receiver is a module identifier
+        let module_name = match &receiver.kind {
+            HirExprKind::Local { name } => name.as_str(),
+            _ => return None,
+        };
+
+        match module_name {
+            "JSON" => match method {
+                "stringify" => Some(builtin::STR),
+                // JSON.parse returns ANY since we can't know the target type here
+                // The actual type will be determined by the context (assignment, return, etc.)
+                "parse" => Some(builtin::ANY),
+                _ => None,
+            },
+            "Math" => match method {
+                "abs" | "floor" | "ceil" | "round" | "sqrt" | "pow" | "sin" | "cos" | "tan"
+                | "log" | "exp" | "min" | "max" => Some(builtin::FLOAT),
+                "random" => Some(builtin::FLOAT),
+                _ => None,
+            },
+            "Array" => match method {
+                "new" => {
+                    // Array.new() returns Array[Any]
+                    Some(registry.register_array(builtin::ANY))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn infer_method_call_type(
         &mut self,
         receiver_type: TypeId,
@@ -2841,6 +3236,9 @@ impl Lower {
         match &receiver_info.kind {
             TypeKind::Array { element } => {
                 self.infer_array_method_type(*element, method, args, registry)
+            }
+            TypeKind::Map { key, value } => {
+                self.infer_map_method_type(*key, *value, method, args, registry)
             }
             _ => None,
         }
@@ -2891,6 +3289,43 @@ impl Lower {
                 } else {
                     Some(closure_return.unwrap_or(builtin::ANY))
                 }
+            }
+            _ => None,
+        }
+    }
+
+    fn infer_map_method_type(
+        &mut self,
+        key_type: TypeId,
+        value_type: TypeId,
+        method: &str,
+        _args: &mut [HirExpr],
+        registry: &mut TypeRegistry,
+    ) -> Option<TypeId> {
+        match method {
+            "keys" => {
+                // keys() returns Array<K>
+                Some(registry.register_array(key_type))
+            }
+            "values" => {
+                // values() returns Array<V>
+                Some(registry.register_array(value_type))
+            }
+            "has" => {
+                // has(key) returns bool
+                Some(builtin::BOOL)
+            }
+            "len" => {
+                // len() returns int
+                Some(builtin::INT)
+            }
+            "isEmpty" => {
+                // isEmpty() returns bool
+                Some(builtin::BOOL)
+            }
+            "clear" | "remove" => {
+                // clear() and remove(key) return void
+                Some(builtin::VOID)
             }
             _ => None,
         }

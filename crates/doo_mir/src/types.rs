@@ -542,6 +542,8 @@ pub enum MirInstrKind {
         dest: String,
         tuple: MirOperand,
         index: usize,
+        /// TypeId of the tuple (so codegen can look up element types)
+        tuple_type: Option<TypeId>,
     },
 
     // ========================================================================
@@ -562,6 +564,8 @@ pub enum MirInstrKind {
         method: String,
         args: Vec<MirOperand>,
         arg_types: Vec<TypeId>,
+        /// Return type of the method call (for JSON.parse and similar)
+        return_type: Option<TypeId>,
     },
 
     /// FFI call

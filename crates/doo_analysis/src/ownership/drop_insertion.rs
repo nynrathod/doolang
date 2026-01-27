@@ -17,8 +17,8 @@
 
 use doo_core::Span;
 use doo_hir::{
-    HirProgram, HirItem, HirFunction, HirStmt, HirStmtKind,
-    HirExpr, HirExprKind, HirVisitor, HirVisitorMut,
+    HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind, HirVisitor,
+    HirVisitorMut,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -82,7 +82,18 @@ impl DropInserter {
                 self.needs_drop.insert(name.clone());
                 self.scan_expr_for_uses(value);
             }
-            HirStmtKind::ManualErrorExtract { ok_names, error_name, expr } => {
+            HirStmtKind::TupleLet { names, value, .. } => {
+                // Register all variables from tuple unpacking as needing drop
+                for name in names {
+                    self.needs_drop.insert(name.clone());
+                }
+                self.scan_expr_for_uses(value);
+            }
+            HirStmtKind::ManualErrorExtract {
+                ok_names,
+                error_name,
+                expr,
+            } => {
                 for name in ok_names {
                     if name != "_" {
                         self.needs_drop.insert(name.clone());
@@ -105,7 +116,11 @@ impl DropInserter {
                     self.scan_expr_for_uses(v);
                 }
             }
-            HirStmtKind::If { condition, then_block, else_block } => {
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.scan_expr_for_uses(condition);
                 // Recurse into blocks
                 let saved_idx = self.current_idx;
@@ -179,7 +194,11 @@ impl DropInserter {
                     self.scan_expr_for_uses(e);
                 }
             }
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.scan_expr_for_uses(condition);
                 self.scan_expr_for_uses(then_expr);
                 if let Some(e) = else_expr {
@@ -211,12 +230,17 @@ impl DropInserter {
                 self.scan_expr_for_uses(start);
                 self.scan_expr_for_uses(end);
             }
-            HirExprKind::Ok(inner) | HirExprKind::Err(inner) |
-            HirExprKind::Try(inner) | HirExprKind::Move(inner) |
-            HirExprKind::Clone(inner) => {
+            HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner)
+            | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Clone(inner) => {
                 self.scan_expr_for_uses(inner);
             }
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.scan_expr_for_uses(inner);
                 self.scan_expr_for_uses(message);
             }
@@ -272,10 +296,7 @@ impl DropInserter {
     fn apply_drops(&self, stmts: &mut Vec<HirStmt>, drops: Vec<(usize, String)>) {
         for (idx, name) in drops {
             if idx <= stmts.len() {
-                let drop_stmt = HirStmt::new(
-                    HirStmtKind::Drop { name },
-                    Span::dummy(),
-                );
+                let drop_stmt = HirStmt::new(HirStmtKind::Drop { name }, Span::dummy());
                 stmts.insert(idx, drop_stmt);
             }
         }
@@ -314,7 +335,7 @@ mod tests {
         inserter.needs_drop.insert("c".to_string());
 
         let drops = inserter.compute_drops();
-        
+
         // Should be sorted descending by index
         assert_eq!(drops.len(), 3);
         assert!(drops[0].0 > drops[1].0);

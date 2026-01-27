@@ -44,10 +44,31 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
         match &instr.kind {
             MirInstrKind::Call { dest, func, args } => {
                 let func_val = ctx.get_function(func)?;
+                
+                // Coerce arguments to match function parameter types
+                // This handles cases like enum StructValues that need to be boxed to pointers
+                let param_types = func_val.get_type().get_param_types();
                 let arg_vals: Vec<_> = args
                     .iter()
-                    .filter_map(|a| operand_to_value(ctx, a))
-                    .map(|v| v.into())
+                    .enumerate()
+                    .filter_map(|(i, a)| {
+                        let val = operand_to_value(ctx, a)?;
+                        // Get expected parameter type from function signature
+                        // Convert BasicMetadataTypeEnum to BasicTypeEnum if possible
+                        let param_type: Option<BasicTypeEnum> = param_types.get(i).and_then(|t| {
+                            match t {
+                                inkwell::types::BasicMetadataTypeEnum::ArrayType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::FloatType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::IntType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::PointerType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::StructType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::VectorType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::ScalableVectorType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::MetadataType(_) => None,
+                            }
+                        });
+                        Some(coerce_arg_to_param_type(ctx, val, param_type))
+                    })
                     .collect();
 
                 let call_site = ctx.builder.build_call(func_val, &arg_vals, "call").ok()?;
@@ -68,42 +89,50 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 method,
                 args,
                 arg_types,
+                return_type,
             } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
                     eprintln!(
-                        "[CODEGEN] MethodCall: {:?}.{} -> {:?}",
-                        receiver, method, dest
+                        "[CODEGEN] MethodCall: {:?}.{} -> {:?}, return_type={:?}",
+                        receiver, method, dest, return_type
                     );
                 }
                 // Intercept JSON.stringify and JSON.parse (Static Specialization)
-                if let MirOperand::Local(name) = receiver {
-                    if name == "JSON" {
-                        if method == "stringify" {
-                            if let (Some(arg_op), Some(&arg_type)) =
-                                (args.first(), arg_types.first())
-                            {
-                                if let Some(val) = operand_to_value(ctx, arg_op) {
-                                    // Dispatch to JSON codegen
-                                    let result = JsonBuiltins::emit_stringify(ctx, val, arg_type);
-                                    if let (Some(r), Some(dst)) = (result, dest) {
-                                        ctx.set_temp(dst, r);
-                                    }
-                                    return result;
+                // Check for both Local("JSON") and Global("JSON") for module calls
+                let is_json_module = matches!(receiver, 
+                    MirOperand::Local(name) | MirOperand::Global(name) if name == ffi_names::MODULE_JSON);
+                
+                if std::env::var("DOO_DEBUG").is_ok() && method == "parse" {
+                    eprintln!("[CODEGEN] JSON.parse check: is_json_module={}, receiver={:?}", is_json_module, receiver);
+                }
+                    
+                if is_json_module {
+                    if method == "stringify" {
+                        if let (Some(arg_op), Some(&arg_type)) =
+                            (args.first(), arg_types.first())
+                        {
+                            if let Some(val) = operand_to_value(ctx, arg_op) {
+                                // Dispatch to JSON codegen
+                                let result = JsonBuiltins::emit_stringify(ctx, val, arg_type);
+                                if let (Some(r), Some(dst)) = (result, dest) {
+                                    ctx.set_temp(dst, r);
                                 }
+                                return result;
                             }
-                            return None;
-                        } else if method == "parse" {
-                            if let Some(arg_op) = args.first() {
-                                if let Some(val) = operand_to_value(ctx, arg_op) {
-                                    let result = JsonBuiltins::emit_parse(ctx, val);
-                                    if let (Some(r), Some(dst)) = (result, dest) {
-                                        ctx.set_temp(dst, r);
-                                    }
-                                    return result;
-                                }
-                            }
-                            return None;
                         }
+                        return None;
+                    } else if method == "parse" {
+                        if let Some(arg_op) = args.first() {
+                            if let Some(val) = operand_to_value(ctx, arg_op) {
+                                // Pass return_type to emit_parse for type-specific parsing
+                                let result = JsonBuiltins::emit_parse(ctx, val, *return_type);
+                                if let (Some(r), Some(dst)) = (result, dest) {
+                                    ctx.set_temp(dst, r);
+                                }
+                                return result;
+                            }
+                        }
+                        return None;
                     }
                 }
 
@@ -334,8 +363,44 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                         emit_print_value(ctx, printf, builtin::ANY, v, false);
                                     }
                                 }
+                                TypeKind::Struct { name, fields } => {
+                                    if v.is_pointer_value() {
+                                        emit_print_struct(
+                                            ctx,
+                                            printf,
+                                            v.into_pointer_value(),
+                                            &name,
+                                            &fields,
+                                        );
+                                    } else {
+                                        emit_print_value(ctx, printf, ty, v, false);
+                                    }
+                                }
+                                TypeKind::Enum { name, variants } => {
+                                    if v.is_pointer_value() {
+                                        emit_print_enum(
+                                            ctx,
+                                            printf,
+                                            v.into_pointer_value(),
+                                            &name,
+                                            &variants,
+                                        );
+                                    } else if v.is_struct_value() {
+                                        // Enum as StructValue (inline) - use direct extraction
+                                        emit_print_enum_value(
+                                            ctx,
+                                            printf,
+                                            v.into_struct_value(),
+                                            &name,
+                                            &variants,
+                                        );
+                                    } else {
+                                        // Fallback for other cases
+                                        emit_print_value(ctx, printf, ty, v, false);
+                                    }
+                                }
                                 _ => {
-                                    emit_print_value(ctx, printf, builtin::ANY, v, false);
+                                    emit_print_value(ctx, printf, ty, v, false);
                                 }
                             }
                         } else {
@@ -757,6 +822,51 @@ fn operand_to_value<'ctx>(
     }
 }
 
+/// Coerce an argument value to match the expected function parameter type.
+/// 
+/// This handles type mismatches between how values are produced (e.g., enum StructValues)
+/// and how function parameters are declared (e.g., pointers for composite types).
+fn coerce_arg_to_param_type<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    val: BasicValueEnum<'ctx>,
+    expected_type: Option<BasicTypeEnum<'ctx>>,
+) -> inkwell::values::BasicMetadataValueEnum<'ctx> {
+    // If no expected type info, pass value as-is
+    let Some(expected) = expected_type else {
+        return val.into();
+    };
+    
+    // If types already match, pass as-is
+    if val.get_type() == expected {
+        return val.into();
+    }
+    
+    // Special case: StructValue passed where pointer is expected
+    // This happens with enums: EnumCreate returns { i32, ptr } but function params expect ptr
+    if val.is_struct_value() && expected.is_pointer_type() {
+        // Box the struct value: allocate, store, return pointer
+        let alloca = ctx
+            .builder
+            .build_alloca(val.get_type(), "arg_box")
+            .unwrap();
+        ctx.builder.build_store(alloca, val).ok();
+        return alloca.into();
+    }
+    
+    // Special case: PointerValue passed where struct is expected
+    // This happens when JSON.parse returns a pointer to enum but function expects struct by value
+    if val.is_pointer_value() && expected.is_struct_type() {
+        // Load the struct from the pointer
+        let loaded = ctx.builder.build_load(expected, val.into_pointer_value(), "arg_load").ok();
+        if let Some(v) = loaded {
+            return v.into();
+        }
+    }
+    
+    // Default: pass value as-is
+    val.into()
+}
+
 /// Convert MirConst to LLVM value.
 fn const_to_value<'ctx>(ctx: &CodegenContext<'ctx>, c: &MirConst) -> BasicValueEnum<'ctx> {
     match c {
@@ -875,6 +985,20 @@ fn emit_print_value<'ctx>(
         return;
     }
 
+    // Handle enum as StructValue (inline { i32, ptr }) - must check BEFORE pointer check
+    if val.is_struct_value() {
+        if let Some(TypeKind::Enum { name, variants }) = ctx.get_type_kind(type_id) {
+            emit_print_enum_value(ctx, printf, val.into_struct_value(), &name, &variants);
+            if newline {
+                let nl = ctx.const_string("\n");
+                ctx.builder
+                    .build_call(printf, &[ctx.const_string("%s").into(), nl.into()], "")
+                    .ok();
+            }
+            return;
+        }
+    }
+
     if val.is_pointer_value() {
         let ptr = val.into_pointer_value();
 
@@ -902,6 +1026,26 @@ fn emit_print_value<'ctx>(
                 }
                 TypeKind::Enum { name, variants } => {
                     emit_print_enum(ctx, printf, ptr, &name, &variants);
+                    if newline {
+                        let nl = ctx.const_string("\n");
+                        ctx.builder
+                            .build_call(printf, &[ctx.const_string("%s").into(), nl.into()], "")
+                            .ok();
+                    }
+                    return;
+                }
+                TypeKind::Array { element } => {
+                    emit_print_array(ctx, printf, ptr, element);
+                    if newline {
+                        let nl = ctx.const_string("\n");
+                        ctx.builder
+                            .build_call(printf, &[ctx.const_string("%s").into(), nl.into()], "")
+                            .ok();
+                    }
+                    return;
+                }
+                TypeKind::Map { key, value } => {
+                    emit_print_map(ctx, printf, ptr, key, value);
                     if newline {
                         let nl = ctx.const_string("\n");
                         ctx.builder
@@ -1015,45 +1159,45 @@ fn emit_print_struct<'ctx>(
         .build_call(printf, &[fmt_s.into(), prefix.into()], "")
         .ok();
 
-    let field_types: Vec<_> = fields
-        .iter()
-        .map(|(_, t)| ctx.get_llvm_type(*t).into())
-        .collect();
-    let struct_llvm_type = ctx.context.struct_type(&field_types, false);
-    let struct_typed_ptr = ctx
-        .builder
-        .build_pointer_cast(
-            struct_ptr,
-            struct_llvm_type.ptr_type(AddressSpace::default()),
-            "struct_cast",
-        )
-        .ok();
+    // Use the cached named struct type if available, otherwise create from field types
+    // Use get_llvm_type for consistent type mapping (matches JSON.parse, StructCreate, etc.)
+    let struct_llvm_type = if let Some(cached) = ctx.lookup_struct_type(name) {
+        cached
+    } else {
+        // Manually create the struct type using get_llvm_type for consistency
+        let field_llvm_types: Vec<inkwell::types::BasicTypeEnum> = fields
+            .iter()
+            .map(|(_, type_id)| ctx.get_llvm_type(*type_id))
+            .collect();
+        ctx.context.struct_type(&field_llvm_types, false)
+    };
+    
+    let base = struct_ptr;
 
-    if let Some(base) = struct_typed_ptr {
-        for (i, (fname, fty)) in fields.iter().enumerate() {
-            if i > 0 {
-                let comma = ctx.const_string(", ");
-                ctx.builder
-                    .build_call(printf, &[fmt_s.into(), comma.into()], "")
-                    .ok();
-            }
-
-            // Print field name
-            let fname_s = ctx.const_string(&format!("{}: ", fname));
+    for (i, (fname, fty)) in fields.iter().enumerate() {
+        if i > 0 {
+            let comma = ctx.const_string(", ");
             ctx.builder
-                .build_call(printf, &[fmt_s.into(), fname_s.into()], "")
+                .build_call(printf, &[fmt_s.into(), comma.into()], "")
                 .ok();
+        }
 
-            let field_ptr = ctx
-                .builder
-                .build_struct_gep(struct_llvm_type, base, i as u32, "field")
-                .ok();
-            if let Some(fp) = field_ptr {
-                let llvm_ty = ctx.get_llvm_type(*fty);
-                let val = ctx.builder.build_load(llvm_ty, fp, "val").ok();
-                if let Some(v) = val {
-                    emit_print_value(ctx, printf, *fty, v, false);
-                }
+        // Print field name
+        let fname_s = ctx.const_string(&format!("{}: ", fname));
+        ctx.builder
+            .build_call(printf, &[fmt_s.into(), fname_s.into()], "")
+            .ok();
+
+        let field_ptr = ctx
+            .builder
+            .build_struct_gep(struct_llvm_type, base, i as u32, "field")
+            .ok();
+        if let Some(fp) = field_ptr {
+            // Use get_llvm_type for consistent type mapping
+            let llvm_ty = ctx.get_llvm_type(*fty);
+            let val = ctx.builder.build_load(llvm_ty, fp, "val").ok();
+            if let Some(v) = val {
+                emit_print_value(ctx, printf, *fty, v, false);
             }
         }
     }
@@ -1071,21 +1215,23 @@ fn emit_print_enum<'ctx>(
     name: &str,
     variants: &[(String, Option<doo_core::types::TypeId>)],
 ) {
-    // Enum Memory Layout: { tag: i32, payload: Union }
-    // But payload size varies.
-    // If we simply treat it as { i32, max_align_payload }?
-    // Or we cast to { i32, PayloadType } based on tag?
-    // We first read tag (first 4 bytes).
+    // Enum layout: { i32 tag (at offset 0), ptr payload (at offset 8) }
+    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let i32_type = ctx.context.i32_type();
 
-    let i32_ptr_ty = ctx.context.i32_type().ptr_type(AddressSpace::default());
+    // Get tag using raw byte offset (more reliable than struct GEP for mixed allocations)
     let tag_ptr = ctx
         .builder
-        .build_pointer_cast(enum_ptr, i32_ptr_ty, "tag_ptr")
+        .build_pointer_cast(
+            enum_ptr,
+            i32_type.ptr_type(AddressSpace::default()),
+            "tag_ptr",
+        )
         .ok();
 
     let tag_val = if let Some(tp) = tag_ptr {
         ctx.builder
-            .build_load(ctx.context.i32_type(), tp, "tag")
+            .build_load(i32_type, tp, "tag")
             .ok()
             .map(|v| v.into_int_value())
     } else {
@@ -1159,44 +1305,152 @@ fn emit_print_enum<'ctx>(
                 .build_call(printf, &[fmt_s.into(), open.into()], "")
                 .ok();
 
-            // Payload pointer
-            // Enum layout: { tag(4), padding(4), payload... } (typically aligned to 8 or max align)
-            // Assuming 8 byte alignment for payload if we use `alloc_enum` logic.
-            // Let's calculate payload address.
-            // Better: cast enum_ptr to { i32, Payload }*?
-            // Or { i64, Payload } if aligned?
-            // Safer: Cast to packed struct { i32, Payload }? No, alignment rules apply.
-            // Best bet: Payload starts at offset 8 (standard for our compiler simplifications? or 4? check `enums.rs`)
-            // Assuming offset 8 for now to be safe/lazy?
-            // Let's check: layout logic usually standardizes.
-
-            // Let's trust `enums.rs` or standard layout.
-            // Assuming offset 8 (tag is 4 bytes, usually padded to 8 for alignment).
-            let payload_offset = 8;
-            let payload_base = unsafe {
+            // Get the payload pointer at offset 8 (after tag + padding)
+            let payload_ptr_field = unsafe {
                 ctx.builder
                     .build_gep(
                         ctx.context.i8_type(),
                         enum_ptr,
-                        &[ctx.context.i64_type().const_int(payload_offset, false)],
-                        "payload_base",
+                        &[ctx.context.i64_type().const_int(8, false)],
+                        "payload_ptr_field",
                     )
                     .ok()
             };
 
-            if let Some(base) = payload_base {
-                // Cast base to payload pointer type
-                let llvm_pty = ctx.get_llvm_type(*pty);
-                let pptr = ctx
+            if let Some(ppf) = payload_ptr_field {
+                // Cast to ptr* to load the stored pointer
+                let ppf_typed = ctx
                     .builder
-                    .build_pointer_cast(base, llvm_pty.ptr_type(AddressSpace::default()), "pptr")
+                    .build_pointer_cast(
+                        ppf,
+                        ptr_type.ptr_type(AddressSpace::default()),
+                        "ppf_typed",
+                    )
                     .ok();
+                
+                let payload_ptr = ppf_typed.and_then(|pt| {
+                    ctx.builder
+                        .build_load(ptr_type, pt, "payload_ptr")
+                        .ok()
+                        .map(|v| v.into_pointer_value())
+                });
 
-                if let Some(p) = pptr {
-                    let val = ctx.builder.build_load(llvm_pty, p, "pval").ok();
-                    if let Some(v) = val {
-                        emit_print_value(ctx, printf, *pty, v, false);
+                if let Some(pp) = payload_ptr {
+                    // For pointer types (Str, Array, Map, etc.), the payload_ptr IS the value
+                    // For value types (Int, Float, Bool), payload_ptr points TO the value
+                    let llvm_pty = ctx.get_llvm_type(*pty);
+                    
+                    if llvm_pty.is_pointer_type() {
+                        // Pointer type: the payload IS the value (string ptr, array ptr, etc.)
+                        emit_print_value(ctx, printf, *pty, pp.into(), false);
+                    } else {
+                        // Value type: load the actual value from the payload pointer
+                        let val = ctx.builder.build_load(llvm_pty, pp, "pval").ok();
+                        if let Some(v) = val {
+                            emit_print_value(ctx, printf, *pty, v, false);
+                        }
                     }
+                }
+            }
+
+            let close = ctx.const_string(")");
+            ctx.builder
+                .build_call(printf, &[fmt_s.into(), close.into()], "")
+                .ok();
+        }
+
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
+    }
+
+    ctx.builder.position_at_end(merge_bb);
+}
+
+/// Print an enum from a StructValue (inline enum) - extracts tag and payload directly without boxing
+fn emit_print_enum_value<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    printf: FunctionValue<'ctx>,
+    enum_val: inkwell::values::StructValue<'ctx>,
+    name: &str,
+    variants: &[(String, Option<doo_core::types::TypeId>)],
+) {
+    // Extract tag from struct value (field 0)
+    let tag = match ctx.builder.build_extract_value(enum_val, 0, "tag") {
+        Ok(v) => v.into_int_value(),
+        Err(_) => return,
+    };
+
+    // Extract payload pointer from struct value (field 1) 
+    let payload_ptr = match ctx.builder.build_extract_value(enum_val, 1, "payload_ptr") {
+        Ok(v) => v.into_pointer_value(),
+        Err(_) => return,
+    };
+
+    let current_fn = ctx
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let merge_bb = ctx.context.append_basic_block(current_fn, "print_enum_end");
+    let default_bb = ctx
+        .context
+        .append_basic_block(current_fn, "print_enum_default");
+
+    let mut cases = Vec::with_capacity(variants.len());
+    let mut target_bbs = Vec::with_capacity(variants.len());
+
+    for (i, _) in variants.iter().enumerate() {
+        let bb = ctx
+            .context
+            .append_basic_block(current_fn, &format!("print_enum_var_{}", i));
+        cases.push((ctx.context.i32_type().const_int(i as u64, false), bb));
+        target_bbs.push(bb);
+    }
+
+    ctx.builder.build_switch(tag, default_bb, &cases).ok();
+
+    // Default
+    ctx.builder.position_at_end(default_bb);
+    let unk = ctx.const_string(&format!("{}::Unknown", name));
+    let fmt_s = ctx.const_string("%s");
+    ctx.builder
+        .build_call(printf, &[fmt_s.into(), unk.into()], "")
+        .ok();
+    ctx.builder.build_unconditional_branch(merge_bb).ok();
+
+    // Variants
+    for (i, (var_name, payload_ty)) in variants.iter().enumerate() {
+        let bb = target_bbs[i];
+        ctx.builder.position_at_end(bb);
+
+        let fmt_s = ctx.const_string("%s");
+        let prefix = format!("{}::", name);
+        let prefix_s = ctx.const_string(&prefix);
+        ctx.builder
+            .build_call(printf, &[fmt_s.into(), prefix_s.into()], "")
+            .ok();
+
+        let vname_s = ctx.const_string(var_name);
+        ctx.builder
+            .build_call(printf, &[fmt_s.into(), vname_s.into()], "")
+            .ok();
+
+        if let Some(pty) = payload_ty {
+            let open = ctx.const_string("(");
+            ctx.builder
+                .build_call(printf, &[fmt_s.into(), open.into()], "")
+                .ok();
+
+            // For pointer types, payload_ptr IS the value
+            // For value types, load from payload_ptr
+            let llvm_pty = ctx.get_llvm_type(*pty);
+            
+            if llvm_pty.is_pointer_type() {
+                emit_print_value(ctx, printf, *pty, payload_ptr.into(), false);
+            } else {
+                let val = ctx.builder.build_load(llvm_pty, payload_ptr, "pval").ok();
+                if let Some(v) = val {
+                    emit_print_value(ctx, printf, *pty, v, false);
                 }
             }
 
@@ -1562,6 +1816,9 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::DOO_JSON_WRITE_COMMA => Some((&["ptr"], "void", false)),
         ffi_names::DOO_JSON_WRITE_COLON => Some((&["ptr"], "void", false)),
         ffi_names::DOO_JSON_WRITE_KEY => Some((&["ptr", "ptr"], "void", false)),
+        ffi_names::DOO_JSON_WRITE_KEY_INT => Some((&["ptr", "i64"], "void", false)),
+        ffi_names::DOO_JSON_WRITE_KEY_FLOAT => Some((&["ptr", "f64"], "void", false)),
+        ffi_names::DOO_JSON_WRITE_KEY_BOOL => Some((&["ptr", "i1"], "void", false)),
         ffi_names::DOO_JSON_WRITE_INT => Some((&["ptr", "i64"], "void", false)),
         ffi_names::DOO_JSON_WRITE_FLOAT => Some((&["ptr", "f64"], "void", false)),
         ffi_names::DOO_JSON_WRITE_BOOL => Some((&["ptr", "i32"], "void", false)),

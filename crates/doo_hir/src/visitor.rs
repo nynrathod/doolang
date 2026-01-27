@@ -64,6 +64,9 @@ pub trait HirVisitor {
             HirStmtKind::Let { value, .. } => {
                 self.visit_expr(value);
             }
+            HirStmtKind::TupleLet { value, .. } => {
+                self.visit_expr(value);
+            }
             HirStmtKind::ManualErrorExtract { expr, .. } => {
                 self.visit_expr(expr);
             }
@@ -80,7 +83,11 @@ pub trait HirVisitor {
                 }
             }
             HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}
-            HirStmtKind::If { condition, then_block, else_block } => {
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.visit_expr(condition);
                 for stmt in then_block {
                     self.visit_stmt(stmt);
@@ -104,7 +111,7 @@ pub trait HirVisitor {
     fn visit_expr(&mut self, expr: &HirExpr) {
         match &expr.kind {
             HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}
-            
+
             HirExprKind::BinOp { lhs, rhs, .. } => {
                 self.visit_expr(lhs);
                 self.visit_expr(rhs);
@@ -152,7 +159,11 @@ pub trait HirVisitor {
                     self.visit_expr(e);
                 }
             }
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.visit_expr(condition);
                 self.visit_expr(then_expr);
                 if let Some(e) = else_expr {
@@ -186,7 +197,10 @@ pub trait HirVisitor {
             HirExprKind::Ok(inner) | HirExprKind::Err(inner) | HirExprKind::Try(inner) => {
                 self.visit_expr(inner);
             }
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.visit_expr(inner);
                 self.visit_expr(message);
             }
@@ -268,6 +282,9 @@ pub trait HirVisitorMut {
             HirStmtKind::Let { value, .. } => {
                 self.visit_expr_mut(value);
             }
+            HirStmtKind::TupleLet { value, .. } => {
+                self.visit_expr_mut(value);
+            }
             HirStmtKind::ManualErrorExtract { expr, .. } => {
                 self.visit_expr_mut(expr);
             }
@@ -284,7 +301,11 @@ pub trait HirVisitorMut {
                 }
             }
             HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}
-            HirStmtKind::If { condition, then_block, else_block } => {
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.visit_expr_mut(condition);
                 for stmt in then_block {
                     self.visit_stmt_mut(stmt);
@@ -307,7 +328,7 @@ pub trait HirVisitorMut {
     fn visit_expr_mut(&mut self, expr: &mut HirExpr) {
         match &mut expr.kind {
             HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}
-            
+
             HirExprKind::BinOp { lhs, rhs, .. } => {
                 self.visit_expr_mut(lhs);
                 self.visit_expr_mut(rhs);
@@ -355,7 +376,11 @@ pub trait HirVisitorMut {
                     self.visit_expr_mut(e);
                 }
             }
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.visit_expr_mut(condition);
                 self.visit_expr_mut(then_expr);
                 if let Some(e) = else_expr {
@@ -389,7 +414,10 @@ pub trait HirVisitorMut {
             HirExprKind::Ok(inner) | HirExprKind::Err(inner) | HirExprKind::Try(inner) => {
                 self.visit_expr_mut(inner);
             }
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.visit_expr_mut(inner);
                 self.visit_expr_mut(message);
             }
@@ -433,8 +461,8 @@ pub trait HirVisitorMut {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use doo_frontend::Parser;
     use crate::Lower;
+    use doo_frontend::Parser;
 
     /// Counter visitor for testing.
     struct ExprCounter {
@@ -470,7 +498,7 @@ mod tests {
 
         let mut counter = ExprCounter { count: 0 };
         counter.visit_program(&hir);
-        
+
         // Should count: 1, 2, and the binop expression = 3 expressions
         assert!(counter.count >= 3);
     }

@@ -1,7 +1,88 @@
 use super::{ContainerKind, Decision, MirBuilder};
 use crate::{BinaryOp, MirConst, MirInstrKind, MirOperand, MirTerminator};
-use doo_core::types::builtin;
+use doo_core::{
+    constants::ffi_names,
+    types::{builtin, TypeId as CoreTypeId},
+};
 use doo_hir::{HirBinOp, HirExpr, HirExprKind};
+
+/// Build an expression with an expected type hint.
+/// This is used for return statements where we know the expected return type.
+pub fn build_expr_with_expected_type(
+    builder: &mut MirBuilder,
+    expr: &HirExpr,
+    expected_type: Option<CoreTypeId>,
+) -> MirOperand {
+    // For method calls, we may need to override the inferred type with the expected type
+    // This is particularly important for JSON.parse() which returns ANY in HIR
+    // but we know the expected type from the function's return type
+    if let HirExprKind::MethodCall {
+        receiver,
+        method,
+        args,
+    } = &expr.kind
+    {
+        // Check if this is a JSON.parse call (receiver is the JSON module)
+        let is_json_parse = matches!(&receiver.kind, HirExprKind::Local { name } if name == ffi_names::MODULE_JSON)
+            && method == "parse";
+
+        if is_json_parse {
+            return build_method_call_with_type(builder, expr, receiver, method, args, expected_type);
+        }
+    }
+
+    // For other expressions, use the regular build_expr
+    build_expr(builder, expr)
+}
+
+/// Build a method call with an explicit return type (used for JSON.parse)
+fn build_method_call_with_type(
+    builder: &mut MirBuilder,
+    expr: &HirExpr,
+    receiver: &HirExpr,
+    method: &str,
+    args: &[HirExpr],
+    expected_type: Option<CoreTypeId>,
+) -> MirOperand {
+    let span = builder.convert_span(expr.span);
+    let recv = build_expr(builder, receiver);
+    let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
+    let arg_ops: Vec<_> = args.iter().map(|a| build_expr(builder, a)).collect();
+    let arg_types: Vec<_> = args
+        .iter()
+        .zip(arg_ops.iter())
+        .map(|(arg, op)| {
+            arg.type_id
+                .or_else(|| match op {
+                    MirOperand::Temp(name) => builder.get_temp_type(name),
+                    MirOperand::Local(name) => builder.get_local_type(name),
+                    _ => None,
+                })
+                .unwrap_or(builtin::ANY)
+        })
+        .collect();
+    let dest = builder.new_temp();
+
+    // Use expected_type if provided, otherwise fall back to expr.type_id
+    let return_type = expected_type.or(expr.type_id);
+    if let Some(rt) = return_type {
+        builder.set_temp_type(&dest, rt);
+    }
+
+    builder.emit(
+        MirInstrKind::MethodCall {
+            dest: Some(dest.clone()),
+            receiver: recv,
+            receiver_type,
+            method: method.to_string(),
+            args: arg_ops,
+            arg_types,
+            return_type,
+        },
+        span,
+    );
+    MirOperand::Temp(dest)
+}
 
 pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
     let span = builder.convert_span(expr.span);
@@ -10,6 +91,11 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         HirExprKind::Const(cv) => MirOperand::Const(builder.const_to_mir(cv)),
 
         HirExprKind::Local { name } => {
+            // Built-in modules (JSON, Math, File, etc.) are treated as globals, not locals
+            if ffi_names::is_builtin_module(name) {
+                return MirOperand::Global(name.clone());
+            }
+            
             // Check ownership decision for this variable use
             if let Some(decision) = builder.get_ownership_decision(name, expr.span) {
                 let dest = builder.new_temp();
@@ -147,7 +233,20 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
         HirExprKind::Call { func, args } => {
             let func_name = builder.expr_to_name(func);
-            let arg_ops: Vec<_> = args.iter().map(|a| builder.build_expr(a)).collect();
+            
+            // Get expected parameter types for this function call
+            // This enables JSON.parse and similar to use the expected type
+            let param_types = builder.get_function_param_types(&func_name).cloned();
+            
+            // Build arguments with expected types when available
+            let arg_ops: Vec<_> = args.iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let expected_type = param_types.as_ref()
+                        .and_then(|types| types.get(i).copied());
+                    builder.build_expr_with_expected_type(a, expected_type)
+                })
+                .collect();
 
             // Intrinsic: print(...) -> MirInstrKind::Print
             if func_name == "print" {
@@ -182,11 +281,18 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 builder.emit(
                     MirInstrKind::Call {
                         dest: Some(dest.clone()),
-                        func: func_name,
+                        func: func_name.clone(),
                         args: arg_ops,
                     },
                     span,
                 );
+
+                // Record the return type of the call for type propagation
+                // This is critical for tuple returns and other complex types
+                if let Some(return_type) = builder.get_function_return_type(&func_name) {
+                    builder.set_temp_type(&dest, return_type);
+                }
+
                 MirOperand::Temp(dest)
             }
         }
@@ -299,14 +405,67 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 }
             }
 
-            let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
-            let recv = builder.build_expr(receiver);
+            // Check if receiver is a module-like name (uppercase first char = static module call)
+            // Modules like JSON, Math, File, etc. don't exist as local variables
+            let is_module_receiver = matches!(&receiver.kind, HirExprKind::Local { name } 
+                if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false));
+
+            // Get receiver type - try HIR type first, then look up from locals/temps
+            // Build receiver - for modules, use Global instead of Local
+            let recv = if is_module_receiver {
+                if let HirExprKind::Local { name } = &receiver.kind {
+                    MirOperand::Global(name.clone())
+                } else {
+                    builder.build_expr(receiver)
+                }
+            } else {
+                builder.build_expr(receiver)
+            };
+
+            let receiver_type = receiver
+                .type_id
+                .or_else(|| match &receiver.kind {
+                    HirExprKind::Local { name } => builder.get_local_type(name),
+                    _ => None,
+                })
+                .or_else(|| {
+                    // If HIR didn't have type, check the built operand
+                    match &recv {
+                        MirOperand::Temp(name) => builder.get_temp_type(name),
+                        MirOperand::Local(name) => builder.get_local_type(name),
+                        _ => None,
+                    }
+                })
+                .unwrap_or(builtin::ANY);
+
             let arg_ops: Vec<_> = args.iter().map(|a| builder.build_expr(a)).collect();
+
+            // Get argument types - try HIR type first, then look up from the built operand
             let arg_types: Vec<_> = args
                 .iter()
-                .map(|a| a.type_id.unwrap_or(builtin::ANY))
+                .zip(arg_ops.iter())
+                .map(|(a, op)| {
+                    a.type_id
+                        .or_else(|| {
+                            // If HIR didn't have type, check the built operand
+                            match op {
+                                MirOperand::Temp(name) => builder.get_temp_type(name),
+                                MirOperand::Local(name) => builder.get_local_type(name),
+                                _ => None,
+                            }
+                        })
+                        .unwrap_or(builtin::ANY)
+                })
                 .collect();
             let dest = builder.new_temp();
+
+            // If the HIR expression has a type_id, set it on the temp
+            // This ensures type inference from HIR is preserved
+            let return_type = expr.type_id;
+            if let Some(rt) = return_type {
+                builder.set_temp_type(&dest, rt);
+            }
+
             builder.emit(
                 MirInstrKind::MethodCall {
                     dest: Some(dest.clone()),
@@ -315,6 +474,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     method: method.clone(),
                     args: arg_ops,
                     arg_types,
+                    return_type,
                 },
                 span,
             );
@@ -541,6 +701,10 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     span,
                 );
             }
+            // Propagate array type to temp for type inference in later operations
+            if let Some(array_type) = expr.type_id {
+                builder.set_temp_type(&dest, array_type);
+            }
             MirOperand::Temp(dest)
         }
 
@@ -564,6 +728,10 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 },
                 span,
             );
+            // Propagate map type to temp for type inference in later operations
+            if let Some(map_type) = expr.type_id {
+                builder.set_temp_type(&dest, map_type);
+            }
             MirOperand::Temp(dest)
         }
 

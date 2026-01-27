@@ -2,9 +2,12 @@
 //!
 //! Validates types and infers missing types.
 
+use std::sync::Arc;
+
 use super::scope::{ScopeManager, Symbol, SymbolKind};
 use doo_core::{
-    types::{builtin, TypeId},
+    constants::ffi_names,
+    types::{builtin, TypeId, TypeKind, TypeRegistry},
     Span,
 };
 use doo_hir::{
@@ -43,6 +46,8 @@ pub enum TypeErrorKind {
 
 /// The type checker.
 pub struct TypeChecker {
+    /// Type registry for type operations (tuple construction, compatibility checking).
+    registry: Arc<TypeRegistry>,
     /// Scope manager for symbol tracking.
     scopes: ScopeManager,
     /// Collected errors.
@@ -54,9 +59,10 @@ pub struct TypeChecker {
 }
 
 impl TypeChecker {
-    /// Create a new type checker.
-    pub fn new() -> Self {
+    /// Create a new type checker with access to the type registry.
+    pub fn new(registry: Arc<TypeRegistry>) -> Self {
         Self {
+            registry,
             scopes: ScopeManager::new(),
             errors: Vec::new(),
             current_return_type: None,
@@ -66,11 +72,35 @@ impl TypeChecker {
 
     /// Check an entire program.
     pub fn check(&mut self, program: &HirProgram) -> Result<(), Vec<TypeError>> {
+        // First pass: Register all functions in global scope
+        // This allows function calls to resolve even before the function is defined
+        self.scopes.enter_scope(super::scope::ScopeKind::Global);
+        for item in &program.items {
+            if let HirItem::Function(func) = item {
+                // For now, store the return type directly as the function's type_id
+                // This is simplified - a full implementation would build a function type
+                let return_type = func.return_type.unwrap_or(builtin::VOID);
+
+                // Register function in global scope
+                let _ = self.scopes.define(Symbol {
+                    name: func.name.clone(),
+                    kind: SymbolKind::Function,
+                    type_id: Some(return_type),
+                    mutable: false,
+                    span: func.span,
+                    used: false,
+                });
+            }
+        }
+
+        // Second pass: Type check function bodies
         for item in &program.items {
             if let HirItem::Function(func) = item {
                 self.check_function(func);
             }
         }
+
+        self.scopes.exit_scope();
 
         if self.errors.is_empty() {
             Ok(())
@@ -183,6 +213,45 @@ impl TypeChecker {
                 });
             }
 
+            HirStmtKind::TupleLet {
+                names,
+                type_ids,
+                value,
+                mutable,
+            } => {
+                // Check the value expression (should be a tuple or function returning tuple)
+                let value_type = self.check_expr(value);
+
+                // Try to get element types from the tuple type
+                let element_types: Vec<TypeId> = if let Some(info) = self.registry.get(value_type) {
+                    if let TypeKind::Tuple { elements } = &info.kind {
+                        elements.clone()
+                    } else {
+                        vec![builtin::ANY; names.len()]
+                    }
+                } else {
+                    vec![builtin::ANY; names.len()]
+                };
+
+                // Register each variable in the current scope
+                for (i, name) in names.iter().enumerate() {
+                    let var_type = type_ids
+                        .get(i)
+                        .and_then(|t| *t)
+                        .or_else(|| element_types.get(i).copied())
+                        .unwrap_or(builtin::ANY);
+
+                    let _ = self.scopes.define(Symbol {
+                        name: name.clone(),
+                        kind: SymbolKind::Variable,
+                        type_id: Some(var_type),
+                        mutable: *mutable,
+                        span: stmt.span,
+                        used: false,
+                    });
+                }
+            }
+
             HirStmtKind::Assign { target, value } => {
                 self.check_expr(target);
                 self.check_expr(value);
@@ -222,6 +291,11 @@ impl TypeChecker {
             HirExprKind::Const(c) => c.type_id(),
 
             HirExprKind::Local { name } => {
+                // Built-in modules (JSON, Math, File, etc.) don't need to be in scope
+                if ffi_names::is_builtin_module(name) {
+                    return builtin::ANY; // Module type - resolved at codegen
+                }
+
                 if let Some(sym) = self.scopes.lookup(name) {
                     sym.type_id.unwrap_or(builtin::ANY)
                 } else {
@@ -261,14 +335,37 @@ impl TypeChecker {
             }
 
             HirExprKind::Call { func, args } => {
-                self.check_expr(func);
+                // Check all argument expressions
                 for arg in args {
                     self.check_expr(arg);
                 }
-                expr.type_id.unwrap_or(builtin::ANY)
+
+                // Try to get the function return type
+                // First, see if the func is a local reference (e.g., a function name)
+                let func_return_type = if let HirExprKind::Local { name } = &func.kind {
+                    // Look up the function in scope
+                    if let Some(sym) = self.scopes.lookup(name) {
+                        if sym.kind == SymbolKind::Function {
+                            sym.type_id
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    // For more complex call targets, just check the expression
+                    self.check_expr(func);
+                    None
+                };
+
+                // Return the function's return type, or fall back to expr.type_id, or ANY
+                func_return_type.or(expr.type_id).unwrap_or(builtin::ANY)
             }
 
             HirExprKind::MethodCall { receiver, args, .. } => {
+                // Built-in modules are checked via is_builtin_module in Local case
+                // This call to check_expr will properly skip the undefined error for them
                 self.check_expr(receiver);
                 for arg in args {
                     self.check_expr(arg);
@@ -499,10 +596,9 @@ impl TypeChecker {
         } else if return_types.len() == 1 {
             return_types[0]
         } else {
-            // Multiple return values would be a tuple, but we don't have tuple registry here
-            // For now, just check each individual return against expected
-            // This is a simplified check - full implementation would build tuple type
-            return_types[0]
+            // Multiple return values form a tuple type.
+            // Look up or match the expected tuple type to verify compatibility.
+            self.match_tuple_return_type(&return_types, expected_type, span)
         };
 
         // Skip validation if types use ANY (dynamic typing)
@@ -510,8 +606,8 @@ impl TypeChecker {
             return;
         }
 
-        // Check type compatibility
-        if actual_type != expected_type {
+        // Check type compatibility using registry
+        if !self.registry.is_compatible(actual_type, expected_type) {
             self.errors.push(TypeError {
                 kind: TypeErrorKind::ReturnTypeMismatch {
                     function: self.current_function.clone(),
@@ -521,5 +617,63 @@ impl TypeChecker {
                 span,
             });
         }
+    }
+
+    /// Match a multi-value return against an expected tuple type.
+    /// Returns the expected type if the elements match, or reports errors.
+    fn match_tuple_return_type(
+        &mut self,
+        return_types: &[TypeId],
+        expected_type: TypeId,
+        span: Span,
+    ) -> TypeId {
+        // Get the expected type info from registry
+        let Some(expected_info) = self.registry.get(expected_type) else {
+            // Expected type not in registry, can't validate - return ANY to skip
+            return builtin::ANY;
+        };
+
+        // Expected type must be a Tuple for multi-value returns
+        let TypeKind::Tuple {
+            elements: expected_elements,
+        } = &expected_info.kind
+        else {
+            // Expected type is not a tuple but we have multiple return values
+            // This is a type mismatch - report with first element type
+            return return_types[0];
+        };
+
+        // Check element count matches
+        if return_types.len() != expected_elements.len() {
+            // Different number of elements - report mismatch
+            // Return first type to trigger error reporting
+            return return_types[0];
+        }
+
+        // Check each element for compatibility
+        for (i, (actual, expected)) in return_types
+            .iter()
+            .zip(expected_elements.iter())
+            .enumerate()
+        {
+            // Skip ANY types (dynamic)
+            if *actual == builtin::ANY || *expected == builtin::ANY {
+                continue;
+            }
+
+            if !self.registry.is_compatible(*actual, *expected) {
+                // Element type mismatch - report specific error
+                self.errors.push(TypeError {
+                    kind: TypeErrorKind::Mismatch {
+                        expected: *expected,
+                        found: *actual,
+                    },
+                    span,
+                });
+            }
+        }
+
+        // All elements matched - return the expected tuple type
+        expected_type
     }
 }

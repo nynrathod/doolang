@@ -278,6 +278,9 @@ impl TypeRegistry {
 
     pub fn define_struct(&mut self, name: &str, fields: Vec<(String, TypeId)>) -> TypeId {
         let id = self.declare_named(name);
+        if std::env::var("DOO_DEBUG_TYPES").is_ok() {
+            eprintln!("[TYPES] define_struct '{}' with id={:?}, fields={:?}", name, id, fields);
+        }
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Struct {
                 name: name.to_string(),
@@ -290,6 +293,9 @@ impl TypeRegistry {
 
     pub fn define_enum(&mut self, name: &str, variants: Vec<(String, Option<TypeId>)>) -> TypeId {
         let id = self.declare_named(name);
+        if std::env::var("DOO_DEBUG_TYPES").is_ok() {
+            eprintln!("[TYPES] define_enum '{}' with id={:?}, variants={:?}", name, id, variants.iter().map(|(n, _)| n).collect::<Vec<_>>());
+        }
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Enum {
                 name: name.to_string(),

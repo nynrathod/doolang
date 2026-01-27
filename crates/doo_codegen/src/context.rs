@@ -97,6 +97,19 @@ pub struct CodegenContext<'ctx> {
     /// Variable types: variable_name -> TypeId.
     /// Tracks the Doo type of each variable for deep clone/drop decisions.
     pub variable_types: FxHashMap<String, TypeId>,
+
+    // ========================================================================
+    // Function Parameter Types (for type coercion in calls)
+    // ========================================================================
+    /// Function parameter types: function_name -> Vec<TypeId>.
+    /// Tracks the Doo types of each function's parameters for argument coercion.
+    pub function_param_types: FxHashMap<String, Vec<TypeId>>,
+
+    // ========================================================================
+    // Current Function Return Type (for type conversion in returns)
+    // ========================================================================
+    /// Current function's return type (for proper return value conversion).
+    pub current_function_return_type: Option<TypeId>,
 }
 
 impl<'ctx> CodegenContext<'ctx> {
@@ -125,13 +138,19 @@ impl<'ctx> CodegenContext<'ctx> {
             struct_metadata: FxHashMap::default(),
             temp_struct_types: FxHashMap::default(),
             variable_types: FxHashMap::default(),
+            function_param_types: FxHashMap::default(),
+            current_function_return_type: None,
         }
     }
 
     pub fn get_type_kind(&self, type_id: TypeId) -> Option<TypeKind> {
-        self.type_registry
+        let result = self.type_registry
             .get(type_id)
-            .map(|info| info.kind.clone())
+            .map(|info| info.kind.clone());
+        if std::env::var("DOO_DEBUG_TYPES").is_ok() {
+            eprintln!("[TYPES] get_type_kind({:?}) = {:?}", type_id, result);
+        }
+        result
     }
 
     /// Get enum variant index by enum name and variant name.
@@ -152,6 +171,17 @@ impl<'ctx> CodegenContext<'ctx> {
             }
         }
         None
+    }
+
+    /// Register function parameter types for argument coercion during calls.
+    pub fn register_function_param_types(&mut self, func_name: &str, param_types: Vec<TypeId>) {
+        self.function_param_types
+            .insert(func_name.to_string(), param_types);
+    }
+
+    /// Get function parameter types (for argument coercion during calls).
+    pub fn get_function_param_types(&self, func_name: &str) -> Option<&Vec<TypeId>> {
+        self.function_param_types.get(func_name)
     }
 
     // ========================================================================
@@ -223,13 +253,20 @@ impl<'ctx> CodegenContext<'ctx> {
                 | TypeKind::Result { .. }
                 | TypeKind::Tuple { .. }
                 | TypeKind::Struct { .. }
-                | TypeKind::Enum { .. }
                 | TypeKind::Function { .. }
                 | TypeKind::TypeRef { .. } => self
                     .context
                     .i8_type()
                     .ptr_type(AddressSpace::default())
                     .into(),
+
+                TypeKind::Enum { .. } => {
+                    // Enum layout: { i32 tag, ptr payload }
+                    let ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+                    self.context
+                        .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                        .into()
+                }
             }
         } else {
             // Unknown type: treat as opaque pointer
@@ -505,20 +542,21 @@ impl<'ctx> CodegenContext<'ctx> {
             .and_then(|fields| fields.iter().position(|f| f == field_name))
             .map(|idx| idx as u32)
     }
-    
+
     /// Get the TypeId for a struct field from the type registry.
     pub fn get_struct_field_type(&self, struct_name: &str, field_name: &str) -> Option<TypeId> {
         let struct_type_id = self.type_registry.lookup(struct_name)?;
         let type_info = self.type_registry.get(struct_type_id)?;
         if let TypeKind::Struct { fields, .. } = &type_info.kind {
-            fields.iter()
+            fields
+                .iter()
                 .find(|(name, _)| name == field_name)
                 .map(|(_, type_id)| *type_id)
         } else {
             None
         }
     }
-    
+
     /// Get all field TypeIds for a struct from the type registry.
     /// Returns field types in declaration order.
     pub fn get_struct_field_types(&self, struct_name: &str) -> Option<Vec<TypeId>> {

@@ -1,8 +1,11 @@
 //! Result Type
 //!
 //! The ONE result type for all FFI operations.
+//! MEMORY MODEL: Pure Ownership/Borrow - No RC, No GC
+//! All string data uses doo_alloc_string from memory.rs (single source of truth).
 
 use std::ffi::c_void;
+use crate::memory::doo_alloc_string;
 
 /// Result tag indicating Ok or Err.
 #[repr(u8)]
@@ -19,7 +22,7 @@ pub struct DooResult {
     pub tag: u8,
     /// Error code (0 if Ok)
     pub code: u16,
-    /// Pointer to data (owned)
+    /// Pointer to data (owned, allocated with libc)
     pub data: *mut c_void,
     /// Data length
     pub len: u32,
@@ -27,6 +30,7 @@ pub struct DooResult {
 
 impl DooResult {
     /// Create an Ok result with data.
+    /// OWNERSHIP: Takes ownership of data pointer.
     pub fn ok(data: *mut c_void, len: u32) -> Self {
         Self {
             tag: ResultTag::Ok as u8,
@@ -47,15 +51,16 @@ impl DooResult {
     }
 
     /// Create an Ok result from a string.
+    /// OWNERSHIP: Allocates string using libc malloc (centralized).
     pub fn ok_string(message: &str) -> Self {
-        let msg = message.to_string();
-        let len = msg.len() as u32;
-        let ptr = msg.as_ptr() as *mut c_void;
-        std::mem::forget(msg);
+        let len = message.len() as u32;
+        // Use centralized string allocation - NOT std::mem::forget!
+        let ptr = doo_alloc_string(message) as *mut c_void;
         Self::ok(ptr, len)
     }
 
     /// Create an Err result.
+    /// OWNERSHIP: Takes ownership of data pointer.
     pub fn err(code: u16, data: *mut c_void, len: u32) -> Self {
         Self {
             tag: ResultTag::Err as u8,
@@ -66,11 +71,11 @@ impl DooResult {
     }
 
     /// Create an Err result from a string.
+    /// OWNERSHIP: Allocates string using libc malloc (centralized).
     pub fn err_str(code: u16, message: &str) -> Self {
-        let msg = message.to_string();
-        let len = msg.len() as u32;
-        let ptr = msg.as_ptr() as *mut c_void;
-        std::mem::forget(msg);
+        let len = message.len() as u32;
+        // Use centralized string allocation - NOT std::mem::forget!
+        let ptr = doo_alloc_string(message) as *mut c_void;
         Self::err(code, ptr, len)
     }
 
@@ -84,7 +89,8 @@ impl DooResult {
         self.tag == ResultTag::Err as u8
     }
 
-    /// Convert to raw pointer (consumer must free).
+    /// Convert to raw pointer (consumer must free with doo_result_free).
+    /// OWNERSHIP: Transfers ownership to caller.
     pub fn into_raw(self) -> *mut Self {
         Box::into_raw(Box::new(self))
     }

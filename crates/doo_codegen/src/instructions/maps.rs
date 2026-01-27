@@ -183,6 +183,8 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 ctx.builder.position_at_end(end_bb);
                 let res = ctx.builder.build_load(val_llvm, res_alloca, dest).ok()?;
                 ctx.set_temp(dest, res);
+                // Set the type for the temp so Clone knows the correct value type
+                ctx.set_variable_type(dest, *val_type);
                 Some(res)
             }
 

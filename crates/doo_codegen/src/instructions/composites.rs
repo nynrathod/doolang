@@ -5,7 +5,7 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::utils::operand_to_value;
-use doo_core::types::builtin;
+use doo_core::types::{builtin, TypeKind};
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 
@@ -60,17 +60,47 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 Some(alloca.into())
             }
 
-            MirInstrKind::TupleGet { dest, tuple, index } => {
+            MirInstrKind::TupleGet { dest, tuple, index, tuple_type } => {
                 if let Some(tup) = operand_to_value(ctx, tuple) {
                     let tup: inkwell::values::BasicValueEnum = tup;
                     if tup.is_pointer_value() {
                         let ptr = tup.into_pointer_value();
-                        let tuple_ty = ctx.context.struct_type(&[ctx.i64_type().into()], false);
+                        
+                        // Build the tuple type from registry if we have the type info
+                        // First, extract element TypeIds to avoid borrowing issues
+                        let elem_type_ids: Option<Vec<doo_core::types::TypeId>> = if let Some(type_id) = tuple_type {
+                            if let Some(type_info) = ctx.type_registry.get(*type_id) {
+                                if let TypeKind::Tuple { elements } = &type_info.kind {
+                                    Some(elements.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        let (tuple_ty, elem_type) = if let Some(elem_ids) = elem_type_ids {
+                            // Build LLVM types for all elements
+                            let element_types: Vec<inkwell::types::BasicTypeEnum> = elem_ids
+                                .iter()
+                                .map(|tid| ctx.get_llvm_type(*tid))
+                                .collect();
+                            let tuple_struct = ctx.context.struct_type(&element_types, false);
+                            let elem_llvm = ctx.get_llvm_type(elem_ids[*index]);
+                            (tuple_struct, elem_llvm)
+                        } else {
+                            // Fallback: single i64
+                            (ctx.context.struct_type(&[ctx.i64_type().into()], false), ctx.i64_type().into())
+                        };
+
                         if let Ok(field_ptr) =
                             ctx.builder
                                 .build_struct_gep(tuple_ty, ptr, *index as u32, "field")
                         {
-                            if let Ok(val) = ctx.builder.build_load(ctx.i64_type(), field_ptr, dest)
+                            if let Ok(val) = ctx.builder.build_load(elem_type, field_ptr, dest)
                             {
                                 ctx.set_temp(dest, val);
                                 return Some(val);
@@ -94,22 +124,14 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 ctx.register_struct_metadata(struct_name, field_names);
 
                 // Build LLVM struct type with correct field types from type registry
+                // Use get_llvm_type for consistent type mapping across all code paths
                 let field_types: Vec<inkwell::types::BasicTypeEnum> = 
                     if let Some(field_type_ids) = ctx.get_struct_field_types(struct_name) {
                         field_type_ids.iter().map(|type_id| {
-                            // Map TypeId to LLVM type
-                            if *type_id == builtin::STR {
-                                ctx.ptr_type().into()
-                            } else if *type_id == builtin::FLOAT {
-                                ctx.f64_type().into()
-                            } else if *type_id == builtin::BOOL {
-                                ctx.bool_type().into()
-                            } else {
-                                ctx.i64_type().into() // Int and default
-                            }
+                            ctx.get_llvm_type(*type_id)
                         }).collect()
                     } else {
-                        // Fallback: all i64
+                        // Fallback: use get_llvm_type based on operand types
                         fields.iter().map(|_| ctx.i64_type().into()).collect()
                     };
                 let struct_type = ctx.get_struct_type(struct_name, &field_types);
@@ -141,6 +163,9 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     .left()?
                     .into_pointer_value();
 
+                // Get field type IDs for proper boxing
+                let field_type_ids = ctx.get_struct_field_types(struct_name);
+
                 // Store field values
                 for (i, (_, value)) in fields.iter().enumerate() {
                     if let Some(val) = operand_to_value(ctx, value) {
@@ -148,6 +173,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             ctx.builder
                                 .build_struct_gep(struct_type, struct_ptr, i as u32, "field_ptr")
                         {
+                            // Store value directly - enum struct types are now stored by value
                             ctx.builder.build_store(ptr, val).ok();
                         }
                     }

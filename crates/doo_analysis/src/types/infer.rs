@@ -24,6 +24,8 @@ pub struct TypeInference {
     constraints: Vec<TypeConstraint>,
     /// Local variable types (for closure body inference).
     locals: HashMap<String, TypeId>,
+    /// Function return types (name -> return type)
+    functions: HashMap<String, TypeId>,
 }
 
 /// A type constraint.
@@ -47,7 +49,13 @@ impl TypeInference {
         Self {
             constraints: Vec::new(),
             locals: HashMap::new(),
+            functions: HashMap::new(),
         }
+    }
+
+    /// Register a function's return type for lookup during call inference.
+    pub fn register_function(&mut self, name: String, return_type: TypeId) {
+        self.functions.insert(name, return_type);
     }
 
     /// Add a constraint: lhs must be compatible with rhs.
@@ -441,11 +449,16 @@ impl TypeInference {
                     match name.as_str() {
                         "typeOf" => return builtin::STR,
                         "print" | "println" => return builtin::VOID,
-                        _ => {}
+                        _ => {
+                            // Look up function return type from our registry
+                            if let Some(&ret_type) = self.functions.get(name) {
+                                return ret_type;
+                            }
+                        }
                     }
                 }
 
-                // For other functions, try to look up return type from function table
+                // For other functions, default to ANY
                 builtin::ANY
             }
 
@@ -475,6 +488,42 @@ impl TypeInference {
                 // Update type_id if not set
                 if type_id.is_none() {
                     *type_id = Some(value_type);
+                }
+            }
+            HirStmtKind::TupleLet {
+                names,
+                value,
+                type_ids,
+                ..
+            } => {
+                // Infer value type (should be a tuple)
+                let value_type = self.infer_expr_type(value, registry);
+
+                // Try to get element types from the tuple type
+                let element_types: Vec<TypeId> = if let Some(info) = registry.get(value_type) {
+                    if let TypeKind::Tuple { elements } = &info.kind {
+                        elements.clone()
+                    } else {
+                        vec![builtin::ANY; names.len()]
+                    }
+                } else {
+                    vec![builtin::ANY; names.len()]
+                };
+
+                // Register each variable with its inferred type
+                for (i, name) in names.iter().enumerate() {
+                    let var_type = type_ids
+                        .get(i)
+                        .and_then(|t| *t)
+                        .unwrap_or_else(|| element_types.get(i).copied().unwrap_or(builtin::ANY));
+                    self.locals.insert(name.clone(), var_type);
+
+                    // Update type_ids if not set
+                    if type_ids.get(i).map(|t| t.is_none()).unwrap_or(true) {
+                        if i < type_ids.len() {
+                            type_ids[i] = Some(var_type);
+                        }
+                    }
                 }
             }
             HirStmtKind::Expr(expr) => {

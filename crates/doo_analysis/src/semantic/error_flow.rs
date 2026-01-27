@@ -136,6 +136,10 @@ impl<'a> ErrorFlowChecker<'a> {
                 // ManualErrorExtract is used for `let ok, err = expr`
                 self.check_expr(value);
             }
+            HirStmtKind::TupleLet { value, .. } => {
+                // Check the value expression for tuple unpacking
+                self.check_expr(value);
+            }
             HirStmtKind::ManualErrorExtract { expr, .. } => {
                 // This is valid manual error extraction - just check the inner expression
                 self.check_expr(expr);

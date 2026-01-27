@@ -154,6 +154,15 @@ impl BorrowChecker {
                 self.active_borrows.remove(name);
             }
 
+            HirStmtKind::TupleLet { names, value, .. } => {
+                // Check value expression
+                self.check_expr(value, false);
+                // New variables - no borrows yet
+                for name in names {
+                    self.active_borrows.remove(name);
+                }
+            }
+
             HirStmtKind::ManualErrorExtract {
                 ok_names,
                 error_name,

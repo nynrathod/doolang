@@ -2,7 +2,7 @@
 
 use super::MirBuilder;
 use crate::{LocalDef, MirInstrKind, MirOperand, MirTerminator};
-use doo_core::types::builtin;
+use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind};
 use doo_hir::{HirExprKind, HirStmt, HirStmtKind};
 
 /// Build a MIR statement from a HIR statement.
@@ -45,6 +45,94 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             );
         }
 
+        HirStmtKind::TupleLet {
+            names,
+            type_ids,
+            value,
+            mutable,
+        } => {
+            // Build the tuple value first
+            let tuple_operand = builder.build_expr(value);
+
+            // Get the tuple type - first from HIR, then from temp_types if it was a call
+            let tuple_type = value.type_id.or_else(|| {
+                if let MirOperand::Temp(ref temp_name) = tuple_operand {
+                    builder.get_temp_type(temp_name)
+                } else {
+                    None
+                }
+            });
+
+            // Extract element types from the tuple type using TypeRegistry
+            let element_types: Vec<CoreTypeId> = if let Some(tuple_type_id) = tuple_type {
+                if let Some(info) = builder.type_registry.get(tuple_type_id) {
+                    if let TypeKind::Tuple { elements } = &info.kind {
+                        elements.clone()
+                    } else {
+                        // Not a tuple type, fall back to HIR type_ids or ANY
+                        type_ids.iter().map(|t| t.unwrap_or(builtin::ANY)).collect()
+                    }
+                } else {
+                    type_ids.iter().map(|t| t.unwrap_or(builtin::ANY)).collect()
+                }
+            } else {
+                type_ids.iter().map(|t| t.unwrap_or(builtin::ANY)).collect()
+            };
+
+            // Create a temp to hold the tuple if it's not already a local
+            let tuple_temp = match &tuple_operand {
+                MirOperand::Local(name) => name.clone(),
+                _ => {
+                    let temp = builder.new_temp();
+                    builder.emit(
+                        MirInstrKind::Assign {
+                            dest: temp.clone(),
+                            value: tuple_operand.clone(),
+                        },
+                        span,
+                    );
+                    temp
+                }
+            };
+
+            // Extract each element and assign to corresponding name
+            for (i, name) in names.iter().enumerate() {
+                // Get the type for this element from computed element_types
+                let elem_type = element_types.get(i).copied().unwrap_or(builtin::ANY);
+
+                // Register the local variable
+                if let Some(f) = &mut builder.current_func {
+                    if !f.locals.iter().any(|l| l.name == *name) {
+                        f.locals.push(LocalDef {
+                            name: name.clone(),
+                            type_id: elem_type,
+                            mutable: *mutable,
+                        });
+                    }
+                }
+
+                // Extract tuple element and assign
+                let extract_temp = builder.new_temp();
+                builder.emit(
+                    MirInstrKind::TupleGet {
+                        dest: extract_temp.clone(),
+                        tuple: MirOperand::Local(tuple_temp.clone()),
+                        index: i,
+                        tuple_type,
+                    },
+                    span,
+                );
+
+                builder.emit(
+                    MirInstrKind::Assign {
+                        dest: name.clone(),
+                        value: MirOperand::Local(extract_temp),
+                    },
+                    span,
+                );
+            }
+        }
+
         HirStmtKind::Assign { target, value } => {
             let val_operand = builder.build_expr(value);
 
@@ -76,7 +164,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                     // For index assignment like `arr[i] = value`
                     let array_operand = builder.build_expr(object);
                     let index_operand = builder.build_expr(index);
-                    
+
                     // Get container type: first try HIR type_id, then look up from locals
                     let container_type = object.type_id.or_else(|| {
                         if let HirExprKind::Local { name } = &object.kind {
@@ -85,7 +173,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                             None
                         }
                     });
-                    
+
                     let elem_type = container_type
                         .and_then(|t| builder.array_elem_type_from_type_id(t))
                         .unwrap_or(doo_core::types::builtin::ANY);
@@ -121,7 +209,11 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
         }
 
         HirStmtKind::Return(exprs) => {
-            let values: Vec<_> = exprs.iter().map(|expr| builder.build_expr(expr)).collect();
+            let expected_return_type = builder.get_current_function_return_type();
+            let values: Vec<_> = exprs
+                .iter()
+                .map(|expr| builder.build_expr_with_expected_type(expr, expected_return_type))
+                .collect();
             builder.set_terminator(MirTerminator::Return { values });
         }
 

@@ -68,6 +68,12 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                     if let Some(struct_name) = ctx.get_temp_struct_type(src_name).cloned() {
                         ctx.set_temp_struct_type(dest, &struct_name);
                     }
+                    // Also propagate the variable type from source to dest
+                    // This ensures that when a temp with known type is assigned to a local,
+                    // the local gets the correct type for subsequent Clone operations
+                    if let Some(src_type) = ctx.get_variable_type(src_name) {
+                        ctx.set_variable_type(dest, src_type);
+                    }
                 }
                 ctx.set_local(dest.clone(), val);
                 Some(val)
@@ -115,10 +121,10 @@ fn emit_deep_clone<'ctx>(
 
     // Get the TypeKind if we have a TypeId
     let type_kind = type_id.and_then(|tid| ctx.get_type_kind(tid));
-    
+
     // Also check if source has a struct type association to propagate
-    let src_struct_type = get_operand_name(src)
-        .and_then(|name| ctx.get_temp_struct_type(name).cloned());
+    let src_struct_type =
+        get_operand_name(src).and_then(|name| ctx.get_temp_struct_type(name).cloned());
 
     // Dispatch based on type
     let cloned = match &type_kind {
@@ -759,9 +765,26 @@ fn drop_map<'ctx>(
     _key_type: doo_core::types::TypeId,
     _value_type: doo_core::types::TypeId,
 ) {
-    // Simplified: just free the map pointer
-    // Full implementation would iterate entries and drop keys/values
-    drop_pointer(ctx, ptr);
+    // Map stores DATA pointer, but we need to free the HEADER pointer
+    // Header is at (data_ptr - 16 bytes)
+    let i8_type = ctx.context.i8_type();
+    let i32_type = ctx.context.i32_type();
+
+    // Calculate header pointer: data_ptr - 16
+    let header_ptr = match unsafe {
+        ctx.builder.build_in_bounds_gep(
+            i8_type,
+            ptr,
+            &[i32_type.const_int((-16i64) as u64, true)],
+            "map_header_ptr",
+        )
+    } {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    // Free the header (which includes the data region)
+    drop_pointer(ctx, header_ptr);
 }
 
 /// Drop an optional value.

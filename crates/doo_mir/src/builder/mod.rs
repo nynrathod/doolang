@@ -42,6 +42,13 @@ pub struct MirBuilder<'a> {
 
     /// Temporary variable types for type propagation.
     pub(crate) temp_types: FxHashMap<String, CoreTypeId>,
+    
+    /// Function return types for type propagation during Call expression building.
+    pub(crate) function_return_types: FxHashMap<String, CoreTypeId>,
+    
+    /// Function parameter types for type propagation during Call argument building.
+    /// Key: function name, Value: list of parameter types
+    pub(crate) function_param_types: FxHashMap<String, Vec<CoreTypeId>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +71,8 @@ impl<'a> MirBuilder<'a> {
             continue_targets: Vec::new(),
             ownership_results: None,
             temp_types: FxHashMap::default(),
+            function_return_types: FxHashMap::default(),
+            function_param_types: FxHashMap::default(),
         }
     }
 
@@ -83,6 +92,8 @@ impl<'a> MirBuilder<'a> {
             continue_targets: Vec::new(),
             ownership_results: Some(ownership_results),
             temp_types: FxHashMap::default(),
+            function_return_types: FxHashMap::default(),
+            function_param_types: FxHashMap::default(),
         }
     }
 
@@ -99,6 +110,22 @@ impl<'a> MirBuilder<'a> {
     /// Build MIR from HIR program.
     pub fn build(&mut self, hir: &HirProgram) -> MirProgram {
         let mut program = MirProgram::new();
+
+        // First pass: collect all function return types and parameter types for type propagation
+        for item in &hir.items {
+            if let HirItem::Function(f) = item {
+                if let Some(return_type) = f.return_type {
+                    self.function_return_types.insert(f.name.clone(), return_type);
+                }
+                // Collect parameter types for type-aware argument building
+                let param_types: Vec<CoreTypeId> = f.params.iter()
+                    .filter_map(|p| p.type_id)
+                    .collect();
+                if !param_types.is_empty() {
+                    self.function_param_types.insert(f.name.clone(), param_types);
+                }
+            }
+        }
 
         for item in &hir.items {
             match item {
@@ -208,6 +235,14 @@ impl<'a> MirBuilder<'a> {
         expr::build_expr(self, expr)
     }
 
+    pub fn build_expr_with_expected_type(
+        &mut self,
+        expr: &HirExpr,
+        expected_type: Option<CoreTypeId>,
+    ) -> MirOperand {
+        expr::build_expr_with_expected_type(self, expr, expected_type)
+    }
+
     pub fn build_match_condition(
         &mut self,
         scrutinees: &[MirOperand],
@@ -310,7 +345,19 @@ impl<'a> MirBuilder<'a> {
                 self.infer_container_kind(inner)
             }
             HirExprKind::Borrow { expr: inner, .. } => self.infer_container_kind(inner),
-            HirExprKind::Local { name } => self.container_kinds.get(name).copied(),
+            HirExprKind::Local { name } => {
+                // First check the container_kinds cache
+                if let Some(kind) = self.container_kinds.get(name).copied() {
+                    return Some(kind);
+                }
+                // Fallback: look up the local variable's type from the function
+                if let Some(type_id) = self.get_local_type(name) {
+                    return self.container_kind_from_type_id(type_id);
+                }
+                // Final fallback: check expr.type_id
+                expr.type_id
+                    .and_then(|tid| self.container_kind_from_type_id(tid))
+            }
             _ => expr
                 .type_id
                 .and_then(|tid| self.container_kind_from_type_id(tid)),
@@ -374,6 +421,21 @@ impl<'a> MirBuilder<'a> {
         self.current_func
             .as_ref()
             .and_then(|f| f.locals.iter().find(|l| l.name == name).map(|l| l.type_id))
+    }
+
+    /// Get the return type of the current function being built.
+    pub(crate) fn get_current_function_return_type(&self) -> Option<CoreTypeId> {
+        self.current_func.as_ref().and_then(|f| f.return_type)
+    }
+
+    /// Get the return type of a function by name.
+    pub(crate) fn get_function_return_type(&self, name: &str) -> Option<CoreTypeId> {
+        self.function_return_types.get(name).copied()
+    }
+
+    /// Get the parameter types of a function by name.
+    pub(crate) fn get_function_param_types(&self, name: &str) -> Option<&Vec<CoreTypeId>> {
+        self.function_param_types.get(name)
     }
 
     /// Set the type of a temporary variable.

@@ -1,12 +1,58 @@
-//! FFI Function Names - Single Source of Truth
+//! FFI Function Names & Built-in Module Names - Single Source of Truth
 //!
-//! ALL FFI function name strings are centralized here. No hardcoded strings in codegen.
+//! ALL FFI function name strings and built-in module names are centralized here.
+//! No hardcoded strings in codegen, type checker, or anywhere else.
 //!
 //! ## Usage
 //! ```
 //! use doo_core::constants::ffi_names;
 //! let malloc_fn = module.get_function(ffi_names::MALLOC)?;
+//! 
+//! // Check if a name is a built-in module
+//! if ffi_names::is_builtin_module(name) { ... }
 //! ```
+
+// ============================================================================
+// Built-in Module Names (Static Modules like JSON, Math, File, etc.)
+// ============================================================================
+
+/// JSON module for parsing and stringifying JSON data
+pub const MODULE_JSON: &str = "JSON";
+/// Math module for mathematical operations
+pub const MODULE_MATH: &str = "Math";
+/// File module for file system operations
+pub const MODULE_FILE: &str = "File";
+/// Http module for HTTP server and client operations  
+pub const MODULE_HTTP: &str = "Http";
+/// Auth module for authentication (hashing, JWT, etc.)
+pub const MODULE_AUTH: &str = "Auth";
+/// Database module for database operations
+pub const MODULE_DATABASE: &str = "Database";
+/// Random module for random number generation
+pub const MODULE_RANDOM: &str = "Random";
+/// Array module for array utilities
+pub const MODULE_ARRAY: &str = "Array";
+/// Console module for console I/O
+pub const MODULE_CONSOLE: &str = "Console";
+
+/// All built-in module names in a static array for iteration/lookup
+pub const BUILTIN_MODULES: &[&str] = &[
+    MODULE_JSON,
+    MODULE_MATH,
+    MODULE_FILE,
+    MODULE_HTTP,
+    MODULE_AUTH,
+    MODULE_DATABASE,
+    MODULE_RANDOM,
+    MODULE_ARRAY,
+    MODULE_CONSOLE,
+];
+
+/// Check if a name is a built-in module
+#[inline]
+pub fn is_builtin_module(name: &str) -> bool {
+    BUILTIN_MODULES.contains(&name)
+}
 
 // ============================================================================
 // Standard C Library Functions
@@ -54,6 +100,9 @@ pub const DOO_JSON_WRITE_END_ARRAY: &str = "doo_json_write_end_array";
 pub const DOO_JSON_WRITE_COMMA: &str = "doo_json_write_comma";
 pub const DOO_JSON_WRITE_COLON: &str = "doo_json_write_colon";
 pub const DOO_JSON_WRITE_KEY: &str = "doo_json_write_key";
+pub const DOO_JSON_WRITE_KEY_INT: &str = "doo_json_write_key_int";
+pub const DOO_JSON_WRITE_KEY_FLOAT: &str = "doo_json_write_key_float";
+pub const DOO_JSON_WRITE_KEY_BOOL: &str = "doo_json_write_key_bool";
 
 // Primitives
 pub const DOO_JSON_WRITE_INT: &str = "doo_json_write_int";
@@ -62,8 +111,38 @@ pub const DOO_JSON_WRITE_BOOL: &str = "doo_json_write_bool";
 pub const DOO_JSON_WRITE_STRING: &str = "doo_json_write_string";
 pub const DOO_JSON_WRITE_NULL: &str = "doo_json_write_null";
 
-// Reader API
+// Reader/Parse API (type-specific)
 pub const DOO_JSON_PARSE: &str = "doo_json_parse";
+pub const DOO_JSON_PARSE_INT: &str = "doo_json_parse_int";
+pub const DOO_JSON_PARSE_FLOAT: &str = "doo_json_parse_float";
+pub const DOO_JSON_PARSE_BOOL: &str = "doo_json_parse_bool";
+pub const DOO_JSON_PARSE_STR: &str = "doo_json_parse_str";
+pub const DOO_JSON_PARSE_ARRAY_INT: &str = "doo_json_parse_array_int";
+pub const DOO_JSON_PARSE_ARRAY_FLOAT: &str = "doo_json_parse_array_float";
+pub const DOO_JSON_PARSE_ARRAY_BOOL: &str = "doo_json_parse_array_bool";
+pub const DOO_JSON_PARSE_ARRAY_STR: &str = "doo_json_parse_array_str";
+pub const DOO_JSON_PARSE_MAP_STR_INT: &str = "doo_json_parse_map_str_int";
+pub const DOO_JSON_PARSE_MAP_STR_FLOAT: &str = "doo_json_parse_map_str_float";
+pub const DOO_JSON_PARSE_MAP_STR_BOOL: &str = "doo_json_parse_map_str_bool";
+pub const DOO_JSON_PARSE_MAP_STR_STR: &str = "doo_json_parse_map_str_str";
+pub const DOO_JSON_PARSE_MAP_INT_INT: &str = "doo_json_parse_map_int_int";
+pub const DOO_JSON_PARSE_MAP_INT_FLOAT: &str = "doo_json_parse_map_int_float";
+pub const DOO_JSON_PARSE_MAP_INT_BOOL: &str = "doo_json_parse_map_int_bool";
+pub const DOO_JSON_PARSE_MAP_INT_STR: &str = "doo_json_parse_map_int_str";
+pub const DOO_JSON_PARSE_MAP_FLOAT_INT: &str = "doo_json_parse_map_float_int";
+pub const DOO_JSON_PARSE_MAP_FLOAT_FLOAT: &str = "doo_json_parse_map_float_float";
+pub const DOO_JSON_PARSE_MAP_FLOAT_BOOL: &str = "doo_json_parse_map_float_bool";
+pub const DOO_JSON_PARSE_MAP_FLOAT_STR: &str = "doo_json_parse_map_float_str";
+pub const DOO_JSON_PARSE_MAP_BOOL_INT: &str = "doo_json_parse_map_bool_int";
+pub const DOO_JSON_PARSE_MAP_BOOL_FLOAT: &str = "doo_json_parse_map_bool_float";
+pub const DOO_JSON_PARSE_MAP_BOOL_BOOL: &str = "doo_json_parse_map_bool_bool";
+pub const DOO_JSON_PARSE_MAP_BOOL_STR: &str = "doo_json_parse_map_bool_str";
+
+// Struct/Enum parse helpers
+pub const DOO_JSON_GET_FIELD: &str = "doo_json_get_field";
+pub const DOO_JSON_GET_VARIANT_NAME: &str = "doo_json_get_variant_name";
+pub const DOO_JSON_GET_VARIANT_PAYLOAD: &str = "doo_json_get_variant_payload";
+pub const DOO_JSON_IS_UNIT_VARIANT: &str = "doo_json_is_unit_variant";
 
 // ============================================================================
 // Doo HTTP FFI (doo_ffi_http)

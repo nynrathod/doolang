@@ -1,11 +1,13 @@
 //! Password Hashing
 //!
 //! Argon2 password hashing and verification.
+//! MEMORY MODEL: Pure Ownership/Borrow - No RC, No GC
+//! All string data uses doo_alloc_string from doo_ffi_core::memory (single source of truth).
 
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use password_hash::SaltString;
 use rand::rngs::OsRng;
-use doo_ffi_core::DooResult;
+use doo_ffi_core::{DooResult, doo_alloc_string};
 use crate::error::AuthError;
 
 /// Hash a password using Argon2.
@@ -33,6 +35,7 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, AuthError> {
 // ============================================================================
 
 /// Hash a password.
+/// OWNERSHIP: Returns DooResult with string allocated using libc.
 #[no_mangle]
 pub extern "C" fn doo_password_hash(password: *const i8) -> DooResult {
     if password.is_null() {
@@ -45,8 +48,8 @@ pub extern "C" fn doo_password_hash(password: *const i8) -> DooResult {
         match hash_password(password_str) {
             Ok(hash) => {
                 let len = hash.len() as u32;
-                let ptr = hash.as_ptr() as *mut std::ffi::c_void;
-                std::mem::forget(hash);
+                // Use centralized string allocation - NOT std::mem::forget!
+                let ptr = doo_alloc_string(&hash) as *mut std::ffi::c_void;
                 DooResult::ok(ptr, len)
             }
             Err(e) => DooResult::err_str(500, &format!("{:?}", e)),

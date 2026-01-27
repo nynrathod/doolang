@@ -213,6 +213,9 @@ impl<'a> ExhaustivenessChecker<'a> {
             HirStmtKind::Let { value, .. } => {
                 self.check_expr(value);
             }
+            HirStmtKind::TupleLet { value, .. } => {
+                self.check_expr(value);
+            }
             HirStmtKind::Assign { target, value } => {
                 self.check_expr(target);
                 self.check_expr(value);
