@@ -204,6 +204,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let l = builder.build_expr(lhs);
                 let r = builder.build_expr(rhs);
                 let dest = builder.new_temp();
+                
+                // Propagate type information from the expression
+                if let Some(type_id) = expr.type_id {
+                    builder.set_temp_type(&dest, type_id);
+                }
+                
                 builder.emit(
                     MirInstrKind::BinaryOp {
                         dest: dest.clone(),
@@ -220,6 +226,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         HirExprKind::UnaryOp { op, operand } => {
             let inner = builder.build_expr(operand);
             let dest = builder.new_temp();
+            
+            // Propagate type information from the expression or operand
+            // For Neg, the result type is the same as the operand type
+            if let Some(type_id) = expr.type_id.or(operand.type_id) {
+                builder.set_temp_type(&dest, type_id);
+            }
+            
             builder.emit(
                 MirInstrKind::UnaryOp {
                     dest: dest.clone(),
