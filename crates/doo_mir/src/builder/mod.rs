@@ -121,7 +121,11 @@ impl<'a> MirBuilder<'a> {
         for item in &hir.items {
             if let HirItem::Function(f) = item {
                 // For functions with error types, track them separately
-                if let (Some(return_type), Some(error_type)) = (f.return_type, f.error_type) {
+                // This includes both `-> T ! E` (return_type + error_type)
+                // and `-> ! E` (error_type only, meaning void return with possible error)
+                if let Some(error_type) = f.error_type {
+                    // Use VOID as the ok type when no return type is specified
+                    let return_type = f.return_type.unwrap_or(builtin::VOID);
                     // Store the Result type components
                     self.function_result_types
                         .insert(f.name.clone(), (return_type, error_type));
@@ -231,15 +235,47 @@ impl<'a> MirBuilder<'a> {
             self.build_stmt(stmt);
         }
 
-        // Ensure function has a terminator - only for void functions
-        // Non-void functions should have explicit returns; unreachable blocks stay unreachable
+        // Ensure function has a terminator
+        // For void functions and functions with `-> ! E` (void + error type),
+        // we need to add implicit return when control reaches the end
+        // Check if we need to add implicit return for `-> ! E` functions
+        let needs_void_error_return = if let Some(f) = &self.current_func {
+            if let Some(block) = f.blocks.get(self.current_block) {
+                matches!(block.terminator, MirTerminator::Unreachable)
+                    && f.return_type.is_none()
+                    && f.error_type.is_some()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // Generate temp BEFORE borrowing block mutably (to avoid borrow conflict)
+        let ok_dest = if needs_void_error_return {
+            Some(self.new_temp())
+        } else {
+            None
+        };
+
         if let Some(f) = &mut self.current_func {
-            // Only add empty return for void functions (no return type and no error type)
-            if f.return_type.is_none() && f.error_type.is_none() {
-                if let Some(block) = f.blocks.get_mut(self.current_block) {
-                    if matches!(block.terminator, MirTerminator::Unreachable) {
+            if let Some(block) = f.blocks.get_mut(self.current_block) {
+                if matches!(block.terminator, MirTerminator::Unreachable) {
+                    if f.return_type.is_none() && f.error_type.is_none() {
+                        // Pure void function: just return
                         block.terminator = MirTerminator::Return { values: Vec::new() };
+                    } else if let Some(dest) = ok_dest {
+                        // `-> ! E` function: return Ok(void) wrapped as Result
+                        let void_val = MirOperand::Const(MirConst::Int(0)); // void placeholder
+                        block.instructions.push(MirInstr::new(MirInstrKind::WrapOk {
+                            dest: dest.clone(),
+                            value: void_val,
+                        }));
+                        block.terminator = MirTerminator::Return {
+                            values: vec![MirOperand::Temp(dest)],
+                        };
                     }
+                    // Non-void functions should have explicit returns; unreachable blocks stay unreachable
                 }
             }
         }

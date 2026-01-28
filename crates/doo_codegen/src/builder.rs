@@ -333,26 +333,47 @@ impl<'ctx> CodegenBuilder<'ctx> {
             self.emit_terminator(ctx, &mir_block.terminator, &block_map);
         }
 
-        // Ensure all blocks have terminators
-        for mir_block in &func.blocks {
-            let bb = block_map[&mir_block.label];
-            if bb.get_terminator().is_none() {
-                ctx.builder.position_at_end(bb);
-                if func.return_type.is_none() {
-                    ctx.builder.build_return(None).ok();
-                } else {
-                    let ret_type = ctx.get_llvm_type(func.return_type.unwrap());
-                    let default: BasicValueEnum = match ret_type {
-                        BasicTypeEnum::IntType(t) => t.const_zero().into(),
-                        BasicTypeEnum::FloatType(t) => t.const_zero().into(),
-                        BasicTypeEnum::PointerType(t) => t.const_null().into(),
-                        BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
-                        BasicTypeEnum::StructType(t) => t.const_zero().into(),
-                        BasicTypeEnum::VectorType(t) => t.const_zero().into(),
-                        BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
-                    };
-                    ctx.builder.build_return(Some(&default)).ok();
+        // Ensure ALL LLVM basic blocks have terminators.
+        // This is critical because some codegen operations (like clone_string) create
+        // additional basic blocks (e.g., clone_merge) that are not in the MIR block_map.
+        // Without this, LLVM verification will fail with "does not have terminator" errors.
+        let llvm_func = block_map.values().next().and_then(|bb| bb.get_parent());
+        if let Some(llvm_func) = llvm_func {
+            let mut maybe_bb = llvm_func.get_first_basic_block();
+            while let Some(bb) = maybe_bb {
+                if bb.get_terminator().is_none() {
+                    if std::env::var("DOO_DEBUG").is_ok() {
+                        eprintln!("[CODEGEN] Block {:?} has no terminator, adding default return", bb.get_name().to_str());
+                    }
+                    ctx.builder.position_at_end(bb);
+
+                    // Check if this is a Result-returning function (has error_type).
+                    // Result functions return { i32 tag, ptr payload } struct.
+                    if func.error_type.is_some() {
+                        // Create a default Result struct: { 0 (Ok tag), null (no payload) }
+                        let result_struct_type = ctx.context.struct_type(
+                            &[ctx.context.i32_type().into(), ctx.ptr_type().into()],
+                            false,
+                        );
+                        let default_result = result_struct_type.const_zero();
+                        ctx.builder.build_return(Some(&default_result)).ok();
+                    } else if func.return_type.is_none() {
+                        ctx.builder.build_return(None).ok();
+                    } else {
+                        let ret_type = ctx.get_llvm_type(func.return_type.unwrap());
+                        let default: BasicValueEnum = match ret_type {
+                            BasicTypeEnum::IntType(t) => t.const_zero().into(),
+                            BasicTypeEnum::FloatType(t) => t.const_zero().into(),
+                            BasicTypeEnum::PointerType(t) => t.const_null().into(),
+                            BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
+                            BasicTypeEnum::StructType(t) => t.const_zero().into(),
+                            BasicTypeEnum::VectorType(t) => t.const_zero().into(),
+                            BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
+                        };
+                        ctx.builder.build_return(Some(&default)).ok();
+                    }
                 }
+                maybe_bb = bb.get_next_basic_block();
             }
         }
     }
@@ -486,6 +507,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
             } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
                     eprintln!("[CODEGEN] Branch cond: {:?}", cond);
+                    if let Some(bb) = ctx.builder.get_insert_block() {
+                        eprintln!("[CODEGEN] Branch emitting from block: {:?}", bb.get_name().to_str());
+                    }
                 }
                 if let Some(cond_val) = operand_to_value(ctx, cond) {
                     if std::env::var("DOO_DEBUG").is_ok() {
@@ -501,9 +525,18 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     if let (Some(then_bb), Some(else_bb)) =
                         (block_map.get(then_block), block_map.get(else_block))
                     {
-                        ctx.builder
-                            .build_conditional_branch(cond_bool, *then_bb, *else_bb)
-                            .ok();
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!("[CODEGEN] Building conditional branch to {} / {}", then_block, else_block);
+                        }
+                        let result = ctx.builder
+                            .build_conditional_branch(cond_bool, *then_bb, *else_bb);
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!("[CODEGEN] build_conditional_branch result: {:?}", result.is_ok());
+                            if let Err(e) = &result {
+                                eprintln!("[CODEGEN] build_conditional_branch error: {:?}", e);
+                            }
+                        }
+                        result.ok();
                     } else if std::env::var("DOO_DEBUG").is_ok() {
                         eprintln!(
                             "[CODEGEN] ERROR: Branch targets not found: {} or {}",

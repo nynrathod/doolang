@@ -326,6 +326,10 @@ fn clone_string<'ctx>(
 }
 
 /// Clone a struct by allocating new memory and copying/cloning fields.
+///
+/// IMPORTANT: Handles null pointers safely - if src_ptr is null, returns null.
+/// This is critical for error handling where error values may be null when
+/// the operation succeeded.
 fn clone_struct<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
@@ -339,9 +343,6 @@ fn clone_struct<'ctx>(
     let struct_type = ctx.lookup_struct_type(struct_name)?;
 
     // Calculate struct size using LLVM's size_of() for correct padding
-    // CRITICAL FIX: The old calculation (fields.len() * 8) was WRONG because:
-    // - Enum fields are { i32, ptr } = 16 bytes (not 8)
-    // - Struct padding can vary based on field alignment requirements
     let struct_size = struct_type
         .size_of()
         .map(|v| v.get_zero_extended_constant().unwrap_or(64))
@@ -355,6 +356,21 @@ fn clone_struct<'ctx>(
             let fn_ty = ptr_type.fn_type(&[i64_type.into()], false);
             ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
         });
+
+    // Handle null pointer case - critical for error values that may be null
+    let is_null = ctx.builder.build_is_null(src_ptr, "struct_is_null").ok()?;
+
+    let current_block = ctx.builder.get_insert_block()?;
+    let func = current_block.get_parent()?;
+    let clone_block = ctx.context.append_basic_block(func, "clone_struct_do");
+    let merge_block = ctx.context.append_basic_block(func, "clone_struct_merge");
+
+    ctx.builder
+        .build_conditional_branch(is_null, merge_block, clone_block)
+        .ok()?;
+
+    // Clone block: do the actual cloning
+    ctx.builder.position_at_end(clone_block);
 
     // Allocate new struct
     let dst_ptr = ctx
@@ -425,47 +441,433 @@ fn clone_struct<'ctx>(
         ctx.builder.build_store(dst_field_ptr, cloned_val).ok()?;
     }
 
-    Some(dst_ptr)
+    // IMPORTANT: Get the current block after all field operations, because
+    // clone_string may have created additional blocks (clone_str/clone_merge)
+    // and we need the actual final block as our phi predecessor
+    let final_clone_block = ctx.builder.get_insert_block()?;
+
+    ctx.builder.build_unconditional_branch(merge_block).ok()?;
+
+    // Merge block: phi between null and cloned struct
+    ctx.builder.position_at_end(merge_block);
+    let phi = ctx.builder.build_phi(ptr_type, "cloned_struct").ok()?;
+    phi.add_incoming(&[
+        (&ptr_type.const_null(), current_block),
+        (&dst_ptr, final_clone_block),
+    ]);
+
+    Some(phi.as_basic_value().into_pointer_value())
 }
 
-/// Clone an array (simplified: shallow clone for now).
-/// TODO: Implement proper deep clone with element iteration.
+/// Clone an array by allocating new memory and copying elements.
+///
+/// IMPORTANT: Handles null pointers safely - if src_ptr is null, returns null.
+/// This is critical for error handling where error values may be null when
+/// the operation succeeded.
+///
+/// For primitive types (Int, Float, Bool), uses memcpy for efficiency.
+/// For pointer types (Str), clones each element individually.
 fn clone_array<'ctx>(
-    _ctx: &mut CodegenContext<'ctx>,
+    ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
-    _element_type: doo_core::types::TypeId,
+    element_type: doo_core::types::TypeId,
 ) -> Option<inkwell::values::PointerValue<'ctx>> {
-    // For now, just return the source pointer (shallow copy)
-    // Full implementation would:
-    // 1. Read array length from header
-    // 2. Allocate new array with same capacity
-    // 3. Clone each element recursively
-    // 4. Return new array pointer
-    Some(src_ptr)
+    use crate::layout::{alloc_with_header, copy_memory, get_array_length_from_data};
+    use doo_core::types::builtin;
+
+    let ptr_type = ctx.ptr_type();
+    let i64_type = ctx.context.i64_type();
+
+    // Handle null pointer case - critical for error values that may be null
+    let is_null = ctx.builder.build_is_null(src_ptr, "array_is_null").ok()?;
+
+    let current_block = ctx.builder.get_insert_block()?;
+    let func = current_block.get_parent()?;
+    let clone_block = ctx.context.append_basic_block(func, "clone_array_do");
+    let merge_block = ctx.context.append_basic_block(func, "clone_array_merge");
+
+    ctx.builder
+        .build_conditional_branch(is_null, merge_block, clone_block)
+        .ok()?;
+
+    // Clone block: allocate new array and copy elements
+    ctx.builder.position_at_end(clone_block);
+
+    // Get source array length
+    let src_len = get_array_length_from_data(ctx, src_ptr)?;
+    let src_len_i32 = ctx
+        .builder
+        .build_int_truncate(src_len, ctx.context.i32_type(), "len_i32")
+        .ok()?;
+
+    // In Doo, all array elements are 8 bytes (pointers or i64)
+    let elem_size = i64_type.const_int(8, false);
+
+    // Allocate new array with same length (use i64 as element type for allocation)
+    let dst_ptr = alloc_with_header(ctx, src_len_i32, i64_type, "cloned_arr")?;
+
+    // Check if this is a string type that needs deep cloning
+    let is_str = element_type == builtin::STR;
+    let type_kind = ctx.get_type_kind(element_type);
+    let needs_deep_clone =
+        is_str || matches!(type_kind, Some(doo_core::types::TypeKind::Struct { .. }));
+
+    if needs_deep_clone {
+        // For strings and structs, iterate and clone each element
+        // Create loop: for i = 0; i < len; i++
+        let loop_preheader = ctx.builder.get_insert_block()?;
+        let loop_body = ctx.context.append_basic_block(func, "clone_loop_body");
+        let loop_end = ctx.context.append_basic_block(func, "clone_loop_end");
+
+        // Check if length > 0
+        let has_elements = ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                src_len,
+                i64_type.const_zero(),
+                "has_elements",
+            )
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(has_elements, loop_body, loop_end)
+            .ok()?;
+
+        // Loop body
+        ctx.builder.position_at_end(loop_body);
+        let idx_phi = ctx.builder.build_phi(i64_type, "idx").ok()?;
+        idx_phi.add_incoming(&[(&i64_type.const_zero(), loop_preheader)]);
+        let idx = idx_phi.as_basic_value().into_int_value();
+
+        // Get source element pointer (src_ptr is data ptr, offset by idx * elem_size)
+        let src_offset = ctx
+            .builder
+            .build_int_mul(idx, elem_size, "src_offset")
+            .ok()?;
+        let src_elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ctx.context.i8_type(), src_ptr, &[src_offset], "src_elem")
+                .ok()?
+        };
+
+        // Get dest element pointer
+        let dst_offset = ctx
+            .builder
+            .build_int_mul(idx, elem_size, "dst_offset")
+            .ok()?;
+        let dst_elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ctx.context.i8_type(), dst_ptr, &[dst_offset], "dst_elem")
+                .ok()?
+        };
+
+        // Load source element and clone if it's a string
+        if is_str {
+            let src_val = ctx
+                .builder
+                .build_load(ptr_type, src_elem_ptr, "src_str")
+                .ok()?
+                .into_pointer_value();
+            let cloned_val = clone_string(ctx, src_val).unwrap_or(src_val);
+            ctx.builder.build_store(dst_elem_ptr, cloned_val).ok()?;
+        } else {
+            // For structs, just copy the pointer (shallow copy for now)
+            let src_val = ctx
+                .builder
+                .build_load(ptr_type, src_elem_ptr, "src_ptr")
+                .ok()?;
+            ctx.builder.build_store(dst_elem_ptr, src_val).ok()?;
+        }
+
+        // CRITICAL: Capture current block AFTER all operations (clone_string may have changed it)
+        let loop_back_block = ctx.builder.get_insert_block()?;
+
+        // Increment index
+        let next_idx = ctx
+            .builder
+            .build_int_add(idx, i64_type.const_int(1, false), "next_idx")
+            .ok()?;
+
+        // Use the actual current block as predecessor, not the original loop_body
+        idx_phi.add_incoming(&[(&next_idx, loop_back_block)]);
+
+        // Check loop condition
+        let continue_loop = ctx
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, next_idx, src_len, "continue")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(continue_loop, loop_body, loop_end)
+            .ok()?;
+
+        // Loop end
+        ctx.builder.position_at_end(loop_end);
+    } else {
+        // For primitives (Int, Float, Bool), use efficient memcpy
+        let copy_size = ctx
+            .builder
+            .build_int_mul(src_len, elem_size, "copy_size")
+            .ok()?;
+        copy_memory(ctx, dst_ptr, src_ptr, copy_size)?;
+    }
+
+    let final_clone_block = ctx.builder.get_insert_block()?;
+    ctx.builder.build_unconditional_branch(merge_block).ok()?;
+
+    // Merge block: phi between null and cloned
+    ctx.builder.position_at_end(merge_block);
+    let phi = ctx.builder.build_phi(ptr_type, "cloned_array").ok()?;
+    phi.add_incoming(&[
+        (&ptr_type.const_null(), current_block),
+        (&dst_ptr, final_clone_block),
+    ]);
+
+    Some(phi.as_basic_value().into_pointer_value())
 }
 
-/// Clone a map (simplified: shallow clone for now).
-/// TODO: Implement proper deep clone with key/value iteration.
+/// Clone a map by allocating new memory and copying key-value pairs.
+///
+/// IMPORTANT: Handles null pointers safely - if src_ptr is null, returns null.
+/// This is critical for error handling where error values may be null when
+/// the operation succeeded.
+///
+/// Maps are stored as arrays of (key, value) pairs with a header.
 fn clone_map<'ctx>(
-    _ctx: &mut CodegenContext<'ctx>,
+    ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
-    _key_type: doo_core::types::TypeId,
-    _value_type: doo_core::types::TypeId,
+    key_type: doo_core::types::TypeId,
+    value_type: doo_core::types::TypeId,
 ) -> Option<inkwell::values::PointerValue<'ctx>> {
-    // For now, just return the source pointer (shallow copy)
-    // Full implementation would iterate all entries and clone
-    Some(src_ptr)
+    use crate::layout::{alloc_with_header, copy_memory, get_array_length_from_data};
+    use doo_core::types::builtin;
+
+    let ptr_type = ctx.ptr_type();
+    let i64_type = ctx.context.i64_type();
+
+    // Handle null pointer case - critical for error values that may be null
+    let is_null = ctx.builder.build_is_null(src_ptr, "map_is_null").ok()?;
+
+    let current_block = ctx.builder.get_insert_block()?;
+    let func = current_block.get_parent()?;
+    let clone_block = ctx.context.append_basic_block(func, "clone_map_do");
+    let merge_block = ctx.context.append_basic_block(func, "clone_map_merge");
+
+    ctx.builder
+        .build_conditional_branch(is_null, merge_block, clone_block)
+        .ok()?;
+
+    // Clone block: allocate new map and copy entries
+    ctx.builder.position_at_end(clone_block);
+
+    // Get source map length
+    let src_len = get_array_length_from_data(ctx, src_ptr)?;
+    let src_len_i32 = ctx
+        .builder
+        .build_int_truncate(src_len, ctx.context.i32_type(), "len_i32")
+        .ok()?;
+
+    // Use i8 array type for map entries (16 bytes per entry)
+    let pair_type = ctx.context.i8_type().array_type(16);
+
+    // Allocate new map with same length
+    let dst_ptr = alloc_with_header(ctx, src_len_i32, pair_type, "cloned_map")?;
+
+    // Check if keys or values need deep cloning (strings)
+    let key_is_str = key_type == builtin::STR;
+    let val_is_str = value_type == builtin::STR;
+    let needs_deep_clone = key_is_str || val_is_str;
+
+    if needs_deep_clone {
+        // For string keys/values, iterate and clone
+        let loop_preheader = ctx.builder.get_insert_block()?;
+        let loop_body = ctx.context.append_basic_block(func, "clone_map_loop");
+        let loop_end = ctx.context.append_basic_block(func, "clone_map_end");
+
+        let has_elements = ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                src_len,
+                i64_type.const_zero(),
+                "has_entries",
+            )
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(has_elements, loop_body, loop_end)
+            .ok()?;
+
+        ctx.builder.position_at_end(loop_body);
+        let idx_phi = ctx.builder.build_phi(i64_type, "idx").ok()?;
+        idx_phi.add_incoming(&[(&i64_type.const_zero(), loop_preheader)]);
+        let idx = idx_phi.as_basic_value().into_int_value();
+
+        // Calculate entry offset (idx * 16 for fixed pair size)
+        let entry_size = i64_type.const_int(16, false);
+        let entry_offset = ctx
+            .builder
+            .build_int_mul(idx, entry_size, "entry_offset")
+            .ok()?;
+
+        let src_entry_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ctx.context.i8_type(), src_ptr, &[entry_offset], "src_entry")
+                .ok()?
+        };
+        let dst_entry_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ctx.context.i8_type(), dst_ptr, &[entry_offset], "dst_entry")
+                .ok()?
+        };
+
+        // Clone key if string
+        if key_is_str {
+            let src_key = ctx
+                .builder
+                .build_load(ptr_type, src_entry_ptr, "src_key")
+                .ok()?
+                .into_pointer_value();
+            let cloned_key = clone_string(ctx, src_key).unwrap_or(src_key);
+            ctx.builder.build_store(dst_entry_ptr, cloned_key).ok()?;
+        } else {
+            let src_key = ctx
+                .builder
+                .build_load(i64_type, src_entry_ptr, "src_key")
+                .ok()?;
+            ctx.builder.build_store(dst_entry_ptr, src_key).ok()?;
+        }
+
+        // Clone value (offset by 8 bytes)
+        let val_offset = ctx
+            .builder
+            .build_int_add(entry_offset, i64_type.const_int(8, false), "val_offset")
+            .ok()?;
+        let src_val_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ctx.context.i8_type(), src_ptr, &[val_offset], "src_val_ptr")
+                .ok()?
+        };
+        let dst_val_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ctx.context.i8_type(), dst_ptr, &[val_offset], "dst_val_ptr")
+                .ok()?
+        };
+
+        if val_is_str {
+            let src_val = ctx
+                .builder
+                .build_load(ptr_type, src_val_ptr, "src_val")
+                .ok()?
+                .into_pointer_value();
+            let cloned_val = clone_string(ctx, src_val).unwrap_or(src_val);
+            ctx.builder.build_store(dst_val_ptr, cloned_val).ok()?;
+        } else {
+            let src_val = ctx
+                .builder
+                .build_load(i64_type, src_val_ptr, "src_val")
+                .ok()?;
+            ctx.builder.build_store(dst_val_ptr, src_val).ok()?;
+        }
+
+        // CRITICAL: Capture current block AFTER all operations (clone_string may have changed it)
+        let loop_back_block = ctx.builder.get_insert_block()?;
+
+        // Increment and loop
+        let next_idx = ctx
+            .builder
+            .build_int_add(idx, i64_type.const_int(1, false), "next_idx")
+            .ok()?;
+
+        // Use the actual current block as predecessor, not the original loop_body
+        idx_phi.add_incoming(&[(&next_idx, loop_back_block)]);
+
+        let continue_loop = ctx
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, next_idx, src_len, "continue")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(continue_loop, loop_body, loop_end)
+            .ok()?;
+
+        ctx.builder.position_at_end(loop_end);
+    } else {
+        // For primitive key/value types, use efficient memcpy
+        let entry_size = i64_type.const_int(16, false);
+        let copy_size = ctx
+            .builder
+            .build_int_mul(src_len, entry_size, "copy_size")
+            .ok()?;
+        copy_memory(ctx, dst_ptr, src_ptr, copy_size)?;
+    }
+
+    let final_clone_block = ctx.builder.get_insert_block()?;
+    ctx.builder.build_unconditional_branch(merge_block).ok()?;
+
+    // Merge block: phi between null and cloned
+    ctx.builder.position_at_end(merge_block);
+    let phi = ctx.builder.build_phi(ptr_type, "cloned_map").ok()?;
+    phi.add_incoming(&[
+        (&ptr_type.const_null(), current_block),
+        (&dst_ptr, final_clone_block),
+    ]);
+
+    Some(phi.as_basic_value().into_pointer_value())
 }
 
 /// Clone an optional value.
+///
+/// IMPORTANT: Handles null pointers safely - if src_ptr is null, returns null.
+/// This is critical for error handling where error values may be null when
+/// the operation succeeded.
+///
+/// Optional values are represented as nullable pointers - null means None,
+/// non-null means Some(value). For non-null, we clone the inner value.
 fn clone_optional<'ctx>(
-    _ctx: &mut CodegenContext<'ctx>,
+    ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
-    _inner_type: doo_core::types::TypeId,
+    inner_type: doo_core::types::TypeId,
 ) -> Option<inkwell::values::PointerValue<'ctx>> {
-    // For now, just return the source pointer (shallow copy)
-    // Full implementation would check has_value flag and clone inner if present
-    Some(src_ptr)
+    use doo_core::types::builtin;
+
+    let ptr_type = ctx.ptr_type();
+
+    // Handle null pointer case - null means None, so return null
+    let is_null = ctx
+        .builder
+        .build_is_null(src_ptr, "optional_is_null")
+        .ok()?;
+
+    let current_block = ctx.builder.get_insert_block()?;
+    let func = current_block.get_parent()?;
+    let clone_block = ctx.context.append_basic_block(func, "clone_optional_do");
+    let merge_block = ctx.context.append_basic_block(func, "clone_optional_merge");
+
+    ctx.builder
+        .build_conditional_branch(is_null, merge_block, clone_block)
+        .ok()?;
+
+    // Clone block: clone the inner value based on its type
+    ctx.builder.position_at_end(clone_block);
+
+    let cloned_ptr = if inner_type == builtin::STR {
+        // String: deep clone
+        clone_string(ctx, src_ptr).unwrap_or(src_ptr)
+    } else {
+        // For other types, just use the same pointer (shallow copy)
+        // This is safe because we've already handled null above
+        src_ptr
+    };
+
+    ctx.builder.build_unconditional_branch(merge_block).ok()?;
+
+    // Merge block: phi between null and cloned
+    ctx.builder.position_at_end(merge_block);
+    let phi = ctx.builder.build_phi(ptr_type, "cloned_optional").ok()?;
+    phi.add_incoming(&[
+        (&ptr_type.const_null(), current_block),
+        (&cloned_ptr, clone_block),
+    ]);
+
+    Some(phi.as_basic_value().into_pointer_value())
 }
 
 // ============================================================================
@@ -741,8 +1143,38 @@ fn drop_array<'ctx>(
     ptr: inkwell::values::PointerValue<'ctx>,
     _element_type: doo_core::types::TypeId,
 ) {
-    // Array stores DATA pointer, but we need to free the HEADER pointer
-    // Header is at (data_ptr - 16 bytes)
+    // CRITICAL: Check if data pointer is null BEFORE calculating header pointer!
+    // If data_ptr is null, then data_ptr - 16 = 0xFFFFFFFFFFFFFFF0 which is NOT null
+    // and would crash when passed to free().
+    let is_null = match ctx.builder.build_is_null(ptr, "arr_data_is_null") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let current_block = match ctx.builder.get_insert_block() {
+        Some(b) => b,
+        None => return,
+    };
+    let func = match current_block.get_parent() {
+        Some(f) => f,
+        None => return,
+    };
+
+    let free_block = ctx.context.append_basic_block(func, "drop_arr_free");
+    let continue_block = ctx.context.append_basic_block(func, "drop_arr_continue");
+
+    // If null, skip to continue; otherwise go to free block
+    if ctx
+        .builder
+        .build_conditional_branch(is_null, continue_block, free_block)
+        .is_err()
+    {
+        return;
+    }
+
+    // Free block: calculate header pointer and free
+    ctx.builder.position_at_end(free_block);
+
     let i8_type = ctx.context.i8_type();
     let i32_type = ctx.context.i32_type();
 
@@ -756,11 +1188,19 @@ fn drop_array<'ctx>(
         )
     } {
         Ok(p) => p,
-        Err(_) => return,
+        Err(_) => {
+            ctx.builder.position_at_end(continue_block);
+            return;
+        }
     };
 
     // Free the header (which includes the data region)
-    drop_pointer(ctx, header_ptr);
+    let free_fn = get_or_declare_free(ctx);
+    let _ = ctx.builder.build_call(free_fn, &[header_ptr.into()], "");
+    let _ = ctx.builder.build_unconditional_branch(continue_block);
+
+    // Continue block
+    ctx.builder.position_at_end(continue_block);
 }
 
 /// Drop a map by dropping each key/value pair, then freeing.
@@ -771,8 +1211,38 @@ fn drop_map<'ctx>(
     _key_type: doo_core::types::TypeId,
     _value_type: doo_core::types::TypeId,
 ) {
-    // Map stores DATA pointer, but we need to free the HEADER pointer
-    // Header is at (data_ptr - 16 bytes)
+    // CRITICAL: Check if data pointer is null BEFORE calculating header pointer!
+    // If data_ptr is null, then data_ptr - 16 = 0xFFFFFFFFFFFFFFF0 which is NOT null
+    // and would crash when passed to free().
+    let is_null = match ctx.builder.build_is_null(ptr, "map_data_is_null") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let current_block = match ctx.builder.get_insert_block() {
+        Some(b) => b,
+        None => return,
+    };
+    let func = match current_block.get_parent() {
+        Some(f) => f,
+        None => return,
+    };
+
+    let free_block = ctx.context.append_basic_block(func, "drop_map_free");
+    let continue_block = ctx.context.append_basic_block(func, "drop_map_continue");
+
+    // If null, skip to continue; otherwise go to free block
+    if ctx
+        .builder
+        .build_conditional_branch(is_null, continue_block, free_block)
+        .is_err()
+    {
+        return;
+    }
+
+    // Free block: calculate header pointer and free
+    ctx.builder.position_at_end(free_block);
+
     let i8_type = ctx.context.i8_type();
     let i32_type = ctx.context.i32_type();
 
@@ -786,11 +1256,19 @@ fn drop_map<'ctx>(
         )
     } {
         Ok(p) => p,
-        Err(_) => return,
+        Err(_) => {
+            ctx.builder.position_at_end(continue_block);
+            return;
+        }
     };
 
     // Free the header (which includes the data region)
-    drop_pointer(ctx, header_ptr);
+    let free_fn = get_or_declare_free(ctx);
+    let _ = ctx.builder.build_call(free_fn, &[header_ptr.into()], "");
+    let _ = ctx.builder.build_unconditional_branch(continue_block);
+
+    // Continue block
+    ctx.builder.position_at_end(continue_block);
 }
 
 /// Drop an optional value.

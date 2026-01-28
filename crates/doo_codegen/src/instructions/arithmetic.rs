@@ -149,6 +149,62 @@ fn emit_binop<'ctx>(
         return Some(result.into());
     }
 
+    // Handle string comparison (both pointers) using strcmp
+    // This is CRITICAL for error handling functions that compare strings
+    if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && lhs.is_pointer_value() && rhs.is_pointer_value() {
+        let lhs_ptr = lhs.into_pointer_value();
+        let rhs_ptr = rhs.into_pointer_value();
+
+        // Debug: show which block we're emitting to
+        if std::env::var("DOO_DEBUG").is_ok() {
+            if let Some(bb) = ctx.builder.get_insert_block() {
+                eprintln!("[CODEGEN] strcmp emitting to block: {:?}", bb.get_name().to_str());
+            }
+        }
+
+        // Get or declare strcmp
+        let strcmp = ctx
+            .module
+            .get_function(ffi_names::STRCMP)
+            .unwrap_or_else(|| {
+                let i32_ty = ctx.context.i32_type();
+                let ptr_ty = ctx.context.ptr_type(inkwell::AddressSpace::default());
+                let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+                ctx.module.add_function(ffi_names::STRCMP, fn_ty, None)
+            });
+
+        // Call strcmp
+        let strcmp_result = ctx
+            .builder
+            .build_call(strcmp, &[lhs_ptr.into(), rhs_ptr.into()], "strcmp_result")
+            .ok()?
+            .try_as_basic_value()
+            .left()?
+            .into_int_value();
+
+        // strcmp returns 0 if equal
+        let result = if matches!(op, BinaryOp::Eq) {
+            ctx.builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    strcmp_result,
+                    ctx.context.i32_type().const_zero(),
+                    "str_eq",
+                )
+                .ok()?
+        } else {
+            ctx.builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    strcmp_result,
+                    ctx.context.i32_type().const_zero(),
+                    "str_ne",
+                )
+                .ok()?
+        };
+        return Some(result.into());
+    }
+
     if lhs.is_int_value() && rhs.is_int_value() {
         let lhs_int = lhs.into_int_value();
         let rhs_int = rhs.into_int_value();

@@ -319,6 +319,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     let fn_ty = i32_ty.fn_type(&[ptr_ty.into()], true); // variadic
                     ctx.module.add_function(ffi_names::PRINTF, fn_ty, None)
                 });
+                
+                let debug = std::env::var("DOO_DEBUG").is_ok();
 
                 for (i, val) in values.iter().enumerate() {
                     let ty = value_types
@@ -327,6 +329,10 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         .unwrap_or(doo_core::types::builtin::ANY);
                     let is_last = i + 1 == values.len();
                     if let Some(v) = operand_to_value(ctx, val) {
+                        if debug {
+                            let blk = ctx.builder.get_insert_block().map(|b| b.get_name().to_string_lossy().to_string());
+                            eprintln!("[CODEGEN] Print value {}: {:?} type={:?} llvm_type={:?} in block {:?}", i, val, ty, v.get_type(), blk);
+                        }
                         if let Some(kind) = ctx.get_type_kind(ty) {
                             match kind {
                                 TypeKind::Str => {
@@ -414,6 +420,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 .build_call(printf, &[fmt.into(), space.into()], "print_space")
                                 .ok();
                         }
+                    } else if debug {
+                        eprintln!("[CODEGEN] WARNING: Print value {} operand_to_value returned None for {:?}", i, val);
                     }
                 }
 
@@ -647,11 +655,22 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 error_name,
                 result,
                 ok_type,
-                err_type: _,
+                err_type,
             } => {
                 // Manual error extraction: let a, b, err = expr;
                 // Result struct layout: { i32 tag, void* value }
                 // tag == 0 means Ok, tag == 1 means Err
+
+                // IMPORTANT: Register error struct type association for field access
+                // This is needed so that FieldGet on the error can resolve field names
+                if error_name != "_" {
+                    if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(*err_type) {
+                        ctx.set_temp_struct_type(error_name, &name);
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!("[CODEGEN] Registered error {} as struct type {}", error_name, name);
+                        }
+                    }
+                }
 
                 let result_val = operand_to_value(ctx, result)?;
 
@@ -717,23 +736,19 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     .build_conditional_branch(is_ok, ok_block, err_block)
                     .ok()?;
 
-                // Determine if we should use value-based phi (when error is ignored)
-                // This prevents null pointer dereference when error occurs but is ignored
-                let error_ignored = error_name == "_";
-                
                 // Check if ok_type is a scalar (Int, Float, Bool) - these need special handling
                 // because Result stores scalars as inttoptr(value) which needs ptrtoint to extract
                 let is_int = *ok_type == builtin::INT;
                 let is_float = *ok_type == builtin::FLOAT;
                 let is_bool = *ok_type == builtin::BOOL;
                 let is_scalar_ok = is_int || is_float || is_bool;
+                let error_ignored = error_name == "_";
 
-                if error_ignored && is_scalar_ok {
-                    // === SCALAR VALUE PATH (error ignored) ===
-                    // When error is ignored and ok type is scalar, we must:
-                    // 1. Convert the pointer to the actual value in ok_block (using ptrtoint)
-                    // 2. Use a default value in err_block (not null pointer)
-                    // 3. Phi the VALUES, not pointers
+                if is_scalar_ok {
+                    // === SCALAR VALUE PATH ===
+                    // For scalar ok types (Int, Float, Bool), we MUST extract actual values
+                    // because Result stores scalars as inttoptr(value).
+                    // This applies whether error is captured or ignored.
                     
                     let ok_llvm_type = ctx.get_llvm_type(*ok_type);
                     
@@ -774,7 +789,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                     // === Err path ===
                     ctx.builder.position_at_end(err_block);
-                    // Use default value for the type (0 for Int, 0.0 for Float, false for Bool)
+                    // Use default value for the ok type (0 for Int, 0.0 for Float, false for Bool)
                     let default_val = crate::utils::default_for_type(ctx, ok_llvm_type);
                     let err_block_end = ctx.builder.get_insert_block()?;
                     ctx.builder.build_unconditional_branch(cont_block).ok()?;
@@ -782,7 +797,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     // === Continue block - merge with phi nodes ===
                     ctx.builder.position_at_end(cont_block);
 
-                    // Create phi node for the VALUE (not pointer)
+                    // Create phi node for the ok VALUE (not pointer)
                     let ok_phi = ctx.builder.build_phi(ok_llvm_type, "ok_val_phi").ok()?;
                     ok_phi.add_incoming(&[
                         (&ok_extracted_val, ok_block_end),
@@ -794,7 +809,20 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     for ok_name in ok_names {
                         ctx.set_temp(ok_name, ok_result);
                     }
-                    // Error is ignored, no phi needed for it
+
+                    // Create phi node for error value (if not ignored)
+                    if !error_ignored {
+                        // Error is a pointer - use pointer phi
+                        let err_val_from_ok = ctx.ptr_type().const_null();
+                        let err_val_from_err = value_ptr;
+                        let err_phi = ctx.builder.build_phi(ctx.ptr_type(), "err_phi").ok()?;
+                        err_phi.add_incoming(&[
+                            (&err_val_from_ok, ok_block_end),
+                            (&err_val_from_err, err_block_end),
+                        ]);
+                        let err_result = err_phi.as_basic_value();
+                        ctx.set_temp(error_name, err_result);
+                    }
 
                     Some(ok_result)
                 } else {
@@ -1071,10 +1099,18 @@ fn emit_print_value<'ctx>(
                 .build_int_z_extend_or_bit_cast(val.into_int_value(), ctx.i64_type(), "print_i64")
                 .ok();
             if let Some(i64v) = i64v {
-                ctx.builder
-                    .build_call(printf, &[fmt.into(), i64v.into()], "print_i")
-                    .ok();
+                let result = ctx.builder
+                    .build_call(printf, &[fmt.into(), i64v.into()], "print_i");
+                if std::env::var("DOO_DEBUG").is_ok() {
+                    let blk = ctx.builder.get_insert_block().map(|b| b.get_name().to_string_lossy().to_string());
+                    eprintln!("[CODEGEN] emit_print_value INT in block {:?}, call result: {:?}", blk, result.is_ok());
+                }
+                result.ok();
+            } else if std::env::var("DOO_DEBUG").is_ok() {
+                eprintln!("[CODEGEN] emit_print_value INT: i64 extend failed");
             }
+        } else if std::env::var("DOO_DEBUG").is_ok() {
+            eprintln!("[CODEGEN] emit_print_value INT: val is not int, is {:?}", val.get_type());
         }
         return;
     }
@@ -1566,6 +1602,53 @@ fn emit_print_array<'ctx>(
     array_ptr: PointerValue<'ctx>,
     elem_type: doo_core::types::TypeId,
 ) {
+    let fmt = ctx.const_string("%s");
+    
+    // Handle null array pointer (print "nil" instead of crashing)
+    let is_null = ctx.builder.build_is_null(array_ptr, "arr_is_null").ok();
+    if let Some(is_null) = is_null {
+        let current_fn = match ctx.builder.get_insert_block().and_then(|b| b.get_parent()) {
+            Some(f) => f,
+            None => return,
+        };
+        
+        let print_nil_bb = ctx.context.append_basic_block(current_fn, "print_arr_nil");
+        let print_arr_bb = ctx.context.append_basic_block(current_fn, "print_arr_content");
+        let merge_bb = ctx.context.append_basic_block(current_fn, "print_arr_done");
+        
+        ctx.builder.build_conditional_branch(is_null, print_nil_bb, print_arr_bb).ok();
+        
+        // Print "nil" for null arrays
+        ctx.builder.position_at_end(print_nil_bb);
+        let nil_str = ctx.const_string("nil");
+        ctx.builder.build_call(printf, &[fmt.into(), nil_str.into()], "print_nil").ok();
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
+        
+        // Print actual array contents
+        ctx.builder.position_at_end(print_arr_bb);
+        emit_print_array_contents(ctx, printf, array_ptr, elem_type, merge_bb);
+        
+        ctx.builder.position_at_end(merge_bb);
+    } else {
+        // Fallback: just print array contents without null check
+        let current_fn = match ctx.builder.get_insert_block().and_then(|b| b.get_parent()) {
+            Some(f) => f,
+            None => return,
+        };
+        let merge_bb = ctx.context.append_basic_block(current_fn, "print_arr_done");
+        emit_print_array_contents(ctx, printf, array_ptr, elem_type, merge_bb);
+        ctx.builder.position_at_end(merge_bb);
+    }
+}
+
+/// Internal helper to print array contents (assumes array_ptr is not null)
+fn emit_print_array_contents<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    printf: FunctionValue<'ctx>,
+    array_ptr: PointerValue<'ctx>,
+    elem_type: doo_core::types::TypeId,
+    merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) {
     let open = ctx.const_string("[");
     let fmt = ctx.const_string("%s");
     ctx.builder
@@ -1577,6 +1660,7 @@ fn emit_print_array<'ctx>(
         ctx.builder
             .build_call(printf, &[fmt.into(), close.into()], "print_arr_close")
             .ok();
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
         return;
     };
     let len_i64 = ctx
@@ -1588,6 +1672,7 @@ fn emit_print_array<'ctx>(
         ctx.builder
             .build_call(printf, &[fmt.into(), close.into()], "print_arr_close")
             .ok();
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
         return;
     };
 
@@ -1602,6 +1687,7 @@ fn emit_print_array<'ctx>(
         ctx.builder
             .build_call(printf, &[fmt.into(), close.into()], "print_arr_close")
             .ok();
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
         return;
     };
 
@@ -1700,6 +1786,7 @@ fn emit_print_array<'ctx>(
     ctx.builder
         .build_call(printf, &[fmt.into(), close.into()], "print_arr_close")
         .ok();
+    ctx.builder.build_unconditional_branch(merge_bb).ok();
 }
 
 fn emit_print_map<'ctx>(
@@ -1708,6 +1795,54 @@ fn emit_print_map<'ctx>(
     map_ptr: PointerValue<'ctx>,
     key_type: doo_core::types::TypeId,
     val_type: doo_core::types::TypeId,
+) {
+    let fmt = ctx.const_string("%s");
+    
+    // Handle null map pointer (print "nil" instead of crashing)
+    let is_null = ctx.builder.build_is_null(map_ptr, "map_is_null").ok();
+    if let Some(is_null) = is_null {
+        let current_fn = match ctx.builder.get_insert_block().and_then(|b| b.get_parent()) {
+            Some(f) => f,
+            None => return,
+        };
+        
+        let print_nil_bb = ctx.context.append_basic_block(current_fn, "print_map_nil");
+        let print_map_bb = ctx.context.append_basic_block(current_fn, "print_map_content");
+        let merge_bb = ctx.context.append_basic_block(current_fn, "print_map_done");
+        
+        ctx.builder.build_conditional_branch(is_null, print_nil_bb, print_map_bb).ok();
+        
+        // Print "nil" for null maps
+        ctx.builder.position_at_end(print_nil_bb);
+        let nil_str = ctx.const_string("nil");
+        ctx.builder.build_call(printf, &[fmt.into(), nil_str.into()], "print_nil").ok();
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
+        
+        // Print actual map contents
+        ctx.builder.position_at_end(print_map_bb);
+        emit_print_map_contents(ctx, printf, map_ptr, key_type, val_type, merge_bb);
+        
+        ctx.builder.position_at_end(merge_bb);
+    } else {
+        // Fallback: just print map contents without null check
+        let current_fn = match ctx.builder.get_insert_block().and_then(|b| b.get_parent()) {
+            Some(f) => f,
+            None => return,
+        };
+        let merge_bb = ctx.context.append_basic_block(current_fn, "print_map_done");
+        emit_print_map_contents(ctx, printf, map_ptr, key_type, val_type, merge_bb);
+        ctx.builder.position_at_end(merge_bb);
+    }
+}
+
+/// Internal helper to print map contents (assumes map_ptr is not null)
+fn emit_print_map_contents<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    printf: FunctionValue<'ctx>,
+    map_ptr: PointerValue<'ctx>,
+    key_type: doo_core::types::TypeId,
+    val_type: doo_core::types::TypeId,
+    merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
 ) {
     let open = ctx.const_string("{");
     let fmt = ctx.const_string("%s");
@@ -1720,6 +1855,7 @@ fn emit_print_map<'ctx>(
         ctx.builder
             .build_call(printf, &[fmt.into(), close.into()], "print_map_close")
             .ok();
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
         return;
     };
     let len_i64 = ctx
@@ -1731,6 +1867,7 @@ fn emit_print_map<'ctx>(
         ctx.builder
             .build_call(printf, &[fmt.into(), close.into()], "print_map_close")
             .ok();
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
         return;
     };
 
@@ -1749,6 +1886,7 @@ fn emit_print_map<'ctx>(
         ctx.builder
             .build_call(printf, &[fmt.into(), close.into()], "print_map_close")
             .ok();
+        ctx.builder.build_unconditional_branch(merge_bb).ok();
         return;
     };
 
@@ -1862,6 +2000,7 @@ fn emit_print_map<'ctx>(
     ctx.builder
         .build_call(printf, &[fmt.into(), close.into()], "print_map_close")
         .ok();
+    ctx.builder.build_unconditional_branch(merge_bb).ok();
 }
 
 // ============================================================================

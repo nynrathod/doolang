@@ -196,6 +196,11 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 object,
                 field,
             } => {
+                let debug = std::env::var("DOO_DEBUG").is_ok();
+                if debug {
+                    let blk = ctx.builder.get_insert_block().map(|b| b.get_name().to_string_lossy().to_string());
+                    eprintln!("[CODEGEN] FieldGet {} in block {:?}", dest, blk);
+                }
                 if let Some(obj_ptr) = operand_to_value(ctx, object) {
                     if obj_ptr.is_pointer_value() {
                         let ptr = obj_ptr.into_pointer_value();
@@ -204,6 +209,11 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         let var_name = Self::get_operand_name(object);
                         let struct_name = var_name
                             .and_then(|name| ctx.get_temp_struct_type(name).cloned());
+                        
+                        if debug && struct_name.is_none() {
+                            eprintln!("[CODEGEN] WARNING: FieldGet {} has no struct type for {:?} (var_name={:?})", 
+                                dest, object, var_name);
+                        }
 
                         if let Some(struct_name) = struct_name {
                             // Look up field index by name from struct metadata
