@@ -60,48 +60,54 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 Some(alloca.into())
             }
 
-            MirInstrKind::TupleGet { dest, tuple, index, tuple_type } => {
+            MirInstrKind::TupleGet {
+                dest,
+                tuple,
+                index,
+                tuple_type,
+            } => {
                 if let Some(tup) = operand_to_value(ctx, tuple) {
                     let tup: inkwell::values::BasicValueEnum = tup;
                     if tup.is_pointer_value() {
                         let ptr = tup.into_pointer_value();
-                        
+
                         // Build the tuple type from registry if we have the type info
                         // First, extract element TypeIds to avoid borrowing issues
-                        let elem_type_ids: Option<Vec<doo_core::types::TypeId>> = if let Some(type_id) = tuple_type {
-                            if let Some(type_info) = ctx.type_registry.get(*type_id) {
-                                if let TypeKind::Tuple { elements } = &type_info.kind {
-                                    Some(elements.clone())
+                        let elem_type_ids: Option<Vec<doo_core::types::TypeId>> =
+                            if let Some(type_id) = tuple_type {
+                                if let Some(type_info) = ctx.type_registry.get(*type_id) {
+                                    if let TypeKind::Tuple { elements } = &type_info.kind {
+                                        Some(elements.clone())
+                                    } else {
+                                        None
+                                    }
                                 } else {
                                     None
                                 }
                             } else {
                                 None
-                            }
-                        } else {
-                            None
-                        };
+                            };
 
                         let (tuple_ty, elem_type) = if let Some(elem_ids) = elem_type_ids {
                             // Build LLVM types for all elements
-                            let element_types: Vec<inkwell::types::BasicTypeEnum> = elem_ids
-                                .iter()
-                                .map(|tid| ctx.get_llvm_type(*tid))
-                                .collect();
+                            let element_types: Vec<inkwell::types::BasicTypeEnum> =
+                                elem_ids.iter().map(|tid| ctx.get_llvm_type(*tid)).collect();
                             let tuple_struct = ctx.context.struct_type(&element_types, false);
                             let elem_llvm = ctx.get_llvm_type(elem_ids[*index]);
                             (tuple_struct, elem_llvm)
                         } else {
                             // Fallback: single i64
-                            (ctx.context.struct_type(&[ctx.i64_type().into()], false), ctx.i64_type().into())
+                            (
+                                ctx.context.struct_type(&[ctx.i64_type().into()], false),
+                                ctx.i64_type().into(),
+                            )
                         };
 
                         if let Ok(field_ptr) =
                             ctx.builder
                                 .build_struct_gep(tuple_ty, ptr, *index as u32, "field")
                         {
-                            if let Ok(val) = ctx.builder.build_load(elem_type, field_ptr, dest)
-                            {
+                            if let Ok(val) = ctx.builder.build_load(elem_type, field_ptr, dest) {
                                 ctx.set_temp(dest, val);
                                 return Some(val);
                             }
@@ -125,17 +131,18 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                 // Build LLVM struct type with correct field types from type registry
                 // Use get_llvm_type for consistent type mapping across all code paths
-                let field_types: Vec<inkwell::types::BasicTypeEnum> = 
+                let field_types: Vec<inkwell::types::BasicTypeEnum> =
                     if let Some(field_type_ids) = ctx.get_struct_field_types(struct_name) {
-                        field_type_ids.iter().map(|type_id| {
-                            ctx.get_llvm_type(*type_id)
-                        }).collect()
+                        field_type_ids
+                            .iter()
+                            .map(|type_id| ctx.get_llvm_type(*type_id))
+                            .collect()
                     } else {
                         // Fallback: use get_llvm_type based on operand types
                         fields.iter().map(|_| ctx.i64_type().into()).collect()
                     };
                 let struct_type = ctx.get_struct_type(struct_name, &field_types);
-                
+
                 // Calculate struct size using LLVM's size_of() for correct padding
                 // CRITICAL FIX: The old calculation (fields.len() * 8) was WRONG because:
                 // - Enum fields are { i32, ptr } = 16 bytes (not 8)
@@ -146,16 +153,17 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     .unwrap_or((fields.len() * 8) as u64); // Fallback for safety
                 let i64_type = ctx.context.i64_type();
                 let ptr_type = ctx.ptr_type();
-                
+
                 // Get or declare malloc for heap allocation
                 let malloc_fn = ctx
                     .module
                     .get_function(doo_core::constants::ffi_names::MALLOC)
                     .unwrap_or_else(|| {
                         let fn_ty = ptr_type.fn_type(&[i64_type.into()], false);
-                        ctx.module.add_function(doo_core::constants::ffi_names::MALLOC, fn_ty, None)
+                        ctx.module
+                            .add_function(doo_core::constants::ffi_names::MALLOC, fn_ty, None)
                     });
-                
+
                 // Heap allocate the struct (so Drop can free it)
                 let struct_ptr = ctx
                     .builder
@@ -175,10 +183,12 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 // Store field values
                 for (i, (_, value)) in fields.iter().enumerate() {
                     if let Some(val) = operand_to_value(ctx, value) {
-                        if let Ok(ptr) =
-                            ctx.builder
-                                .build_struct_gep(struct_type, struct_ptr, i as u32, "field_ptr")
-                        {
+                        if let Ok(ptr) = ctx.builder.build_struct_gep(
+                            struct_type,
+                            struct_ptr,
+                            i as u32,
+                            "field_ptr",
+                        ) {
                             // Store value directly - enum struct types are now stored by value
                             ctx.builder.build_store(ptr, val).ok();
                         }
@@ -198,7 +208,10 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
             } => {
                 let debug = std::env::var("DOO_DEBUG").is_ok();
                 if debug {
-                    let blk = ctx.builder.get_insert_block().map(|b| b.get_name().to_string_lossy().to_string());
+                    let blk = ctx
+                        .builder
+                        .get_insert_block()
+                        .map(|b| b.get_name().to_string_lossy().to_string());
                     eprintln!("[CODEGEN] FieldGet {} in block {:?}", dest, blk);
                 }
                 if let Some(obj_ptr) = operand_to_value(ctx, object) {
@@ -207,9 +220,9 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                         // Get struct name from the object operand
                         let var_name = Self::get_operand_name(object);
-                        let struct_name = var_name
-                            .and_then(|name| ctx.get_temp_struct_type(name).cloned());
-                        
+                        let struct_name =
+                            var_name.and_then(|name| ctx.get_temp_struct_type(name).cloned());
+
                         if debug && struct_name.is_none() {
                             eprintln!("[CODEGEN] WARNING: FieldGet {} has no struct type for {:?} (var_name={:?})", 
                                 dest, object, var_name);
@@ -232,18 +245,40 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     "field_ptr",
                                 ) {
                                     // Determine the correct LLVM type based on field's Doo type
-                                    let field_type_id = ctx.get_struct_field_type(&struct_name, field);
-                                    let load_type: inkwell::types::BasicTypeEnum = match field_type_id {
-                                        Some(t) if t == builtin::STR => ctx.ptr_type().into(),
-                                        Some(t) if t == builtin::FLOAT => ctx.f64_type().into(),
-                                        Some(t) if t == builtin::BOOL => ctx.bool_type().into(),
-                                        _ => ctx.i64_type().into(), // Int and default
-                                    };
-                                    
+                                    let field_type_id =
+                                        ctx.get_struct_field_type(&struct_name, field);
+
+                                    // Check if field is a nested struct - if so, propagate struct type info
+                                    let nested_struct_name = field_type_id
+                                        .and_then(|tid| ctx.get_struct_name_from_type_id(tid));
+
+                                    let load_type: inkwell::types::BasicTypeEnum =
+                                        match field_type_id {
+                                            Some(t) if t == builtin::STR => ctx.ptr_type().into(),
+                                            Some(t) if t == builtin::FLOAT => ctx.f64_type().into(),
+                                            Some(t) if t == builtin::BOOL => ctx.bool_type().into(),
+                                            Some(t)
+                                                if ctx
+                                                    .get_struct_name_from_type_id(t)
+                                                    .is_some() =>
+                                            {
+                                                // Nested struct - load as pointer
+                                                ctx.ptr_type().into()
+                                            }
+                                            _ => ctx.i64_type().into(), // Int and default
+                                        };
+
                                     if let Ok(val) =
                                         ctx.builder.build_load(load_type, field_ptr, dest)
                                     {
                                         ctx.set_temp(dest, val);
+
+                                        // CRITICAL: If field is a nested struct, propagate struct type
+                                        // This enables chained field access like user.address.street
+                                        if let Some(nested_name) = nested_struct_name {
+                                            ctx.set_temp_struct_type(dest, &nested_name);
+                                        }
+
                                         return Some(val);
                                     }
                                 }

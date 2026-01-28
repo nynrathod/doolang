@@ -558,6 +558,17 @@ impl<'ctx> CodegenContext<'ctx> {
         }
     }
 
+    /// Get the struct name from a TypeId if it's a struct type.
+    /// Returns None if the TypeId doesn't refer to a struct.
+    pub fn get_struct_name_from_type_id(&self, type_id: TypeId) -> Option<String> {
+        let type_info = self.type_registry.get(type_id)?;
+        if let TypeKind::Struct { name, .. } = &type_info.kind {
+            Some(name.clone())
+        } else {
+            None
+        }
+    }
+
     /// Get all field TypeIds for a struct from the type registry.
     /// Returns field types in declaration order.
     pub fn get_struct_field_types(&self, struct_name: &str) -> Option<Vec<TypeId>> {

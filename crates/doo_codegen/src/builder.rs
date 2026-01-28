@@ -343,7 +343,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
             while let Some(bb) = maybe_bb {
                 if bb.get_terminator().is_none() {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[CODEGEN] Block {:?} has no terminator, adding default return", bb.get_name().to_str());
+                        eprintln!(
+                            "[CODEGEN] Block {:?} has no terminator, adding default return",
+                            bb.get_name().to_str()
+                        );
                     }
                     ctx.builder.position_at_end(bb);
 
@@ -508,7 +511,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 if std::env::var("DOO_DEBUG").is_ok() {
                     eprintln!("[CODEGEN] Branch cond: {:?}", cond);
                     if let Some(bb) = ctx.builder.get_insert_block() {
-                        eprintln!("[CODEGEN] Branch emitting from block: {:?}", bb.get_name().to_str());
+                        eprintln!(
+                            "[CODEGEN] Branch emitting from block: {:?}",
+                            bb.get_name().to_str()
+                        );
                     }
                 }
                 if let Some(cond_val) = operand_to_value(ctx, cond) {
@@ -526,12 +532,19 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         (block_map.get(then_block), block_map.get(else_block))
                     {
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[CODEGEN] Building conditional branch to {} / {}", then_block, else_block);
+                            eprintln!(
+                                "[CODEGEN] Building conditional branch to {} / {}",
+                                then_block, else_block
+                            );
                         }
-                        let result = ctx.builder
+                        let result = ctx
+                            .builder
                             .build_conditional_branch(cond_bool, *then_bb, *else_bb);
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[CODEGEN] build_conditional_branch result: {:?}", result.is_ok());
+                            eprintln!(
+                                "[CODEGEN] build_conditional_branch result: {:?}",
+                                result.is_ok()
+                            );
                             if let Err(e) = &result {
                                 eprintln!("[CODEGEN] build_conditional_branch error: {:?}", e);
                             }

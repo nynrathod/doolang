@@ -29,25 +29,37 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
         match &instr.kind {
             MirInstrKind::BinaryOp { dest, op, lhs, rhs } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] BinaryOp: {} = {:?} {:?} {:?}", dest, lhs, op, rhs);
+                    eprintln!(
+                        "[CODEGEN] BinaryOp: {} = {:?} {:?} {:?}",
+                        dest, lhs, op, rhs
+                    );
                 }
                 let lhs_val = operand_to_value(ctx, lhs);
                 if lhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] BinaryOp: lhs operand_to_value failed for {:?}", lhs);
+                    eprintln!(
+                        "[CODEGEN] BinaryOp: lhs operand_to_value failed for {:?}",
+                        lhs
+                    );
                     return None;
                 }
                 let lhs_val = lhs_val?;
-                
+
                 let rhs_val = operand_to_value(ctx, rhs);
                 if rhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] BinaryOp: rhs operand_to_value failed for {:?}", rhs);
+                    eprintln!(
+                        "[CODEGEN] BinaryOp: rhs operand_to_value failed for {:?}",
+                        rhs
+                    );
                     return None;
                 }
                 let rhs_val = rhs_val?;
 
                 let result = emit_binop(ctx, *op, lhs_val, rhs_val);
                 if result.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] BinaryOp: emit_binop failed for {:?} {:?} {:?}", lhs_val, op, rhs_val);
+                    eprintln!(
+                        "[CODEGEN] BinaryOp: emit_binop failed for {:?} {:?} {:?}",
+                        lhs_val, op, rhs_val
+                    );
                     return None;
                 }
                 let result = result?;
@@ -138,7 +150,7 @@ fn emit_binop<'ctx>(
     }
 
     // Handle pointer comparison with nil (reversed operands)
-    // nil == Pointer or nil != Pointer  
+    // nil == Pointer or nil != Pointer
     if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && lhs.is_int_value() && rhs.is_pointer_value() {
         let rhs_ptr = rhs.into_pointer_value();
         let result = if matches!(op, BinaryOp::Eq) {
@@ -151,14 +163,18 @@ fn emit_binop<'ctx>(
 
     // Handle string comparison (both pointers) using strcmp
     // This is CRITICAL for error handling functions that compare strings
-    if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && lhs.is_pointer_value() && rhs.is_pointer_value() {
+    if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && lhs.is_pointer_value() && rhs.is_pointer_value()
+    {
         let lhs_ptr = lhs.into_pointer_value();
         let rhs_ptr = rhs.into_pointer_value();
 
         // Debug: show which block we're emitting to
         if std::env::var("DOO_DEBUG").is_ok() {
             if let Some(bb) = ctx.builder.get_insert_block() {
-                eprintln!("[CODEGEN] strcmp emitting to block: {:?}", bb.get_name().to_str());
+                eprintln!(
+                    "[CODEGEN] strcmp emitting to block: {:?}",
+                    bb.get_name().to_str()
+                );
             }
         }
 
