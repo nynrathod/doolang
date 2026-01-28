@@ -201,6 +201,11 @@ impl MirFunction {
             defined.insert(param.name.clone());
         }
 
+        // Locals are pre-defined (including variables defined by ManualErrorExtract, etc.)
+        for local in &self.locals {
+            defined.insert(local.name.clone());
+        }
+
         // Check each block
         for block in &self.blocks {
             for instr in &block.instructions {
@@ -605,8 +610,8 @@ pub enum MirInstrKind {
     /// Check if result is Ok
     IsOk { dest: String, value: MirOperand },
 
-    /// Unwrap Ok value
-    UnwrapOk { dest: String, value: MirOperand },
+    /// Unwrap Ok value (with expected type for proper conversion)
+    UnwrapOk { dest: String, value: MirOperand, expected_type: Option<TypeId> },
 
     /// Unwrap Err value
     UnwrapErr { dest: String, value: MirOperand },
@@ -648,6 +653,14 @@ pub enum MirInstrKind {
         dest: String,
         value: MirOperand,
         value_type: TypeId,
+    },
+
+    // ========================================================================
+    // Control Flow / Panic
+    // ========================================================================
+    /// Panic with message (abort program execution)
+    Panic {
+        message: MirOperand,
     },
 }
 
@@ -760,6 +773,7 @@ impl MirInstr {
                 value_types: _,
             } => values.iter().collect(),
             MirInstrKind::TypeOf { value, .. } => vec![value],
+            MirInstrKind::Panic { message } => vec![message],
             _ => vec![],
         }
     }

@@ -124,6 +124,31 @@ fn emit_binop<'ctx>(
         return emit_string_concat(ctx, lhs_str, rhs);
     }
 
+    // Handle pointer comparison with nil (null check)
+    // Pointer == nil or Pointer != nil
+    if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && lhs.is_pointer_value() && rhs.is_int_value() {
+        // rhs is probably nil (represented as i64 0)
+        let lhs_ptr = lhs.into_pointer_value();
+        let result = if matches!(op, BinaryOp::Eq) {
+            ctx.builder.build_is_null(lhs_ptr, "ptr_eq_nil").ok()?
+        } else {
+            ctx.builder.build_is_not_null(lhs_ptr, "ptr_ne_nil").ok()?
+        };
+        return Some(result.into());
+    }
+
+    // Handle pointer comparison with nil (reversed operands)
+    // nil == Pointer or nil != Pointer  
+    if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && lhs.is_int_value() && rhs.is_pointer_value() {
+        let rhs_ptr = rhs.into_pointer_value();
+        let result = if matches!(op, BinaryOp::Eq) {
+            ctx.builder.build_is_null(rhs_ptr, "nil_eq_ptr").ok()?
+        } else {
+            ctx.builder.build_is_not_null(rhs_ptr, "nil_ne_ptr").ok()?
+        };
+        return Some(result.into());
+    }
+
     if lhs.is_int_value() && rhs.is_int_value() {
         let lhs_int = lhs.into_int_value();
         let rhs_int = rhs.into_int_value();

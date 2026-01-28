@@ -3,12 +3,15 @@
 //! Minimal trait-based parser that delegates to centralized helpers.
 //! No duplicate logic, all utilities in helpers.rs.
 
-use crate::ast::*;
-use crate::lexer::TokenKind;
-use doo_core::{Span, CompilerError, ErrorCode};
-use super::{Parser, ParseResult, helpers::{self, BraceType}};
 use super::stmt::ParserStmt;
 use super::types::ParserTypes;
+use super::{
+    helpers::{self, BraceType},
+    ParseResult, Parser,
+};
+use crate::ast::*;
+use crate::lexer::TokenKind;
+use doo_core::{CompilerError, ErrorCode, Span};
 
 /// Expression parsing trait.
 pub trait ParserExpr {
@@ -31,7 +34,13 @@ impl ParserExpr for Parser {
             self.advance();
             let expr = self.parse_unary()?;
             let span = start.merge(&expr.span);
-            return Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(expr) }, span));
+            return Ok(Expr::new(
+                ExprKind::Unary {
+                    op,
+                    expr: Box::new(expr),
+                },
+                span,
+            ));
         }
         self.parse_primary()
     }
@@ -41,14 +50,15 @@ impl ParserExpr for Parser {
         let start = self.current_span();
 
         match self.current().kind {
-            TokenKind::Integer | TokenKind::Float => {
-                self.parse_number_literal(start)
-            }
+            TokenKind::Integer | TokenKind::Float => self.parse_number_literal(start),
 
             TokenKind::String => {
                 let text = self.current().text.clone();
                 self.advance();
-                Ok(Expr::new(ExprKind::StrLit(Self::process_escapes(&text)), start))
+                Ok(Expr::new(
+                    ExprKind::StrLit(Self::process_escapes(&text)),
+                    start,
+                ))
             }
 
             TokenKind::True => {
@@ -84,13 +94,11 @@ impl ParserExpr for Parser {
 
             TokenKind::LBracket => parse_array(self, start),
 
-            TokenKind::LBrace => {
-                match self.lookahead_brace_type() {
-                    BraceType::Object => parse_object(self, start),
-                    BraceType::Map => parse_map(self, start),
-                    BraceType::Block => parse_block(self, start),
-                }
-            }
+            TokenKind::LBrace => match self.lookahead_brace_type() {
+                BraceType::Object => parse_object(self, start),
+                BraceType::Map => parse_map(self, start),
+                BraceType::Block => parse_block(self, start),
+            },
 
             TokenKind::If => parse_if_expr(self, start),
             TokenKind::Match => parse_match(self, start),
@@ -121,6 +129,41 @@ impl ParserExpr for Parser {
                 TokenKind::As => {
                     expr = parse_cast(self, expr)?;
                 }
+                TokenKind::QuestionQuestion => {
+                    // Unwrap or panic operator: expr ?? panic(msg)
+                    let start = expr.span;
+                    self.advance();
+
+                    // Expect 'panic' keyword and message
+                    if !self.check(TokenKind::Ident) || self.current().text != "panic" {
+                        return Err(CompilerError::new(
+                            ErrorCode::UnexpectedToken,
+                            "Expected `panic` after `??`",
+                            self.current().span,
+                        ));
+                    }
+                    self.advance();
+
+                    self.expect(TokenKind::LParen)?;
+                    let message = Box::new(self.parse_expression()?);
+                    self.expect(TokenKind::RParen)?;
+
+                    let span = start.merge(&self.prev_span());
+                    expr = Expr::new(
+                        ExprKind::UnwrapOrPanic {
+                            expr: Box::new(expr),
+                            message,
+                        },
+                        span,
+                    );
+                }
+                TokenKind::Question => {
+                    // Error propagation operator: expr?
+                    let start = expr.span;
+                    self.advance();
+                    let span = start.merge(&self.prev_span());
+                    expr = Expr::new(ExprKind::Try(Box::new(expr)), span);
+                }
                 _ => break,
             }
         }
@@ -146,7 +189,11 @@ fn parse_ident(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
             vec![]
         };
         return Ok(Expr::new(
-            ExprKind::EnumVariant { enum_name: name, variant, payload },
+            ExprKind::EnumVariant {
+                enum_name: name,
+                variant,
+                payload,
+            },
             start.merge(&parser.prev_span()),
         ));
     }
@@ -189,7 +236,10 @@ fn parse_group_or_tuple(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
             elements.extend(parser.parse_list(TokenKind::RParen, |p| p.parse_expression())?);
         }
         parser.expect(TokenKind::RParen)?;
-        Ok(Expr::new(ExprKind::TupleLit(elements), start.merge(&parser.prev_span())))
+        Ok(Expr::new(
+            ExprKind::TupleLit(elements),
+            start.merge(&parser.prev_span()),
+        ))
     } else {
         parser.expect(TokenKind::RParen)?;
         Ok(first)
@@ -209,7 +259,10 @@ fn parse_array(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
         }
     })?;
     parser.expect(TokenKind::RBracket)?;
-    Ok(Expr::new(ExprKind::ArrayLit(elements), start.merge(&parser.prev_span())))
+    Ok(Expr::new(
+        ExprKind::ArrayLit(elements),
+        start.merge(&parser.prev_span()),
+    ))
 }
 
 fn parse_map(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
@@ -219,7 +272,10 @@ fn parse_map(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
             let span = p.current_span();
             p.advance();
             let spread = p.parse_expression()?;
-            Ok((Expr::new(ExprKind::Spread(Box::new(spread.clone())), span), Expr::new(ExprKind::Nil, span)))
+            Ok((
+                Expr::new(ExprKind::Spread(Box::new(spread.clone())), span),
+                Expr::new(ExprKind::Nil, span),
+            ))
         } else {
             let key = p.parse_expression()?;
             p.expect(TokenKind::Colon)?;
@@ -228,7 +284,10 @@ fn parse_map(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
         }
     })?;
     parser.expect(TokenKind::RBrace)?;
-    Ok(Expr::new(ExprKind::MapLit(entries), start.merge(&parser.prev_span())))
+    Ok(Expr::new(
+        ExprKind::MapLit(entries),
+        start.merge(&parser.prev_span()),
+    ))
 }
 
 fn parse_object(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
@@ -240,7 +299,10 @@ fn parse_object(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
         Ok((key, value))
     })?;
     parser.expect(TokenKind::RBrace)?;
-    Ok(Expr::new(ExprKind::ObjectLit(entries), start.merge(&parser.prev_span())))
+    Ok(Expr::new(
+        ExprKind::ObjectLit(entries),
+        start.merge(&parser.prev_span()),
+    ))
 }
 
 fn parse_block(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
@@ -265,7 +327,10 @@ fn parse_block(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     }
 
     parser.expect(TokenKind::RBrace)?;
-    Ok(Expr::new(ExprKind::Block(stmts, final_expr), start.merge(&parser.prev_span())))
+    Ok(Expr::new(
+        ExprKind::Block(stmts, final_expr),
+        start.merge(&parser.prev_span()),
+    ))
 }
 
 fn parse_if_expr(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
@@ -283,7 +348,11 @@ fn parse_if_expr(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
         None
     };
     Ok(Expr::new(
-        ExprKind::IfExpr { condition: Box::new(condition), then_branch: Box::new(then_branch), else_branch },
+        ExprKind::IfExpr {
+            condition: Box::new(condition),
+            then_branch: Box::new(then_branch),
+            else_branch,
+        },
         start.merge(&parser.prev_span()),
     ))
 }
@@ -301,7 +370,10 @@ fn parse_match(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     parser.expect(TokenKind::LBrace)?;
     let arms = parser.parse_list(TokenKind::RBrace, |p| parse_match_arm(p))?;
     parser.expect(TokenKind::RBrace)?;
-    Ok(Expr::new(ExprKind::Match { values, arms }, start.merge(&parser.prev_span())))
+    Ok(Expr::new(
+        ExprKind::Match { values, arms },
+        start.merge(&parser.prev_span()),
+    ))
 }
 
 fn parse_match_arm(parser: &mut Parser) -> ParseResult<MatchArm> {
@@ -315,7 +387,12 @@ fn parse_match_arm(parser: &mut Parser) -> ParseResult<MatchArm> {
     };
     parser.expect(TokenKind::FatArrow)?;
     let body = parser.parse_expression()?;
-    Ok(MatchArm { pattern, guard, body, span: start.merge(&parser.prev_span()) })
+    Ok(MatchArm {
+        pattern,
+        guard,
+        body,
+        span: start.merge(&parser.prev_span()),
+    })
 }
 
 fn parse_match_pattern(parser: &mut Parser) -> ParseResult<MatchPattern> {
@@ -334,9 +411,16 @@ fn parse_match_pattern(parser: &mut Parser) -> ParseResult<MatchPattern> {
                     parser.advance();
                     let bindings = parser.parse_list(TokenKind::RParen, |p| p.expect_ident())?;
                     parser.expect(TokenKind::RParen)?;
-                    Ok(MatchPattern::EnumVariantPayload { enum_name: name, variant, bindings })
+                    Ok(MatchPattern::EnumVariantPayload {
+                        enum_name: name,
+                        variant,
+                        bindings,
+                    })
                 } else {
-                    Ok(MatchPattern::EnumVariant { enum_name: name, variant })
+                    Ok(MatchPattern::EnumVariant {
+                        enum_name: name,
+                        variant,
+                    })
                 }
             } else {
                 parser.pos -= 1;
@@ -344,7 +428,11 @@ fn parse_match_pattern(parser: &mut Parser) -> ParseResult<MatchPattern> {
                 Ok(MatchPattern::Condition(Box::new(expr)))
             }
         }
-        TokenKind::Integer | TokenKind::Float | TokenKind::String | TokenKind::True | TokenKind::False => {
+        TokenKind::Integer
+        | TokenKind::Float
+        | TokenKind::String
+        | TokenKind::True
+        | TokenKind::False => {
             let expr = parser.parse_primary()?;
             Ok(MatchPattern::Literal(Box::new(expr)))
         }
@@ -396,7 +484,12 @@ fn parse_closure(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     };
 
     Ok(Expr::new(
-        ExprKind::Closure { params, body: Box::new(body), return_type, error_type },
+        ExprKind::Closure {
+            params,
+            body: Box::new(body),
+            return_type,
+            error_type,
+        },
         start.merge(&parser.prev_span()),
     ))
 }
@@ -404,14 +497,29 @@ fn parse_closure(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
 fn parse_ok(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     parser.expect(TokenKind::Ok)?;
     let values = if parser.check(TokenKind::LParen) {
+        // Ok(value) or Ok(v1, v2, ...)
         parser.advance();
         let args = parser.parse_list(TokenKind::RParen, |p| p.parse_expression())?;
         parser.expect(TokenKind::RParen)?;
         args
     } else {
-        vec![parser.parse_expression()?]
+        // Ok value or Ok v1, v2, ...
+        // Parse first value, then continue with comma-separated values
+        let mut values = vec![parser.parse_expression()?];
+        while parser.check(TokenKind::Comma) {
+            parser.advance();
+            // Stop if next token looks like a statement start
+            if parser.check(TokenKind::Semi) || parser.check(TokenKind::RBrace) {
+                break;
+            }
+            values.push(parser.parse_expression()?);
+        }
+        values
     };
-    Ok(Expr::new(ExprKind::Ok(values), start.merge(&parser.prev_span())))
+    Ok(Expr::new(
+        ExprKind::Ok(values),
+        start.merge(&parser.prev_span()),
+    ))
 }
 
 fn parse_err(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
@@ -424,7 +532,10 @@ fn parse_err(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     } else {
         parser.parse_expression()?
     };
-    Ok(Expr::new(ExprKind::Err(Box::new(value)), start.merge(&parser.prev_span())))
+    Ok(Expr::new(
+        ExprKind::Err(Box::new(value)),
+        start.merge(&parser.prev_span()),
+    ))
 }
 
 // === Postfix Expression Parsers ===
@@ -435,7 +546,10 @@ fn parse_call(parser: &mut Parser, func: Expr) -> ParseResult<Expr> {
     let args = parser.parse_list(TokenKind::RParen, |p| p.parse_expression())?;
     parser.expect(TokenKind::RParen)?;
     Ok(Expr::new(
-        ExprKind::Call { func: Box::new(func), args },
+        ExprKind::Call {
+            func: Box::new(func),
+            args,
+        },
         start.merge(&parser.prev_span()),
     ))
 }
@@ -449,12 +563,19 @@ fn parse_field_or_method(parser: &mut Parser, object: Expr) -> ParseResult<Expr>
         let args = parser.parse_list(TokenKind::RParen, |p| p.parse_expression())?;
         parser.expect(TokenKind::RParen)?;
         Ok(Expr::new(
-            ExprKind::MethodCall { object: Box::new(object), method: field, args },
+            ExprKind::MethodCall {
+                object: Box::new(object),
+                method: field,
+                args,
+            },
             start.merge(&parser.prev_span()),
         ))
     } else {
         Ok(Expr::new(
-            ExprKind::Field { object: Box::new(object), field },
+            ExprKind::Field {
+                object: Box::new(object),
+                field,
+            },
             start.merge(&parser.prev_span()),
         ))
     }
@@ -466,7 +587,10 @@ fn parse_index(parser: &mut Parser, object: Expr) -> ParseResult<Expr> {
     let index = parser.parse_expression()?;
     parser.expect(TokenKind::RBracket)?;
     Ok(Expr::new(
-        ExprKind::Index { object: Box::new(object), index: Box::new(index) },
+        ExprKind::Index {
+            object: Box::new(object),
+            index: Box::new(index),
+        },
         start.merge(&parser.prev_span()),
     ))
 }
@@ -476,7 +600,10 @@ fn parse_cast(parser: &mut Parser, expr: Expr) -> ParseResult<Expr> {
     parser.expect(TokenKind::As)?;
     let target = parser.parse_type_expr()?;
     Ok(Expr::new(
-        ExprKind::Cast { expr: Box::new(expr), target },
+        ExprKind::Cast {
+            expr: Box::new(expr),
+            target,
+        },
         start.merge(&parser.prev_span()),
     ))
 }

@@ -144,7 +144,8 @@ impl<'ctx> CodegenContext<'ctx> {
     }
 
     pub fn get_type_kind(&self, type_id: TypeId) -> Option<TypeKind> {
-        let result = self.type_registry
+        let result = self
+            .type_registry
             .get(type_id)
             .map(|info| info.kind.clone());
         if std::env::var("DOO_DEBUG_TYPES").is_ok() {

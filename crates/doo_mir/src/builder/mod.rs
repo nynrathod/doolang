@@ -42,10 +42,14 @@ pub struct MirBuilder<'a> {
 
     /// Temporary variable types for type propagation.
     pub(crate) temp_types: FxHashMap<String, CoreTypeId>,
-    
+
     /// Function return types for type propagation during Call expression building.
     pub(crate) function_return_types: FxHashMap<String, CoreTypeId>,
-    
+
+    /// Function error types to detect Result-returning functions.
+    /// Key: function name, Value: (ok_type, err_type)
+    pub(crate) function_result_types: FxHashMap<String, (CoreTypeId, CoreTypeId)>,
+
     /// Function parameter types for type propagation during Call argument building.
     /// Key: function name, Value: list of parameter types
     pub(crate) function_param_types: FxHashMap<String, Vec<CoreTypeId>>,
@@ -72,6 +76,7 @@ impl<'a> MirBuilder<'a> {
             ownership_results: None,
             temp_types: FxHashMap::default(),
             function_return_types: FxHashMap::default(),
+            function_result_types: FxHashMap::default(),
             function_param_types: FxHashMap::default(),
         }
     }
@@ -93,6 +98,7 @@ impl<'a> MirBuilder<'a> {
             ownership_results: Some(ownership_results),
             temp_types: FxHashMap::default(),
             function_return_types: FxHashMap::default(),
+            function_result_types: FxHashMap::default(),
             function_param_types: FxHashMap::default(),
         }
     }
@@ -114,15 +120,25 @@ impl<'a> MirBuilder<'a> {
         // First pass: collect all function return types and parameter types for type propagation
         for item in &hir.items {
             if let HirItem::Function(f) = item {
-                if let Some(return_type) = f.return_type {
-                    self.function_return_types.insert(f.name.clone(), return_type);
+                // For functions with error types, track them separately
+                if let (Some(return_type), Some(error_type)) = (f.return_type, f.error_type) {
+                    // Store the Result type components
+                    self.function_result_types
+                        .insert(f.name.clone(), (return_type, error_type));
+                    // Also store the return type for the temp type (will be the ok value for unwrapping)
+                    self.function_return_types
+                        .insert(f.name.clone(), return_type);
+                } else if let Some(return_type) = f.return_type {
+                    self.function_return_types
+                        .insert(f.name.clone(), return_type);
                 }
+
                 // Collect parameter types for type-aware argument building
-                let param_types: Vec<CoreTypeId> = f.params.iter()
-                    .filter_map(|p| p.type_id)
-                    .collect();
+                let param_types: Vec<CoreTypeId> =
+                    f.params.iter().filter_map(|p| p.type_id).collect();
                 if !param_types.is_empty() {
-                    self.function_param_types.insert(f.name.clone(), param_types);
+                    self.function_param_types
+                        .insert(f.name.clone(), param_types);
                 }
             }
         }
@@ -215,11 +231,15 @@ impl<'a> MirBuilder<'a> {
             self.build_stmt(stmt);
         }
 
-        // Ensure function has a terminator
+        // Ensure function has a terminator - only for void functions
+        // Non-void functions should have explicit returns; unreachable blocks stay unreachable
         if let Some(f) = &mut self.current_func {
-            if let Some(block) = f.blocks.get_mut(self.current_block) {
-                if matches!(block.terminator, MirTerminator::Unreachable) {
-                    block.terminator = MirTerminator::Return { values: Vec::new() };
+            // Only add empty return for void functions (no return type and no error type)
+            if f.return_type.is_none() && f.error_type.is_none() {
+                if let Some(block) = f.blocks.get_mut(self.current_block) {
+                    if matches!(block.terminator, MirTerminator::Unreachable) {
+                        block.terminator = MirTerminator::Return { values: Vec::new() };
+                    }
                 }
             }
         }
@@ -276,6 +296,23 @@ impl<'a> MirBuilder<'a> {
             if let Some(block) = f.blocks.get_mut(self.current_block) {
                 block.terminator = term;
             }
+        }
+    }
+
+    /// Check if the current block already has a terminator set (not Unreachable).
+    pub(crate) fn current_block_has_terminator(&self) -> bool {
+        if let Some(f) = &self.current_func {
+            if let Some(block) = f.blocks.get(self.current_block) {
+                return !matches!(block.terminator, MirTerminator::Unreachable);
+            }
+        }
+        false
+    }
+
+    /// Set terminator only if one hasn't been set yet.
+    pub(crate) fn set_terminator_if_none(&mut self, term: MirTerminator) {
+        if !self.current_block_has_terminator() {
+            self.set_terminator(term);
         }
     }
 
@@ -426,6 +463,11 @@ impl<'a> MirBuilder<'a> {
     /// Get the return type of the current function being built.
     pub(crate) fn get_current_function_return_type(&self) -> Option<CoreTypeId> {
         self.current_func.as_ref().and_then(|f| f.return_type)
+    }
+
+    /// Get the error type of the current function being built.
+    pub(crate) fn get_current_function_error_type(&self) -> Option<CoreTypeId> {
+        self.current_func.as_ref().and_then(|f| f.error_type)
     }
 
     /// Get the return type of a function by name.

@@ -330,13 +330,13 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         if let Some(kind) = ctx.get_type_kind(ty) {
                             match kind {
                                 TypeKind::Str => {
-                                    emit_print_value(ctx, printf, ty, v, false);
+                                    emit_print_value(ctx, printf, ty, v, false, false);
                                 }
                                 TypeKind::Bool => {
-                                    emit_print_value(ctx, printf, ty, v, false);
+                                    emit_print_value(ctx, printf, ty, v, false, false);
                                 }
                                 TypeKind::Int | TypeKind::Float => {
-                                    emit_print_value(ctx, printf, ty, v, false);
+                                    emit_print_value(ctx, printf, ty, v, false, false);
                                 }
                                 TypeKind::Array { element } => {
                                     if v.is_pointer_value() {
@@ -347,7 +347,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                             element,
                                         );
                                     } else {
-                                        emit_print_value(ctx, printf, builtin::ANY, v, false);
+                                        emit_print_value(ctx, printf, builtin::ANY, v, false, false);
                                     }
                                 }
                                 TypeKind::Map { key, value } => {
@@ -360,7 +360,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                             value,
                                         );
                                     } else {
-                                        emit_print_value(ctx, printf, builtin::ANY, v, false);
+                                        emit_print_value(ctx, printf, builtin::ANY, v, false, false);
                                     }
                                 }
                                 TypeKind::Struct { name, fields } => {
@@ -373,7 +373,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                             &fields,
                                         );
                                     } else {
-                                        emit_print_value(ctx, printf, ty, v, false);
+                                        emit_print_value(ctx, printf, ty, v, false, false);
                                     }
                                 }
                                 TypeKind::Enum { name, variants } => {
@@ -396,15 +396,15 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                         );
                                     } else {
                                         // Fallback for other cases
-                                        emit_print_value(ctx, printf, ty, v, false);
+                                        emit_print_value(ctx, printf, ty, v, false, false);
                                     }
                                 }
                                 _ => {
-                                    emit_print_value(ctx, printf, ty, v, false);
+                                    emit_print_value(ctx, printf, ty, v, false, false);
                                 }
                             }
                         } else {
-                            emit_print_value(ctx, printf, ty, v, false);
+                            emit_print_value(ctx, printf, ty, v, false, false);
                         }
 
                         if !is_last {
@@ -521,140 +521,132 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 // Check if result is Ok (tag == 0)
                 let result_val = operand_to_value(ctx, value)?;
 
-                // Get the Result struct (load if pointer)
-                let result_struct = load_result_struct(ctx, result_val)?;
+                // Try to get the Result struct (load if pointer)
+                if let Some(result_struct) = load_result_struct(ctx, result_val) {
+                    // Extract tag (field 0)
+                    let tag = ctx
+                        .builder
+                        .build_extract_value(result_struct, 0, "result_tag")
+                        .ok()?
+                        .into_int_value();
 
-                // Extract tag (field 0)
-                let tag = ctx
-                    .builder
-                    .build_extract_value(result_struct, 0, "result_tag")
-                    .ok()?
-                    .into_int_value();
+                    // Check if tag == 0 (Ok)
+                    let is_ok = ctx
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            tag,
+                            ctx.i32_type().const_int(0, false),
+                            "is_ok",
+                        )
+                        .ok()?;
 
-                // Check if tag == 0 (Ok)
-                let is_ok = ctx
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        tag,
-                        ctx.i32_type().const_int(0, false),
-                        "is_ok",
-                    )
-                    .ok()?;
-
-                ctx.set_temp(dest, is_ok.into());
-                Some(is_ok.into())
+                    ctx.set_temp(dest, is_ok.into());
+                    Some(is_ok.into())
+                } else {
+                    // Not a Result type - treat as always Ok
+                    // This handles the case where ? is used on non-Result values
+                    let is_ok = ctx.const_bool(true);
+                    ctx.set_temp(dest, is_ok.into());
+                    Some(is_ok.into())
+                }
             }
 
-            MirInstrKind::UnwrapOk { dest, value } => {
+            MirInstrKind::UnwrapOk { dest, value, expected_type } => {
                 // Extract Ok value from Result
-                // Assert tag == 0, then load and unbox payload
+                // The branching (error check) is now handled at MIR level
+                // This just extracts the value from an Ok result
                 let result_val = operand_to_value(ctx, value)?;
 
-                // Get the Result struct (load if pointer)
-                let result_struct = load_result_struct(ctx, result_val)?;
+                // Try to get the Result struct (load if pointer)
+                if let Some(result_struct) = load_result_struct(ctx, result_val) {
+                    // Extract value pointer (field 1)
+                    let value_ptr = ctx
+                        .builder
+                        .build_extract_value(result_struct, 1, "ok_value_ptr")
+                        .ok()?
+                        .into_pointer_value();
 
-                // Extract tag (field 0)
-                let tag = ctx
-                    .builder
-                    .build_extract_value(result_struct, 0, "unwrap_ok_tag")
-                    .ok()?
-                    .into_int_value();
+                    // Convert the pointer back to the expected type
+                    // The payload was created using value_to_ptr which uses inttoptr for primitives
+                    let final_value: BasicValueEnum = match expected_type {
+                        Some(type_id) if *type_id == builtin::INT => {
+                            // Convert pointer back to i64 using ptrtoint
+                            ctx.builder
+                                .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_int")
+                                .ok()?
+                                .into()
+                        }
+                        Some(type_id) if *type_id == builtin::FLOAT => {
+                            // Convert pointer to float (reverse of value_to_ptr)
+                            let i64_val = ctx.builder
+                                .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
+                                .ok()?;
+                            let tmp = ctx.builder.build_alloca(ctx.i64_type(), "f_tmp").ok()?;
+                            ctx.builder.build_store(tmp, i64_val).ok()?;
+                            let f_ptr = ctx.builder
+                                .build_pointer_cast(tmp, ctx.context.ptr_type(inkwell::AddressSpace::default()), "f_ptr")
+                                .ok()?;
+                            ctx.builder.build_load(ctx.f64_type(), f_ptr, "f_val").ok()?
+                        }
+                        Some(type_id) if *type_id == builtin::BOOL => {
+                            // Convert pointer back to bool
+                            let i64_val = ctx.builder
+                                .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
+                                .ok()?;
+                            ctx.builder
+                                .build_int_truncate(i64_val, ctx.bool_type(), "to_bool")
+                                .ok()?
+                                .into()
+                        }
+                        _ => {
+                            // For pointers (string, array, struct), the pointer is the value
+                            value_ptr.into()
+                        }
+                    };
 
-                // Check if tag == 1 (Err) - panic if so
-                let is_err = ctx
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        tag,
-                        ctx.i32_type().const_int(1, false),
-                        "is_err_unwrap",
-                    )
-                    .ok()?;
-
-                // Create blocks for error and ok paths
-                let func = ctx.builder.get_insert_block()?.get_parent()?;
-                let panic_block = ctx.context.append_basic_block(func, "unwrap_ok_panic");
-                let ok_block = ctx.context.append_basic_block(func, "unwrap_ok_cont");
-
-                ctx.builder
-                    .build_conditional_branch(is_err, panic_block, ok_block)
-                    .ok()?;
-
-                // Panic path: print error and exit
-                ctx.builder.position_at_end(panic_block);
-                emit_panic(ctx, "unwrap called on Err value")?;
-
-                // Ok path: extract value
-                ctx.builder.position_at_end(ok_block);
-                let value_ptr = ctx
-                    .builder
-                    .build_extract_value(result_struct, 1, "ok_value_ptr")
-                    .ok()?
-                    .into_pointer_value();
-
-                // The payload is already a pointer - store it as the value
-                ctx.set_temp(dest, value_ptr.into());
-                Some(value_ptr.into())
+                    ctx.set_temp(dest, final_value);
+                    Some(final_value)
+                } else {
+                    // Not a Result type - pass through the value as-is
+                    // This handles the case where ? is used on non-Result values
+                    ctx.set_temp(dest, result_val);
+                    Some(result_val)
+                }
             }
 
             MirInstrKind::UnwrapErr { dest, value } => {
                 // Extract Err value from Result
-                // Assert tag == 1, then load and unbox payload
+                // The MIR is responsible for checking IsOk before calling UnwrapErr,
+                // so we don't need to check again here - just extract the payload.
                 let result_val = operand_to_value(ctx, value)?;
 
-                // Get the Result struct (load if pointer)
-                let result_struct = load_result_struct(ctx, result_val)?;
+                // Try to get the Result struct (load if pointer)
+                if let Some(result_struct) = load_result_struct(ctx, result_val) {
+                    // Extract payload (field 1) - this is the error value
+                    let value_ptr = ctx
+                        .builder
+                        .build_extract_value(result_struct, 1, "err_value_ptr")
+                        .ok()?
+                        .into_pointer_value();
 
-                // Extract tag (field 0)
-                let tag = ctx
-                    .builder
-                    .build_extract_value(result_struct, 0, "unwrap_err_tag")
-                    .ok()?
-                    .into_int_value();
-
-                // Check if tag == 0 (Ok) - panic if so
-                let is_ok = ctx
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        tag,
-                        ctx.i32_type().const_int(0, false),
-                        "is_ok_unwrap_err",
-                    )
-                    .ok()?;
-
-                // Create blocks for error and ok paths
-                let func = ctx.builder.get_insert_block()?.get_parent()?;
-                let panic_block = ctx.context.append_basic_block(func, "unwrap_err_panic");
-                let err_block = ctx.context.append_basic_block(func, "unwrap_err_cont");
-
-                ctx.builder
-                    .build_conditional_branch(is_ok, panic_block, err_block)
-                    .ok()?;
-
-                // Panic path: print error and exit
-                ctx.builder.position_at_end(panic_block);
-                emit_panic(ctx, "unwrap_err called on Ok value")?;
-
-                // Err path: extract error value
-                ctx.builder.position_at_end(err_block);
-                let value_ptr = ctx
-                    .builder
-                    .build_extract_value(result_struct, 1, "err_value_ptr")
-                    .ok()?
-                    .into_pointer_value();
-
-                // The payload is already a pointer - store it as the value
-                ctx.set_temp(dest, value_ptr.into());
-                Some(value_ptr.into())
+                    // The payload is already a pointer - store it as the value
+                    ctx.set_temp(dest, value_ptr.into());
+                    Some(value_ptr.into())
+                } else {
+                    // Not a Result type - return null pointer as error
+                    // This shouldn't normally happen but provides fallback
+                    let null_ptr = ctx.ptr_type().const_null();
+                    ctx.set_temp(dest, null_ptr.into());
+                    Some(null_ptr.into())
+                }
             }
 
             MirInstrKind::ManualErrorExtract {
                 ok_names,
                 error_name,
                 result,
-                ok_type: _,
+                ok_type,
                 err_type: _,
             } => {
                 // Manual error extraction: let a, b, err = expr;
@@ -725,49 +717,134 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     .build_conditional_branch(is_ok, ok_block, err_block)
                     .ok()?;
 
-                // === Ok path ===
-                ctx.builder.position_at_end(ok_block);
+                // Determine if we should use value-based phi (when error is ignored)
+                // This prevents null pointer dereference when error occurs but is ignored
+                let error_ignored = error_name == "_";
+                
+                // Check if ok_type is a scalar (Int, Float, Bool) - these need special handling
+                // because Result stores scalars as inttoptr(value) which needs ptrtoint to extract
+                let is_int = *ok_type == builtin::INT;
+                let is_float = *ok_type == builtin::FLOAT;
+                let is_bool = *ok_type == builtin::BOOL;
+                let is_scalar_ok = is_int || is_float || is_bool;
 
-                // For Ok path: ok values get the actual value, error gets nil
-                let ok_val_from_ok = value_ptr;
-                let err_val_from_ok = ctx.ptr_type().const_null();
+                if error_ignored && is_scalar_ok {
+                    // === SCALAR VALUE PATH (error ignored) ===
+                    // When error is ignored and ok type is scalar, we must:
+                    // 1. Convert the pointer to the actual value in ok_block (using ptrtoint)
+                    // 2. Use a default value in err_block (not null pointer)
+                    // 3. Phi the VALUES, not pointers
+                    
+                    let ok_llvm_type = ctx.get_llvm_type(*ok_type);
+                    
+                    // === Ok path ===
+                    ctx.builder.position_at_end(ok_block);
+                    
+                    // Convert pointer to value (same logic as UnwrapOk)
+                    let ok_extracted_val: BasicValueEnum = if is_int {
+                        // Convert pointer back to i64 using ptrtoint
+                        ctx.builder
+                            .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_int")
+                            .ok()?
+                            .into()
+                    } else if is_float {
+                        // Convert pointer to float (reverse of value_to_ptr)
+                        let i64_val = ctx.builder
+                            .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
+                            .ok()?;
+                        let tmp = ctx.builder.build_alloca(ctx.i64_type(), "f_tmp").ok()?;
+                        ctx.builder.build_store(tmp, i64_val).ok()?;
+                        let f_ptr = ctx.builder
+                            .build_pointer_cast(tmp, ctx.context.ptr_type(inkwell::AddressSpace::default()), "f_ptr")
+                            .ok()?;
+                        ctx.builder.build_load(ctx.f64_type(), f_ptr, "f_val").ok()?
+                    } else {
+                        // Bool: Convert pointer back to bool
+                        let i64_val = ctx.builder
+                            .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
+                            .ok()?;
+                        ctx.builder
+                            .build_int_truncate(i64_val, ctx.bool_type(), "to_bool")
+                            .ok()?
+                            .into()
+                    };
+                    
+                    let ok_block_end = ctx.builder.get_insert_block()?;
+                    ctx.builder.build_unconditional_branch(cont_block).ok()?;
 
-                ctx.builder.build_unconditional_branch(cont_block).ok()?;
+                    // === Err path ===
+                    ctx.builder.position_at_end(err_block);
+                    // Use default value for the type (0 for Int, 0.0 for Float, false for Bool)
+                    let default_val = crate::utils::default_for_type(ctx, ok_llvm_type);
+                    let err_block_end = ctx.builder.get_insert_block()?;
+                    ctx.builder.build_unconditional_branch(cont_block).ok()?;
 
-                // === Err path ===
-                ctx.builder.position_at_end(err_block);
+                    // === Continue block - merge with phi nodes ===
+                    ctx.builder.position_at_end(cont_block);
 
-                // For Err path: ok values get nil, error gets the actual error
-                let ok_val_from_err = ctx.ptr_type().const_null();
-                let err_val_from_err = value_ptr;
-
-                ctx.builder.build_unconditional_branch(cont_block).ok()?;
-
-                // === Continue block - merge with phi nodes ===
-                ctx.builder.position_at_end(cont_block);
-
-                // Create phi node for ok value
-                let ok_phi = ctx.builder.build_phi(ctx.ptr_type(), "ok_phi").ok()?;
-                ok_phi.add_incoming(&[(&ok_val_from_ok, ok_block), (&ok_val_from_err, err_block)]);
-                let ok_result = ok_phi.as_basic_value();
-
-                // Store ok value(s) to all ok_names
-                for ok_name in ok_names {
-                    ctx.set_temp(ok_name, ok_result);
-                }
-
-                // Create phi node for error value (if not ignored)
-                if error_name != "_" {
-                    let err_phi = ctx.builder.build_phi(ctx.ptr_type(), "err_phi").ok()?;
-                    err_phi.add_incoming(&[
-                        (&err_val_from_ok, ok_block),
-                        (&err_val_from_err, err_block),
+                    // Create phi node for the VALUE (not pointer)
+                    let ok_phi = ctx.builder.build_phi(ok_llvm_type, "ok_val_phi").ok()?;
+                    ok_phi.add_incoming(&[
+                        (&ok_extracted_val, ok_block_end),
+                        (&default_val, err_block_end),
                     ]);
-                    let err_result = err_phi.as_basic_value();
-                    ctx.set_temp(error_name, err_result);
-                }
+                    let ok_result = ok_phi.as_basic_value();
 
-                Some(ok_result)
+                    // Store ok value(s) to all ok_names
+                    for ok_name in ok_names {
+                        ctx.set_temp(ok_name, ok_result);
+                    }
+                    // Error is ignored, no phi needed for it
+
+                    Some(ok_result)
+                } else {
+                    // === POINTER PATH (original behavior) ===
+                    // Used when error is NOT ignored, or ok type is not scalar
+                    
+                    // === Ok path ===
+                    ctx.builder.position_at_end(ok_block);
+
+                    // For Ok path: ok values get the actual value, error gets nil
+                    let ok_val_from_ok = value_ptr;
+                    let err_val_from_ok = ctx.ptr_type().const_null();
+
+                    ctx.builder.build_unconditional_branch(cont_block).ok()?;
+
+                    // === Err path ===
+                    ctx.builder.position_at_end(err_block);
+
+                    // For Err path: ok values get nil, error gets the actual error
+                    let ok_val_from_err = ctx.ptr_type().const_null();
+                    let err_val_from_err = value_ptr;
+
+                    ctx.builder.build_unconditional_branch(cont_block).ok()?;
+
+                    // === Continue block - merge with phi nodes ===
+                    ctx.builder.position_at_end(cont_block);
+
+                    // Create phi node for ok value
+                    let ok_phi = ctx.builder.build_phi(ctx.ptr_type(), "ok_phi").ok()?;
+                    ok_phi.add_incoming(&[(&ok_val_from_ok, ok_block), (&ok_val_from_err, err_block)]);
+                    let ok_result = ok_phi.as_basic_value();
+
+                    // Store ok value(s) to all ok_names
+                    for ok_name in ok_names {
+                        ctx.set_temp(ok_name, ok_result);
+                    }
+
+                    // Create phi node for error value (if not ignored)
+                    if !error_ignored {
+                        let err_phi = ctx.builder.build_phi(ctx.ptr_type(), "err_phi").ok()?;
+                        err_phi.add_incoming(&[
+                            (&err_val_from_ok, ok_block),
+                            (&err_val_from_err, err_block),
+                        ]);
+                        let err_result = err_phi.as_basic_value();
+                        ctx.set_temp(error_name, err_result);
+                    }
+
+                    Some(ok_result)
+                }
             }
 
             MirInstrKind::TypeOf {
@@ -884,6 +961,7 @@ fn emit_print_value<'ctx>(
     type_id: doo_core::types::TypeId,
     val: BasicValueEnum<'ctx>,
     newline: bool,
+    quote_strings: bool,
 ) {
     // Handle ANY type by inferring from LLVM value type
     if type_id == builtin::ANY {
@@ -923,11 +1001,27 @@ fn emit_print_value<'ctx>(
 
     if type_id == builtin::STR {
         if val.is_pointer_value() {
-            let fmt = if newline { "%s\n" } else { "%s" };
-            let fmt = ctx.const_string(fmt);
-            ctx.builder
-                .build_call(printf, &[fmt.into(), val.into()], "print_str")
-                .ok();
+            if quote_strings {
+                // Print string with surrounding quotes for collection display
+                let open_quote = ctx.const_string("\"");
+                let close_quote = if newline { ctx.const_string("\"\n") } else { ctx.const_string("\"") };
+                let fmt = ctx.const_string("%s");
+                ctx.builder
+                    .build_call(printf, &[fmt.into(), open_quote.into()], "print_quote_open")
+                    .ok();
+                ctx.builder
+                    .build_call(printf, &[fmt.into(), val.into()], "print_str")
+                    .ok();
+                ctx.builder
+                    .build_call(printf, &[fmt.into(), close_quote.into()], "print_quote_close")
+                    .ok();
+            } else {
+                let fmt = if newline { "%s\n" } else { "%s" };
+                let fmt = ctx.const_string(fmt);
+                ctx.builder
+                    .build_call(printf, &[fmt.into(), val.into()], "print_str")
+                    .ok();
+            }
         }
         return;
     }
@@ -1133,7 +1227,7 @@ fn emit_print_tuple<'ctx>(
                 let llvm_ty = ctx.get_llvm_type(ty);
                 let val = ctx.builder.build_load(llvm_ty, fp, "val").ok();
                 if let Some(v) = val {
-                    emit_print_value(ctx, printf, ty, v, false);
+                    emit_print_value(ctx, printf, ty, v, false, true);
                 }
             }
         }
@@ -1197,7 +1291,7 @@ fn emit_print_struct<'ctx>(
             let llvm_ty = ctx.get_llvm_type(*fty);
             let val = ctx.builder.build_load(llvm_ty, fp, "val").ok();
             if let Some(v) = val {
-                emit_print_value(ctx, printf, *fty, v, false);
+                emit_print_value(ctx, printf, *fty, v, false, true);
             }
         }
     }
@@ -1342,12 +1436,12 @@ fn emit_print_enum<'ctx>(
                     
                     if llvm_pty.is_pointer_type() {
                         // Pointer type: the payload IS the value (string ptr, array ptr, etc.)
-                        emit_print_value(ctx, printf, *pty, pp.into(), false);
+                        emit_print_value(ctx, printf, *pty, pp.into(), false, true);
                     } else {
                         // Value type: load the actual value from the payload pointer
                         let val = ctx.builder.build_load(llvm_pty, pp, "pval").ok();
                         if let Some(v) = val {
-                            emit_print_value(ctx, printf, *pty, v, false);
+                            emit_print_value(ctx, printf, *pty, v, false, true);
                         }
                     }
                 }
@@ -1446,11 +1540,11 @@ fn emit_print_enum_value<'ctx>(
             let llvm_pty = ctx.get_llvm_type(*pty);
             
             if llvm_pty.is_pointer_type() {
-                emit_print_value(ctx, printf, *pty, payload_ptr.into(), false);
+                emit_print_value(ctx, printf, *pty, payload_ptr.into(), false, true);
             } else {
                 let val = ctx.builder.build_load(llvm_pty, payload_ptr, "pval").ok();
                 if let Some(v) = val {
-                    emit_print_value(ctx, printf, *pty, v, false);
+                    emit_print_value(ctx, printf, *pty, v, false, true);
                 }
             }
 
@@ -1586,7 +1680,7 @@ fn emit_print_array<'ctx>(
     if let Some(elem_ptr) = elem_ptr {
         let elem_val = ctx.builder.build_load(elem_llvm, elem_ptr, "elem").ok();
         if let Some(elem_val) = elem_val {
-            emit_print_value(ctx, printf, elem_type, elem_val, false);
+            emit_print_value(ctx, printf, elem_type, elem_val, false, true);
         }
     }
     ctx.builder.build_unconditional_branch(inc_bb).ok();
@@ -1742,12 +1836,12 @@ fn emit_print_map<'ctx>(
             let k = ctx.builder.build_load(key_llvm, kptr, "k").ok();
             let v = ctx.builder.build_load(val_llvm, vptr, "v").ok();
             if let (Some(k), Some(v)) = (k, v) {
-                emit_print_value(ctx, printf, key_type, k, false);
+                emit_print_value(ctx, printf, key_type, k, false, true);
                 let sep = ctx.const_string(": ");
                 ctx.builder
                     .build_call(printf, &[fmt.into(), sep.into()], "print_sep")
                     .ok();
-                emit_print_value(ctx, printf, val_type, v, false);
+                emit_print_value(ctx, printf, val_type, v, false, true);
             }
         }
     }

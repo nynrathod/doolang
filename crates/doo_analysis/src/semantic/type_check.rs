@@ -420,6 +420,12 @@ impl TypeChecker {
                 expr.type_id.unwrap_or(builtin::ANY)
             }
 
+            // Error handling expressions - recurse into inner value
+            HirExprKind::Ok(inner) | HirExprKind::Err(inner) | HirExprKind::Try(inner) => {
+                self.check_expr(inner);
+                expr.type_id.unwrap_or(builtin::ANY)
+            }
+
             _ => expr.type_id.unwrap_or(builtin::ANY),
         }
     }
@@ -498,6 +504,11 @@ impl TypeChecker {
                     // Check body
                     self.check_expr(&arm.body);
                 }
+            }
+
+            // Error handling expressions - recurse into inner value
+            HirExprKind::Ok(inner) | HirExprKind::Err(inner) | HirExprKind::Try(inner) => {
+                self.check_expr(inner);
             }
 
             _ => {}

@@ -965,19 +965,28 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
         HirExprKind::Ok(inner) => {
             let val = builder.build_expr(inner);
-            let dest = builder.new_temp();
-            builder.emit(
-                MirInstrKind::WrapOk {
-                    dest: dest.clone(),
-                    value: val,
-                },
-                span,
-            );
-            MirOperand::Temp(dest)
+            // Only wrap in Result if function has an error type
+            // Otherwise, Ok is just syntactic sugar for returning the value
+            if builder.get_current_function_error_type().is_some() {
+                let dest = builder.new_temp();
+                builder.emit(
+                    MirInstrKind::WrapOk {
+                        dest: dest.clone(),
+                        value: val,
+                    },
+                    span,
+                );
+                MirOperand::Temp(dest)
+            } else {
+                // No error type - just pass through the value
+                val
+            }
         }
 
         HirExprKind::Err(inner) => {
             let val = builder.build_expr(inner);
+            // Err is only valid in functions with error type
+            // but we still emit it (semantic analysis should catch invalid usage)
             let dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::WrapErr {
@@ -991,9 +1000,45 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
         HirExprKind::Try(inner) => {
             let val = builder.build_expr(inner);
+            
+            // Check if this is actually a Result type
+            // If not, just return the value as-is (no unwrapping needed)
+            let value_type = inner.type_id.or_else(|| {
+                if let MirOperand::Temp(ref temp_name) = val {
+                    builder.get_temp_type(temp_name)
+                } else {
+                    None
+                }
+            });
+            
+            // Check if it's a Result type by looking for the function in function_result_types
+            let is_result_type = if let HirExprKind::Call { func, .. } = &inner.kind {
+                if let HirExprKind::Local { name } = &func.kind {
+                    builder.function_result_types.contains_key(name.as_str())
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            
+            // If not a Result type, just return the value directly
+            if !is_result_type {
+                return val;
+            }
+            
             let dest = builder.new_temp();
             let is_ok_dest = builder.new_temp();
 
+            // Get the expected type for the unwrapped value
+            let expected_type = value_type;
+            
+            // Track the unwrapped type for downstream code
+            if let Some(type_id) = expected_type {
+                builder.set_temp_type(&dest, type_id);
+            }
+
+            // Check if Ok
             builder.emit(
                 MirInstrKind::IsOk {
                     dest: is_ok_dest.clone(),
@@ -1001,13 +1046,81 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 },
                 span,
             );
+
+            // Create labels for branching
+            let ok_label = builder.new_block_label("try_ok");
+            let err_label = builder.new_block_label("try_err");
+            let cont_label = builder.new_block_label("try_cont");
+
+            // Branch based on is_ok
+            builder.set_terminator(MirTerminator::Branch {
+                cond: MirOperand::Temp(is_ok_dest),
+                then_block: ok_label.clone(),
+                else_block: err_label.clone(),
+            });
+
+            // Ok path: unwrap and continue
+            builder.add_block(&ok_label);
             builder.emit(
                 MirInstrKind::UnwrapOk {
                     dest: dest.clone(),
-                    value: val,
+                    value: val.clone(),
+                    expected_type,
                 },
                 span,
             );
+            builder.set_terminator(MirTerminator::Goto { target: cont_label.clone() });
+
+            // Err path: propagate error (return the Result as-is)
+            // For functions with error types, this should return early
+            // For main or functions without error types, this becomes a panic
+            builder.add_block(&err_label);
+            
+            if builder.get_current_function_error_type().is_some() {
+                // Function has an error type - propagate the error
+                let err_dest = builder.new_temp();
+                builder.emit(
+                    MirInstrKind::UnwrapErr {
+                        dest: err_dest.clone(),
+                        value: val,
+                    },
+                    span,
+                );
+                // Wrap the error and return it (propagate)
+                let wrapped_err = builder.new_temp();
+                builder.emit(
+                    MirInstrKind::WrapErr {
+                        dest: wrapped_err.clone(),
+                        value: MirOperand::Temp(err_dest),
+                    },
+                    span,
+                );
+                builder.set_terminator(MirTerminator::Return {
+                    values: vec![MirOperand::Temp(wrapped_err)],
+                });
+            } else {
+                // Function has no error type - panic on error
+                // Extract the error message and panic
+                let err_dest = builder.new_temp();
+                builder.emit(
+                    MirInstrKind::UnwrapErr {
+                        dest: err_dest.clone(),
+                        value: val,
+                    },
+                    span,
+                );
+                builder.emit(
+                    MirInstrKind::Panic {
+                        message: MirOperand::Temp(err_dest),
+                    },
+                    span,
+                );
+                // Panic doesn't return, but we need a terminator for LLVM
+                builder.set_terminator(MirTerminator::Unreachable);
+            }
+
+            // Continue block for ok path
+            builder.add_block(&cont_label);
 
             MirOperand::Temp(dest)
         }
@@ -1044,6 +1157,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 MirInstrKind::UnwrapOk {
                     dest: dest.clone(),
                     value: result_val.clone(),
+                    expected_type: inner.type_id,
                 },
                 span,
             );

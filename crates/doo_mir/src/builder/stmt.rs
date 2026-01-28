@@ -51,17 +51,108 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             value,
             mutable,
         } => {
+            // Check if this is a call to a Result-returning function
+            // If so, use ManualErrorExtract instead of TupleLet
+            let is_result_call = if let HirExprKind::Call { func, .. } = &value.kind {
+                // Extract function name
+                let func_name = match &func.kind {
+                    HirExprKind::Local { name } => Some(name.as_str()),
+                    _ => None,
+                };
+                // Check if it returns a Result
+                func_name
+                    .map(|name| builder.function_result_types.contains_key(name))
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            if is_result_call && names.len() >= 2 {
+                // Result type with tuple destructuring: last name is error variable
+                // Split names into ok_names and error_name
+                let (ok_names, error_name) = if names.len() == 2 {
+                    // Simple case: let ok, err = ...
+                    (vec![names[0].clone()], names[1].clone())
+                } else {
+                    // Multi-value Ok: let a, b, err = ... (last is error)
+                    let ok_names: Vec<String> = names[..names.len() - 1].to_vec();
+                    let error_name = names[names.len() - 1].clone();
+                    (ok_names, error_name)
+                };
+
+                // Get Result's ok and err types from function_result_types
+                let (ok_type, err_type) = if let HirExprKind::Call { func, .. } = &value.kind {
+                    if let HirExprKind::Local { name } = &func.kind {
+                        builder
+                            .function_result_types
+                            .get(name.as_str())
+                            .copied()
+                            .unwrap_or((builtin::ANY, builtin::ANY))
+                    } else {
+                        (builtin::ANY, builtin::ANY)
+                    }
+                } else {
+                    (builtin::ANY, builtin::ANY)
+                };
+
+                // Register ok variables as locals
+                for ok_name in &ok_names {
+                    if let Some(f) = &mut builder.current_func {
+                        if !f.locals.iter().any(|l| l.name == *ok_name) {
+                            f.locals.push(LocalDef {
+                                name: ok_name.clone(),
+                                type_id: ok_type,
+                                mutable: *mutable,
+                            });
+                        }
+                    }
+                }
+
+                // Register error variable as local
+                if error_name != "_" {
+                    if let Some(f) = &mut builder.current_func {
+                        if !f.locals.iter().any(|l| l.name == error_name) {
+                            f.locals.push(LocalDef {
+                                name: error_name.clone(),
+                                type_id: err_type,
+                                mutable: *mutable,
+                            });
+                        }
+                    }
+                }
+
+                // Build the call expression
+                let result_operand = builder.build_expr(value);
+
+                // Emit ManualErrorExtract instruction
+                builder.emit(
+                    MirInstrKind::ManualErrorExtract {
+                        ok_names,
+                        error_name,
+                        result: result_operand,
+                        ok_type,
+                        err_type,
+                    },
+                    span,
+                );
+
+                return; // Early return - we've handled this case
+            }
+
+            // Standard tuple destructuring (not a Result-returning call)
             // Build the tuple value first
             let tuple_operand = builder.build_expr(value);
 
-            // Get the tuple type - first from HIR, then from temp_types if it was a call
-            let tuple_type = value.type_id.or_else(|| {
+            // Get the value type - first from HIR, then from temp_types if it was a call
+            let value_type = value.type_id.or_else(|| {
                 if let MirOperand::Temp(ref temp_name) = tuple_operand {
                     builder.get_temp_type(temp_name)
                 } else {
                     None
                 }
             });
+
+            let tuple_type = value_type;
 
             // Extract element types from the tuple type using TypeRegistry
             let element_types: Vec<CoreTypeId> = if let Some(tuple_type_id) = tuple_type {
@@ -204,8 +295,21 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
         }
 
         HirStmtKind::Expr(expr) => {
-            // Just evaluate the expression for side effects
-            builder.build_expr(expr);
+            // Check if this is an Ok or Err expression - these implicitly return
+            match &expr.kind {
+                HirExprKind::Ok(_) | HirExprKind::Err(_) => {
+                    // Build the expression to get the wrapped Result value
+                    let result_operand = builder.build_expr(expr);
+                    // Set the return terminator with this value
+                    builder.set_terminator(MirTerminator::Return {
+                        values: vec![result_operand],
+                    });
+                }
+                _ => {
+                    // Just evaluate the expression for side effects
+                    builder.build_expr(expr);
+                }
+            }
         }
 
         HirStmtKind::Return(exprs) => {
@@ -259,7 +363,9 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             for stmt in then_block {
                 build_stmt(builder, stmt);
             }
-            builder.set_terminator(MirTerminator::Goto {
+            // Only add Goto if the block doesn't already have a terminator
+            // (e.g., Ok/Err expressions implicitly return)
+            builder.set_terminator_if_none(MirTerminator::Goto {
                 target: merge_label.clone(),
             });
 
@@ -269,7 +375,8 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 for stmt in else_stmts {
                     build_stmt(builder, stmt);
                 }
-                builder.set_terminator(MirTerminator::Goto {
+                // Only add Goto if the block doesn't already have a terminator
+                builder.set_terminator_if_none(MirTerminator::Goto {
                     target: merge_label.clone(),
                 });
             }
@@ -306,7 +413,9 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             for stmt in body {
                 build_stmt(builder, stmt);
             }
-            builder.set_terminator(MirTerminator::Goto { target: cond_label });
+            // Only add Goto if the block doesn't already have a terminator
+            // (e.g., return inside the loop body)
+            builder.set_terminator_if_none(MirTerminator::Goto { target: cond_label });
 
             // Pop loop labels
             builder.break_targets.pop();

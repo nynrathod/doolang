@@ -4,24 +4,70 @@
 //! This handler is a placeholder for any non-terminator control flow.
 
 use inkwell::values::BasicValueEnum;
-use doo_mir::MirInstr;
+use doo_mir::{MirInstr, MirInstrKind};
 use crate::context::CodegenContext;
+use crate::utils::operand_to_value;
 use super::InstructionHandler;
 
 /// Control flow instruction handler.
 pub struct ControlFlowHandler;
 
 impl<'ctx> InstructionHandler<'ctx> for ControlFlowHandler {
-    fn handles(&self, _instr: &MirInstr) -> bool {
-        // Control flow (terminators) handled directly in builder
-        false
+    fn handles(&self, instr: &MirInstr) -> bool {
+        matches!(&instr.kind, MirInstrKind::Panic { .. })
     }
 
     fn emit(
         &self,
-        _ctx: &mut CodegenContext<'ctx>,
-        _instr: &MirInstr,
+        ctx: &mut CodegenContext<'ctx>,
+        instr: &MirInstr,
     ) -> Option<BasicValueEnum<'ctx>> {
-        None
+        match &instr.kind {
+            MirInstrKind::Panic { message } => {
+                // Get message value (should be a string pointer)
+                let msg_val = operand_to_value(ctx, message)?;
+                
+                // Emit panic: print message and abort
+                emit_panic_with_value(ctx, msg_val);
+                
+                None
+            }
+            _ => None,
+        }
     }
+}
+
+/// Emit panic code: print message and exit(1).
+/// NOTE: Does NOT emit unreachable - that's handled by MirTerminator::Unreachable
+fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicValueEnum<'ctx>) {
+    // Get or declare printf
+    let printf_type = ctx.i32_type().fn_type(&[ctx.ptr_type().into()], true);
+    let printf = ctx
+        .module
+        .get_function("printf")
+        .unwrap_or_else(|| ctx.module.add_function("printf", printf_type, None));
+
+    // Print panic message
+    let panic_fmt = ctx.const_string("panic: %s\n");
+    let _ = ctx.builder.build_call(
+        printf,
+        &[panic_fmt.into(), message.into()],
+        "print_panic",
+    );
+
+    // Get or declare exit
+    let exit_type = ctx
+        .context
+        .void_type()
+        .fn_type(&[ctx.i32_type().into()], false);
+    let exit_fn = ctx
+        .module
+        .get_function("exit")
+        .unwrap_or_else(|| ctx.module.add_function("exit", exit_type, None));
+
+    // Exit with code 1
+    let exit_code = ctx.i32_type().const_int(1, false);
+    let _ = ctx.builder.build_call(exit_fn, &[exit_code.into()], "exit_on_panic");
+
+    // Don't emit unreachable here - let MirTerminator::Unreachable handle it
 }
