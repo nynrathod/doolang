@@ -14,12 +14,6 @@ members = [
 	"ffi/doo_ffi_db",
 	"ffi/doo_ffi_auth",
 	"ffi/doo_ffi_file",
-	"ffi/doo_ffi_json",
-	# "ffi_libs/libdoo_file",
-	# "ffi_libs/libdoo_http",
-	# "ffi_libs/libdoo_db",
-	# "ffi_libs/libdoo_auth",
-	# "ffi_libs/libdoo_runtime",
 ]
 resolver = "2"
 
