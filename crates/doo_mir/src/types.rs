@@ -153,6 +153,8 @@ pub struct MirFunction {
     pub ffi: Option<FfiLinkage>,
     /// Source span
     pub span: Span,
+    /// Whether this is a closure function (requires env param and i64 calling convention)
+    pub is_closure: bool,
 }
 
 /// Parameter definition
@@ -188,6 +190,7 @@ impl MirFunction {
             locals: Vec::new(),
             ffi: None,
             span: Span::default(),
+            is_closure: false,
         }
     }
 

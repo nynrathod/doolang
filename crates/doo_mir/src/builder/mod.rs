@@ -53,6 +53,17 @@ pub struct MirBuilder<'a> {
     /// Function parameter types for type propagation during Call argument building.
     /// Key: function name, Value: list of parameter types
     pub(crate) function_param_types: FxHashMap<String, Vec<CoreTypeId>>,
+
+    /// Counter for generating unique closure function names.
+    pub(crate) closure_counter: usize,
+
+    /// Pending closure functions to be added to the program.
+    /// Each entry is (func_name, params, body_expr).
+    pub(crate) pending_closures: Vec<(String, Vec<(String, Option<CoreTypeId>)>, Box<HirExpr>)>,
+
+    /// Closure return types for type propagation.
+    /// Key: closure function name, Value: return type
+    pub(crate) closure_return_types: FxHashMap<String, CoreTypeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +89,9 @@ impl<'a> MirBuilder<'a> {
             function_return_types: FxHashMap::default(),
             function_result_types: FxHashMap::default(),
             function_param_types: FxHashMap::default(),
+            closure_counter: 0,
+            pending_closures: Vec::new(),
+            closure_return_types: FxHashMap::default(),
         }
     }
 
@@ -100,6 +114,9 @@ impl<'a> MirBuilder<'a> {
             function_return_types: FxHashMap::default(),
             function_result_types: FxHashMap::default(),
             function_param_types: FxHashMap::default(),
+            closure_counter: 0,
+            pending_closures: Vec::new(),
+            closure_return_types: FxHashMap::default(),
         }
     }
 
@@ -193,7 +210,115 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        // Generate MIR functions for all pending closures
+        while let Some((closure_name, params, body)) = self.pending_closures.pop() {
+            let closure_func = self.build_closure_function(&closure_name, &params, &body);
+            program.functions.push(closure_func);
+        }
+
         program
+    }
+
+    /// Build a MIR function for a closure.
+    fn build_closure_function(
+        &mut self,
+        name: &str,
+        params: &[(String, Option<CoreTypeId>)],
+        body: &HirExpr,
+    ) -> MirFunction {
+        // Save current state
+        let saved_func = self.current_func.take();
+        let saved_block = self.current_block;
+        let saved_temp = self.temp_counter;
+        let saved_label = self.block_counter;
+        let saved_temp_types = std::mem::take(&mut self.temp_types);
+        let saved_container_kinds = std::mem::take(&mut self.container_kinds);
+
+        // Reset counters for closure
+        self.temp_counter = 0;
+        self.block_counter = 0;
+
+        // Create new closure function
+        let mut func = MirFunction::new(name.to_string());
+        func.is_closure = true; // Mark as closure for special codegen handling
+
+        // Keep original param types for proper MIR body codegen
+        // The LLVM signature will use i64 calling convention, but codegen
+        // will handle the conversion
+        func.params = params
+            .iter()
+            .map(|(pname, ptype)| ParamDef {
+                name: pname.clone(),
+                type_id: ptype.unwrap_or(builtin::INT),
+            })
+            .collect();
+        // Don't set return_type yet - we'll infer it from the body expression
+
+        // Create entry block
+        func.blocks.push(MirBlock::new("entry".to_string()));
+        self.current_func = Some(func);
+        self.current_block = 0;
+
+        // Register parameters as locals with their original types
+        for (pname, ptype) in params {
+            if let Some(f) = &mut self.current_func {
+                f.locals.push(LocalDef {
+                    name: pname.clone(),
+                    type_id: ptype.unwrap_or(builtin::INT),
+                    mutable: false,
+                });
+            }
+        }
+
+        // Build the body expression
+        let result = self.build_expr(body);
+
+        // Infer actual return type from the result expression
+        let mut return_type = self.infer_operand_type(&result);
+
+        // If the result type is ANY, it might be because the closure body has an explicit
+        // `return` statement (which sets the terminator). Check for an existing Return terminator
+        // and infer the type from its operands.
+        if return_type == builtin::ANY {
+            if let Some(f) = &self.current_func {
+                // Check all blocks for Return terminators (for closures with explicit returns)
+                for block in &f.blocks {
+                    if let MirTerminator::Return { values } = &block.terminator {
+                        if let Some(first_val) = values.first() {
+                            let inferred = self.infer_operand_type(first_val);
+                            if inferred != builtin::ANY {
+                                return_type = inferred;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update function's return type with the actual type
+        if let Some(f) = &mut self.current_func {
+            f.return_type = Some(return_type);
+        }
+
+        // Add return statement only if no explicit return was already set
+        // (e.g., block closures with `return x;` will have set the terminator already)
+        self.set_terminator_if_none(MirTerminator::Return {
+            values: vec![result],
+        });
+
+        // Extract the built function
+        let closure_func = self.current_func.take().unwrap();
+
+        // Restore previous state
+        self.current_func = saved_func;
+        self.current_block = saved_block;
+        self.temp_counter = saved_temp;
+        self.block_counter = saved_label;
+        self.temp_types = saved_temp_types;
+        self.container_kinds = saved_container_kinds;
+
+        closure_func
     }
 
     /// Build MIR for a function.
@@ -518,6 +643,19 @@ impl<'a> MirBuilder<'a> {
         receiver_type: CoreTypeId,
         method: &str,
     ) -> Option<CoreTypeId> {
+        // Use the extended version with no closure info
+        self.get_builtin_method_return_type_with_closure(receiver_type, method, None)
+    }
+
+    /// Get the return type for a builtin method call, with optional closure argument type.
+    /// This handles generic return types like [U] (from map) where U is closure's return.
+    /// SINGLE SOURCE OF TRUTH using doo_core::methods.
+    pub(crate) fn get_builtin_method_return_type_with_closure(
+        &self,
+        receiver_type: CoreTypeId,
+        method: &str,
+        closure_type: Option<CoreTypeId>,
+    ) -> Option<CoreTypeId> {
         use doo_core::methods::get_method;
 
         // Get the type name for lookup
@@ -541,7 +679,7 @@ impl<'a> MirBuilder<'a> {
             "Str" => Some(builtin::STR),
             "Float" => Some(builtin::FLOAT),
             "Void" => Some(builtin::VOID),
-            // For generic types like T, [T], [U], etc., we need receiver type info
+            // For generic types like T, [T], [U], U, etc.
             "T" => {
                 // Element type of array or value type of map
                 if let Some(info) = self.type_registry.get(receiver_type) {
@@ -563,14 +701,44 @@ impl<'a> MirBuilder<'a> {
                 }
                 Some(builtin::ANY)
             }
+            // [U] - Array of closure return type (e.g., map returns [U])
+            "[U]" => {
+                // Get U from closure's function return type
+                if let Some(closure_tid) = closure_type {
+                    if let Some(info) = self.type_registry.get(closure_tid) {
+                        if let TypeKind::Function { returns, .. } = &info.kind {
+                            // Register array type with closure's return type as element
+                            // Since we can't mutate registry here, check if it already exists
+                            // or return the element type and let caller handle array wrapping
+                            return Some(*returns);
+                        }
+                    }
+                }
+                // Fallback: get element type from receiver (same type mapping)
+                if let Some(info) = self.type_registry.get(receiver_type) {
+                    if let TypeKind::Array { element } = &info.kind {
+                        return Some(*element);
+                    }
+                }
+                Some(builtin::ANY)
+            }
+            // U - Closure return type (e.g., reduce returns U)
+            "U" => {
+                // Get U from closure's function return type
+                if let Some(closure_tid) = closure_type {
+                    if let Some(info) = self.type_registry.get(closure_tid) {
+                        if let TypeKind::Function { returns, .. } = &info.kind {
+                            return Some(*returns);
+                        }
+                    }
+                }
+                Some(builtin::ANY)
+            }
             "[K]" => {
                 // Array of keys from a map
                 if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Map { key: _, .. } = &info.kind {
-                        // Register a new array type for the keys
-                        // Note: Since we only have immutable access to registry,
-                        // we return ANY and let codegen handle it
-                        return Some(builtin::ANY);
+                    if let TypeKind::Map { key, .. } = &info.kind {
+                        return Some(*key);
                     }
                 }
                 Some(builtin::ANY)
@@ -578,8 +746,8 @@ impl<'a> MirBuilder<'a> {
             "[V]" => {
                 // Array of values from a map
                 if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Map { value: _, .. } = &info.kind {
-                        return Some(builtin::ANY);
+                    if let TypeKind::Map { value, .. } = &info.kind {
+                        return Some(*value);
                     }
                 }
                 Some(builtin::ANY)

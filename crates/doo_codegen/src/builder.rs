@@ -10,7 +10,7 @@ use doo_mir::{MirBlock, MirConst, MirFunction, MirInstr, MirOperand, MirProgram,
 use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::BasicTypeEnum;
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::BasicValueEnum;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,6 +88,108 @@ fn convert_return_value<'ctx>(
 
     // If conversion failed, return original value
     BasicValueEnum::PointerValue(ptr)
+}
+
+/// Convert an i64 value to the target Doo type.
+/// Used for closure parameters which come in as i64 but need conversion to their actual types.
+fn convert_i64_to_type<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    val: BasicValueEnum<'ctx>,
+    target_type: doo_core::types::TypeId,
+) -> BasicValueEnum<'ctx> {
+    use doo_core::types::TypeKind;
+
+    let i64_val = val.into_int_value();
+
+    let kind = match ctx.get_type_kind(target_type) {
+        Some(k) => k,
+        None => return val, // Unknown type, keep as-is
+    };
+
+    match kind {
+        TypeKind::Int => {
+            // Already i64
+            i64_val.into()
+        }
+        TypeKind::Bool => {
+            // Truncate i64 to i1
+            ctx.builder
+                .build_int_truncate(i64_val, ctx.context.bool_type(), "i64_to_bool")
+                .map(|v| v.into())
+                .unwrap_or(val)
+        }
+        TypeKind::Float => {
+            // Reinterpret i64 bits as f64
+            ctx.builder
+                .build_bit_cast(i64_val, ctx.context.f64_type(), "i64_to_f64")
+                .map(|v| v)
+                .unwrap_or(val)
+        }
+        TypeKind::Str | TypeKind::Array { .. } | TypeKind::Map { .. } | TypeKind::Struct { .. } => {
+            // Convert i64 to pointer
+            ctx.builder
+                .build_int_to_ptr(
+                    i64_val,
+                    ctx.context
+                        .i8_type()
+                        .ptr_type(inkwell::AddressSpace::default()),
+                    "i64_to_ptr",
+                )
+                .map(|v| v.into())
+                .unwrap_or(val)
+        }
+        _ => val, // Keep as-is for other types
+    }
+}
+
+/// Convert any value to i64.
+/// Used for closure return values which must be i64.
+fn convert_to_i64<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    val: BasicValueEnum<'ctx>,
+) -> BasicValueEnum<'ctx> {
+    let i64_type = ctx.context.i64_type();
+
+    if val.is_int_value() {
+        let int_val = val.into_int_value();
+        let bit_width = int_val.get_type().get_bit_width();
+        if bit_width == 64 {
+            return val;
+        } else if bit_width < 64 {
+            // Zero extend smaller ints (like i1 for bool)
+            return ctx
+                .builder
+                .build_int_z_extend(int_val, i64_type, "to_i64")
+                .map(|v| v.into())
+                .unwrap_or(val);
+        } else {
+            // Truncate larger ints
+            return ctx
+                .builder
+                .build_int_truncate(int_val, i64_type, "to_i64")
+                .map(|v| v.into())
+                .unwrap_or(val);
+        }
+    } else if val.is_float_value() {
+        // Bitcast f64 to i64
+        let f64_val = val.into_float_value();
+        return ctx
+            .builder
+            .build_bit_cast(f64_val, i64_type, "f64_to_i64")
+            .map(|v| v)
+            .unwrap_or(BasicValueEnum::IntValue(i64_type.const_zero()));
+    } else if val.is_pointer_value() {
+        // Convert pointer to i64
+        let ptr_val = val.into_pointer_value();
+        return ctx
+            .builder
+            .build_ptr_to_int(ptr_val, i64_type, "ptr_to_i64")
+            .map(|v| v.into())
+            .unwrap_or(val);
+    }
+
+    // Fallback: return 0
+    i64_type.const_zero().into()
 }
 
 /// Main code generation builder.
@@ -182,9 +284,35 @@ impl<'ctx> CodegenBuilder<'ctx> {
         let debug = std::env::var("DOO_DEBUG").is_ok();
         if debug {
             eprintln!(
-                "[CODEGEN] Declaring function {} with return_type={:?}",
-                func.name, func.return_type
+                "[CODEGEN] Declaring function {} with return_type={:?} is_closure={}",
+                func.name, func.return_type, func.is_closure
             );
+        }
+
+        // Closure functions have special calling convention: (env: ptr, params...) -> return_type
+        // Use actual types for parameters and return type (no i64 boxing)
+        if func.is_closure {
+            let ptr_type = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+
+            // Build param types: env ptr + user params (with actual types)
+            let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = vec![ptr_type.into()];
+            for param in &func.params {
+                let llvm_type = ctx.get_llvm_type(param.type_id);
+                param_types.push(llvm_type.into());
+            }
+
+            // Use actual return type (default to i64 if none specified)
+            let return_llvm_type = func
+                .return_type
+                .map(|t| ctx.get_llvm_type(t))
+                .unwrap_or_else(|| ctx.context.i64_type().into());
+
+            let fn_type = return_llvm_type.fn_type(&param_types, false);
+            ctx.module.add_function(&func.name, fn_type, None);
+            return;
         }
 
         // Build parameter types
@@ -251,6 +379,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Set current function's return type for proper return value conversion
         ctx.current_function_return_type = func.return_type;
 
+        // Set closure flag for special return value handling
+        ctx.is_closure_function = func.is_closure;
+
         if std::env::var("DOO_DEBUG").is_ok() {
             eprintln!(
                 "[CODEGEN] Function {} has {} MIR locals:",
@@ -299,12 +430,20 @@ impl<'ctx> CodegenBuilder<'ctx> {
             .unwrap_or_else(|| ctx.context.append_basic_block(llvm_func, "entry"));
         ctx.builder.position_at_end(entry_bb);
 
+        // For closures, first LLVM param is env_ptr (skip it when mapping to MIR params)
+        // Closure params now use actual types (no i64 conversion needed)
+        let param_offset = if func.is_closure { 1 } else { 0 };
+
         // Create allocas for parameters
         for (i, param) in func.params.iter().enumerate() {
-            let param_value = llvm_func.get_nth_param(i as u32).unwrap();
+            let llvm_param_idx = (i + param_offset) as u32;
+            let param_value = llvm_func.get_nth_param(llvm_param_idx).unwrap();
             let param_type = ctx.get_llvm_type(param.type_id);
             let alloca = ctx.create_local(&param.name, param_type);
+
+            // Store param directly - closures now use actual types
             ctx.builder.build_store(alloca, param_value).unwrap();
+
             // Track parameter type for Clone/Drop
             ctx.set_variable_type(&param.name, param.type_id);
 
@@ -491,6 +630,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             ctx.builder.build_return(Some(&zero)).ok();
                         } else {
                             // Convert value to expected return type if needed
+                            // Closures now use actual types, no i64 conversion needed
                             let final_val = convert_return_value(ctx, val);
                             ctx.builder.build_return(Some(&final_val)).ok();
                         }

@@ -14,6 +14,7 @@
 //! - `span`: Source location tracking
 //! - `symbol`: Symbol table with scopes
 //! - `errors`: Centralized error codes
+//! - `infer`: Type inference utilities (single source of truth)
 
 pub mod types;
 pub mod span;
@@ -22,6 +23,7 @@ pub mod errors;
 pub mod intern;
 pub mod methods;
 pub mod constants;
+pub mod infer;
 
 // Re-exports for convenience
 pub use types::{
@@ -32,3 +34,4 @@ pub use types::{
 pub use span::{Span, Spanned};
 pub use symbol::{SymbolTable, SymbolInfo, SymbolKind};
 pub use errors::{ErrorCode, CompilerError};
+pub use infer::{BinOpKind, UnaryOpKind, infer_binop_result_type, infer_unaryop_result_type};

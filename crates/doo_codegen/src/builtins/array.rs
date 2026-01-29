@@ -7,7 +7,7 @@
 
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
-use doo_core::types::builtin;
+use doo_core::types::{builtin, TypeId};
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
@@ -49,9 +49,9 @@ impl ArrayBuiltins {
             "slice" => Self::emit_slice(ctx, elem_type_id, receiver_ptr, args),
 
             // Lambda methods - require closure argument
-            "map" => Self::emit_map(ctx, receiver_ptr, args),
-            "filter" => Self::emit_filter(ctx, receiver_ptr, args),
-            "reduce" => Self::emit_reduce(ctx, receiver_ptr, args),
+            "map" => Self::emit_map(ctx, elem_type_id, receiver_ptr, args),
+            "filter" => Self::emit_filter(ctx, elem_type_id, receiver_ptr, args),
+            "reduce" => Self::emit_reduce(ctx, elem_type_id, receiver_ptr, args),
 
             _ => None,
         };
@@ -1164,6 +1164,7 @@ impl ArrayBuiltins {
     // =========================================================================
     fn emit_map<'ctx>(
         ctx: &mut CodegenContext<'ctx>,
+        elem_type_id: doo_core::types::TypeId,
         arr_ptr: PointerValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
@@ -1178,15 +1179,20 @@ impl ArrayBuiltins {
             .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
             .ok()?;
 
+        // Get actual element LLVM type based on type_id
+        let elem_ty = ctx.get_llvm_type(elem_type_id);
+        let elem_size = elem_ty
+            .size_of()
+            .unwrap_or(ctx.context.i64_type().const_int(8, false));
+
         // Allocate result array (same size)
-        let elem_ty = ctx.context.i64_type();
+        // Standard array layout: 16-byte header (i64 length + i64 capacity) + data
         let doo_alloc = ctx.get_function(ffi_names::DOO_ALLOC)?;
-        let elem_size = ctx.context.i64_type().const_int(8, false); // i64 = 8 bytes
         let total_size = ctx
             .builder
             .build_int_mul(len_i64, elem_size, "data_size")
             .ok()?;
-        let header_size = ctx.context.i64_type().const_int(8, false); // RC + len
+        let header_size = ctx.context.i64_type().const_int(16, false); // length (i64) + capacity (i64)
         let alloc_size = ctx
             .builder
             .build_int_add(header_size, total_size, "alloc_size")
@@ -1200,16 +1206,16 @@ impl ArrayBuiltins {
             .left()?
             .into_pointer_value();
 
-        // Store RC=1 and len
-        store_header_len_only(ctx, result_heap, len_i32)?;
+        // Store header: length and capacity (both i64)
+        store_header(ctx, result_heap, len_i64, len_i64)?;
 
-        // Get data pointer (offset 8)
+        // Get data pointer (offset 16, after 16-byte header)
         let result_data = unsafe {
             ctx.builder
                 .build_gep(
                     ctx.context.i8_type(),
                     result_heap,
-                    &[ctx.context.i64_type().const_int(8, false)],
+                    &[ctx.context.i64_type().const_int(16, false)],
                     "result_data",
                 )
                 .ok()?
@@ -1245,7 +1251,7 @@ impl ArrayBuiltins {
             .ok()?;
 
         ctx.builder.position_at_end(body_bb);
-        // Load element
+        // Load element using correct element type
         let elem_ptr = unsafe {
             ctx.builder
                 .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
@@ -1253,10 +1259,10 @@ impl ArrayBuiltins {
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
 
-        // Call closure with element
-        let mapped = call_closure(ctx, closure_ptr, &[elem])?;
+        // Call closure with element - return type is same as element type for map
+        let mapped = call_closure(ctx, closure_ptr, &[elem], elem_ty)?;
 
-        // Store result
+        // Store result using correct element type
         let result_elem_ptr = unsafe {
             ctx.builder
                 .build_in_bounds_gep(elem_ty, result_data, &[idx], "res_elem")
@@ -1282,6 +1288,7 @@ impl ArrayBuiltins {
     // =========================================================================
     fn emit_filter<'ctx>(
         ctx: &mut CodegenContext<'ctx>,
+        elem_type_id: doo_core::types::TypeId,
         arr_ptr: PointerValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
@@ -1296,15 +1303,20 @@ impl ArrayBuiltins {
             .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
             .ok()?;
 
+        // Get actual element LLVM type based on type_id
+        let elem_ty = ctx.get_llvm_type(elem_type_id);
+        let elem_size = elem_ty
+            .size_of()
+            .unwrap_or(ctx.context.i64_type().const_int(8, false));
+
         // Allocate result array (max size = original size, will track actual count)
-        let elem_ty = ctx.context.i64_type();
+        // Standard array layout: 16-byte header (i64 length + i64 capacity) + data
         let doo_alloc = ctx.get_function(ffi_names::DOO_ALLOC)?;
-        let elem_size = ctx.context.i64_type().const_int(8, false);
         let total_size = ctx
             .builder
             .build_int_mul(len_i64, elem_size, "data_size")
             .ok()?;
-        let header_size = ctx.context.i64_type().const_int(8, false);
+        let header_size = ctx.context.i64_type().const_int(16, false); // length (i64) + capacity (i64)
         let alloc_size = ctx
             .builder
             .build_int_add(header_size, total_size, "alloc_size")
@@ -1318,12 +1330,22 @@ impl ArrayBuiltins {
             .left()?
             .into_pointer_value();
 
+        // We'll store the initial capacity, length will be set at the end
+        // Store capacity = original length (max possible), length = 0 initially
+        store_header(
+            ctx,
+            result_heap,
+            ctx.context.i64_type().const_zero(),
+            len_i64,
+        )?;
+
+        // Get data pointer (offset 16)
         let result_data = unsafe {
             ctx.builder
                 .build_gep(
                     ctx.context.i8_type(),
                     result_heap,
-                    &[ctx.context.i64_type().const_int(8, false)],
+                    &[ctx.context.i64_type().const_int(16, false)],
                     "result_data",
                 )
                 .ok()?
@@ -1375,8 +1397,9 @@ impl ArrayBuiltins {
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
 
-        // Call closure predicate
-        let pred_result = call_closure(ctx, closure_ptr, &[elem])?;
+        // Call closure predicate - filter predicates return Bool (i1)
+        let bool_ty = ctx.context.bool_type().into();
+        let pred_result = call_closure(ctx, closure_ptr, &[elem], bool_ty)?;
         let pred_bool = if pred_result.is_int_value() {
             let int_val = pred_result.into_int_value();
             ctx.builder
@@ -1426,17 +1449,14 @@ impl ArrayBuiltins {
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
 
         ctx.builder.position_at_end(end_bb);
-        // Update result length
+        // Update result length (i64) in header at offset 0
         let final_len = ctx
             .builder
             .build_load(ctx.context.i64_type(), res_idx_alloca, "final_len")
             .ok()?
             .into_int_value();
-        let final_len_i32 = ctx
-            .builder
-            .build_int_truncate(final_len, ctx.context.i32_type(), "len32")
-            .ok()?;
-        store_header_len_only(ctx, result_heap, final_len_i32)?;
+        // Store the final length at header offset 0 (i64)
+        set_array_length(ctx, result_heap, final_len)?;
 
         Some(result_data.into())
     }
@@ -1447,6 +1467,7 @@ impl ArrayBuiltins {
     // =========================================================================
     fn emit_reduce<'ctx>(
         ctx: &mut CodegenContext<'ctx>,
+        elem_type_id: TypeId,
         arr_ptr: PointerValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
@@ -1462,7 +1483,11 @@ impl ArrayBuiltins {
             .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
             .ok()?;
 
-        let elem_ty = ctx.context.i64_type();
+        // Get the accumulator type from init_val (single source of truth)
+        let acc_ty = init_val.get_type();
+
+        // Get the element type from elem_type_id (single source of truth)
+        let elem_ty = ctx.get_llvm_type(elem_type_id);
 
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
         let loop_bb = ctx.context.append_basic_block(current_fn, "reduce_loop");
@@ -1473,7 +1498,7 @@ impl ArrayBuiltins {
             .builder
             .build_alloca(ctx.context.i64_type(), "idx")
             .ok()?;
-        let acc_alloca = ctx.builder.build_alloca(elem_ty, "acc").ok()?;
+        let acc_alloca = ctx.builder.build_alloca(acc_ty, "acc").ok()?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -1495,7 +1520,7 @@ impl ArrayBuiltins {
             .ok()?;
 
         ctx.builder.position_at_end(body_bb);
-        let acc = ctx.builder.build_load(elem_ty, acc_alloca, "acc").ok()?;
+        let acc = ctx.builder.build_load(acc_ty, acc_alloca, "acc").ok()?;
         let elem_ptr = unsafe {
             ctx.builder
                 .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
@@ -1503,8 +1528,8 @@ impl ArrayBuiltins {
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
 
-        // Call closure with (acc, elem)
-        let new_acc = call_closure(ctx, closure_ptr, &[acc, elem])?;
+        // Call closure with (acc, elem) - reduce returns the accumulator type
+        let new_acc = call_closure(ctx, closure_ptr, &[acc, elem], acc_ty)?;
         ctx.builder.build_store(acc_alloca, new_acc).ok()?;
 
         let next = ctx
@@ -1515,7 +1540,7 @@ impl ArrayBuiltins {
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
 
         ctx.builder.position_at_end(end_bb);
-        let result = ctx.builder.build_load(elem_ty, acc_alloca, "result").ok()?;
+        let result = ctx.builder.build_load(acc_ty, acc_alloca, "result").ok()?;
         Some(result)
     }
 }
@@ -1585,9 +1610,9 @@ fn call_closure<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     closure_ptr: PointerValue<'ctx>,
     args: &[BasicValueEnum<'ctx>],
+    return_type: inkwell::types::BasicTypeEnum<'ctx>,
 ) -> Option<BasicValueEnum<'ctx>> {
     let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
-    let i64_type = ctx.context.i64_type();
     let closure_type = ctx
         .context
         .struct_type(&[ptr_type.into(), ptr_type.into()], false);
@@ -1610,11 +1635,12 @@ fn call_closure<'ctx>(
         .ok()?;
     let env_ptr = ctx.builder.build_load(ptr_type, env_slot, "env_ptr").ok()?;
 
-    // Build function type: (env, ...args) -> i64
-    let param_types: Vec<_> = std::iter::once(ptr_type.into())
-        .chain(args.iter().map(|_| i64_type.into()))
+    // Build function type: (env, ...args) -> return_type
+    // Use actual argument types for correct function signature
+    let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = std::iter::once(ptr_type.into())
+        .chain(args.iter().map(|arg| arg.get_type().into()))
         .collect();
-    let fn_type = i64_type.fn_type(&param_types, false);
+    let fn_type = return_type.fn_type(&param_types, false);
 
     // Cast fn_ptr to correct function pointer type
     let fn_ptr_typed = ctx

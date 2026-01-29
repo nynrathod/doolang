@@ -10,6 +10,7 @@
 //! - Range expressions → Range construction
 
 use doo_core::{
+    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
     Span,
 };
@@ -3371,6 +3372,7 @@ impl Lower {
     ) -> Option<TypeId> {
         match &mut expr.kind {
             HirExprKind::Closure { params, body } => {
+                // Apply param types from context
                 for (idx, (_, param_type)) in params.iter_mut().enumerate() {
                     if param_type.is_none() {
                         if let Some(ty) = param_types.get(idx) {
@@ -3379,9 +3381,22 @@ impl Lower {
                     }
                 }
 
+                // Build local variable types map for body inference
+                let mut locals: FxHashMap<String, TypeId> = FxHashMap::default();
+                for (name, type_id) in params.iter() {
+                    if let Some(tid) = type_id {
+                        locals.insert(name.clone(), *tid);
+                    }
+                }
+
+                // Infer body type if not set
                 if body.type_id.is_none() {
                     if let Some(ret) = return_type_hint {
                         body.type_id = Some(ret);
+                    } else {
+                        // Use centralized inference from doo_core
+                        let inferred = self.infer_closure_body_type(body, &locals, registry);
+                        body.type_id = Some(inferred);
                     }
                 }
 
@@ -3402,6 +3417,110 @@ impl Lower {
                     },
                     None => None,
                 }),
+        }
+    }
+
+    /// Infer the type of a closure body expression.
+    /// Uses centralized inference rules from doo_core::infer (single source of truth).
+    fn infer_closure_body_type(
+        &self,
+        expr: &HirExpr,
+        locals: &FxHashMap<String, TypeId>,
+        registry: &mut TypeRegistry,
+    ) -> TypeId {
+        // If already has type, return it
+        if let Some(tid) = expr.type_id {
+            return tid;
+        }
+
+        match &expr.kind {
+            HirExprKind::Const(c) => c.type_id(),
+
+            HirExprKind::Local { name } => locals.get(name).copied().unwrap_or(builtin::ANY),
+
+            HirExprKind::BinOp { op, lhs, rhs } => {
+                let lhs_type = self.infer_closure_body_type(lhs, locals, registry);
+                let rhs_type = self.infer_closure_body_type(rhs, locals, registry);
+                // Convert HirBinOp to BinOpKind and use centralized inference
+                let op_kind = hir_binop_to_kind(*op);
+                infer_binop_result_type(op_kind, lhs_type, rhs_type)
+            }
+
+            HirExprKind::UnaryOp { op, operand } => {
+                let operand_type = self.infer_closure_body_type(operand, locals, registry);
+                let op_kind = hir_unaryop_to_kind(*op);
+                infer_unaryop_result_type(op_kind, operand_type)
+            }
+
+            HirExprKind::Index { object, .. } => {
+                let obj_type = self.infer_closure_body_type(object, locals, registry);
+                if let Some(info) = registry.get(obj_type) {
+                    match &info.kind {
+                        TypeKind::Array { element } => *element,
+                        TypeKind::Map { value, .. } => *value,
+                        TypeKind::Str => builtin::STR,
+                        _ => builtin::ANY,
+                    }
+                } else {
+                    builtin::ANY
+                }
+            }
+
+            HirExprKind::Block { stmts, expr } => {
+                // Build extended locals map including block-local let bindings
+                let mut block_locals = locals.clone();
+                for stmt in stmts.iter() {
+                    if let HirStmtKind::Let { name, value, .. } = &stmt.kind {
+                        // Infer the type of the let value and add to block_locals
+                        let val_type = self.infer_closure_body_type(value, &block_locals, registry);
+                        block_locals.insert(name.clone(), val_type);
+                    }
+                }
+
+                // Priority 1: trailing expression
+                if let Some(expr) = expr {
+                    return self.infer_closure_body_type(expr, &block_locals, registry);
+                }
+                // Priority 2: look for return statements (for block closures with explicit return)
+                for stmt in stmts.iter() {
+                    if let HirStmtKind::Return(values) = &stmt.kind {
+                        if let Some(val) = values.first() {
+                            return self.infer_closure_body_type(val, &block_locals, registry);
+                        }
+                    }
+                }
+                // Priority 3: last expression statement
+                if let Some(last) = stmts.last() {
+                    if let HirStmtKind::Expr(e) = &last.kind {
+                        return self.infer_closure_body_type(e, &block_locals, registry);
+                    }
+                }
+                builtin::VOID
+            }
+
+            HirExprKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                let then_type = self.infer_closure_body_type(then_expr, locals, registry);
+                if let Some(else_expr) = else_expr {
+                    let else_type = self.infer_closure_body_type(else_expr, locals, registry);
+                    if then_type == else_type {
+                        then_type
+                    } else if then_type == builtin::ANY {
+                        else_type
+                    } else if else_type == builtin::ANY {
+                        then_type
+                    } else {
+                        builtin::ANY
+                    }
+                } else {
+                    builtin::VOID
+                }
+            }
+
+            _ => builtin::ANY,
         }
     }
 
@@ -3922,5 +4041,35 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// Convert HirBinOp to BinOpKind for centralized type inference.
+fn hir_binop_to_kind(op: HirBinOp) -> BinOpKind {
+    match op {
+        HirBinOp::Add => BinOpKind::Add,
+        HirBinOp::Sub => BinOpKind::Sub,
+        HirBinOp::Mul => BinOpKind::Mul,
+        HirBinOp::Div => BinOpKind::Div,
+        HirBinOp::Mod => BinOpKind::Mod,
+        HirBinOp::Eq => BinOpKind::Eq,
+        HirBinOp::NotEq => BinOpKind::Ne,
+        HirBinOp::Lt => BinOpKind::Lt,
+        HirBinOp::Gt => BinOpKind::Gt,
+        HirBinOp::LtEq => BinOpKind::Le,
+        HirBinOp::GtEq => BinOpKind::Ge,
+        HirBinOp::And => BinOpKind::And,
+        HirBinOp::Or => BinOpKind::Or,
+        // In and BitAnd/BitOr don't have direct equivalents, default to appropriate
+        HirBinOp::In => BinOpKind::Eq, // Comparison semantics
+        HirBinOp::BitAnd | HirBinOp::BitOr => BinOpKind::And, // Logical semantics for type inference
+    }
+}
+
+/// Convert HirUnaryOp to UnaryOpKind for centralized type inference.
+fn hir_unaryop_to_kind(op: HirUnaryOp) -> UnaryOpKind {
+    match op {
+        HirUnaryOp::Neg => UnaryOpKind::Neg,
+        HirUnaryOp::Not => UnaryOpKind::Not,
     }
 }

@@ -118,6 +118,13 @@ pub struct CodegenContext<'ctx> {
     /// When a temp is a borrow of a local, this tracks the origin so mutating
     /// operations can store back to the original local's alloca.
     pub borrow_origins: FxHashMap<String, String>,
+
+    // ========================================================================
+    // Closure Function Flag
+    // ========================================================================
+    /// Whether the currently generating function is a closure.
+    /// Closures have special calling convention (all params/returns as i64).
+    pub is_closure_function: bool,
 }
 
 impl<'ctx> CodegenContext<'ctx> {
@@ -149,6 +156,7 @@ impl<'ctx> CodegenContext<'ctx> {
             function_param_types: FxHashMap::default(),
             current_function_return_type: None,
             borrow_origins: FxHashMap::default(),
+            is_closure_function: false,
         }
     }
 

@@ -498,9 +498,17 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // If the HIR expression has a type_id, set it on the temp
             // This ensures type inference from HIR is preserved
             let return_type = expr.type_id.or_else(|| {
-                // First, try builtin method return type (Str, Array, Map, Int, etc.)
+                // For lambda methods (map, filter, reduce), get closure type from first arg
+                // This enables proper [U] return type inference from closure signature
+                let closure_type = args.first().and_then(|a| a.type_id).or_else(|| {
+                    arg_types.first().copied()
+                });
+                
+                // Try builtin method return type with closure info
                 // This is the SINGLE SOURCE OF TRUTH from doo_core::methods
-                if let Some(rt) = builder.get_builtin_method_return_type(receiver_type, method) {
+                if let Some(rt) = builder.get_builtin_method_return_type_with_closure(
+                    receiver_type, method, closure_type
+                ) {
                     return Some(rt);
                 }
                 
@@ -1219,6 +1227,10 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         HirExprKind::Clone(inner) => {
             let val = builder.build_expr(inner);
             let dest = builder.new_temp();
+            
+            // Infer the type of the cloned value
+            let inner_type = builder.infer_operand_type(&val);
+            
             builder.emit(
                 MirInstrKind::Clone {
                     dest: dest.clone(),
@@ -1226,6 +1238,10 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 },
                 span,
             );
+            
+            // Set the temp type for proper type tracking
+            builder.set_temp_type(&dest, inner_type);
+            
             MirOperand::Temp(dest)
         }
 
@@ -1234,25 +1250,38 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         }
 
         HirExprKind::Closure { params, body } => {
+            // Generate a unique name for the closure function
+            let closure_name = format!("__closure_{}", builder.closure_counter);
+            builder.closure_counter += 1;
+
+            // Store the closure for later processing (don't build body inline!)
+            // The body will be built as a separate MIR function
+            builder
+                .pending_closures
+                .push((closure_name.clone(), params.clone(), body.clone()));
+
+            // Emit ClosureCreate instruction that references the closure function
             let dest = builder.new_temp();
+            let span = builder.convert_span(expr.span);
             
-            // Register closure parameters as locals so they can be referenced in the body
-            // params is Vec<(String, Option<TypeId>)>
-            if let Some(f) = &mut builder.current_func {
-                for (param_name, param_type) in params {
-                    let type_id = param_type.unwrap_or(builtin::ANY);
-                    // Only add if not already present
-                    if !f.locals.iter().any(|l| l.name == *param_name) {
-                        f.locals.push(crate::LocalDef {
-                            name: param_name.clone(),
-                            type_id,
-                            mutable: false,
-                        });
-                    }
-                }
+            // Set the closure's function type on the temp if HIR provided it
+            // This enables proper type inference for lambda methods like map/filter/reduce
+            if let Some(func_type) = expr.type_id {
+                builder.set_temp_type(&dest, func_type);
             }
+            // If HIR didn't provide type, the body type might still be set
+            // Store closure info for later type lookup
+            let return_type = body.type_id.unwrap_or(builtin::ANY);
+            builder.closure_return_types.insert(closure_name.clone(), return_type);
             
-            let _body_val = builder.build_expr(body);
+            builder.emit(
+                MirInstrKind::ClosureCreate {
+                    dest: dest.clone(),
+                    func: closure_name,
+                    captures: Vec::new(), // TODO: capture analysis
+                },
+                span,
+            );
             MirOperand::Temp(dest)
         }
 

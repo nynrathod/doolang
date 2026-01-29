@@ -60,11 +60,8 @@ impl StringBuiltins {
             .try_as_basic_value()
             .left()?
             .into_int_value();
-        let len_i32 = ctx
-            .builder
-            .build_int_truncate(len_i64, ctx.context.i32_type(), "len")
-            .ok()?;
-        Some(len_i32.into())
+        // Return i64 directly since Doo Int is i64
+        Some(len_i64.into())
     }
 
     // =========================================================================
@@ -1010,17 +1007,11 @@ impl StringBuiltins {
             .into_pointer_value();
 
         let is_null = ctx.builder.build_is_null(found, "is_null").ok()?;
-        let result = ctx
-            .builder
-            .build_select(
-                is_null,
-                ctx.context.i32_type().const_int(0, false),
-                ctx.context.i32_type().const_int(1, false),
-                "contains",
-            )
-            .ok()?;
 
-        Some(result)
+        // is_null is true when NOT found, so we negate: contains = !is_null
+        let result = ctx.builder.build_not(is_null, "contains").ok()?;
+
+        Some(result.into())
     }
 
     // =========================================================================
@@ -1068,17 +1059,8 @@ impl StringBuiltins {
             )
             .ok()?;
 
-        let result = ctx
-            .builder
-            .build_select(
-                is_eq,
-                ctx.context.i32_type().const_int(1, false),
-                ctx.context.i32_type().const_int(0, false),
-                "starts",
-            )
-            .ok()?;
-
-        Some(result)
+        // Return i1 (bool) directly - is_eq is already an i1 from the comparison
+        Some(is_eq.into())
     }
 
     // =========================================================================
@@ -1145,17 +1127,8 @@ impl StringBuiltins {
             )
             .ok()?;
 
-        let result = ctx
-            .builder
-            .build_select(
-                is_eq,
-                ctx.context.i32_type().const_int(1, false),
-                ctx.context.i32_type().const_int(0, false),
-                "ends",
-            )
-            .ok()?;
-
-        Some(result)
+        // Return i1 (bool) directly - is_eq is already an i1 from the comparison
+        Some(is_eq.into())
     }
 
     // =========================================================================
