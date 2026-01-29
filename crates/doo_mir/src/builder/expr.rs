@@ -2,7 +2,7 @@ use super::{ContainerKind, Decision, MirBuilder};
 use crate::{BinaryOp, MirConst, MirInstrKind, MirOperand, MirTerminator};
 use doo_core::{
     constants::ffi_names,
-    types::{builtin, TypeId as CoreTypeId},
+    types::{builtin, TypeId as CoreTypeId, TypeKind},
 };
 use doo_hir::{HirBinOp, HirExpr, HirExprKind};
 
@@ -205,9 +205,32 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let r = builder.build_expr(rhs);
                 let dest = builder.new_temp();
                 
-                // Propagate type information from the expression
-                if let Some(type_id) = expr.type_id {
-                    builder.set_temp_type(&dest, type_id);
+                // Propagate type information from the expression, or infer from operands
+                let type_id = expr.type_id.or_else(|| {
+                    // Infer result type from operands
+                    // For comparison ops, result is always Bool
+                    match op {
+                        HirBinOp::Eq | HirBinOp::NotEq | HirBinOp::Lt | HirBinOp::Gt | HirBinOp::LtEq | HirBinOp::GtEq => {
+                            Some(doo_core::types::builtin::BOOL)
+                        }
+                        HirBinOp::And | HirBinOp::Or => {
+                            Some(doo_core::types::builtin::BOOL)
+                        }
+                        _ => {
+                            // For Add/Sub/Mul/Div/Mod, use LHS type, or infer from operands
+                            lhs.type_id.or_else(|| {
+                                let inferred = builder.infer_operand_type(&l);
+                                if inferred != doo_core::types::builtin::ANY {
+                                    Some(inferred)
+                                } else {
+                                    None
+                                }
+                            })
+                        }
+                    }
+                });
+                if let Some(tid) = type_id {
+                    builder.set_temp_type(&dest, tid);
                 }
                 
                 builder.emit(
@@ -261,8 +284,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 })
                 .collect();
 
-            // Intrinsic: print(...) -> MirInstrKind::Print
-            if func_name == "print" {
+            // Intrinsic: print(...) or println(...) -> MirInstrKind::Print
+            if func_name == "print" || func_name == "println" {
                 // Use infer_operand_type for proper type tracking (handles temps with recorded types)
                 let value_types: Vec<_> = arg_ops
                     .iter()
@@ -474,7 +497,17 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
             // If the HIR expression has a type_id, set it on the temp
             // This ensures type inference from HIR is preserved
-            let return_type = expr.type_id;
+            let return_type = expr.type_id.or_else(|| {
+                // Look up the method's return type from the function registry
+                // Method functions are named _method_{TypeName}_{method}
+                if let Some(type_info) = builder.type_registry.get(receiver_type) {
+                    if let TypeKind::Struct { name, .. } = &type_info.kind {
+                        let mangled_name = format!("_method_{}_{}", name, method);
+                        return builder.get_function_return_type(&mangled_name);
+                    }
+                }
+                None
+            });
             if let Some(rt) = return_type {
                 builder.set_temp_type(&dest, rt);
             }

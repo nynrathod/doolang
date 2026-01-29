@@ -382,6 +382,11 @@ impl TypeRegistry {
         self.name_to_id.get(name).copied()
     }
     
+    /// Get all registered type IDs
+    pub fn all_type_ids(&self) -> impl Iterator<Item = TypeId> + '_ {
+        self.types.keys().copied()
+    }
+    
     /// Check if a type is Copy (bitwise copyable)
     pub fn is_copy(&self, id: TypeId) -> bool {
         self.get(id).map(|t| t.is_copy()).unwrap_or(false)

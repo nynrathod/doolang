@@ -272,7 +272,12 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     // 5.4: Drop Insertion
     // Automatically inserts Drop statements at optimal points (after last use)
-    let mut drop_inserter = DropInserter::new();
+    // Uses ownership results to skip dropping moved variables
+    let mut drop_inserter = if let Some(ref results) = ownership_results {
+        DropInserter::with_ownership_results(results)
+    } else {
+        DropInserter::new()
+    };
     drop_inserter.insert_drops_program(&mut hir);
 
     // 5.5: Error Flow Checking

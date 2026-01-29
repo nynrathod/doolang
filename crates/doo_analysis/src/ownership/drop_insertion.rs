@@ -8,13 +8,16 @@
 //! - Tracks last use of each variable
 //! - Inserts Drop immediately after last use
 //! - Handles control flow (if/loop) correctly
+//! - **Skips dropping variables that were moved** (ownership transferred)
 //!
 //! ## Algorithm
 //!
 //! 1. Find last use of each variable in the function
-//! 2. Insert `Drop { name }` after the last use statement
-//! 3. For control flow, drop at earliest exit point
+//! 2. Check if the last use was a Move (ownership transferred)
+//! 3. If not moved, insert `Drop { name }` after the last use statement
+//! 4. For control flow, drop at earliest exit point
 
+use crate::{Decision, OwnershipResults};
 use doo_core::Span;
 use doo_hir::{
     HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind, HirVisitor,
@@ -23,22 +26,39 @@ use doo_hir::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Drop insertion pass.
-pub struct DropInserter {
+pub struct DropInserter<'a> {
     /// Last use index for each variable.
     last_use: FxHashMap<String, usize>,
+    /// Last use span for each variable (for checking ownership decision).
+    last_use_span: FxHashMap<String, Span>,
     /// Variables that need dropping (non-Copy types).
     needs_drop: FxHashSet<String>,
     /// Current statement index.
     current_idx: usize,
+    /// Ownership results to check for Move decisions.
+    ownership_results: Option<&'a OwnershipResults>,
 }
 
-impl DropInserter {
+impl<'a> DropInserter<'a> {
     /// Create a new drop inserter.
     pub fn new() -> Self {
         Self {
             last_use: FxHashMap::default(),
+            last_use_span: FxHashMap::default(),
             needs_drop: FxHashSet::default(),
             current_idx: 0,
+            ownership_results: None,
+        }
+    }
+
+    /// Create a new drop inserter with ownership results.
+    pub fn with_ownership_results(ownership_results: &'a OwnershipResults) -> Self {
+        Self {
+            last_use: FxHashMap::default(),
+            last_use_span: FxHashMap::default(),
+            needs_drop: FxHashSet::default(),
+            current_idx: 0,
+            ownership_results: Some(ownership_results),
         }
     }
 
@@ -55,6 +75,7 @@ impl DropInserter {
     pub fn insert_drops_function(&mut self, func: &mut HirFunction) {
         // Clear state
         self.last_use.clear();
+        self.last_use_span.clear();
         self.needs_drop.clear();
         self.current_idx = 0;
 
@@ -144,8 +165,9 @@ impl DropInserter {
     fn scan_expr_for_uses(&mut self, expr: &HirExpr) {
         match &expr.kind {
             HirExprKind::Local { name } => {
-                // Record this as a use
+                // Record this as a use, along with its span for ownership decision lookup
                 self.last_use.insert(name.clone(), self.current_idx);
+                self.last_use_span.insert(name.clone(), expr.span);
             }
             HirExprKind::BinOp { lhs, rhs, .. } => {
                 self.scan_expr_for_uses(lhs);
@@ -282,9 +304,24 @@ impl DropInserter {
 
         for (name, &last_idx) in &self.last_use {
             // Only insert drops for non-primitive variables
-            if self.needs_drop.contains(name) {
-                drops.push((last_idx + 1, name.clone()));
+            if !self.needs_drop.contains(name) {
+                continue;
             }
+
+            // CRITICAL: Don't drop variables whose last use was a Move
+            // When a variable is moved, ownership is transferred - no drop needed
+            if let Some(ownership_results) = self.ownership_results {
+                if let Some(span) = self.last_use_span.get(name) {
+                    if let Some(decision) = ownership_results.get_decision(name, *span) {
+                        if matches!(decision, Decision::Move) {
+                            // Variable was moved at its last use - skip drop
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            drops.push((last_idx + 1, name.clone()));
         }
 
         // Sort by position (descending) for safe insertion
@@ -303,7 +340,7 @@ impl DropInserter {
     }
 }
 
-impl Default for DropInserter {
+impl<'a> Default for DropInserter<'a> {
     fn default() -> Self {
         Self::new()
     }

@@ -355,8 +355,15 @@ impl Lower {
             .map(|d| self.lower_decorator(d))
             .collect();
 
+        // Generate mangled name for methods: _method_{TypeName}_{MethodName}
+        let func_name = if let Some(type_name) = &f.associated_type {
+            format!("_method_{}_{}", type_name, f.name)
+        } else {
+            f.name.clone()
+        };
+
         HirFunction {
-            name: f.name.clone(),
+            name: func_name,
             params,
             return_type: None,
             error_type: None,
@@ -374,13 +381,29 @@ impl Lower {
         // Clear variable types for new function scope
         self.var_types.clear();
 
+        // For method functions (fn Type.method), resolve the receiver type
+        let receiver_type_id = f.associated_type.as_ref().and_then(|type_name| {
+            registry.lookup(type_name)
+        });
+
+        // If this is a method, track 'self' parameter type
+        if let Some(type_id) = receiver_type_id {
+            self.var_types.insert("self".to_string(), type_id);
+        }
+
         let params: Vec<HirParam> = f
             .params
             .iter()
             .map(|(name, type_ann)| {
-                let type_id = type_ann
-                    .as_ref()
-                    .map(|t| self.resolve_type_expr(t, registry));
+                // Special handling for 'self' parameter in methods
+                let type_id = if name == "self" {
+                    // Use the receiver type for 'self'
+                    receiver_type_id
+                } else {
+                    type_ann
+                        .as_ref()
+                        .map(|t| self.resolve_type_expr(t, registry))
+                };
                 // Track parameter types
                 if let Some(tid) = type_id {
                     self.var_types.insert(name.clone(), tid);
@@ -405,8 +428,15 @@ impl Lower {
             .map(|d| self.lower_decorator(d))
             .collect();
 
+        // Generate mangled name for methods: _method_{TypeName}_{MethodName}
+        let func_name = if let Some(type_name) = &f.associated_type {
+            format!("_method_{}_{}", type_name, f.name)
+        } else {
+            f.name.clone()
+        };
+
         HirFunction {
-            name: f.name.clone(),
+            name: func_name,
             params,
             return_type: f
                 .return_type

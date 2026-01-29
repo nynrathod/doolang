@@ -223,9 +223,14 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         let struct_name =
                             var_name.and_then(|name| ctx.get_temp_struct_type(name).cloned());
 
-                        if debug && struct_name.is_none() {
-                            eprintln!("[CODEGEN] WARNING: FieldGet {} has no struct type for {:?} (var_name={:?})", 
-                                dest, object, var_name);
+                        if debug {
+                            if struct_name.is_none() {
+                                eprintln!("[CODEGEN] WARNING: FieldGet {} has no struct type for {:?} (var_name={:?})", 
+                                    dest, object, var_name);
+                            } else {
+                                eprintln!("[CODEGEN] FieldGet {} using struct_name={:?} for field={}", 
+                                    dest, struct_name, field);
+                            }
                         }
 
                         if let Some(struct_name) = struct_name {
@@ -235,6 +240,9 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     // Fallback: try parsing field as numeric index
                                     field.parse::<u32>().unwrap_or(0)
                                 });
+                            if debug {
+                                eprintln!("[CODEGEN] FieldGet {} field_index={} for {}.{}", dest, field_index, struct_name, field);
+                            }
 
                             // Get the struct type from cache
                             if let Some(struct_type) = ctx.lookup_struct_type(&struct_name) {
@@ -276,6 +284,9 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                         // CRITICAL: If field is a nested struct, propagate struct type
                                         // This enables chained field access like user.address.street
                                         if let Some(nested_name) = nested_struct_name {
+                                            if debug {
+                                                eprintln!("[CODEGEN] FieldGet {} setting nested struct type to {}", dest, nested_name);
+                                            }
                                             ctx.set_temp_struct_type(dest, &nested_name);
                                         }
 
