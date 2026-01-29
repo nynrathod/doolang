@@ -379,7 +379,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .build_struct_gep(pair_ty, pair_ptr, 1, "val_ptr")
                     .ok()?;
                 ctx.builder.build_store(val_ptr, valv).ok();
-                ctx.builder.build_unconditional_branch(end_bb).ok()?;
+                let _ = ctx.builder.build_unconditional_branch(end_bb);
 
                 ctx.builder.position_at_end(inc_bb);
                 let next = ctx
@@ -391,7 +391,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
 
                 ctx.builder.position_at_end(not_found_bb);
                 // Grow via realloc(header, new_total)
-                let doo_realloc = ctx.get_function(ffi_names::DOO_REALLOC)?;
+                let doo_realloc = ctx.get_function(ffi_names::REALLOC)?;
                 let header_ptr = header_ptr_from_data(ctx, old_data)?;
                 let pair_size = pair_ty.size_of()?;
                 let new_len_i32 = ctx
@@ -406,9 +406,10 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .builder
                     .build_int_mul(new_len_i64, pair_size, "data_bytes")
                     .ok()?;
+                // Header is 16 bytes: 2 x i64 (length + capacity)
                 let total = ctx
                     .builder
-                    .build_int_add(ctx.i64_type().const_int(8, false), data_bytes, "total")
+                    .build_int_add(ctx.i64_type().const_int(16, false), data_bytes, "total")
                     .ok()?;
                 let new_header = ctx
                     .builder
@@ -417,7 +418,12 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .try_as_basic_value()
                     .left()?
                     .into_pointer_value();
-                store_len_at_header(ctx, new_header, new_len_i32)?;
+                // Store length as i64 (header expects i64)
+                let new_len_i64_for_store = ctx
+                    .builder
+                    .build_int_z_extend(new_len_i32, ctx.i64_type(), "new_len_i64_store")
+                    .ok()?;
+                store_len_at_header(ctx, new_header, new_len_i64_for_store)?;
                 let new_data = data_ptr_from_header(ctx, new_header)?;
                 ctx.builder.build_store(updated_alloca, new_data).ok();
 
@@ -444,19 +450,20 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .ok()?;
                 ctx.builder.build_store(nk, keyv).ok();
                 ctx.builder.build_store(nv, valv).ok();
-                ctx.builder.build_unconditional_branch(end_bb).ok()?;
+                let _ = ctx.builder.build_unconditional_branch(end_bb);
 
                 ctx.builder.position_at_end(end_bb);
                 // update temp binding if we reallocated
                 if let MirOperand::Local(name) | MirOperand::Temp(name) = map {
-                    let updated = ctx
+                    if let Ok(updated) = ctx
                         .builder
                         .build_load(ctx.ptr_type(), updated_alloca, "updated")
-                        .ok()?;
-                    if let Some(local_ptr) = ctx.get_local(name) {
-                        ctx.builder.build_store(local_ptr, updated).ok();
-                    } else {
-                        ctx.set_temp(name, updated);
+                    {
+                        if let Some(local_ptr) = ctx.get_local(name) {
+                            ctx.builder.build_store(local_ptr, updated).ok();
+                        } else {
+                            ctx.set_temp(name, updated);
+                        }
                     }
                 }
                 None

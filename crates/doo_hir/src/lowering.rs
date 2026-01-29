@@ -382,9 +382,10 @@ impl Lower {
         self.var_types.clear();
 
         // For method functions (fn Type.method), resolve the receiver type
-        let receiver_type_id = f.associated_type.as_ref().and_then(|type_name| {
-            registry.lookup(type_name)
-        });
+        let receiver_type_id = f
+            .associated_type
+            .as_ref()
+            .and_then(|type_name| registry.lookup(type_name));
 
         // If this is a method, track 'self' parameter type
         if let Some(type_id) = receiver_type_id {

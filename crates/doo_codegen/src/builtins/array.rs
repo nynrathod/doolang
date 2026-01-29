@@ -7,10 +7,10 @@
 
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
-use inkwell::types::BasicType;
-use inkwell::values::{BasicValueEnum, PointerValue, IntValue, FunctionValue};
-use inkwell::{AddressSpace, IntPredicate};
 use doo_core::types::builtin;
+use inkwell::types::BasicType;
+use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::{AddressSpace, IntPredicate};
 
 pub struct ArrayBuiltins;
 
@@ -47,19 +47,19 @@ impl ArrayBuiltins {
             "push" => Self::emit_push(ctx, receiver_name, elem_type_id, receiver_ptr, args),
             "sort" => Self::emit_sort(ctx, elem_type_id, receiver_ptr),
             "slice" => Self::emit_slice(ctx, elem_type_id, receiver_ptr, args),
-            
+
             // Lambda methods - require closure argument
             "map" => Self::emit_map(ctx, receiver_ptr, args),
             "filter" => Self::emit_filter(ctx, receiver_ptr, args),
             "reduce" => Self::emit_reduce(ctx, receiver_ptr, args),
-            
+
             _ => None,
         };
-        
+
         if let (Some(val), Some(dest_name)) = (result, dest) {
             ctx.set_temp(dest_name, val);
         }
-        
+
         result
     }
 
@@ -71,7 +71,10 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "len64").ok()?;
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+            .ok()?;
         Some(len_i64.into())
     }
 
@@ -95,12 +98,24 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "len64").ok()?;
-        let last_idx = ctx.builder.build_int_sub(len_i64, ctx.context.i64_type().const_int(1, false), "last_idx").ok()?;
-        
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+            .ok()?;
+        let last_idx = ctx
+            .builder
+            .build_int_sub(
+                len_i64,
+                ctx.context.i64_type().const_int(1, false),
+                "last_idx",
+            )
+            .ok()?;
+
         let elem_ty = ctx.context.i64_type();
         let elem_ptr = unsafe {
-            ctx.builder.build_in_bounds_gep(elem_ty, arr_ptr, &[last_idx], "last_ptr").ok()?
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, arr_ptr, &[last_idx], "last_ptr")
+                .ok()?
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "last").ok()?;
         Some(elem)
@@ -114,10 +129,19 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let is_zero = ctx.builder.build_int_compare(
-            IntPredicate::EQ, len_i32, ctx.context.i32_type().const_zero(), "is_empty"
-        ).ok()?;
-        let result = ctx.builder.build_int_z_extend(is_zero, ctx.context.i32_type(), "bool").ok()?;
+        let is_zero = ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                len_i32,
+                ctx.context.i32_type().const_zero(),
+                "is_empty",
+            )
+            .ok()?;
+        let result = ctx
+            .builder
+            .build_int_z_extend(is_zero, ctx.context.i32_type(), "bool")
+            .ok()?;
         Some(result.into())
     }
 
@@ -129,18 +153,42 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "len64").ok()?;
-        let last_idx = ctx.builder.build_int_sub(len_i64, ctx.context.i64_type().const_int(1, false), "last_idx").ok()?;
-        
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+            .ok()?;
+        let last_idx = ctx
+            .builder
+            .build_int_sub(
+                len_i64,
+                ctx.context.i64_type().const_int(1, false),
+                "last_idx",
+            )
+            .ok()?;
+
         let elem_ty = ctx.context.i64_type();
         let elem_ptr = unsafe {
-            ctx.builder.build_in_bounds_gep(elem_ty, arr_ptr, &[last_idx], "last_ptr").ok()?
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, arr_ptr, &[last_idx], "last_ptr")
+                .ok()?
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "pop").ok()?;
-        
-        let new_len = ctx.builder.build_int_sub(len_i32, ctx.context.i32_type().const_int(1, false), "new_len").ok()?;
-        store_len(ctx, arr_ptr, new_len)?;
-        
+
+        let new_len = ctx
+            .builder
+            .build_int_sub(
+                len_i32,
+                ctx.context.i32_type().const_int(1, false),
+                "new_len",
+            )
+            .ok()?;
+        // Use proper header-aware function: arr_ptr is DATA pointer
+        let new_len_i64 = ctx
+            .builder
+            .build_int_z_extend(new_len, ctx.context.i64_type(), "new_len64")
+            .ok()?;
+        set_array_length_from_data(ctx, arr_ptr, new_len_i64)?;
+
         Some(elem)
     }
 
@@ -152,54 +200,111 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
-        if args.is_empty() { return None; }
+        if args.is_empty() {
+            return None;
+        }
         let needle = args[0];
-        
+
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "len64").ok()?;
-        
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+            .ok()?;
+
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
         let loop_bb = ctx.context.append_basic_block(current_fn, "idx_loop");
         let check_bb = ctx.context.append_basic_block(current_fn, "idx_check");
         let found_bb = ctx.context.append_basic_block(current_fn, "idx_found");
         let inc_bb = ctx.context.append_basic_block(current_fn, "idx_inc");
         let end_bb = ctx.context.append_basic_block(current_fn, "idx_end");
-        
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
-        let res_alloca = ctx.builder.build_alloca(ctx.context.i32_type(), "res").ok()?;
-        ctx.builder.build_store(idx_alloca, ctx.context.i64_type().const_zero()).ok()?;
-        ctx.builder.build_store(res_alloca, ctx.context.i32_type().const_int((-1_i32) as u64, true)).ok()?;
+
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
+        let res_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i32_type(), "res")
+            .ok()?;
+        ctx.builder
+            .build_store(idx_alloca, ctx.context.i64_type().const_zero())
+            .ok()?;
+        ctx.builder
+            .build_store(
+                res_alloca,
+                ctx.context.i32_type().const_int((-1_i32) as u64, true),
+            )
+            .ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(loop_bb);
-        let idx = ctx.builder.build_load(ctx.context.i64_type(), idx_alloca, "idx").ok()?.into_int_value();
-        let cond = ctx.builder.build_int_compare(IntPredicate::ULT, idx, len_i64, "cond").ok()?;
-        ctx.builder.build_conditional_branch(cond, check_bb, end_bb).ok()?;
-        
+        let idx = ctx
+            .builder
+            .build_load(ctx.context.i64_type(), idx_alloca, "idx")
+            .ok()?
+            .into_int_value();
+        let cond = ctx
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, len_i64, "cond")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, check_bb, end_bb)
+            .ok()?;
+
         ctx.builder.position_at_end(check_bb);
         let elem_ty = ctx.context.i64_type();
         let elem_ptr = unsafe {
-            ctx.builder.build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr").ok()?
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
+                .ok()?
         };
-        let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?.into_int_value();
-        
-        let needle_int = if needle.is_int_value() { needle.into_int_value() } else { return None; };
-        let is_eq = ctx.builder.build_int_compare(IntPredicate::EQ, elem, needle_int, "eq").ok()?;
-        ctx.builder.build_conditional_branch(is_eq, found_bb, inc_bb).ok()?;
-        
+        let elem = ctx
+            .builder
+            .build_load(elem_ty, elem_ptr, "elem")
+            .ok()?
+            .into_int_value();
+
+        let needle_int = if needle.is_int_value() {
+            needle.into_int_value()
+        } else {
+            return None;
+        };
+        let is_eq = ctx
+            .builder
+            .build_int_compare(IntPredicate::EQ, elem, needle_int, "eq")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(is_eq, found_bb, inc_bb)
+            .ok()?;
+
         ctx.builder.position_at_end(found_bb);
-        let idx_i32 = ctx.builder.build_int_truncate(idx, ctx.context.i32_type(), "idx32").ok()?;
+        let idx_i32 = ctx
+            .builder
+            .build_int_truncate(idx, ctx.context.i32_type(), "idx32")
+            .ok()?;
         ctx.builder.build_store(res_alloca, idx_i32).ok()?;
         ctx.builder.build_unconditional_branch(end_bb).ok()?;
-        
+
         ctx.builder.position_at_end(inc_bb);
-        let next = ctx.builder.build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next").ok()?;
+        let next = ctx
+            .builder
+            .build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next")
+            .ok()?;
         ctx.builder.build_store(idx_alloca, next).ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(end_bb);
-        let result = ctx.builder.build_load(ctx.context.i32_type(), res_alloca, "indexOf").ok()?;
-        Some(result)
+        let result_i32 = ctx
+            .builder
+            .build_load(ctx.context.i32_type(), res_alloca, "indexOf_i32")
+            .ok()?
+            .into_int_value();
+        // Sign-extend to i64 so -1 stays as -1 (not 4294967295)
+        let result = ctx
+            .builder
+            .build_int_s_extend(result_i32, ctx.context.i64_type(), "indexOf")
+            .ok()?;
+        Some(result.into())
     }
 
     // =========================================================================
@@ -210,41 +315,75 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "len64").ok()?;
-        let half = ctx.builder.build_int_unsigned_div(len_i64, ctx.context.i64_type().const_int(2, false), "half").ok()?;
-        
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+            .ok()?;
+        let half = ctx
+            .builder
+            .build_int_unsigned_div(len_i64, ctx.context.i64_type().const_int(2, false), "half")
+            .ok()?;
+
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
         let loop_bb = ctx.context.append_basic_block(current_fn, "rev_loop");
         let body_bb = ctx.context.append_basic_block(current_fn, "rev_body");
         let after_bb = ctx.context.append_basic_block(current_fn, "rev_after");
-        
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
-        ctx.builder.build_store(idx_alloca, ctx.context.i64_type().const_zero()).ok()?;
+
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
+        ctx.builder
+            .build_store(idx_alloca, ctx.context.i64_type().const_zero())
+            .ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(loop_bb);
-        let idx = ctx.builder.build_load(ctx.context.i64_type(), idx_alloca, "idx").ok()?.into_int_value();
-        let cond = ctx.builder.build_int_compare(IntPredicate::ULT, idx, half, "cond").ok()?;
-        ctx.builder.build_conditional_branch(cond, body_bb, after_bb).ok()?;
-        
+        let idx = ctx
+            .builder
+            .build_load(ctx.context.i64_type(), idx_alloca, "idx")
+            .ok()?
+            .into_int_value();
+        let cond = ctx
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, half, "cond")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, after_bb)
+            .ok()?;
+
         ctx.builder.position_at_end(body_bb);
         let elem_ty = ctx.context.i64_type();
-        
-        let rev_idx = ctx.builder.build_int_sub(len_i64, ctx.context.i64_type().const_int(1, false), "lm1").ok()?;
+
+        let rev_idx = ctx
+            .builder
+            .build_int_sub(len_i64, ctx.context.i64_type().const_int(1, false), "lm1")
+            .ok()?;
         let rev_idx = ctx.builder.build_int_sub(rev_idx, idx, "rev_idx").ok()?;
-        
-        let ptr1 = unsafe { ctx.builder.build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "ptr1").ok()? };
-        let ptr2 = unsafe { ctx.builder.build_in_bounds_gep(elem_ty, arr_ptr, &[rev_idx], "ptr2").ok()? };
-        
+
+        let ptr1 = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "ptr1")
+                .ok()?
+        };
+        let ptr2 = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, arr_ptr, &[rev_idx], "ptr2")
+                .ok()?
+        };
+
         let val1 = ctx.builder.build_load(elem_ty, ptr1, "v1").ok()?;
         let val2 = ctx.builder.build_load(elem_ty, ptr2, "v2").ok()?;
         ctx.builder.build_store(ptr1, val2).ok()?;
         ctx.builder.build_store(ptr2, val1).ok()?;
-        
-        let next = ctx.builder.build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next").ok()?;
+
+        let next = ctx
+            .builder
+            .build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next")
+            .ok()?;
         ctx.builder.build_store(idx_alloca, next).ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(after_bb);
         Some(arr_ptr.into())
     }
@@ -256,7 +395,9 @@ impl ArrayBuiltins {
         ctx: &mut CodegenContext<'ctx>,
         arr_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
-        store_len(ctx, arr_ptr, ctx.context.i32_type().const_zero())?;
+        // Use proper header-aware function: arr_ptr is DATA pointer
+        let zero_i64 = ctx.context.i64_type().const_zero();
+        set_array_length_from_data(ctx, arr_ptr, zero_i64)?;
         Some(arr_ptr.into())
     }
 
@@ -276,12 +417,16 @@ impl ArrayBuiltins {
         let val = args[0];
 
         let elem_llvm = ctx.get_llvm_type(elem_type);
-        let doo_realloc = ctx.get_function(ffi_names::DOO_REALLOC)?;
+        // NOTE: realloc_array_capacity handles REALLOC internally
 
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
         let new_len_i32 = ctx
             .builder
-            .build_int_add(len_i32, ctx.context.i32_type().const_int(1, false), "new_len")
+            .build_int_add(
+                len_i32,
+                ctx.context.i32_type().const_int(1, false),
+                "new_len",
+            )
             .ok()?;
         let new_len_i64 = ctx
             .builder
@@ -291,25 +436,34 @@ impl ArrayBuiltins {
         let elem_size = elem_llvm
             .size_of()
             .unwrap_or(ctx.context.i64_type().const_int(8, false));
-        
+
         // Use shared realloc helper (Deduplication)
         use crate::layout::realloc_array_capacity;
         let new_data = realloc_array_capacity(ctx, arr_ptr, new_len_i32, elem_size)?;
 
         let base = ctx
             .builder
-            .build_pointer_cast(new_data, elem_llvm.ptr_type(AddressSpace::default()), "arr_cast")
+            .build_pointer_cast(
+                new_data,
+                elem_llvm.ptr_type(AddressSpace::default()),
+                "arr_cast",
+            )
             .ok()?;
         let append_idx = ctx
             .builder
             .build_int_z_extend(len_i32, ctx.context.i64_type(), "append_idx")
             .ok()?;
-        let elem_ptr = unsafe { ctx.builder.build_gep(elem_llvm, base, &[append_idx], "elem_ptr") }
-            .ok()?;
+        let elem_ptr = unsafe {
+            ctx.builder
+                .build_gep(elem_llvm, base, &[append_idx], "elem_ptr")
+        }
+        .ok()?;
         ctx.builder.build_store(elem_ptr, val).ok()?;
 
         if let Some(name) = receiver_name {
-            if let Some(local_ptr) = ctx.get_local(name) {
+            // Use get_local_or_borrow_origin to find the alloca for storing back
+            // This handles both direct locals and borrowed temps
+            if let Some(local_ptr) = ctx.get_local_or_borrow_origin(name) {
                 ctx.builder.build_store(local_ptr, new_data).ok();
             } else {
                 ctx.set_temp(name, new_data.into());
@@ -340,15 +494,23 @@ impl ArrayBuiltins {
         let elem_llvm = ctx.get_llvm_type(elem_type);
         let base = ctx
             .builder
-            .build_pointer_cast(arr_ptr, elem_llvm.ptr_type(AddressSpace::default()), "arr_cast")
+            .build_pointer_cast(
+                arr_ptr,
+                elem_llvm.ptr_type(AddressSpace::default()),
+                "arr_cast",
+            )
             .ok()?;
 
         // bubble sort
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
         let outer_bb = ctx.context.append_basic_block(current_fn, "sort_outer");
-        let outer_body_bb = ctx.context.append_basic_block(current_fn, "sort_outer_body");
+        let outer_body_bb = ctx
+            .context
+            .append_basic_block(current_fn, "sort_outer_body");
         let inner_bb = ctx.context.append_basic_block(current_fn, "sort_inner");
-        let inner_body_bb = ctx.context.append_basic_block(current_fn, "sort_inner_body");
+        let inner_body_bb = ctx
+            .context
+            .append_basic_block(current_fn, "sort_inner_body");
         let inner_end_bb = ctx.context.append_basic_block(current_fn, "sort_inner_end");
         let outer_end_bb = ctx.context.append_basic_block(current_fn, "sort_outer_end");
 
@@ -464,7 +626,10 @@ impl ArrayBuiltins {
         let elem_llvm = ctx.get_llvm_type(elem_type);
         let start64 = int_to_i64(ctx, start)?;
         let end64 = int_to_i64(ctx, end)?;
-        let slice_len64 = ctx.builder.build_int_sub(end64, start64, "slice_len").ok()?;
+        let slice_len64 = ctx
+            .builder
+            .build_int_sub(end64, start64, "slice_len")
+            .ok()?;
         let slice_len32 = ctx
             .builder
             .build_int_truncate(slice_len64, ctx.context.i32_type(), "slice_len32")
@@ -474,11 +639,19 @@ impl ArrayBuiltins {
 
         let in_base = ctx
             .builder
-            .build_pointer_cast(arr_ptr, elem_llvm.ptr_type(AddressSpace::default()), "in_cast")
+            .build_pointer_cast(
+                arr_ptr,
+                elem_llvm.ptr_type(AddressSpace::default()),
+                "in_cast",
+            )
             .ok()?;
         let out_base = ctx
             .builder
-            .build_pointer_cast(out_data, elem_llvm.ptr_type(AddressSpace::default()), "out_cast")
+            .build_pointer_cast(
+                out_data,
+                elem_llvm.ptr_type(AddressSpace::default()),
+                "out_cast",
+            )
             .ok()?;
 
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
@@ -486,7 +659,10 @@ impl ArrayBuiltins {
         let body_bb = ctx.context.append_basic_block(current_fn, "slice_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "slice_end");
 
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -502,15 +678,23 @@ impl ArrayBuiltins {
             .builder
             .build_int_compare(IntPredicate::ULT, idx, slice_len64, "cond")
             .ok()?;
-        ctx.builder.build_conditional_branch(cond, body_bb, end_bb).ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, end_bb)
+            .ok()?;
 
         ctx.builder.position_at_end(body_bb);
         let src_idx = ctx.builder.build_int_add(start64, idx, "src_idx").ok()?;
-        let src_ptr = unsafe { ctx.builder.build_gep(elem_llvm, in_base, &[src_idx], "src_ptr") }
-            .ok()?;
+        let src_ptr = unsafe {
+            ctx.builder
+                .build_gep(elem_llvm, in_base, &[src_idx], "src_ptr")
+        }
+        .ok()?;
         let val = ctx.builder.build_load(elem_llvm, src_ptr, "val").ok()?;
-        let dst_ptr = unsafe { ctx.builder.build_gep(elem_llvm, out_base, &[idx], "dst_ptr") }
-            .ok()?;
+        let dst_ptr = unsafe {
+            ctx.builder
+                .build_gep(elem_llvm, out_base, &[idx], "dst_ptr")
+        }
+        .ok()?;
         ctx.builder.build_store(dst_ptr, val).ok()?;
         let next = ctx
             .builder
@@ -558,7 +742,10 @@ impl ArrayBuiltins {
 
         let res_alloca = ctx
             .builder
-            .build_alloca(ctx.context.i8_type().ptr_type(AddressSpace::default()), "join_res")
+            .build_alloca(
+                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                "join_res",
+            )
             .ok()?;
 
         ctx.builder
@@ -596,11 +783,17 @@ impl ArrayBuiltins {
 
         // total = elem_total + (len-1)*sep_len + 1
         let elem_total = if elem_type == builtin::STR {
-            let total_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "total").ok()?;
+            let total_alloca = ctx
+                .builder
+                .build_alloca(ctx.context.i64_type(), "total")
+                .ok()?;
             ctx.builder
                 .build_store(total_alloca, ctx.context.i64_type().const_zero())
                 .ok()?;
-            let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
+            let idx_alloca = ctx
+                .builder
+                .build_alloca(ctx.context.i64_type(), "idx")
+                .ok()?;
             ctx.builder
                 .build_store(idx_alloca, ctx.context.i64_type().const_zero())
                 .ok()?;
@@ -634,10 +827,14 @@ impl ArrayBuiltins {
             let elem_llvm = ctx.get_llvm_type(elem_type);
             let base = ctx
                 .builder
-                .build_pointer_cast(arr_ptr, elem_llvm.ptr_type(AddressSpace::default()), "arr_cast")
+                .build_pointer_cast(
+                    arr_ptr,
+                    elem_llvm.ptr_type(AddressSpace::default()),
+                    "arr_cast",
+                )
                 .ok()?;
-            let elem_ptr = unsafe { ctx.builder.build_gep(elem_llvm, base, &[idx], "elem_ptr") }
-                .ok()?;
+            let elem_ptr =
+                unsafe { ctx.builder.build_gep(elem_llvm, base, &[idx], "elem_ptr") }.ok()?;
             let elem = ctx
                 .builder
                 .build_load(elem_llvm, elem_ptr, "elem")
@@ -667,7 +864,10 @@ impl ArrayBuiltins {
             ctx.builder.build_int_mul(len_i64, per, "elem_total").ok()?
         };
 
-        let sep_total = ctx.builder.build_int_mul(len_m1, sep_len, "sep_total").ok()?;
+        let sep_total = ctx
+            .builder
+            .build_int_mul(len_m1, sep_len, "sep_total")
+            .ok()?;
         let total_no_nul = ctx
             .builder
             .build_int_add(elem_total, sep_total, "total")
@@ -693,24 +893,35 @@ impl ArrayBuiltins {
         .ok()?;
         let buf_end_alloca = ctx
             .builder
-            .build_alloca(ctx.context.i8_type().ptr_type(AddressSpace::default()), "buf_end")
+            .build_alloca(
+                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                "buf_end",
+            )
             .ok()?;
         ctx.builder.build_store(buf_end_alloca, buf_end).ok()?;
 
         let cursor_alloca = ctx
             .builder
-            .build_alloca(ctx.context.i8_type().ptr_type(AddressSpace::default()), "cursor")
+            .build_alloca(
+                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                "cursor",
+            )
             .ok()?;
         ctx.builder.build_store(cursor_alloca, out_ptr).ok()?;
 
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
 
         let loop_bb = ctx.context.append_basic_block(current_fn, "join_fill_loop");
         let body_bb = ctx.context.append_basic_block(current_fn, "join_fill_body");
-        let after_bb = ctx.context.append_basic_block(current_fn, "join_fill_after");
+        let after_bb = ctx
+            .context
+            .append_basic_block(current_fn, "join_fill_after");
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
 
         ctx.builder.position_at_end(loop_bb);
@@ -723,7 +934,9 @@ impl ArrayBuiltins {
             .builder
             .build_int_compare(IntPredicate::ULT, idx, len_i64, "cond")
             .ok()?;
-        ctx.builder.build_conditional_branch(cond, body_bb, after_bb).ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, after_bb)
+            .ok()?;
 
         ctx.builder.position_at_end(body_bb);
         let cursor = ctx
@@ -740,10 +953,14 @@ impl ArrayBuiltins {
             let elem_llvm = ctx.get_llvm_type(elem_type);
             let base = ctx
                 .builder
-                .build_pointer_cast(arr_ptr, elem_llvm.ptr_type(AddressSpace::default()), "arr_cast")
+                .build_pointer_cast(
+                    arr_ptr,
+                    elem_llvm.ptr_type(AddressSpace::default()),
+                    "arr_cast",
+                )
                 .ok()?;
-            let elem_ptr = unsafe { ctx.builder.build_gep(elem_llvm, base, &[idx], "elem_ptr") }
-                .ok()?;
+            let elem_ptr =
+                unsafe { ctx.builder.build_gep(elem_llvm, base, &[idx], "elem_ptr") }.ok()?;
             let elem = ctx
                 .builder
                 .build_load(elem_llvm, elem_ptr, "elem")
@@ -792,10 +1009,14 @@ impl ArrayBuiltins {
             let elem_llvm = ctx.get_llvm_type(elem_type);
             let base = ctx
                 .builder
-                .build_pointer_cast(arr_ptr, elem_llvm.ptr_type(AddressSpace::default()), "arr_cast")
+                .build_pointer_cast(
+                    arr_ptr,
+                    elem_llvm.ptr_type(AddressSpace::default()),
+                    "arr_cast",
+                )
                 .ok()?;
-            let elem_ptr = unsafe { ctx.builder.build_gep(elem_llvm, base, &[idx], "elem_ptr") }
-                .ok()?;
+            let elem_ptr =
+                unsafe { ctx.builder.build_gep(elem_llvm, base, &[idx], "elem_ptr") }.ok()?;
             let raw_elem = ctx.builder.build_load(elem_llvm, elem_ptr, "elem").ok()?;
 
             // Calculate remaining buffer space for snprintf
@@ -862,8 +1083,12 @@ impl ArrayBuiltins {
                 .ok()?
                 .into_pointer_value();
             let cursor2 = unsafe {
-                ctx.builder
-                    .build_in_bounds_gep(ctx.context.i8_type(), cursor_now, &[written64], "cursor2")
+                ctx.builder.build_in_bounds_gep(
+                    ctx.context.i8_type(),
+                    cursor_now,
+                    &[written64],
+                    "cursor2",
+                )
             }
             .ok()?;
             ctx.builder.build_store(cursor_alloca, cursor2).ok()?;
@@ -942,72 +1167,111 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
-        if args.is_empty() { return None; }
+        if args.is_empty() {
+            return None;
+        }
         let closure_ptr = args[0].into_pointer_value();
-        
+
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "len64").ok()?;
-        
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+            .ok()?;
+
         // Allocate result array (same size)
         let elem_ty = ctx.context.i64_type();
         let doo_alloc = ctx.get_function(ffi_names::DOO_ALLOC)?;
         let elem_size = ctx.context.i64_type().const_int(8, false); // i64 = 8 bytes
-        let total_size = ctx.builder.build_int_mul(len_i64, elem_size, "data_size").ok()?;
+        let total_size = ctx
+            .builder
+            .build_int_mul(len_i64, elem_size, "data_size")
+            .ok()?;
         let header_size = ctx.context.i64_type().const_int(8, false); // RC + len
-        let alloc_size = ctx.builder.build_int_add(header_size, total_size, "alloc_size").ok()?;
-        
-        let result_heap = ctx.builder
+        let alloc_size = ctx
+            .builder
+            .build_int_add(header_size, total_size, "alloc_size")
+            .ok()?;
+
+        let result_heap = ctx
+            .builder
             .build_call(doo_alloc, &[alloc_size.into()], "map_result")
             .ok()?
             .try_as_basic_value()
             .left()?
             .into_pointer_value();
-        
+
         // Store RC=1 and len
         store_header_len_only(ctx, result_heap, len_i32)?;
-        
+
         // Get data pointer (offset 8)
         let result_data = unsafe {
-            ctx.builder.build_gep(
-                ctx.context.i8_type(),
-                result_heap,
-                &[ctx.context.i64_type().const_int(8, false)],
-                "result_data"
-            ).ok()?
+            ctx.builder
+                .build_gep(
+                    ctx.context.i8_type(),
+                    result_heap,
+                    &[ctx.context.i64_type().const_int(8, false)],
+                    "result_data",
+                )
+                .ok()?
         };
-        
+
         // Loop over elements, call closure, store result
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
         let loop_bb = ctx.context.append_basic_block(current_fn, "map_loop");
         let body_bb = ctx.context.append_basic_block(current_fn, "map_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "map_end");
-        
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
-        ctx.builder.build_store(idx_alloca, ctx.context.i64_type().const_zero()).ok()?;
+
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
+        ctx.builder
+            .build_store(idx_alloca, ctx.context.i64_type().const_zero())
+            .ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(loop_bb);
-        let idx = ctx.builder.build_load(ctx.context.i64_type(), idx_alloca, "idx").ok()?.into_int_value();
-        let cond = ctx.builder.build_int_compare(IntPredicate::ULT, idx, len_i64, "cond").ok()?;
-        ctx.builder.build_conditional_branch(cond, body_bb, end_bb).ok()?;
-        
+        let idx = ctx
+            .builder
+            .build_load(ctx.context.i64_type(), idx_alloca, "idx")
+            .ok()?
+            .into_int_value();
+        let cond = ctx
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, len_i64, "cond")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, end_bb)
+            .ok()?;
+
         ctx.builder.position_at_end(body_bb);
         // Load element
-        let elem_ptr = unsafe { ctx.builder.build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr").ok()? };
+        let elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
+                .ok()?
+        };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
-        
+
         // Call closure with element
         let mapped = call_closure(ctx, closure_ptr, &[elem])?;
-        
+
         // Store result
-        let result_elem_ptr = unsafe { ctx.builder.build_in_bounds_gep(elem_ty, result_data, &[idx], "res_elem").ok()? };
+        let result_elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, result_data, &[idx], "res_elem")
+                .ok()?
+        };
         ctx.builder.build_store(result_elem_ptr, mapped).ok()?;
-        
+
         // Increment
-        let next = ctx.builder.build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next").ok()?;
+        let next = ctx
+            .builder
+            .build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next")
+            .ok()?;
         ctx.builder.build_store(idx_alloca, next).ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(end_bb);
         Some(result_data.into())
     }
@@ -1021,32 +1285,50 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
-        if args.is_empty() { return None; }
+        if args.is_empty() {
+            return None;
+        }
         let closure_ptr = args[0].into_pointer_value();
-        
+
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "len64").ok()?;
-        
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+            .ok()?;
+
         // Allocate result array (max size = original size, will track actual count)
         let elem_ty = ctx.context.i64_type();
         let doo_alloc = ctx.get_function(ffi_names::DOO_ALLOC)?;
         let elem_size = ctx.context.i64_type().const_int(8, false);
-        let total_size = ctx.builder.build_int_mul(len_i64, elem_size, "data_size").ok()?;
+        let total_size = ctx
+            .builder
+            .build_int_mul(len_i64, elem_size, "data_size")
+            .ok()?;
         let header_size = ctx.context.i64_type().const_int(8, false);
-        let alloc_size = ctx.builder.build_int_add(header_size, total_size, "alloc_size").ok()?;
-        
-        let result_heap = ctx.builder
+        let alloc_size = ctx
+            .builder
+            .build_int_add(header_size, total_size, "alloc_size")
+            .ok()?;
+
+        let result_heap = ctx
+            .builder
             .build_call(doo_alloc, &[alloc_size.into()], "filter_result")
             .ok()?
             .try_as_basic_value()
             .left()?
             .into_pointer_value();
-        
+
         let result_data = unsafe {
-            ctx.builder.build_gep(ctx.context.i8_type(), result_heap,
-                &[ctx.context.i64_type().const_int(8, false)], "result_data").ok()?
+            ctx.builder
+                .build_gep(
+                    ctx.context.i8_type(),
+                    result_heap,
+                    &[ctx.context.i64_type().const_int(8, false)],
+                    "result_data",
+                )
+                .ok()?
         };
-        
+
         // Loop with separate result counter
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
         let loop_bb = ctx.context.append_basic_block(current_fn, "filter_loop");
@@ -1054,51 +1336,108 @@ impl ArrayBuiltins {
         let store_bb = ctx.context.append_basic_block(current_fn, "filter_store");
         let inc_bb = ctx.context.append_basic_block(current_fn, "filter_inc");
         let end_bb = ctx.context.append_basic_block(current_fn, "filter_end");
-        
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
-        let res_idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "res_idx").ok()?;
-        ctx.builder.build_store(idx_alloca, ctx.context.i64_type().const_zero()).ok()?;
-        ctx.builder.build_store(res_idx_alloca, ctx.context.i64_type().const_zero()).ok()?;
+
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
+        let res_idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "res_idx")
+            .ok()?;
+        ctx.builder
+            .build_store(idx_alloca, ctx.context.i64_type().const_zero())
+            .ok()?;
+        ctx.builder
+            .build_store(res_idx_alloca, ctx.context.i64_type().const_zero())
+            .ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(loop_bb);
-        let idx = ctx.builder.build_load(ctx.context.i64_type(), idx_alloca, "idx").ok()?.into_int_value();
-        let cond = ctx.builder.build_int_compare(IntPredicate::ULT, idx, len_i64, "cond").ok()?;
-        ctx.builder.build_conditional_branch(cond, check_bb, end_bb).ok()?;
-        
+        let idx = ctx
+            .builder
+            .build_load(ctx.context.i64_type(), idx_alloca, "idx")
+            .ok()?
+            .into_int_value();
+        let cond = ctx
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, len_i64, "cond")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, check_bb, end_bb)
+            .ok()?;
+
         ctx.builder.position_at_end(check_bb);
-        let elem_ptr = unsafe { ctx.builder.build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr").ok()? };
+        let elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
+                .ok()?
+        };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
-        
+
         // Call closure predicate
         let pred_result = call_closure(ctx, closure_ptr, &[elem])?;
         let pred_bool = if pred_result.is_int_value() {
             let int_val = pred_result.into_int_value();
-            ctx.builder.build_int_compare(IntPredicate::NE, int_val, int_val.get_type().const_zero(), "pred").ok()?
+            ctx.builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    int_val,
+                    int_val.get_type().const_zero(),
+                    "pred",
+                )
+                .ok()?
         } else {
             return None;
         };
-        ctx.builder.build_conditional_branch(pred_bool, store_bb, inc_bb).ok()?;
-        
+        ctx.builder
+            .build_conditional_branch(pred_bool, store_bb, inc_bb)
+            .ok()?;
+
         ctx.builder.position_at_end(store_bb);
-        let res_idx = ctx.builder.build_load(ctx.context.i64_type(), res_idx_alloca, "res_idx").ok()?.into_int_value();
-        let result_elem_ptr = unsafe { ctx.builder.build_in_bounds_gep(elem_ty, result_data, &[res_idx], "res_elem").ok()? };
+        let res_idx = ctx
+            .builder
+            .build_load(ctx.context.i64_type(), res_idx_alloca, "res_idx")
+            .ok()?
+            .into_int_value();
+        let result_elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, result_data, &[res_idx], "res_elem")
+                .ok()?
+        };
         ctx.builder.build_store(result_elem_ptr, elem).ok()?;
-        let next_res = ctx.builder.build_int_add(res_idx, ctx.context.i64_type().const_int(1, false), "next_res").ok()?;
+        let next_res = ctx
+            .builder
+            .build_int_add(
+                res_idx,
+                ctx.context.i64_type().const_int(1, false),
+                "next_res",
+            )
+            .ok()?;
         ctx.builder.build_store(res_idx_alloca, next_res).ok()?;
         ctx.builder.build_unconditional_branch(inc_bb).ok()?;
-        
+
         ctx.builder.position_at_end(inc_bb);
-        let next = ctx.builder.build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next").ok()?;
+        let next = ctx
+            .builder
+            .build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next")
+            .ok()?;
         ctx.builder.build_store(idx_alloca, next).ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(end_bb);
         // Update result length
-        let final_len = ctx.builder.build_load(ctx.context.i64_type(), res_idx_alloca, "final_len").ok()?.into_int_value();
-        let final_len_i32 = ctx.builder.build_int_truncate(final_len, ctx.context.i32_type(), "len32").ok()?;
+        let final_len = ctx
+            .builder
+            .build_load(ctx.context.i64_type(), res_idx_alloca, "final_len")
+            .ok()?
+            .into_int_value();
+        let final_len_i32 = ctx
+            .builder
+            .build_int_truncate(final_len, ctx.context.i32_type(), "len32")
+            .ok()?;
         store_header_len_only(ctx, result_heap, final_len_i32)?;
-        
+
         Some(result_data.into())
     }
 
@@ -1111,44 +1450,70 @@ impl ArrayBuiltins {
         arr_ptr: PointerValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
-        if args.len() < 2 { return None; }
+        if args.len() < 2 {
+            return None;
+        }
         let init_val = args[0];
         let closure_ptr = args[1].into_pointer_value();
-        
+
         let len_i32 = load_len_i32(ctx, arr_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "len64").ok()?;
-        
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "len64")
+            .ok()?;
+
         let elem_ty = ctx.context.i64_type();
-        
+
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
         let loop_bb = ctx.context.append_basic_block(current_fn, "reduce_loop");
         let body_bb = ctx.context.append_basic_block(current_fn, "reduce_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "reduce_end");
-        
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
+
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
         let acc_alloca = ctx.builder.build_alloca(elem_ty, "acc").ok()?;
-        ctx.builder.build_store(idx_alloca, ctx.context.i64_type().const_zero()).ok()?;
+        ctx.builder
+            .build_store(idx_alloca, ctx.context.i64_type().const_zero())
+            .ok()?;
         ctx.builder.build_store(acc_alloca, init_val).ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(loop_bb);
-        let idx = ctx.builder.build_load(ctx.context.i64_type(), idx_alloca, "idx").ok()?.into_int_value();
-        let cond = ctx.builder.build_int_compare(IntPredicate::ULT, idx, len_i64, "cond").ok()?;
-        ctx.builder.build_conditional_branch(cond, body_bb, end_bb).ok()?;
-        
+        let idx = ctx
+            .builder
+            .build_load(ctx.context.i64_type(), idx_alloca, "idx")
+            .ok()?
+            .into_int_value();
+        let cond = ctx
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, len_i64, "cond")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, end_bb)
+            .ok()?;
+
         ctx.builder.position_at_end(body_bb);
         let acc = ctx.builder.build_load(elem_ty, acc_alloca, "acc").ok()?;
-        let elem_ptr = unsafe { ctx.builder.build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr").ok()? };
+        let elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
+                .ok()?
+        };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
-        
+
         // Call closure with (acc, elem)
         let new_acc = call_closure(ctx, closure_ptr, &[acc, elem])?;
         ctx.builder.build_store(acc_alloca, new_acc).ok()?;
-        
-        let next = ctx.builder.build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next").ok()?;
+
+        let next = ctx
+            .builder
+            .build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next")
+            .ok()?;
         ctx.builder.build_store(idx_alloca, next).ok()?;
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
-        
+
         ctx.builder.position_at_end(end_bb);
         let result = ctx.builder.build_load(elem_ty, acc_alloca, "result").ok()?;
         Some(result)
@@ -1160,33 +1525,46 @@ impl ArrayBuiltins {
 // =============================================================================
 
 use crate::layout::{
-    alloc_with_header, int_to_i64, get_array_length, get_array_data_ptr, set_array_length,
-    load_len_i32, data_ptr_from_header, header_ptr_from_data, store_len, store_len_at_header, 
-    store_header, store_header_len_only
+    alloc_with_header, data_ptr_from_header, get_array_data_ptr, get_array_length,
+    header_ptr_from_data, int_to_i64, load_len_i32, set_array_length, set_array_length_from_data,
+    store_header, store_header_len_only, store_len, store_len_at_header,
 };
 
 fn get_or_declare_malloc<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-    ctx.module.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
-        let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
-        let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
-        ctx.module.add_function(ffi_names::MALLOC, fn_type, None)
-    })
+    ctx.module
+        .get_function(ffi_names::MALLOC)
+        .unwrap_or_else(|| {
+            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
+            ctx.module.add_function(ffi_names::MALLOC, fn_type, None)
+        })
 }
 
 fn get_or_declare_strlen<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-    ctx.module.get_function(ffi_names::STRLEN).unwrap_or_else(|| {
-        let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
-        let fn_type = ctx.context.i64_type().fn_type(&[ptr_type.into()], false);
-        ctx.module.add_function(ffi_names::STRLEN, fn_type, None)
-    })
+    ctx.module
+        .get_function(ffi_names::STRLEN)
+        .unwrap_or_else(|| {
+            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let fn_type = ctx.context.i64_type().fn_type(&[ptr_type.into()], false);
+            ctx.module.add_function(ffi_names::STRLEN, fn_type, None)
+        })
 }
 
 fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-    ctx.module.get_function(ffi_names::MEMCPY).unwrap_or_else(|| {
-        let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
-        let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ctx.context.i64_type().into()], false);
-        ctx.module.add_function(ffi_names::MEMCPY, fn_type, None)
-    })
+    ctx.module
+        .get_function(ffi_names::MEMCPY)
+        .unwrap_or_else(|| {
+            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let fn_type = ptr_type.fn_type(
+                &[
+                    ptr_type.into(),
+                    ptr_type.into(),
+                    ctx.context.i64_type().into(),
+                ],
+                false,
+            );
+            ctx.module.add_function(ffi_names::MEMCPY, fn_type, None)
+        })
 }
 
 fn get_or_declare_snprintf<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
@@ -1194,7 +1572,10 @@ fn get_or_declare_snprintf<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'c
         let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let i64_type = ctx.context.i64_type();
         // snprintf(char *str, size_t size, const char *format, ...)
-        let fn_type = ctx.context.i32_type().fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], true);
+        let fn_type = ctx
+            .context
+            .i32_type()
+            .fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], true);
         ctx.module.add_function("snprintf", fn_type, None)
     })
 }
@@ -1207,34 +1588,54 @@ fn call_closure<'ctx>(
 ) -> Option<BasicValueEnum<'ctx>> {
     let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
     let i64_type = ctx.context.i64_type();
-    let closure_type = ctx.context.struct_type(&[ptr_type.into(), ptr_type.into()], false);
-    
+    let closure_type = ctx
+        .context
+        .struct_type(&[ptr_type.into(), ptr_type.into()], false);
+
     // Load fn_ptr (offset 0)
-    let fn_ptr_slot = ctx.builder.build_struct_gep(closure_type, closure_ptr, 0, "fn_ptr_slot").ok()?;
-    let fn_ptr = ctx.builder.build_load(ptr_type, fn_ptr_slot, "fn_ptr").ok()?.into_pointer_value();
-    
+    let fn_ptr_slot = ctx
+        .builder
+        .build_struct_gep(closure_type, closure_ptr, 0, "fn_ptr_slot")
+        .ok()?;
+    let fn_ptr = ctx
+        .builder
+        .build_load(ptr_type, fn_ptr_slot, "fn_ptr")
+        .ok()?
+        .into_pointer_value();
+
     // Load env_ptr (offset 1)
-    let env_slot = ctx.builder.build_struct_gep(closure_type, closure_ptr, 1, "env_slot").ok()?;
+    let env_slot = ctx
+        .builder
+        .build_struct_gep(closure_type, closure_ptr, 1, "env_slot")
+        .ok()?;
     let env_ptr = ctx.builder.build_load(ptr_type, env_slot, "env_ptr").ok()?;
-    
+
     // Build function type: (env, ...args) -> i64
     let param_types: Vec<_> = std::iter::once(ptr_type.into())
         .chain(args.iter().map(|_| i64_type.into()))
         .collect();
     let fn_type = i64_type.fn_type(&param_types, false);
-    
+
     // Cast fn_ptr to correct function pointer type
-    let fn_ptr_typed = ctx.builder.build_pointer_cast(
-        fn_ptr, fn_type.ptr_type(AddressSpace::default()), "fn_typed"
-    ).ok()?;
-    
+    let fn_ptr_typed = ctx
+        .builder
+        .build_pointer_cast(
+            fn_ptr,
+            fn_type.ptr_type(AddressSpace::default()),
+            "fn_typed",
+        )
+        .ok()?;
+
     // Build call args: env, ...user_args
     let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = vec![env_ptr.into()];
     for arg in args {
         call_args.push((*arg).into());
     }
-    
+
     // Call
-    let result = ctx.builder.build_indirect_call(fn_type, fn_ptr_typed, &call_args, "closure_call").ok()?;
+    let result = ctx
+        .builder
+        .build_indirect_call(fn_type, fn_ptr_typed, &call_args, "closure_call")
+        .ok()?;
     result.try_as_basic_value().left()
 }

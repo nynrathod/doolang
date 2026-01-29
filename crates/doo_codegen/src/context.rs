@@ -110,6 +110,14 @@ pub struct CodegenContext<'ctx> {
     // ========================================================================
     /// Current function's return type (for proper return value conversion).
     pub current_function_return_type: Option<TypeId>,
+
+    // ========================================================================
+    // Borrow Origin Tracking (for mutating operations)
+    // ========================================================================
+    /// Borrow origins: temp_name -> original_local_name.
+    /// When a temp is a borrow of a local, this tracks the origin so mutating
+    /// operations can store back to the original local's alloca.
+    pub borrow_origins: FxHashMap<String, String>,
 }
 
 impl<'ctx> CodegenContext<'ctx> {
@@ -140,6 +148,7 @@ impl<'ctx> CodegenContext<'ctx> {
             variable_types: FxHashMap::default(),
             function_param_types: FxHashMap::default(),
             current_function_return_type: None,
+            borrow_origins: FxHashMap::default(),
         }
     }
 
@@ -376,10 +385,37 @@ impl<'ctx> CodegenContext<'ctx> {
         }
     }
 
+    /// Register a borrow: track that temp_name is a borrow of local_name.
+    /// Used for mutating operations to store back to the original local.
+    pub fn set_borrow_origin(&mut self, temp_name: &str, local_name: &str) {
+        self.borrow_origins.insert(temp_name.to_string(), local_name.to_string());
+    }
+
+    /// Get the original local name for a borrowed temp.
+    /// Returns None if the name is not a borrowed temp.
+    pub fn get_borrow_origin(&self, name: &str) -> Option<&str> {
+        self.borrow_origins.get(name).map(|s| s.as_str())
+    }
+
+    /// Get the alloca pointer for a name, checking both locals and borrow origins.
+    /// For borrowed temps, returns the original local's alloca.
+    pub fn get_local_or_borrow_origin(&self, name: &str) -> Option<PointerValue<'ctx>> {
+        // First try direct local
+        if let Some(ptr) = self.get_local(name) {
+            return Some(ptr);
+        }
+        // Then try borrow origin
+        if let Some(origin) = self.get_borrow_origin(name) {
+            return self.get_local(origin);
+        }
+        None
+    }
+
     /// Clear locals (for new function).
     pub fn clear_locals(&mut self) {
         self.locals.clear();
         self.temps.clear();
+        self.borrow_origins.clear();
     }
 
     // ========================================================================

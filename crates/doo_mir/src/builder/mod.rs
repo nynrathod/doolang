@@ -511,6 +511,83 @@ impl<'a> MirBuilder<'a> {
         self.function_return_types.get(name).copied()
     }
 
+    /// Get the return type for a builtin method call based on receiver type and method name.
+    /// This is the SINGLE SOURCE OF TRUTH lookup using doo_core::methods.
+    pub(crate) fn get_builtin_method_return_type(
+        &self,
+        receiver_type: CoreTypeId,
+        method: &str,
+    ) -> Option<CoreTypeId> {
+        use doo_core::methods::get_method;
+
+        // Get the type name for lookup
+        let type_name: &str = match self.type_registry.get(receiver_type).map(|info| &info.kind) {
+            Some(TypeKind::Str) => "Str",
+            Some(TypeKind::Int) => "Int",
+            Some(TypeKind::Float) => "Float",
+            Some(TypeKind::Bool) => "Bool",
+            Some(TypeKind::Array { .. }) => "[T]",
+            Some(TypeKind::Map { .. }) => "{K:V}",
+            _ => return None,
+        };
+
+        // Look up the method definition
+        let method_def = get_method(type_name, method)?;
+
+        // Convert return type string to TypeId
+        match method_def.return_type {
+            "Int" => Some(builtin::INT),
+            "Bool" => Some(builtin::BOOL),
+            "Str" => Some(builtin::STR),
+            "Float" => Some(builtin::FLOAT),
+            "Void" => Some(builtin::VOID),
+            // For generic types like T, [T], [U], etc., we need receiver type info
+            "T" => {
+                // Element type of array or value type of map
+                if let Some(info) = self.type_registry.get(receiver_type) {
+                    match &info.kind {
+                        TypeKind::Array { element } => Some(*element),
+                        TypeKind::Map { value, .. } => Some(*value),
+                        _ => Some(builtin::ANY),
+                    }
+                } else {
+                    Some(builtin::ANY)
+                }
+            }
+            "[T]" => {
+                // Same array type as receiver
+                if let Some(info) = self.type_registry.get(receiver_type) {
+                    if let TypeKind::Array { element: _ } = &info.kind {
+                        return Some(receiver_type); // Same type for slice
+                    }
+                }
+                Some(builtin::ANY)
+            }
+            "[K]" => {
+                // Array of keys from a map
+                if let Some(info) = self.type_registry.get(receiver_type) {
+                    if let TypeKind::Map { key: _, .. } = &info.kind {
+                        // Register a new array type for the keys
+                        // Note: Since we only have immutable access to registry,
+                        // we return ANY and let codegen handle it
+                        return Some(builtin::ANY);
+                    }
+                }
+                Some(builtin::ANY)
+            }
+            "[V]" => {
+                // Array of values from a map
+                if let Some(info) = self.type_registry.get(receiver_type) {
+                    if let TypeKind::Map { value: _, .. } = &info.kind {
+                        return Some(builtin::ANY);
+                    }
+                }
+                Some(builtin::ANY)
+            }
+            _ => Some(builtin::ANY),
+        }
+    }
+
     /// Get the parameter types of a function by name.
     pub(crate) fn get_function_param_types(&self, name: &str) -> Option<&Vec<CoreTypeId>> {
         self.function_param_types.get(name)

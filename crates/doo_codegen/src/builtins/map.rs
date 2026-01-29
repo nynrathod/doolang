@@ -80,7 +80,9 @@ impl MapBuiltins {
         ctx: &mut CodegenContext<'ctx>,
         map_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
-        store_len(ctx, map_ptr, ctx.context.i32_type().const_zero())?;
+        // Use proper header-aware function: map_ptr is DATA pointer
+        let zero_i64 = ctx.context.i64_type().const_zero();
+        set_map_length_from_data(ctx, map_ptr, zero_i64)?;
         Some(map_ptr.into())
     }
 
@@ -410,25 +412,34 @@ impl MapBuiltins {
 
         // shrink + copy from tmp into new data
         ctx.builder.position_at_end(pre_end);
-        let doo_realloc = ctx.get_function(ffi_names::DOO_REALLOC)?;
+        // Use standard realloc (fallback from DOO_REALLOC)
+        let realloc_fn = ctx.module
+            .get_function(ffi_names::DOO_REALLOC)
+            .or_else(|| ctx.module.get_function(ffi_names::REALLOC))?;
         let header_ptr = header_ptr_from_data(ctx, map_ptr)?;
         let pair_size = pair_ty.size_of()?;
         let data_bytes = ctx
             .builder
             .build_int_mul(new_len_i64, pair_size, "data_bytes")
             .ok()?;
+        // Header is 16 bytes (2 x i64: length + capacity)
         let total = ctx
             .builder
-            .build_int_add(ctx.context.i64_type().const_int(8, false), data_bytes, "total")
+            .build_int_add(ctx.context.i64_type().const_int(16, false), data_bytes, "total")
             .ok()?;
         let new_header = ctx
             .builder
-            .build_call(doo_realloc, &[header_ptr.into(), total.into()], "realloc")
+            .build_call(realloc_fn, &[header_ptr.into(), total.into()], "realloc")
             .ok()?
             .try_as_basic_value()
             .left()?
             .into_pointer_value();
-        store_len_at_header(ctx, new_header, new_len_i32)?;
+        // Store length as i64 (header expects i64)
+        let new_len_i64_store = ctx
+            .builder
+            .build_int_z_extend(new_len_i32, ctx.context.i64_type(), "new_len_i64_store")
+            .ok()?;
+        store_len_at_header(ctx, new_header, new_len_i64_store)?;
         let new_data = data_ptr_from_header(ctx, new_header)?;
         let new_base = ctx
             .builder
@@ -478,7 +489,9 @@ impl MapBuiltins {
 
         ctx.builder.position_at_end(copy_end);
         if let Some(name) = receiver_name {
-            if let Some(local_ptr) = ctx.get_local(name) {
+            // Use get_local_or_borrow_origin to find the alloca for storing back
+            // This handles both direct locals and borrowed temps
+            if let Some(local_ptr) = ctx.get_local_or_borrow_origin(name) {
                 ctx.builder.build_store(local_ptr, new_data).ok();
             } else {
                 ctx.set_temp(name, new_data.into());
@@ -497,5 +510,6 @@ impl MapBuiltins {
 
 use crate::layout::{
     alloc_with_header, get_map_length, get_map_data_ptr, set_map_length,
+    set_map_length_from_data,
     load_len_i32, data_ptr_from_header, header_ptr_from_data, store_len, store_len_at_header
 };

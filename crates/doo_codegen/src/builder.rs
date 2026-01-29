@@ -137,9 +137,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
     /// This ensures struct types are cached before we try to access their fields.
     fn declare_struct_types(&self, ctx: &mut CodegenContext<'ctx>) {
         let debug = std::env::var("DOO_DEBUG").is_ok();
-        
+
         // First, collect all struct information from the registry
-        let structs: Vec<(String, Vec<(String, doo_core::types::TypeId)>)> = ctx.type_registry
+        let structs: Vec<(String, Vec<(String, doo_core::types::TypeId)>)> = ctx
+            .type_registry
             .all_type_ids()
             .filter_map(|type_id| {
                 if let Some(type_info) = ctx.type_registry.get(type_id) {
@@ -150,7 +151,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 None
             })
             .collect();
-        
+
         // Now process each struct with mutable access to ctx
         for (name, fields) in structs {
             // Build LLVM field types
@@ -158,16 +159,20 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 .iter()
                 .map(|(_, field_type_id)| ctx.get_llvm_type(*field_type_id))
                 .collect();
-            
+
             // Cache the struct type
             let _struct_type = ctx.get_struct_type(&name, &field_types);
-            
+
             // Also register struct metadata (field names)
             let field_names: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
             ctx.register_struct_metadata(&name, field_names);
-            
+
             if debug {
-                eprintln!("[CODEGEN] Pre-declared struct type: {} with {} fields", name, fields.len());
+                eprintln!(
+                    "[CODEGEN] Pre-declared struct type: {} with {} fields",
+                    name,
+                    fields.len()
+                );
             }
         }
     }
@@ -176,9 +181,12 @@ impl<'ctx> CodegenBuilder<'ctx> {
     fn declare_function(&self, ctx: &mut CodegenContext<'ctx>, func: &MirFunction) {
         let debug = std::env::var("DOO_DEBUG").is_ok();
         if debug {
-            eprintln!("[CODEGEN] Declaring function {} with return_type={:?}", func.name, func.return_type);
+            eprintln!(
+                "[CODEGEN] Declaring function {} with return_type={:?}",
+                func.name, func.return_type
+            );
         }
-        
+
         // Build parameter types
         let param_types: Vec<BasicTypeEnum<'ctx>> = func
             .params
@@ -388,6 +396,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Without this, LLVM verification will fail with "does not have terminator" errors.
         let llvm_func = block_map.values().next().and_then(|bb| bb.get_parent());
         if let Some(llvm_func) = llvm_func {
+            // Check if this is the main function - main must always return i32
+            let is_main = llvm_func.get_name().to_str().unwrap_or("") == "main";
+
             let mut maybe_bb = llvm_func.get_first_basic_block();
             while let Some(bb) = maybe_bb {
                 if bb.get_terminator().is_none() {
@@ -409,6 +420,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         );
                         let default_result = result_struct_type.const_zero();
                         ctx.builder.build_return(Some(&default_result)).ok();
+                    } else if is_main {
+                        // Main function must return i32, even if MIR has no return type
+                        let zero = ctx.context.i32_type().const_int(0, false);
+                        ctx.builder.build_return(Some(&zero)).ok();
                     } else if func.return_type.is_none() {
                         ctx.builder.build_return(None).ok();
                     } else {
@@ -450,7 +465,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     .and_then(|bb| bb.get_parent())
                     .map(|f| f.get_name().to_str().unwrap_or("") == "main")
                     .unwrap_or(false);
-                
+
                 let debug = std::env::var("DOO_DEBUG").is_ok();
 
                 if values.is_empty() {
@@ -464,7 +479,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 } else if values.len() == 1 {
                     if let Some(val) = operand_to_value(ctx, &values[0]) {
                         if debug {
-                            eprintln!("[CODEGEN] Return: got value {:?} for {:?}", val.get_type(), &values[0]);
+                            eprintln!(
+                                "[CODEGEN] Return: got value {:?} for {:?}",
+                                val.get_type(),
+                                &values[0]
+                            );
                         }
                         if is_main {
                             // Main function must return i32

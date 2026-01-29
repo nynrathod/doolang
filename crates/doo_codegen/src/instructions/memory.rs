@@ -87,6 +87,8 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                 // Borrow at LLVM level is just getting the value
                 let val = ctx.get_value(src.as_str())?;
                 ctx.set_local(dest.clone(), val);
+                // Track borrow origin so mutating operations can store back
+                ctx.set_borrow_origin(dest, src);
                 Some(val)
             }
             _ => None,

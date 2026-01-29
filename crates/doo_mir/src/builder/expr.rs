@@ -446,7 +446,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let is_module_receiver = matches!(&receiver.kind, HirExprKind::Local { name } 
                 if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false));
 
-            // Get receiver type - try HIR type first, then look up from locals/temps
+// Get receiver type - try HIR type first, then look up from locals/temps
             // Build receiver - for modules, use Global instead of Local
             let recv = if is_module_receiver {
                 if let HirExprKind::Local { name } = &receiver.kind {
@@ -498,7 +498,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // If the HIR expression has a type_id, set it on the temp
             // This ensures type inference from HIR is preserved
             let return_type = expr.type_id.or_else(|| {
-                // Look up the method's return type from the function registry
+                // First, try builtin method return type (Str, Array, Map, Int, etc.)
+                // This is the SINGLE SOURCE OF TRUTH from doo_core::methods
+                if let Some(rt) = builder.get_builtin_method_return_type(receiver_type, method) {
+                    return Some(rt);
+                }
+                
+                // Fallback: Look up the method's return type from the function registry
                 // Method functions are named _method_{TypeName}_{method}
                 if let Some(type_info) = builder.type_registry.get(receiver_type) {
                     if let TypeKind::Struct { name, .. } = &type_info.kind {
@@ -515,7 +521,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             builder.emit(
                 MirInstrKind::MethodCall {
                     dest: Some(dest.clone()),
-                    receiver: recv,
+                    receiver: recv.clone(),
                     receiver_type,
                     method: method.clone(),
                     args: arg_ops,
@@ -524,6 +530,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 },
                 span,
             );
+
             MirOperand::Temp(dest)
         }
 
@@ -1228,6 +1235,23 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
         HirExprKind::Closure { params, body } => {
             let dest = builder.new_temp();
+            
+            // Register closure parameters as locals so they can be referenced in the body
+            // params is Vec<(String, Option<TypeId>)>
+            if let Some(f) = &mut builder.current_func {
+                for (param_name, param_type) in params {
+                    let type_id = param_type.unwrap_or(builtin::ANY);
+                    // Only add if not already present
+                    if !f.locals.iter().any(|l| l.name == *param_name) {
+                        f.locals.push(crate::LocalDef {
+                            name: param_name.clone(),
+                            type_id,
+                            mutable: false,
+                        });
+                    }
+                }
+            }
+            
             let _body_val = builder.build_expr(body);
             MirOperand::Temp(dest)
         }

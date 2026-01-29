@@ -44,6 +44,15 @@ pub fn has_method(type_name: &str, method_name: &str) -> bool {
         .any(|m| m.name == method_name)
 }
 
+/// Check if a method mutates its receiver
+pub fn method_mutates(type_name: &str, method_name: &str) -> bool {
+    get_methods_for_type(type_name)
+        .iter()
+        .find(|m| m.name == method_name)
+        .map(|m| m.mutates)
+        .unwrap_or(false)
+}
+
 /// Get method definition by name
 pub fn get_method(type_name: &str, method_name: &str) -> Option<&'static MethodDef> {
     get_methods_for_type(type_name)

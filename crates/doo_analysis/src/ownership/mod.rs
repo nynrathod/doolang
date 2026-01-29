@@ -562,8 +562,20 @@ impl OwnershipAnalyzer {
                     self.analyze_expr(arg);
                 }
             }
-            HirExprKind::MethodCall { receiver, args, .. } => {
-                self.analyze_expr(receiver);
+            HirExprKind::MethodCall { receiver, method, args } => {
+                // For mutating methods on locals, use Borrow instead of Clone
+                // This ensures mutations affect the original, not a copy
+                if let HirExprKind::Local { name } = &receiver.kind {
+                    if self.is_mutating_method(method) {
+                        // Mutating method: use mutable borrow so changes affect original
+                        self.results.record(name, receiver.span, Decision::Borrow { mutable: true });
+                    } else {
+                        // Non-mutating method: normal ownership decision
+                        self.analyze_expr(receiver);
+                    }
+                } else {
+                    self.analyze_expr(receiver);
+                }
                 for arg in args {
                     self.analyze_expr(arg);
                 }
@@ -714,6 +726,15 @@ impl OwnershipAnalyzer {
         self.results.record(name, use_span, decision);
 
         decision
+    }
+
+    /// Check if a method is a known mutating method for arrays or maps.
+    /// This is a fast check that doesn't require TypeRegistry access.
+    fn is_mutating_method(&self, method: &str) -> bool {
+        // Check against known mutating methods from doo_core::methods
+        // Array mutating: push, pop, sort, reverse, clear
+        // Map mutating: remove, clear
+        matches!(method, "push" | "pop" | "sort" | "reverse" | "clear" | "remove")
     }
 
     /// Check if a type is Copy (primitives).

@@ -17,6 +17,9 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             mutable,
             ..
         } => {
+            // Detect container kind BEFORE building expression (for proper type tracking)
+            let container_kind = builder.infer_container_kind(value);
+            
             let val_operand = builder.build_expr(value);
 
             // Register the local variable in the function
@@ -24,6 +27,11 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 // Infer type from the value operand using builder's method
                 builder.infer_operand_type(&val_operand)
             });
+
+            // Register container kind for this variable (used in index assignment)
+            if let Some(kind) = container_kind {
+                builder.container_kinds.insert(name.clone(), kind);
+            }
 
             if let Some(f) = &mut builder.current_func {
                 // Check if already registered (e.g., loop index vars)
@@ -252,11 +260,34 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                     );
                 }
                 HirExprKind::Index { object, index } => {
-                    // For index assignment like `arr[i] = value`
+                    // For index assignment like `arr[i] = value` or `map[key] = value`
                     let array_operand = builder.build_expr(object);
                     let index_operand = builder.build_expr(index);
 
-                    // Get container type: first try HIR type_id, then look up from locals
+                    // Determine if this is a Map or Array:
+                    // 1. First check container_kinds cache (most reliable for inferred types)
+                    // 2. Then try HIR type_id
+                    // 3. Then look up from locals
+                    let is_map = if let HirExprKind::Local { name } = &object.kind {
+                        // Check container_kinds cache first
+                        if let Some(kind) = builder.container_kinds.get(name).copied() {
+                            matches!(kind, super::ContainerKind::Map)
+                        } else {
+                            // Fall back to type registry lookup
+                            builder.get_local_type(name)
+                                .and_then(|t| builder.type_registry.get(t))
+                                .map(|info| matches!(info.kind, TypeKind::Map { .. }))
+                                .unwrap_or(false)
+                        }
+                    } else {
+                        // For non-local objects, use type_id
+                        object.type_id
+                            .and_then(|t| builder.type_registry.get(t))
+                            .map(|info| matches!(info.kind, TypeKind::Map { .. }))
+                            .unwrap_or(false)
+                    };
+
+                    // Get container type for extracting key/value types
                     let container_type = object.type_id.or_else(|| {
                         if let HirExprKind::Local { name } = &object.kind {
                             builder.get_local_type(name)
@@ -265,18 +296,44 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         }
                     });
 
-                    let elem_type = container_type
-                        .and_then(|t| builder.array_elem_type_from_type_id(t))
-                        .unwrap_or(doo_core::types::builtin::ANY);
-                    builder.emit(
-                        MirInstrKind::ArraySet {
-                            array: array_operand,
-                            index: index_operand,
-                            value: val_operand,
-                            elem_type,
-                        },
-                        span,
-                    );
+                    if is_map {
+                        // Map set: map[key] = value
+                        let (key_type, val_type) = container_type
+                            .and_then(|t| builder.type_registry.get(t))
+                            .and_then(|info| {
+                                if let TypeKind::Map { key, value } = &info.kind {
+                                    Some((*key, *value))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or((builtin::ANY, builtin::ANY));
+
+                        builder.emit(
+                            MirInstrKind::MapSet {
+                                map: array_operand,
+                                key: index_operand,
+                                value: val_operand,
+                                key_type,
+                                val_type,
+                            },
+                            span,
+                        );
+                    } else {
+                        // Array set: arr[index] = value
+                        let elem_type = container_type
+                            .and_then(|t| builder.array_elem_type_from_type_id(t))
+                            .unwrap_or(builtin::ANY);
+                        builder.emit(
+                            MirInstrKind::ArraySet {
+                                array: array_operand,
+                                index: index_operand,
+                                value: val_operand,
+                                elem_type,
+                            },
+                            span,
+                        );
+                    }
                 }
                 _ => {
                     // Fallback: try to build as expression (may not work for all cases)

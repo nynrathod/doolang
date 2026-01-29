@@ -228,8 +228,10 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                 eprintln!("[CODEGEN] WARNING: FieldGet {} has no struct type for {:?} (var_name={:?})", 
                                     dest, object, var_name);
                             } else {
-                                eprintln!("[CODEGEN] FieldGet {} using struct_name={:?} for field={}", 
-                                    dest, struct_name, field);
+                                eprintln!(
+                                    "[CODEGEN] FieldGet {} using struct_name={:?} for field={}",
+                                    dest, struct_name, field
+                                );
                             }
                         }
 
@@ -241,7 +243,10 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     field.parse::<u32>().unwrap_or(0)
                                 });
                             if debug {
-                                eprintln!("[CODEGEN] FieldGet {} field_index={} for {}.{}", dest, field_index, struct_name, field);
+                                eprintln!(
+                                    "[CODEGEN] FieldGet {} field_index={} for {}.{}",
+                                    dest, field_index, struct_name, field
+                                );
                             }
 
                             // Get the struct type from cache
