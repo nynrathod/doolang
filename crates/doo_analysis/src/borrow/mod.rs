@@ -182,7 +182,7 @@ impl BorrowChecker {
             HirStmtKind::Assign { target, value } => {
                 // Check the value being assigned FIRST (before we clear borrows on target)
                 self.check_expr(value, false);
-                
+
                 // Assignment replaces the value - clear any borrows on the target
                 // This is safe because:
                 // 1. We already checked the RHS which may read from the target

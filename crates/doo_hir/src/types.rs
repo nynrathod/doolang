@@ -412,6 +412,7 @@ pub struct HirStruct {
 pub struct HirField {
     pub name: String,
     pub type_id: Option<TypeId>,
+    pub is_public: bool,
     pub is_optional: bool,
     pub default: Option<HirExpr>,
     pub decorators: Vec<HirDecorator>,

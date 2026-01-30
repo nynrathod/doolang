@@ -595,8 +595,8 @@ impl<'ctx> CodegenContext<'ctx> {
         if let TypeKind::Struct { fields, .. } = &type_info.kind {
             fields
                 .iter()
-                .find(|(name, _)| name == field_name)
-                .map(|(_, type_id)| *type_id)
+                .find(|(name, _, _)| name == field_name)
+                .map(|(_, type_id, _)| *type_id)
         } else {
             None
         }
@@ -619,7 +619,7 @@ impl<'ctx> CodegenContext<'ctx> {
         let struct_type_id = self.type_registry.lookup(struct_name)?;
         let type_info = self.type_registry.get(struct_type_id)?;
         if let TypeKind::Struct { fields, .. } = &type_info.kind {
-            Some(fields.iter().map(|(_, type_id)| *type_id).collect())
+            Some(fields.iter().map(|(_, type_id, _)| *type_id).collect())
         } else {
             None
         }

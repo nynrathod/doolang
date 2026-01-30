@@ -371,12 +371,14 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 }
                                 TypeKind::Struct { name, fields } => {
                                     if v.is_pointer_value() {
+                                        // Extract just name and type for printing (visibility not needed)
+                                        let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
                                         emit_print_struct(
                                             ctx,
                                             printf,
                                             v.into_pointer_value(),
                                             &name,
-                                            &fields,
+                                            &field_pairs,
                                         );
                                     } else {
                                         emit_print_value(ctx, printf, ty, v, false, false);
@@ -1145,7 +1147,9 @@ fn emit_print_value<'ctx>(
                     return;
                 }
                 TypeKind::Struct { name, fields } => {
-                    emit_print_struct(ctx, printf, ptr, &name, &fields);
+                    // Extract just name and type for printing (visibility not needed)
+                    let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                    emit_print_struct(ctx, printf, ptr, &name, &field_pairs);
                     if newline {
                         let nl = ctx.const_string("\n");
                         ctx.builder

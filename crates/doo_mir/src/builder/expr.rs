@@ -932,6 +932,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Then
             builder.add_block(&then_label);
             let then_val = builder.build_expr(then_expr);
+            // Infer type from then branch
+            let then_type = builder.infer_operand_type(&then_val);
             builder.emit(
                 MirInstrKind::Assign {
                     dest: dest.clone(),
@@ -945,8 +947,9 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
             // Else
             builder.add_block(&else_label);
-            if let Some(else_e) = else_expr {
+            let else_type = if let Some(else_e) = else_expr {
                 let else_val = builder.build_expr(else_e);
+                let else_type = builder.infer_operand_type(&else_val);
                 builder.emit(
                     MirInstrKind::Assign {
                         dest: dest.clone(),
@@ -954,6 +957,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     },
                     span,
                 );
+                else_type
             } else {
                 builder.emit(
                     MirInstrKind::Assign {
@@ -962,10 +966,22 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     },
                     span,
                 );
-            }
+                builtin::ANY
+            };
             builder.set_terminator(MirTerminator::Goto {
                 target: merge_label.clone(),
             });
+
+            // Set temp type for dest - prefer then_type if concrete, else use else_type
+            let result_type = if then_type != builtin::ANY {
+                then_type
+            } else {
+                else_type
+            };
+            builder.set_temp_type(&dest, result_type);
+            
+            // Also add to locals so codegen can find the type
+            builder.add_temp_local(&dest, result_type);
 
             builder.add_block(&merge_label);
             MirOperand::Temp(dest)

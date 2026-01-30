@@ -461,6 +461,7 @@ impl Lower {
             .map(|f| HirField {
                 name: f.name.clone(),
                 type_id: None,
+                is_public: f.is_public,
                 is_optional: f.is_optional,
                 default: f.default.as_ref().map(|e| self.lower_expr(e)),
                 decorators: f
@@ -505,6 +506,7 @@ impl Lower {
                 HirField {
                     name: f.name.clone(),
                     type_id: Some(type_id),
+                    is_public: f.is_public,
                     is_optional: f.is_optional,
                     default: f
                         .default
@@ -524,7 +526,7 @@ impl Lower {
             &s.name,
             fields
                 .iter()
-                .filter_map(|f| f.type_id.map(|id| (f.name.clone(), id)))
+                .filter_map(|f| f.type_id.map(|id| (f.name.clone(), id, f.is_public)))
                 .collect(),
         );
 

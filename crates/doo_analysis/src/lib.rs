@@ -33,6 +33,10 @@ pub use semantic::{
     ExhaustivenessChecker,
     ExhaustivenessError,
     ExhaustivenessErrorKind,
+    // Field visibility checking
+    check_field_visibility,
+    FieldVisibilityChecker,
+    FieldVisibilityError,
     ImportGraph,
     ImportItemKind,
     ImportKind,

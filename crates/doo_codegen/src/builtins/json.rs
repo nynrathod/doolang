@@ -69,7 +69,9 @@ impl JsonBuiltins {
                     if std::env::var("DOO_DEBUG").is_ok() {
                         eprintln!("[CODEGEN] emit_parse -> emit_parse_struct for '{}'", name);
                     }
-                    return Self::emit_parse_struct(ctx, val, ty, &name, &fields);
+                    // Extract just name and type for parsing (visibility not needed)
+                    let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                    return Self::emit_parse_struct(ctx, val, ty, &name, &field_pairs);
                 }
                 Some(TypeKind::Enum { name, variants }) => {
                     if std::env::var("DOO_DEBUG").is_ok() {
@@ -790,10 +792,10 @@ impl JsonBuiltins {
                 }
                 let struct_ptr = val.into_pointer_value();
 
-                // Cast to struct type
+                // Cast to struct type (extract just type, ignore visibility)
                 let field_types: Vec<_> = fields
                     .iter()
-                    .map(|(_, t)| ctx.get_llvm_type(*t).into())
+                    .map(|(_, t, _)| ctx.get_llvm_type(*t).into())
                     .collect();
                 let struct_llvm_type = ctx.context.struct_type(&field_types, false);
                 let typed_ptr = ctx
@@ -805,7 +807,7 @@ impl JsonBuiltins {
                     )
                     .ok()?;
 
-                for (i, (fname, fty)) in fields.iter().enumerate() {
+                for (i, (fname, fty, _)) in fields.iter().enumerate() {
                     if i > 0 {
                         ctx.builder
                             .build_call(comma_fn, &[writer.into()], "")

@@ -25,6 +25,8 @@ use crate::loader::{merge_imports, resolve_imports, ModuleLoader};
 
 // Analysis imports - wire in the semantic analysis phase
 use doo_analysis::{
+    // Field visibility checking
+    check_field_visibility,
     // AST transformations
     transform::{transform_inline_closures, transform_route_groups},
     // Borrow checking
@@ -140,7 +142,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let source = fs::read_to_string(&input_path)
         .map_err(|e| format!("Failed to read {}: {}", input_path.display(), e))?;
 
-    let _project_root = input_path
+    let project_root = input_path
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -195,7 +197,40 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Phase 3.5: Resolve Imports (using centralized loader module)
     // Load and merge imported functions/structs/enums from std library and other modules
     let mut loader = ModuleLoader::new();
-    let import_resolution = resolve_imports(&program, &mut loader)?;
+    let import_resolution = resolve_imports(&program, &mut loader, &project_root)?;
+
+    // Debug: show what was resolved
+    if env::var("DOO_DEBUG").is_ok() {
+        eprintln!(
+            "[DEBUG] Import resolution items: {}",
+            import_resolution.items.len()
+        );
+        for item in &import_resolution.items {
+            match item {
+                doo_frontend::ast::Item::Struct(s) => {
+                    eprintln!("[DEBUG]   Imported Struct: {}", s.name)
+                }
+                doo_frontend::ast::Item::Function(f) => {
+                    eprintln!("[DEBUG]   Imported Function: {}", f.name)
+                }
+                doo_frontend::ast::Item::Enum(e) => {
+                    eprintln!("[DEBUG]   Imported Enum: {}", e.name)
+                }
+                _ => eprintln!("[DEBUG]   Imported other item"),
+            }
+        }
+    }
+
+    // Track which structs were imported (for visibility checking)
+    let imported_struct_names: HashSet<String> = import_resolution
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            doo_frontend::ast::Item::Struct(s) => Some(s.name.clone()),
+            _ => None,
+        })
+        .collect();
+
     merge_imports(&mut program, import_resolution);
 
     if opts.print_ast {
@@ -304,6 +339,16 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let exhaustiveness_errors = exhaustiveness_checker.check_program(&hir);
     for err in &exhaustiveness_errors {
         analysis_errors.push(format_exhaustiveness_error(err));
+    }
+
+    // 5.7: Field Visibility Checking
+    // Ensures private fields (camelCase) are not accessed from outside their module
+    if env::var("DOO_DEBUG").is_ok() {
+        eprintln!("[DEBUG] Imported struct names: {:?}", imported_struct_names);
+    }
+    let visibility_errors = check_field_visibility(&hir, &type_registry, &imported_struct_names);
+    for err in &visibility_errors {
+        analysis_errors.push(err.clone());
     }
 
     // Report any analysis errors

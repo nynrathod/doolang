@@ -489,6 +489,22 @@ impl<'a> MirBuilder<'a> {
         self.temp_counter += 1;
         name
     }
+    
+    /// Add a temporary variable to func.locals so codegen can access its type.
+    /// This is needed for temps that hold intermediate values (like if-expr results)
+    /// which need proper LLVM types during alloca creation.
+    pub(crate) fn add_temp_local(&mut self, name: &str, type_id: CoreTypeId) {
+        if let Some(f) = &mut self.current_func {
+            // Only add if not already present
+            if !f.locals.iter().any(|l| l.name == name) {
+                f.locals.push(LocalDef {
+                    name: name.to_string(),
+                    type_id,
+                    mutable: false,
+                });
+            }
+        }
+    }
 
     pub(crate) fn new_block_label(&mut self, prefix: &str) -> String {
         let label = format!("{}_{}", prefix, self.block_counter);
@@ -608,8 +624,8 @@ impl<'a> MirBuilder<'a> {
             .and_then(|info| match &info.kind {
                 TypeKind::Struct { fields, .. } => fields
                     .iter()
-                    .find(|(name, _)| name == field_name)
-                    .map(|(_, t)| *t),
+                    .find(|(name, _, _)| name == field_name)
+                    .map(|(_, t, _)| *t),
                 _ => None,
             })
     }

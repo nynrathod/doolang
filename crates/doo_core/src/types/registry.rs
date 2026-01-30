@@ -104,9 +104,10 @@ pub enum TypeKind {
     /// Tuple of types
     Tuple { elements: Vec<TypeId> },
     /// Struct with named fields
+    /// Fields are (name, type_id, is_public)
     Struct {
         name: String,
-        fields: Vec<(String, TypeId)>,
+        fields: Vec<(String, TypeId, bool)>,
     },
     /// Enum with variants
     Enum {
@@ -276,7 +277,7 @@ impl TypeRegistry {
         self.register(name, TypeKind::TypeRef { name: name.to_string() })
     }
 
-    pub fn define_struct(&mut self, name: &str, fields: Vec<(String, TypeId)>) -> TypeId {
+    pub fn define_struct(&mut self, name: &str, fields: Vec<(String, TypeId, bool)>) -> TypeId {
         let id = self.declare_named(name);
         if std::env::var("DOO_DEBUG_TYPES").is_ok() {
             eprintln!("[TYPES] define_struct '{}' with id={:?}, fields={:?}", name, id, fields);
@@ -357,7 +358,7 @@ impl TypeRegistry {
     }
     
     /// Register a struct type
-    pub fn register_struct(&mut self, name: &str, fields: Vec<(String, TypeId)>) -> TypeId {
+    pub fn register_struct(&mut self, name: &str, fields: Vec<(String, TypeId, bool)>) -> TypeId {
         self.register(name, TypeKind::Struct {
             name: name.to_string(),
             fields,

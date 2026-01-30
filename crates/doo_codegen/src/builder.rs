@@ -241,7 +241,8 @@ impl<'ctx> CodegenBuilder<'ctx> {
         let debug = std::env::var("DOO_DEBUG").is_ok();
 
         // First, collect all struct information from the registry
-        let structs: Vec<(String, Vec<(String, doo_core::types::TypeId)>)> = ctx
+        // Fields are now (name, type_id, is_public) tuples
+        let structs: Vec<(String, Vec<(String, doo_core::types::TypeId, bool)>)> = ctx
             .type_registry
             .all_type_ids()
             .filter_map(|type_id| {
@@ -256,17 +257,17 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // Now process each struct with mutable access to ctx
         for (name, fields) in structs {
-            // Build LLVM field types
+            // Build LLVM field types (ignore visibility for LLVM type)
             let field_types: Vec<inkwell::types::BasicTypeEnum> = fields
                 .iter()
-                .map(|(_, field_type_id)| ctx.get_llvm_type(*field_type_id))
+                .map(|(_, field_type_id, _)| ctx.get_llvm_type(*field_type_id))
                 .collect();
 
             // Cache the struct type
             let _struct_type = ctx.get_struct_type(&name, &field_types);
 
             // Also register struct metadata (field names)
-            let field_names: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
+            let field_names: Vec<String> = fields.iter().map(|(n, _, _)| n.clone()).collect();
             ctx.register_struct_metadata(&name, field_names);
 
             if debug {
@@ -394,25 +395,45 @@ impl<'ctx> CodegenBuilder<'ctx> {
         }
 
         // Collect all assigned variables from MIR to create allocas
+        // FIRST: Pre-populate with all known local types from func.locals
         let mut assigned_vars: HashMap<String, doo_core::types::TypeId> = HashMap::new();
-        for block in &func.blocks {
-            for instr in &block.instructions {
-                if let doo_mir::MirInstrKind::Assign { dest, value } = &instr.kind {
-                    // Infer type from value
-                    let type_id = match value {
-                        MirOperand::Const(MirConst::Int(_)) => builtin::INT,
-                        MirOperand::Const(MirConst::Float(_)) => builtin::FLOAT,
-                        MirOperand::Const(MirConst::Bool(_)) => builtin::BOOL,
-                        MirOperand::Const(MirConst::Str(_)) => builtin::STR,
-                        MirOperand::Const(MirConst::Nil) => builtin::ANY,
-                        MirOperand::Local(name) | MirOperand::Temp(name) => {
-                            // Get type from existing var if known
-                            assigned_vars.get(name).copied().unwrap_or(builtin::ANY)
+        for local in &func.locals {
+            assigned_vars.insert(local.name.clone(), local.type_id);
+        }
+
+        // SECOND: Scan all blocks to infer types for temps from assignments
+        // This requires multiple passes since types can flow through multiple temps
+        let max_passes = 10; // Prevent infinite loops
+        for _pass in 0..max_passes {
+            let mut changed = false;
+            for block in &func.blocks {
+                for instr in &block.instructions {
+                    if let doo_mir::MirInstrKind::Assign { dest, value } = &instr.kind {
+                        // Infer type from value
+                        let type_id = match value {
+                            MirOperand::Const(MirConst::Int(_)) => builtin::INT,
+                            MirOperand::Const(MirConst::Float(_)) => builtin::FLOAT,
+                            MirOperand::Const(MirConst::Bool(_)) => builtin::BOOL,
+                            MirOperand::Const(MirConst::Str(_)) => builtin::STR,
+                            MirOperand::Const(MirConst::Nil) => builtin::ANY,
+                            MirOperand::Local(name) | MirOperand::Temp(name) => {
+                                // Get type from existing var if known (now includes func.locals)
+                                assigned_vars.get(name).copied().unwrap_or(builtin::ANY)
+                            }
+                            MirOperand::Global(_) => builtin::ANY,
+                        };
+                        // Only update if we have a concrete type (not ANY) or dest is unknown
+                        if type_id != builtin::ANY || !assigned_vars.contains_key(dest) {
+                            if assigned_vars.get(dest) != Some(&type_id) {
+                                assigned_vars.insert(dest.clone(), type_id);
+                                changed = true;
+                            }
                         }
-                        MirOperand::Global(_) => builtin::ANY,
-                    };
-                    assigned_vars.insert(dest.clone(), type_id);
+                    }
                 }
+            }
+            if !changed {
+                break;
             }
         }
 
@@ -469,6 +490,18 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 ctx.create_local(&local.name, local_type);
                 // Track local type for Clone/Drop
                 ctx.set_variable_type(&local.name, local.type_id);
+
+                // CRITICAL: For struct locals, register the struct type association
+                // This is needed for FieldGet/FieldSet to work correctly
+                if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(local.type_id) {
+                    ctx.set_temp_struct_type(&local.name, &name);
+                    if std::env::var("DOO_DEBUG").is_ok() {
+                        eprintln!(
+                            "[CODEGEN] Registered struct local {} as type {}",
+                            local.name, name
+                        );
+                    }
+                }
             }
         }
 

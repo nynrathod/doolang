@@ -51,4 +51,7 @@ pub use resolve::{
 };
 pub use scope::{Scope, ScopeManager, Symbol, SymbolKind};
 pub use type_check::{TypeChecker, TypeError, TypeErrorKind};
-pub use visibility::{visibility_from_flag, Visibility, VisibilityChecker, VisibilityError};
+pub use visibility::{
+    check_field_visibility, visibility_from_flag, FieldVisibilityChecker, FieldVisibilityError,
+    Visibility, VisibilityChecker, VisibilityError,
+};

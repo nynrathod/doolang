@@ -114,7 +114,7 @@ impl ParserItems for Parser {
         //   (nothing)      -- returns void, no error
         let (return_type, error_type) = if self.check(TokenKind::Arrow) {
             self.advance();
-            
+
             // Check for "-> ! E" (void return with error)
             if self.check(TokenKind::Bang) {
                 self.advance();
