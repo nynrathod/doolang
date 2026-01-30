@@ -287,66 +287,101 @@ fn emit_binop<'ctx>(
         };
         Some(result)
     } else if lhs.is_float_value() && rhs.is_float_value() {
+        // Both floats: perform float operation
         let lhs_float = lhs.into_float_value();
         let rhs_float = rhs.into_float_value();
+        emit_float_binop(ctx, op, lhs_float, rhs_float)
+    } else if lhs.is_float_value() && rhs.is_int_value() {
+        // Mixed: float op int → convert int to float, perform float op
+        let lhs_float = lhs.into_float_value();
+        let rhs_float = ctx
+            .builder
+            .build_signed_int_to_float(rhs.into_int_value(), ctx.context.f64_type(), "int_to_f64")
+            .ok()?;
 
-        let result = match op {
-            BinaryOp::Add => ctx
-                .builder
-                .build_float_add(lhs_float, rhs_float, "fadd")
-                .ok()?
-                .into(),
-            BinaryOp::Sub => ctx
-                .builder
-                .build_float_sub(lhs_float, rhs_float, "fsub")
-                .ok()?
-                .into(),
-            BinaryOp::Mul => ctx
-                .builder
-                .build_float_mul(lhs_float, rhs_float, "fmul")
-                .ok()?
-                .into(),
-            BinaryOp::Div => ctx
-                .builder
-                .build_float_div(lhs_float, rhs_float, "fdiv")
-                .ok()?
-                .into(),
-            BinaryOp::Eq => ctx
-                .builder
-                .build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq")
-                .ok()?
-                .into(),
-            BinaryOp::Ne => ctx
-                .builder
-                .build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne")
-                .ok()?
-                .into(),
-            BinaryOp::Lt => ctx
-                .builder
-                .build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt")
-                .ok()?
-                .into(),
-            BinaryOp::Le => ctx
-                .builder
-                .build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle")
-                .ok()?
-                .into(),
-            BinaryOp::Gt => ctx
-                .builder
-                .build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt")
-                .ok()?
-                .into(),
-            BinaryOp::Ge => ctx
-                .builder
-                .build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge")
-                .ok()?
-                .into(),
-            _ => return None,
-        };
-        Some(result)
+        emit_float_binop(ctx, op, lhs_float, rhs_float)
+    } else if lhs.is_int_value() && rhs.is_float_value() {
+        // Mixed: int op float → convert int to float, perform float op
+        let lhs_float = ctx
+            .builder
+            .build_signed_int_to_float(lhs.into_int_value(), ctx.context.f64_type(), "int_to_f64")
+            .ok()?;
+        let rhs_float = rhs.into_float_value();
+
+        emit_float_binop(ctx, op, lhs_float, rhs_float)
     } else {
         None
     }
+}
+
+/// Emit float binary operation (extracted for reuse).
+fn emit_float_binop<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    op: BinaryOp,
+    lhs_float: inkwell::values::FloatValue<'ctx>,
+    rhs_float: inkwell::values::FloatValue<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    let result = match op {
+        BinaryOp::Add => ctx
+            .builder
+            .build_float_add(lhs_float, rhs_float, "fadd")
+            .ok()?
+            .into(),
+        BinaryOp::Sub => ctx
+            .builder
+            .build_float_sub(lhs_float, rhs_float, "fsub")
+            .ok()?
+            .into(),
+        BinaryOp::Mul => ctx
+            .builder
+            .build_float_mul(lhs_float, rhs_float, "fmul")
+            .ok()?
+            .into(),
+        BinaryOp::Div => ctx
+            .builder
+            .build_float_div(lhs_float, rhs_float, "fdiv")
+            .ok()?
+            .into(),
+        BinaryOp::Mod => {
+            // Floating-point modulo using LLVM's frem instruction
+            ctx.builder
+                .build_float_rem(lhs_float, rhs_float, "fmod")
+                .ok()?
+                .into()
+        }
+        BinaryOp::Eq => ctx
+            .builder
+            .build_float_compare(FloatPredicate::OEQ, lhs_float, rhs_float, "feq")
+            .ok()?
+            .into(),
+        BinaryOp::Ne => ctx
+            .builder
+            .build_float_compare(FloatPredicate::ONE, lhs_float, rhs_float, "fne")
+            .ok()?
+            .into(),
+        BinaryOp::Lt => ctx
+            .builder
+            .build_float_compare(FloatPredicate::OLT, lhs_float, rhs_float, "flt")
+            .ok()?
+            .into(),
+        BinaryOp::Le => ctx
+            .builder
+            .build_float_compare(FloatPredicate::OLE, lhs_float, rhs_float, "fle")
+            .ok()?
+            .into(),
+        BinaryOp::Gt => ctx
+            .builder
+            .build_float_compare(FloatPredicate::OGT, lhs_float, rhs_float, "fgt")
+            .ok()?
+            .into(),
+        BinaryOp::Ge => ctx
+            .builder
+            .build_float_compare(FloatPredicate::OGE, lhs_float, rhs_float, "fge")
+            .ok()?
+            .into(),
+        _ => return None,
+    };
+    Some(result)
 }
 
 /// Emit string concatenation.
