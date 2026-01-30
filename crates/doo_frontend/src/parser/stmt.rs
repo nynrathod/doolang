@@ -118,7 +118,10 @@ impl ParserStmt for Parser {
             // Build the tuple pattern
             let pattern_start = patterns.first().map(|p| p.span).unwrap_or(start);
             let pattern_end = patterns.last().map(|p| p.span).unwrap_or(start);
-            let pattern = Pattern::new(PatternKind::Tuple(patterns), pattern_start.merge(&pattern_end));
+            let pattern = Pattern::new(
+                PatternKind::Tuple(patterns),
+                pattern_start.merge(&pattern_end),
+            );
 
             let type_ann = if self.check(TokenKind::Colon) {
                 self.advance();
@@ -241,6 +244,20 @@ impl ParserStmt for Parser {
     fn parse_for(&mut self) -> ParseResult<Stmt> {
         let start = self.current_span();
         self.expect(TokenKind::For)?;
+
+        // Check for infinite loop: `for { ... }` (no pattern, no iterable)
+        if self.check(TokenKind::LBrace) {
+            let body = self.parse_block()?;
+            let end = self.prev_span();
+            return Ok(Stmt::new(
+                StmtKind::For {
+                    pattern: Pattern::wildcard(start), // Use wildcard as placeholder
+                    iterable: None,
+                    body,
+                },
+                start.merge(&end),
+            ));
+        }
 
         let first_pattern = self.parse_pattern()?;
 

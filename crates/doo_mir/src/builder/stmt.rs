@@ -19,8 +19,14 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
         } => {
             // Detect container kind BEFORE building expression (for proper type tracking)
             let container_kind = builder.infer_container_kind(value);
-            
-            let val_operand = builder.build_expr(value);
+
+            // Use build_expr_with_expected_type if we have a type annotation
+            // This enables JSON.parse to use the expected type for proper parsing
+            let val_operand = if type_id.is_some() {
+                builder.build_expr_with_expected_type(value, *type_id)
+            } else {
+                builder.build_expr(value)
+            };
 
             // Register the local variable in the function
             let var_type_id = type_id.unwrap_or_else(|| {
@@ -279,14 +285,16 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                             matches!(kind, super::ContainerKind::Map)
                         } else {
                             // Fall back to type registry lookup
-                            builder.get_local_type(name)
+                            builder
+                                .get_local_type(name)
                                 .and_then(|t| builder.type_registry.get(t))
                                 .map(|info| matches!(info.kind, TypeKind::Map { .. }))
                                 .unwrap_or(false)
                         }
                     } else {
                         // For non-local objects, use type_id
-                        object.type_id
+                        object
+                            .type_id
                             .and_then(|t| builder.type_registry.get(t))
                             .map(|info| matches!(info.kind, TypeKind::Map { .. }))
                             .unwrap_or(false)
@@ -448,9 +456,22 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
         }
 
         HirStmtKind::While { condition, body } => {
+            if std::env::var("DOO_DEBUG").is_ok() {
+                eprintln!(
+                    "[MIR] Building While loop with {} body statements",
+                    body.len()
+                );
+            }
             let cond_label = builder.new_block_label("while_cond");
             let body_label = builder.new_block_label("while_body");
             let exit_label = builder.new_block_label("while_exit");
+
+            if std::env::var("DOO_DEBUG").is_ok() {
+                eprintln!(
+                    "[MIR] While labels: cond={}, body={}, exit={}",
+                    cond_label, body_label, exit_label
+                );
+            }
 
             // Jump to condition
             builder.set_terminator(MirTerminator::Goto {

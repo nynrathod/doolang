@@ -31,6 +31,9 @@ pub struct Lower {
     var_types: FxHashMap<String, TypeId>,
     /// Counter for generating unique internal variable names
     unique_counter: u64,
+    /// Track JSON stringify sources: variable name -> type of the stringified value
+    /// Used to infer JSON.parse return type when parsing a variable
+    json_stringify_sources: FxHashMap<String, TypeId>,
 }
 
 /// Lowering error.
@@ -56,6 +59,7 @@ impl Lower {
             errors: Vec::new(),
             var_types: FxHashMap::default(),
             unique_counter: 0,
+            json_stringify_sources: FxHashMap::default(),
         }
     }
 
@@ -899,6 +903,14 @@ impl Lower {
                     if let Some(tid) = inferred_type_id {
                         self.var_types.insert(name.clone(), tid);
                     }
+
+                    // Track JSON.stringify sources for later JSON.parse type inference
+                    // If the value is JSON.stringify(x), remember that this variable contains JSON of type x
+                    if let Some(stringify_arg_type) = self.extract_stringify_arg_type(&value_hir) {
+                        self.json_stringify_sources
+                            .insert(name.clone(), stringify_arg_type);
+                    }
+
                     HirStmtKind::Let {
                         name,
                         type_id: inferred_type_id,
@@ -1617,7 +1629,8 @@ impl Lower {
                 args,
             } => {
                 // Check if this is a module method call (e.g., JSON.parse, JSON.stringify)
-                if let Some(return_type) = self.infer_module_method_type(receiver, method, registry)
+                if let Some(return_type) =
+                    self.infer_module_method_type(receiver, method, args, registry)
                 {
                     out.type_id = Some(return_type);
                 } else {
@@ -1631,6 +1644,19 @@ impl Lower {
             }
             HirExprKind::Cast { to_type, .. } => {
                 out.type_id = Some(*to_type);
+            }
+            HirExprKind::UnaryOp { op, operand } => {
+                // Infer type for unary operations (e.g., -7 should be Int)
+                let operand_type = operand.type_id.unwrap_or(builtin::ANY);
+                let op_kind = hir_unaryop_to_kind(*op);
+                out.type_id = Some(infer_unaryop_result_type(op_kind, operand_type));
+            }
+            HirExprKind::BinOp { op, lhs, rhs } => {
+                // Infer type for binary operations
+                let lhs_type = lhs.type_id.unwrap_or(builtin::ANY);
+                let rhs_type = rhs.type_id.unwrap_or(builtin::ANY);
+                let op_kind = hir_binop_to_kind(*op);
+                out.type_id = Some(infer_binop_result_type(op_kind, lhs_type, rhs_type));
             }
             _ => {}
         }
@@ -3222,10 +3248,13 @@ impl Lower {
     }
 
     /// Infer the return type of module-level method calls (e.g., JSON.stringify, JSON.parse)
+    /// For JSON.parse, if the argument is JSON.stringify(x), we can infer the type from x.
+    /// Also tracks variables that were assigned from JSON.stringify for indirect inference.
     fn infer_module_method_type(
         &self,
         receiver: &HirExpr,
         method: &str,
+        args: &[HirExpr],
         registry: &mut TypeRegistry,
     ) -> Option<TypeId> {
         // Check if receiver is a module identifier
@@ -3237,9 +3266,26 @@ impl Lower {
         match module_name {
             "JSON" => match method {
                 "stringify" => Some(builtin::STR),
-                // JSON.parse returns ANY since we can't know the target type here
-                // The actual type will be determined by the context (assignment, return, etc.)
-                "parse" => Some(builtin::ANY),
+                "parse" => {
+                    // For JSON.parse, try to infer type from the argument
+                    if let Some(first_arg) = args.first() {
+                        // Case 1: JSON.parse(JSON.stringify(x)) - the arg is a stringify call
+                        if let Some(inner_type) = self.extract_stringify_arg_type(first_arg) {
+                            return Some(inner_type);
+                        }
+
+                        // Case 2: JSON.parse(variable) where variable was assigned from JSON.stringify(x)
+                        if let HirExprKind::Local { name } = &first_arg.kind {
+                            if let Some(stringify_arg_type) = self.json_stringify_sources.get(name)
+                            {
+                                return Some(*stringify_arg_type);
+                            }
+                        }
+                    }
+                    // Fallback: JSON.parse returns ANY since we can't know the target type here
+                    // The actual type will be determined by the context (assignment, return, etc.)
+                    Some(builtin::ANY)
+                }
                 _ => None,
             },
             "Math" => match method {
@@ -3257,6 +3303,30 @@ impl Lower {
             },
             _ => None,
         }
+    }
+
+    /// Extract the type of the argument to JSON.stringify if the expression is a stringify call.
+    /// Returns None if the expression is not a JSON.stringify call or the type cannot be determined.
+    fn extract_stringify_arg_type(&self, expr: &HirExpr) -> Option<TypeId> {
+        if let HirExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+        } = &expr.kind
+        {
+            // Check if this is JSON.stringify
+            if method == "stringify" {
+                if let HirExprKind::Local { name } = &receiver.kind {
+                    if name == "JSON" {
+                        // Get the type of the first argument to stringify
+                        if let Some(first_arg) = args.first() {
+                            return first_arg.type_id;
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn infer_method_call_type(
