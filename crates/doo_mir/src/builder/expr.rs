@@ -1199,16 +1199,47 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
             let dest = builder.new_temp();
 
+            // Extract the Ok type from the Result type
+            // inner.type_id is the Result<T, E> type, we need T
+            let ok_type = inner.type_id.and_then(|result_type_id| {
+                builder.type_registry.get(result_type_id).and_then(|info| {
+                    if let TypeKind::Result { ok, .. } = &info.kind {
+                        Some(*ok)
+                    } else {
+                        // Not a Result type - might be from a function call
+                        // Try to infer from function_result_types
+                        None
+                    }
+                })
+            }).or_else(|| {
+                // Fallback: try to get from function call if inner is a Call
+                if let HirExprKind::Call { func, .. } = &inner.kind {
+                    if let HirExprKind::Local { name } | HirExprKind::Global { name } = &func.kind {
+                        builder.function_result_types.get(name.as_str()).map(|(ok, _)| *ok)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+
             // Ok path: unwrap and continue
             builder.add_block(&ok_label);
             builder.emit(
                 MirInstrKind::UnwrapOk {
                     dest: dest.clone(),
                     value: result_val.clone(),
-                    expected_type: inner.type_id,
+                    expected_type: ok_type,
                 },
                 span,
             );
+            
+            // Set the temp type for proper type inference
+            if let Some(type_id) = ok_type {
+                builder.set_temp_type(&dest, type_id);
+            }
+            
             builder.set_terminator(MirTerminator::Goto {
                 target: merge_label.clone(),
             });

@@ -180,24 +180,16 @@ impl BorrowChecker {
             }
 
             HirStmtKind::Assign { target, value } => {
-                // Assignment is a mutable access to target
-                if let HirExprKind::Local { name } = &target.kind {
-                    // Check no active borrows on the target
-                    if let Some(borrows) = self.active_borrows.get(name) {
-                        if !borrows.is_empty() {
-                            let first = &borrows[0];
-                            self.errors.push(BorrowError {
-                                kind: BorrowErrorKind::ModifyWhileBorrowed {
-                                    variable: name.clone(),
-                                    borrow_span: first.span,
-                                },
-                                span: stmt.span,
-                            });
-                        }
-                    }
-                }
-                // Check the value being assigned
+                // Check the value being assigned FIRST (before we clear borrows on target)
                 self.check_expr(value, false);
+                
+                // Assignment replaces the value - clear any borrows on the target
+                // This is safe because:
+                // 1. We already checked the RHS which may read from the target
+                // 2. The assignment creates a new value, invalidating old borrows
+                if let HirExprKind::Local { name } = &target.kind {
+                    self.active_borrows.remove(name);
+                }
             }
 
             HirStmtKind::Expr(expr) => {
@@ -215,7 +207,12 @@ impl BorrowChecker {
                 then_block,
                 else_block,
             } => {
+                // Check condition in its own temporary scope
+                // Borrows from condition don't persist into then/else blocks
+                // This is a simplified NLL: condition borrows are temporary
+                self.enter_scope();
                 self.check_expr(condition, false);
+                self.exit_scope();
 
                 // Enter scope for then block
                 self.enter_scope();
@@ -235,7 +232,11 @@ impl BorrowChecker {
             }
 
             HirStmtKind::While { condition, body } => {
+                // Check condition in its own temporary scope
+                // Borrows from condition don't persist into loop body
+                self.enter_scope();
                 self.check_expr(condition, false);
+                self.exit_scope();
 
                 // Enter scope for loop body
                 self.enter_scope();

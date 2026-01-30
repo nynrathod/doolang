@@ -6,7 +6,7 @@
 //! This module is the **single source of truth** for the Doo compilation pipeline.
 //! All compilation commands (build, run, check) flow through this module.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -19,6 +19,9 @@ use doo_core::types::TypeRegistry;
 use doo_frontend::{Lexer, Parser};
 use doo_hir::Lower;
 use doo_mir::builder::MirBuilder;
+
+// Module loader - single source of truth for import resolution
+use crate::loader::{merge_imports, resolve_imports, ModuleLoader};
 
 // Analysis imports - wire in the semantic analysis phase
 use doo_analysis::{
@@ -188,6 +191,12 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let mut program = program;
     transform_route_groups(&mut program);
     transform_inline_closures(&mut program);
+
+    // Phase 3.5: Resolve Imports (using centralized loader module)
+    // Load and merge imported functions/structs/enums from std library and other modules
+    let mut loader = ModuleLoader::new();
+    let import_resolution = resolve_imports(&program, &mut loader)?;
+    merge_imports(&mut program, import_resolution);
 
     if opts.print_ast {
         eprintln!("=== AST ===");

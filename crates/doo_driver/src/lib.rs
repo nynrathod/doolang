@@ -7,6 +7,7 @@ pub mod analytics;
 pub mod cli;
 pub mod commands;
 pub mod compile;
+pub mod loader;
 pub mod templates;
 
 use console::Term;

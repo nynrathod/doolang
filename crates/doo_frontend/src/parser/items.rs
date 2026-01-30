@@ -398,7 +398,7 @@ impl ParserItems for Parser {
         let start = self.current_span();
         self.expect(TokenKind::Import)?;
 
-        // Parse path: std::io::File
+        // Parse path: std::io::File or std::Math::{Abs, Pow}
         let mut path = vec![self.expect_ident()?];
         while self.check(TokenKind::ColonColon) {
             // Check for wildcard `::*`
@@ -413,6 +413,12 @@ impl ParserItems for Parser {
                     wildcard: true,
                     span: start.merge(&end),
                 });
+            }
+
+            // Check for items `::{Foo, Bar}` - stop path parsing here
+            if self.peek_next().kind == TokenKind::LBrace {
+                self.advance(); // consume ::
+                break;
             }
 
             self.advance();
