@@ -191,6 +191,29 @@ impl<'ctx> CodegenContext<'ctx> {
         None
     }
 
+    /// Get the payload TypeId for an enum variant.
+    /// Returns Some(TypeId) if the variant has a payload, None otherwise.
+    pub fn get_enum_variant_payload_type(
+        &self,
+        enum_name: &str,
+        variant_name: &str,
+    ) -> Option<TypeId> {
+        // Look up the enum type by name
+        let type_id = self.type_registry.lookup(enum_name)?;
+        let type_info = self.type_registry.get(type_id)?;
+
+        // Extract variants from the enum type
+        if let TypeKind::Enum { variants, .. } = &type_info.kind {
+            // Find the variant by name and return its payload type
+            for (vname, payload) in variants.iter() {
+                if vname == variant_name {
+                    return payload.clone();
+                }
+            }
+        }
+        None
+    }
+
     /// Register function parameter types for argument coercion during calls.
     pub fn register_function_param_types(&mut self, func_name: &str, param_types: Vec<TypeId>) {
         self.function_param_types
@@ -381,12 +404,41 @@ impl<'ctx> CodegenContext<'ctx> {
     }
 
     /// Store a value to a local variable.
-    /// If an alloca exists (from create_local), stores to it.
+    /// If an alloca exists (from create_local) with matching type, stores to it.
+    /// If there's a type mismatch (e.g., variable shadowing with different type),
+    /// stores as temp so get_value finds it first.
     /// Otherwise, stores as a temp value.
     pub fn set_local(&mut self, name: String, value: BasicValueEnum<'ctx>) {
-        // If we have an alloca for this variable, store to it
-        if let Some((ptr, _ty)) = self.locals.get(&name) {
-            let _ = self.builder.build_store(*ptr, value);
+        // If we have an alloca for this variable, check type compatibility
+        if let Some((ptr, alloca_ty)) = self.locals.get(&name) {
+            // Check if value type matches alloca type
+            // For type mismatches (e.g., same variable name but different type due to shadowing),
+            // store as temp instead to avoid LLVM type errors
+            let value_type = value.get_type();
+            let types_match = *alloca_ty == value_type;
+            if std::env::var("DOO_DEBUG").is_ok() {
+                eprintln!(
+                    "[CODEGEN] set_local '{}': alloca_ty={:?}, value_ty={:?}, match={}",
+                    name, alloca_ty, value_type, types_match
+                );
+            }
+            if types_match {
+                // Types match - store to alloca
+                let _ = self.builder.build_store(*ptr, value);
+                // Clear any stale temp entry - the alloca is the source of truth now
+                // This prevents get_value from returning an old SSA value from a different block
+                self.temps.remove(&name);
+            } else {
+                // Type mismatch - store as temp (shadows the local for this scope)
+                // get_value checks temps first, so this will be found before the alloca
+                if std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!(
+                        "[CODEGEN] set_local type mismatch for '{}': using temp instead",
+                        name
+                    );
+                }
+                self.temps.insert(name, value);
+            }
         } else {
             // Fallback to temp storage (for temporaries without allocas)
             self.temps.insert(name, value);
@@ -396,7 +448,8 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Register a borrow: track that temp_name is a borrow of local_name.
     /// Used for mutating operations to store back to the original local.
     pub fn set_borrow_origin(&mut self, temp_name: &str, local_name: &str) {
-        self.borrow_origins.insert(temp_name.to_string(), local_name.to_string());
+        self.borrow_origins
+            .insert(temp_name.to_string(), local_name.to_string());
     }
 
     /// Get the original local name for a borrowed temp.
@@ -530,6 +583,12 @@ impl<'ctx> CodegenContext<'ctx> {
         self.temps.insert(name.to_string(), value);
     }
 
+    /// Clear a temporary value (remove from temps map).
+    /// Used when storing to an alloca to ensure get_value loads from the alloca.
+    pub fn clear_temp(&mut self, name: &str) {
+        self.temps.remove(name);
+    }
+
     /// Get a temporary value.
     pub fn get_temp(&self, name: &str) -> Option<BasicValueEnum<'ctx>> {
         self.temps.get(name).copied()
@@ -539,16 +598,29 @@ impl<'ctx> CodegenContext<'ctx> {
     pub fn get_value(&self, name: &str) -> Option<BasicValueEnum<'ctx>> {
         // Check temps first
         if let Some(v) = self.temps.get(name) {
+            if std::env::var("DOO_DEBUG").is_ok() {
+                eprintln!("[CODEGEN] get_value({}) found in temps", name);
+            }
             return Some(*v);
         }
         // Check locals - return loaded value
         if let Some((ptr, ty)) = self.locals.get(name) {
-            let result = self.builder.build_load(*ty, *ptr, name);
-            if result.is_err() && std::env::var("DOO_DEBUG").is_ok() {
+            if std::env::var("DOO_DEBUG").is_ok() {
                 eprintln!(
-                    "[CODEGEN] ERROR: build_load failed for {}: {:?}",
-                    name, result
+                    "[CODEGEN] get_value({}) loading from local, ty={:?}",
+                    name, ty
                 );
+            }
+            let result = self.builder.build_load(*ty, *ptr, name);
+            if result.is_err() {
+                if std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!(
+                        "[CODEGEN] ERROR: build_load failed for {}: {:?}",
+                        name, result
+                    );
+                }
+            } else if std::env::var("DOO_DEBUG").is_ok() {
+                eprintln!("[CODEGEN] get_value({}) loaded successfully", name);
             }
             return result.ok();
         }

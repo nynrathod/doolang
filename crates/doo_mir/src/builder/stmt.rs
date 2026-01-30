@@ -34,8 +34,13 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             }
 
             if let Some(f) = &mut builder.current_func {
-                // Check if already registered (e.g., loop index vars)
-                if !f.locals.iter().any(|l| l.name == *name) {
+                // Check if already registered - if so, update the type if different
+                // This handles cases like payload bindings reusing variable names
+                if let Some(existing) = f.locals.iter_mut().find(|l| l.name == *name) {
+                    // Update to the new type (let binding takes precedence)
+                    existing.type_id = var_type_id;
+                    existing.mutable = *mutable;
+                } else {
                     f.locals.push(LocalDef {
                         name: name.clone(),
                         type_id: var_type_id,

@@ -1,10 +1,10 @@
-use super::{ContainerKind, Decision, MirBuilder};
+use super::{ContainerKind, Decision, MirBuilder, LocalDef};
 use crate::{BinaryOp, MirConst, MirInstrKind, MirOperand, MirTerminator};
 use doo_core::{
     constants::ffi_names,
     types::{builtin, TypeId as CoreTypeId, TypeKind},
 };
-use doo_hir::{HirBinOp, HirExpr, HirExprKind};
+use doo_hir::{HirBinOp, HirExpr, HirExprKind, HirMatchPattern};
 
 /// Build an expression with an expected type hint.
 /// This is used for return statements where we know the expected return type.
@@ -100,9 +100,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             if let Some(decision) = builder.get_ownership_decision(name, expr.span) {
                 let dest = builder.new_temp();
 
-                // Propagate type from local to temp for proper type tracking
-                if let Some(local_type) = builder.get_local_type(name) {
-                    builder.set_temp_type(&dest, local_type);
+                // Propagate type from local/temp to new temp for proper type tracking.
+                // CRITICAL: Check temp_types FIRST to handle shadowed bindings correctly.
+                // When a match binding shadows a local with a different type, we register
+                // the binding's type in temp_types, which should take precedence.
+                let propagated_type = builder.get_temp_type(name)
+                    .or_else(|| builder.get_local_type(name));
+                if let Some(ty) = propagated_type {
+                    builder.set_temp_type(&dest, ty);
                 }
 
                 match decision {
@@ -858,6 +863,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 },
                 span,
             );
+            
+            // Register the enum type for the temp so that type inference works correctly
+            // This ensures variables assigned from enum creation get the right type
+            if let Some(enum_type_id) = builder.type_registry.lookup(enum_name) {
+                builder.set_temp_type(&dest, enum_type_id);
+            }
+            
             MirOperand::Temp(dest)
         }
 
@@ -894,6 +906,100 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 }
 
                 builder.add_block(&arm_label);
+                
+                // Extract payload bindings INSIDE the arm block (after we know the pattern matched)
+                // This ensures SSA values are defined in the correct basic block
+                if let HirMatchPattern::EnumVariantPayload { enum_name, variant, bindings } = &arm.pattern {
+                    if !scrutinees.is_empty() {
+                        // Look up the actual payload type BEFORE borrowing current_func mutably
+                        let payload_type = builder.get_enum_variant_payload_type(enum_name, variant)
+                            .unwrap_or(builtin::ANY);
+                        
+                        // For tuple payloads, get the element types to assign correct types to bindings
+                        // CRITICAL: Each binding should get the type of its corresponding tuple element,
+                        // not the whole tuple type.
+                        let element_types = builder.get_tuple_element_types(payload_type);
+                        
+                        for (i, binding) in bindings.iter().enumerate() {
+                            if binding != "_" {
+                                // Get the correct element type for this binding
+                                // If payload is a tuple with multiple elements, use the element at index i
+                                // Otherwise (single element), use the payload_type itself
+                                let binding_type = if let Some(ref elem_types) = element_types {
+                                    elem_types.get(i).copied().unwrap_or(payload_type)
+                                } else {
+                                    // Not a tuple (single-element payload) - use payload_type
+                                    payload_type
+                                };
+                                
+                                // Check if this binding name already exists with a DIFFERENT type
+                                // If so, we need to use a unique internal name to avoid type conflicts
+                                let (actual_dest, need_new_local) = if let Some(f) = &builder.current_func {
+                                    if let Some(existing) = f.locals.iter().find(|l| l.name == *binding) {
+                                        if existing.type_id != binding_type {
+                                            // Type conflict - use a unique temp name internally
+                                            // but store the value so the original binding still works
+                                            (builder.new_temp(), true)
+                                        } else {
+                                            // Same type - use the existing local
+                                            (binding.clone(), false)
+                                        }
+                                    } else {
+                                        // New binding - create it
+                                        (binding.clone(), true)
+                                    }
+                                } else {
+                                    (binding.clone(), true)
+                                };
+                                
+                                builder.emit(
+                                    MirInstrKind::EnumGetPayload {
+                                        dest: actual_dest.clone(),
+                                        value: scrutinees[0].clone(),
+                                        variant_name: variant.clone(),
+                                        enum_name: enum_name.clone(),
+                                        index: i as u32,
+                                    },
+                                    span,
+                                );
+                                
+                                // Register as local with the correct element type (not the tuple type)
+                                if need_new_local {
+                                    if let Some(f) = &mut builder.current_func {
+                                        // Only add if not already present
+                                        if !f.locals.iter().any(|l| l.name == actual_dest) {
+                                            f.locals.push(LocalDef {
+                                                name: actual_dest.clone(),
+                                                type_id: binding_type,
+                                                mutable: false,
+                                            });
+                                        }
+                                    }
+                                }
+                                
+                                // If we used a temp, alias it to the original binding name
+                                // so that code using the binding name can find it.
+                                // CRITICAL: Also register the binding's type as a temp type
+                                // so that infer_operand_type finds the correct (shadowed) type
+                                // instead of the original local's type.
+                                if actual_dest != *binding {
+                                    // Register the correct type for the binding name
+                                    // This shadows the original local's type for this scope
+                                    builder.set_temp_type(binding, binding_type);
+                                    
+                                    builder.emit(
+                                        MirInstrKind::Assign {
+                                            dest: binding.clone(),
+                                            value: MirOperand::Temp(actual_dest),
+                                        },
+                                        span,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 let body_val = builder.build_expr(&arm.body);
                 builder.emit(
                     MirInstrKind::Assign {

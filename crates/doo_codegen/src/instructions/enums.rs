@@ -18,6 +18,7 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
+use doo_core::types::TypeId;
 use doo_mir::{MirConst, MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
@@ -96,29 +97,30 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
             } => emit_enum_tag_equals(ctx, dest, tag, variant_name, enum_name),
 
             // ==================================================================
-            // EnumPayload - Extract payload (simple version)
+            // EnumPayload - Extract payload (simple version, no type info)
             // ==================================================================
             MirInstrKind::EnumPayload {
                 dest,
                 value,
-                variant: _,
+                variant,
             } => {
                 // Extract payload pointer - variant name available for type lookup
-                emit_enum_payload(ctx, dest, value)
+                emit_enum_payload(ctx, dest, value, None, Some(variant))
             }
 
             // ==================================================================
-            // EnumGetPayload - Extract payload with type info
+            // EnumGetPayload - Extract payload with type info (preferred)
             // ==================================================================
             MirInstrKind::EnumGetPayload {
                 dest,
                 value,
-                variant_name: _,
-                enum_name: _,
-                index: _,
+                variant_name,
+                enum_name,
+                index,
             } => {
-                // Extract payload pointer - type info available for future optimizations
-                emit_enum_payload(ctx, dest, value)
+                // Extract and dereference payload using type info
+                // Pass index for tuple payload element extraction
+                emit_enum_get_payload(ctx, dest, value, enum_name, variant_name, *index)
             }
 
             _ => None,
@@ -270,6 +272,13 @@ fn emit_enum_tag<'ctx>(
     let enum_val = operand_to_value(ctx, value)?;
     let enum_type = get_enum_type(ctx);
 
+    if std::env::var("DOO_DEBUG").is_ok() {
+        eprintln!(
+            "[CODEGEN] emit_enum_tag: dest={}, enum_val={:?}",
+            dest, enum_val
+        );
+    }
+
     // If it's a struct value, extract directly
     if let BasicValueEnum::StructValue(struct_val) = enum_val {
         let tag_val = ctx
@@ -351,15 +360,104 @@ fn emit_enum_tag_equals<'ctx>(
 
 /// Emit EnumPayload/EnumGetPayload instruction.
 ///
-/// Extracts the payload pointer from an enum value.
-/// The caller is responsible for knowing the payload type and loading appropriately.
+/// Extracts the payload from an enum value and dereferences it based on type info.
+/// If type info is provided, the payload pointer is dereferenced to get the actual value.
 fn emit_enum_payload<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     dest: &str,
     value: &MirOperand,
+    enum_name: Option<&str>,
+    variant_name: Option<&str>,
 ) -> Option<BasicValueEnum<'ctx>> {
     let enum_val = operand_to_value(ctx, value)?;
     let enum_type = get_enum_type(ctx);
+
+    // Get payload type if we have enum/variant info
+    let payload_type_id = if let (Some(en), Some(vn)) = (enum_name, variant_name) {
+        ctx.get_enum_variant_payload_type(en, vn)
+    } else {
+        None
+    };
+
+    // Helper to dereference payload pointer based on type
+    // IMPORTANT: For pointer types (Str, Array, Map, Struct, etc.), the payload pointer
+    // IS the value - no dereference needed. Only value types (Int, Float, Bool) need
+    // to be loaded from the heap-allocated payload.
+    let dereference_payload = |ctx: &mut CodegenContext<'ctx>,
+                               payload_ptr: BasicValueEnum<'ctx>,
+                               type_id: Option<TypeId>|
+     -> BasicValueEnum<'ctx> {
+        // If we don't have type info or the payload is not a pointer, return as-is
+        if type_id.is_none() || !payload_ptr.is_pointer_value() {
+            return payload_ptr;
+        }
+
+        let ptr = payload_ptr.into_pointer_value();
+        let type_id = type_id.unwrap();
+
+        // Check if this is a pointer type (Str, Array, Map, Struct, etc.)
+        // For pointer types, the payload IS the value - don't dereference
+        if let Some(type_kind) = ctx.get_type_kind(type_id) {
+            match type_kind {
+                // Pointer types - the payload already IS the pointer to the data
+                doo_core::types::TypeKind::Str
+                | doo_core::types::TypeKind::Array { .. }
+                | doo_core::types::TypeKind::Map { .. }
+                | doo_core::types::TypeKind::Struct { .. }
+                | doo_core::types::TypeKind::Enum { .. }
+                | doo_core::types::TypeKind::Tuple { .. } => {
+                    // Return the payload pointer directly as the value
+                    return payload_ptr.into_pointer_value().into();
+                }
+                // Value types - need to load from the heap-allocated payload
+                doo_core::types::TypeKind::Int
+                | doo_core::types::TypeKind::Float
+                | doo_core::types::TypeKind::Bool => {
+                    // Fall through to load logic below
+                }
+                // Other types - check LLVM type
+                _ => {
+                    // If the LLVM type is already a pointer, don't dereference
+                    let llvm_type = ctx.get_llvm_type(type_id);
+                    if llvm_type.is_pointer_type() {
+                        return payload_ptr.into_pointer_value().into();
+                    }
+                }
+            }
+        }
+
+        // Value types: load the actual value from the heap-allocated payload pointer
+        let llvm_type = ctx.get_llvm_type(type_id);
+        ctx.builder
+            .build_load(llvm_type, ptr, &format!("{}_value", dest))
+            .ok()
+            .map(|v| v.into())
+            .unwrap_or(payload_ptr.into())
+    };
+
+    // Check if dest has a type conflict - if the local has a DIFFERENT type than the payload,
+    // we must NOT store to it (would cause LLVM type mismatch). Use temp storage instead.
+    let has_type_conflict = if let Some(payload_tid) = payload_type_id {
+        if let Some(local_tid) = ctx.get_variable_type(dest) {
+            // Type conflict: local is registered with a different type than the payload
+            local_tid != payload_tid
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Helper to store the result based on type conflict status
+    let store_result = |ctx: &mut CodegenContext<'ctx>, value: BasicValueEnum<'ctx>| {
+        if has_type_conflict {
+            // Type conflict - store as temp to avoid corrupting the local's alloca
+            ctx.set_temp(dest, value);
+        } else {
+            // No conflict - use set_local which stores to alloca if present
+            ctx.set_local(dest.to_string(), value);
+        }
+    };
 
     // If it's a struct value, extract directly
     if let BasicValueEnum::StructValue(struct_val) = enum_val {
@@ -372,8 +470,12 @@ fn emit_enum_payload<'ctx>(
             )
             .ok()?;
 
-        ctx.set_temp(dest, payload_ptr);
-        return Some(payload_ptr);
+        // Dereference the payload pointer to get the actual value
+        let payload_value = dereference_payload(ctx, payload_ptr, payload_type_id);
+
+        // Store result appropriately based on type conflict
+        store_result(ctx, payload_value);
+        return Some(payload_value);
     }
 
     // If it's a pointer, load the struct first then extract
@@ -394,12 +496,215 @@ fn emit_enum_payload<'ctx>(
                 )
                 .ok()?;
 
-            ctx.set_temp(dest, payload_ptr);
-            return Some(payload_ptr);
+            // Dereference the payload pointer to get the actual value
+            let payload_value = dereference_payload(ctx, payload_ptr, payload_type_id);
+
+            // Store result appropriately based on type conflict
+            store_result(ctx, payload_value);
+            return Some(payload_value);
         }
     }
 
     None
+}
+
+/// Emit EnumGetPayload instruction with tuple element extraction.
+///
+/// This handles multi-field enum variants like `Okkk(Int, Str)` where the payload
+/// is stored as a tuple. The index parameter specifies which element to extract.
+///
+/// For single-field variants (index 0 with non-tuple payload), the entire payload is returned.
+/// For multi-field variants (tuple payloads), the specific element at `index` is extracted.
+fn emit_enum_get_payload<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    dest: &str,
+    value: &MirOperand,
+    enum_name: &str,
+    variant_name: &str,
+    index: u32,
+) -> Option<BasicValueEnum<'ctx>> {
+    let enum_val = operand_to_value(ctx, value)?;
+
+    // Get payload type from type registry (single source of truth)
+    let payload_type_id = ctx.get_enum_variant_payload_type(enum_name, variant_name);
+
+    // Check if payload is a tuple type - if so, we need to extract the element at index
+    let (is_tuple_payload, tuple_element_types) = if let Some(type_id) = payload_type_id {
+        if let Some(type_kind) = ctx.get_type_kind(type_id) {
+            if let doo_core::types::TypeKind::Tuple { elements } = type_kind {
+                (true, Some(elements.clone()))
+            } else {
+                (false, None)
+            }
+        } else {
+            (false, None)
+        }
+    } else {
+        (false, None)
+    };
+
+    // Extract payload pointer from enum struct
+    let extract_payload_ptr = |ctx: &mut CodegenContext<'ctx>,
+                               enum_val: BasicValueEnum<'ctx>|
+     -> Option<inkwell::values::PointerValue<'ctx>> {
+        if let BasicValueEnum::StructValue(struct_val) = enum_val {
+            ctx.builder
+                .build_extract_value(
+                    struct_val,
+                    ENUM_PAYLOAD_INDEX,
+                    &format!("{}_payload_ptr", dest),
+                )
+                .ok()
+                .and_then(|v| {
+                    if v.is_pointer_value() {
+                        Some(v.into_pointer_value())
+                    } else {
+                        None
+                    }
+                })
+        } else if enum_val.is_pointer_value() {
+            // Load struct from pointer first
+            let enum_ptr = enum_val.into_pointer_value();
+            let loaded = ctx
+                .builder
+                .build_load(get_enum_type(ctx), enum_ptr, "enum_loaded")
+                .ok()?;
+
+            if let BasicValueEnum::StructValue(struct_val) = loaded {
+                ctx.builder
+                    .build_extract_value(
+                        struct_val,
+                        ENUM_PAYLOAD_INDEX,
+                        &format!("{}_payload_ptr", dest),
+                    )
+                    .ok()
+                    .and_then(|v| {
+                        if v.is_pointer_value() {
+                            Some(v.into_pointer_value())
+                        } else {
+                            None
+                        }
+                    })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    let payload_ptr = extract_payload_ptr(ctx, enum_val)?;
+
+    // If this is a tuple payload, extract the specific element at index
+    if is_tuple_payload {
+        if let Some(elem_types) = tuple_element_types {
+            // CRITICAL: TupleCreate stores ALL elements as i64 (see composites.rs TupleCreate)
+            // This is the memory layout used when the tuple was created, so we MUST match it here.
+            // Using ctx.get_llvm_type() would give wrong types (e.g., ptr for Str) and cause crashes.
+            let llvm_elem_types: Vec<inkwell::types::BasicTypeEnum> = elem_types
+                .iter()
+                .map(|_| ctx.i64_type().into()) // All elements stored as i64
+                .collect();
+            let tuple_struct_type = ctx.context.struct_type(&llvm_elem_types, false);
+
+            // Get the element at the specified index using GEP
+            if let Ok(elem_ptr) = ctx.builder.build_struct_gep(
+                tuple_struct_type,
+                payload_ptr,
+                index,
+                &format!("{}_elem_ptr", dest),
+            ) {
+                // Always load as i64 since that's how TupleCreate stores elements
+                let i64_type = ctx.i64_type();
+                if let Ok(elem_val) = ctx.builder.build_load(i64_type, elem_ptr, dest) {
+                    // Check if this element is a pointer type (Str, Array, etc.)
+                    // If so, we need to convert the i64 back to a pointer
+                    let elem_type_id = elem_types.get(index as usize).copied();
+                    let final_val = if let Some(tid) = elem_type_id {
+                        if let Some(type_kind) = ctx.get_type_kind(tid) {
+                            match type_kind {
+                                // Pointer types - convert i64 to pointer
+                                doo_core::types::TypeKind::Str
+                                | doo_core::types::TypeKind::Array { .. }
+                                | doo_core::types::TypeKind::Map { .. }
+                                | doo_core::types::TypeKind::Struct { .. }
+                                | doo_core::types::TypeKind::Enum { .. }
+                                | doo_core::types::TypeKind::Tuple { .. } => {
+                                    // IntToPtr to get the actual pointer
+                                    ctx.builder
+                                        .build_int_to_ptr(
+                                            elem_val.into_int_value(),
+                                            ctx.ptr_type(),
+                                            &format!("{}_ptr", dest),
+                                        )
+                                        .ok()
+                                        .map(|p| p.into())
+                                        .unwrap_or(elem_val)
+                                }
+                                // Value types - i64 is already correct
+                                _ => elem_val,
+                            }
+                        } else {
+                            elem_val
+                        }
+                    } else {
+                        elem_val
+                    };
+
+                    ctx.set_temp(dest, final_val);
+                    return Some(final_val);
+                }
+            }
+        }
+        // Fallback: return payload pointer if tuple extraction fails
+        ctx.set_temp(dest, payload_ptr.into());
+        return Some(payload_ptr.into());
+    }
+
+    // Non-tuple payload: dereference based on type
+    let final_value = if let Some(type_id) = payload_type_id {
+        if let Some(type_kind) = ctx.get_type_kind(type_id) {
+            match type_kind {
+                // Pointer types - the payload IS the pointer
+                doo_core::types::TypeKind::Str
+                | doo_core::types::TypeKind::Array { .. }
+                | doo_core::types::TypeKind::Map { .. }
+                | doo_core::types::TypeKind::Struct { .. }
+                | doo_core::types::TypeKind::Enum { .. } => payload_ptr.into(),
+                // Value types - load from the heap-allocated payload
+                doo_core::types::TypeKind::Int
+                | doo_core::types::TypeKind::Float
+                | doo_core::types::TypeKind::Bool => {
+                    let llvm_type = ctx.get_llvm_type(type_id);
+                    ctx.builder
+                        .build_load(llvm_type, payload_ptr, &format!("{}_value", dest))
+                        .ok()
+                        .map(|v| v.into())
+                        .unwrap_or(payload_ptr.into())
+                }
+                _ => {
+                    // Check LLVM type
+                    let llvm_type = ctx.get_llvm_type(type_id);
+                    if llvm_type.is_pointer_type() {
+                        payload_ptr.into()
+                    } else {
+                        ctx.builder
+                            .build_load(llvm_type, payload_ptr, &format!("{}_value", dest))
+                            .ok()
+                            .map(|v| v.into())
+                            .unwrap_or(payload_ptr.into())
+                    }
+                }
+            }
+        } else {
+            payload_ptr.into()
+        }
+    } else {
+        payload_ptr.into()
+    };
+
+    ctx.set_temp(dest, final_value);
+    Some(final_value)
 }
 
 // ============================================================================

@@ -544,14 +544,13 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             if let Some(struct_name) = ctx.get_temp_struct_type(src_name).cloned() {
                                 ctx.set_temp_struct_type(dest, &struct_name);
                             }
+                            // Also propagate the variable type from source to dest
+                            if let Some(src_type) = ctx.get_variable_type(src_name) {
+                                ctx.set_variable_type(dest, src_type);
+                            }
                         }
-                        if let Some(ptr) = ctx.get_local(dest) {
-                            // Store to alloca
-                            ctx.builder.build_store(ptr, val).ok();
-                        } else {
-                            // Fallback to temp
-                            ctx.set_temp(dest, val);
-                        }
+                        // Use set_local which handles type mismatch detection for shadowed variables
+                        ctx.set_local(dest.clone(), val);
                     }
                 } else {
                     dispatcher.emit(ctx, instr);

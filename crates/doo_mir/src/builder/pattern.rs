@@ -76,8 +76,10 @@ pub fn build_value_pattern_condition(
             MirOperand::Temp(cmp_dest)
         }
         
-        HirMatchPattern::EnumVariantPayload { enum_name, variant, bindings } => {
-            // First check the discriminant
+        HirMatchPattern::EnumVariantPayload { enum_name, variant, bindings: _ } => {
+            // Only check the discriminant - payload extraction happens in the arm body
+            // This avoids SSA domination issues where payload values defined in check blocks
+            // are invalid in arm blocks or merge blocks
             if scrutinees.is_empty() {
                 return MirOperand::Const(MirConst::Bool(false));
             }
@@ -104,31 +106,8 @@ pub fn build_value_pattern_condition(
                 span,
             );
             
-            // Extract and bind payload values
-            for (i, binding) in bindings.iter().enumerate() {
-                if binding != "_" {
-                    let payload_dest = binding.clone();
-                    builder.emit(
-                        MirInstrKind::EnumGetPayload {
-                            dest: payload_dest.clone(),
-                            value: scrutinees[0].clone(),
-                            variant_name: variant.clone(),
-                            enum_name: enum_name.clone(),
-                            index: i as u32,
-                        },
-                        span,
-                    );
-                    
-                    // Register as local
-                    if let Some(f) = &mut builder.current_func {
-                        f.locals.push(LocalDef {
-                            name: payload_dest,
-                            type_id: builtin::ANY,
-                            mutable: false,
-                        });
-                    }
-                }
-            }
+            // NOTE: Payload extraction moved to arm body (see expr.rs build Match)
+            // to ensure SSA values are defined in the correct basic block
             
             MirOperand::Temp(cmp_dest)
         }

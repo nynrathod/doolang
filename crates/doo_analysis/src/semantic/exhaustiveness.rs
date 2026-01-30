@@ -173,6 +173,8 @@ pub struct ExhaustivenessChecker<'a> {
     registry: &'a TypeRegistry,
     /// Collected errors.
     errors: Vec<ExhaustivenessError>,
+    /// Tracked local variable types.
+    locals: std::collections::HashMap<String, TypeId>,
 }
 
 impl<'a> ExhaustivenessChecker<'a> {
@@ -181,6 +183,7 @@ impl<'a> ExhaustivenessChecker<'a> {
         Self {
             registry,
             errors: Vec::new(),
+            locals: std::collections::HashMap::new(),
         }
     }
 
@@ -200,8 +203,105 @@ impl<'a> ExhaustivenessChecker<'a> {
         }
     }
 
+    /// Infer the type of an expression when type_id is not set.
+    /// This is a simplified inference that handles common cases.
+    fn infer_expr_type(&self, expr: &HirExpr) -> Option<TypeId> {
+        match &expr.kind {
+            HirExprKind::Const(c) => Some(c.type_id()),
+            HirExprKind::Local { name } => {
+                // Look up from our tracked locals first, then fall back to expr.type_id
+                self.locals.get(name).copied().or(expr.type_id)
+            }
+            HirExprKind::Index { object, .. } => {
+                // For array/map indexing, get element/value type
+                let obj_type = object.type_id.or_else(|| self.infer_expr_type(object))?;
+                if let Some(info) = self.registry.get(obj_type) {
+                    match &info.kind {
+                        TypeKind::Array { element } => Some(*element),
+                        TypeKind::Map { value, .. } => Some(*value),
+                        TypeKind::Str => Some(builtin::STR),
+                        TypeKind::Tuple { elements } => {
+                            // Can't statically determine tuple element type without constant index
+                            elements.first().copied()
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            HirExprKind::Field { object, field } => {
+                // For struct field access, get the field type
+                let obj_type = object.type_id.or_else(|| self.infer_expr_type(object))?;
+                if let Some(info) = self.registry.get(obj_type) {
+                    if let TypeKind::Struct { fields, .. } = &info.kind {
+                        for (name, type_id, _) in fields {
+                            if name == field {
+                                return Some(*type_id);
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            HirExprKind::MethodCall {
+                receiver, method, ..
+            } => {
+                // For method calls, try to infer return type from common methods
+                let recv_type = receiver
+                    .type_id
+                    .or_else(|| self.infer_expr_type(receiver))?;
+                self.infer_method_return_type(recv_type, method)
+            }
+            _ => None,
+        }
+    }
+
+    /// Infer return type for common methods.
+    fn infer_method_return_type(&self, receiver_type: TypeId, method: &str) -> Option<TypeId> {
+        if let Some(info) = self.registry.get(receiver_type) {
+            match &info.kind {
+                TypeKind::Array { element } => match method {
+                    "get" | "first" | "last" | "pop" | "shift" => Some(*element),
+                    "len" => Some(builtin::INT),
+                    "isEmpty" => Some(builtin::BOOL),
+                    "contains" => Some(builtin::BOOL),
+                    _ => None,
+                },
+                TypeKind::Map { value, .. } => match method {
+                    "get" => Some(*value),
+                    "len" => Some(builtin::INT),
+                    "isEmpty" | "has" | "containsKey" | "containsValue" => Some(builtin::BOOL),
+                    _ => None,
+                },
+                TypeKind::Str => match method {
+                    "len" | "indexOf" | "charCode" => Some(builtin::INT),
+                    "isEmpty" | "contains" | "startsWith" | "endsWith" => Some(builtin::BOOL),
+                    "trim" | "toUpperCase" | "toLowerCase" | "substr" | "replace" => {
+                        Some(builtin::STR)
+                    }
+                    "charAt" => Some(builtin::STR),
+                    _ => None,
+                },
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
     /// Check a function.
     fn check_function(&mut self, func: &HirFunction) {
+        // Clear locals for new function
+        self.locals.clear();
+
+        // Register function parameters
+        for param in &func.params {
+            if let Some(type_id) = param.type_id {
+                self.locals.insert(param.name.clone(), type_id);
+            }
+        }
+
         for stmt in &func.body {
             self.check_stmt(stmt);
         }
@@ -210,11 +310,25 @@ impl<'a> ExhaustivenessChecker<'a> {
     /// Check a statement.
     fn check_stmt(&mut self, stmt: &HirStmt) {
         match &stmt.kind {
-            HirStmtKind::Let { value, .. } => {
+            HirStmtKind::Let { name, value, .. } => {
                 self.check_expr(value);
+                // Track the local variable type for exhaustiveness checking
+                if let Some(type_id) = value.type_id.or_else(|| self.infer_expr_type(value)) {
+                    self.locals.insert(name.clone(), type_id);
+                }
             }
-            HirStmtKind::TupleLet { value, .. } => {
+            HirStmtKind::TupleLet { names, value, .. } => {
                 self.check_expr(value);
+                // Track tuple element types if we can infer them
+                if let Some(type_id) = value.type_id.or_else(|| self.infer_expr_type(value)) {
+                    if let Some(info) = self.registry.get(type_id) {
+                        if let TypeKind::Tuple { elements } = &info.kind {
+                            for (name, elem_type) in names.iter().zip(elements.iter()) {
+                                self.locals.insert(name.clone(), *elem_type);
+                            }
+                        }
+                    }
+                }
             }
             HirStmtKind::Assign { target, value } => {
                 self.check_expr(target);
@@ -263,7 +377,11 @@ impl<'a> ExhaustivenessChecker<'a> {
                 // For each matched value, check exhaustiveness
                 // Currently we only support single-value matches
                 if values.len() == 1 {
-                    let matched_type = values[0].type_id.unwrap_or(builtin::ANY);
+                    // Get the matched type - infer if not already set
+                    let matched_type = values[0]
+                        .type_id
+                        .or_else(|| self.infer_expr_type(&values[0]))
+                        .unwrap_or(builtin::ANY);
                     self.check_match_exhaustive(matched_type, arms, expr.span);
                 }
                 // Recurse into arm bodies

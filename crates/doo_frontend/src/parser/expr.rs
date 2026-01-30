@@ -386,7 +386,28 @@ fn parse_match_arm(parser: &mut Parser) -> ParseResult<MatchArm> {
         None
     };
     parser.expect(TokenKind::FatArrow)?;
-    let body = parser.parse_expression()?;
+
+    // Parse body: can be an expression OR a statement (wrapped in implicit block)
+    // Statement keywords that can appear as match arm bodies
+    let body = if matches!(
+        parser.current().kind,
+        TokenKind::Print
+            | TokenKind::Let
+            | TokenKind::For
+            | TokenKind::Return
+            | TokenKind::Break
+            | TokenKind::Continue
+    ) {
+        // Parse as a statement and wrap in a Block expression
+        let body_start = parser.current_span();
+        let stmt = parser.parse_statement()?;
+        let body_span = body_start.merge(&parser.prev_span());
+        Expr::new(ExprKind::Block(vec![stmt], None), body_span)
+    } else {
+        // Parse as a regular expression
+        parser.parse_expression()?
+    };
+
     Ok(MatchArm {
         pattern,
         guard,

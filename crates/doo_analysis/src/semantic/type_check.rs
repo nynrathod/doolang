@@ -405,6 +405,12 @@ impl TypeChecker {
 
                 // Check all arms
                 for arm in arms {
+                    // Enter arm scope for pattern bindings
+                    self.scopes.enter_scope(super::scope::ScopeKind::Block);
+
+                    // Register pattern bindings in scope
+                    self.register_pattern_bindings(&arm.pattern, arm.span);
+
                     // Check pattern (guards must be Bool)
                     self.check_match_pattern(&arm.pattern);
 
@@ -415,6 +421,9 @@ impl TypeChecker {
 
                     // Check body
                     self.check_expr(&arm.body);
+
+                    // Exit arm scope
+                    self.scopes.exit_scope();
                 }
 
                 expr.type_id.unwrap_or(builtin::ANY)
@@ -493,6 +502,12 @@ impl TypeChecker {
 
                 // Check all arms
                 for arm in arms {
+                    // Enter arm scope for pattern bindings
+                    self.scopes.enter_scope(super::scope::ScopeKind::Block);
+
+                    // Register pattern bindings in scope
+                    self.register_pattern_bindings(&arm.pattern, arm.span);
+
                     // Check pattern (guards must be Bool)
                     self.check_match_pattern(&arm.pattern);
 
@@ -503,6 +518,9 @@ impl TypeChecker {
 
                     // Check body
                     self.check_expr(&arm.body);
+
+                    // Exit arm scope
+                    self.scopes.exit_scope();
                 }
             }
 
@@ -535,6 +553,54 @@ impl TypeChecker {
             | HirMatchPattern::EnumVariantPayload { .. } => {
                 // No type checking needed for these patterns
             }
+        }
+    }
+
+    /// Register pattern bindings in the current scope.
+    /// This allows bound variables from match patterns to be used in arm bodies.
+    fn register_pattern_bindings(&mut self, pattern: &HirMatchPattern, span: Span) {
+        match pattern {
+            HirMatchPattern::EnumVariantPayload {
+                enum_name,
+                variant,
+                bindings,
+            } => {
+                // Look up the enum type to find the variant's payload type
+                if let Some(enum_type_id) = self.registry.lookup(enum_name) {
+                    if let Some(type_info) = self.registry.get(enum_type_id) {
+                        if let TypeKind::Enum { variants, .. } = &type_info.kind {
+                            // Find the variant's payload type
+                            if let Some((_, Some(payload_type_id))) =
+                                variants.iter().find(|(v, _)| v == variant)
+                            {
+                                // Register each binding with the payload type
+                                // For now, if there's one binding, it gets the full payload type
+                                // If there are multiple bindings, we'd need tuple destructuring
+                                for binding in bindings {
+                                    let _ = self.scopes.define(Symbol {
+                                        name: binding.clone(),
+                                        kind: SymbolKind::Variable,
+                                        type_id: Some(*payload_type_id),
+                                        mutable: false,
+                                        span,
+                                        used: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            HirMatchPattern::Tuple(patterns) => {
+                for p in patterns {
+                    self.register_pattern_bindings(p, span);
+                }
+            }
+            // These patterns don't introduce bindings
+            HirMatchPattern::Literal(_)
+            | HirMatchPattern::Condition(_)
+            | HirMatchPattern::Wildcard
+            | HirMatchPattern::EnumVariant { .. } => {}
         }
     }
 

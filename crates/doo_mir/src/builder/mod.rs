@@ -11,7 +11,7 @@ use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind, TypeRegistry};
 use doo_core::Span as CoreSpan;
 use doo_hir::{
     ConstValue, HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern, HirProgram,
-    HirStmt, HirUnaryOp,
+    HirStmt, HirStmtKind, HirUnaryOp,
 };
 
 use rustc_hash::FxHashMap;
@@ -355,8 +355,28 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        // Build statements
-        for stmt in &hir.body {
+        // Build statements, treating the last expression statement specially for implicit returns
+        // in functions that have a return type
+        let has_return_type = hir.return_type.is_some();
+        let stmt_count = hir.body.len();
+
+        for (idx, stmt) in hir.body.iter().enumerate() {
+            let is_last_stmt = idx + 1 == stmt_count;
+
+            // Check if this is the last statement and it's a bare expression
+            // that should be implicitly returned
+            if is_last_stmt && has_return_type {
+                if let HirStmtKind::Expr(expr) = &stmt.kind {
+                    // This is the last expression in a function with a return type
+                    // - treat it as an implicit return (like Rust does)
+                    let result = self.build_expr(expr);
+                    self.set_terminator_if_none(MirTerminator::Return {
+                        values: vec![result],
+                    });
+                    continue;
+                }
+            }
+
             self.build_stmt(stmt);
         }
 
@@ -489,7 +509,7 @@ impl<'a> MirBuilder<'a> {
         self.temp_counter += 1;
         name
     }
-    
+
     /// Add a temporary variable to func.locals so codegen can access its type.
     /// This is needed for temps that hold intermediate values (like if-expr results)
     /// which need proper LLVM types during alloca creation.
@@ -628,6 +648,40 @@ impl<'a> MirBuilder<'a> {
                     .map(|(_, t, _)| *t),
                 _ => None,
             })
+    }
+
+    /// Get the payload type of an enum variant.
+    /// Used during match expression lowering to register payload bindings with correct types.
+    pub(crate) fn get_enum_variant_payload_type(
+        &self,
+        enum_name: &str,
+        variant_name: &str,
+    ) -> Option<CoreTypeId> {
+        // Look up the enum type in the registry
+        let type_id = self.type_registry.lookup(enum_name)?;
+        let type_info = self.type_registry.get(type_id)?;
+
+        // Extract the variant's payload type from the enum definition
+        if let TypeKind::Enum { variants, .. } = &type_info.kind {
+            for (vname, payload_type) in variants {
+                if vname == variant_name {
+                    return *payload_type;
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the element types if the given type is a Tuple.
+    /// Returns None if the type is not a tuple.
+    /// Used to get individual element types for enum variant tuple payloads.
+    pub(crate) fn get_tuple_element_types(&self, type_id: CoreTypeId) -> Option<Vec<CoreTypeId>> {
+        let type_info = self.type_registry.get(type_id)?;
+        if let TypeKind::Tuple { elements } = &type_info.kind {
+            Some(elements.clone())
+        } else {
+            None
+        }
     }
 
     /// Look up the type of a local variable by name.
@@ -803,8 +857,12 @@ impl<'a> MirBuilder<'a> {
                 self.get_temp_type(name).unwrap_or(builtin::ANY)
             }
             MirOperand::Local(name) => {
-                // Check local variable type
-                self.get_local_type(name).unwrap_or(builtin::ANY)
+                // Check temp_types FIRST to handle shadowed bindings correctly.
+                // When a match binding shadows a local with a different type,
+                // we register the binding's type in temp_types, which takes precedence.
+                self.get_temp_type(name)
+                    .or_else(|| self.get_local_type(name))
+                    .unwrap_or(builtin::ANY)
             }
             MirOperand::Global(_) => builtin::ANY,
         }
