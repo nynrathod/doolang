@@ -2389,14 +2389,34 @@ fn get_or_generate_handler_wrapper<'ctx>(
         }
     };
     
+    // Check if return type is a struct (not a primitive)
+    let return_type_id = ctx.get_function_return_type(user_func_name);
+    let return_type_name = return_type_id.and_then(|tid| {
+        ctx.get_type_kind(tid).map(|tk| match tk {
+            TypeKind::Str => "Str".to_string(),
+            TypeKind::Int => "Int".to_string(),
+            TypeKind::Float => "Float".to_string(),
+            TypeKind::Bool => "Bool".to_string(),
+            TypeKind::Void => "Void".to_string(),
+            TypeKind::Struct { name, .. } => name.clone(),
+            TypeKind::Enum { name, .. } => name.clone(),
+            TypeKind::Array { .. } => "Array".to_string(),
+            _ => "Unknown".to_string(),
+        })
+    });
+    
+    let returns_struct = return_type_name.as_ref().map_or(false, |name: &String| {
+        !matches!(name.as_str(), "Str" | "Int" | "Float" | "Bool" | "Void" | "Array" | "Unknown")
+    });
+    
     // Analyze user function signature
     let user_fn_type = user_func.get_type();
     let user_param_count = user_fn_type.count_param_types();
     let user_return_type = user_fn_type.get_return_type();
     
     if debug {
-        eprintln!("[CODEGEN] User function {} has {} params, returns {:?}", 
-            user_func_name, user_param_count, user_return_type);
+        eprintln!("[CODEGEN] User function {} has {} params, returns {:?}, return_type_name={:?}, returns_struct={}", 
+            user_func_name, user_param_count, user_return_type, return_type_name, returns_struct);
     }
     
     // Create wrapper function with FFI signature: fn(ptr) -> ptr
@@ -2579,6 +2599,47 @@ fn get_or_generate_handler_wrapper<'ctx>(
             .and_then(|cs| cs.try_as_basic_value().left())
     };
     
+    // If user returns a struct, serialize it to JSON
+    let final_result = if returns_struct {
+        if let Some(val) = user_result {
+            if val.is_pointer_value() {
+                let struct_ptr = val.into_pointer_value();
+                
+                // Get or declare doohttp_serialize_struct_to_json
+                let serialize_fn = ctx.module.get_function("doohttp_serialize_struct_to_json")
+                    .unwrap_or_else(|| {
+                        let fn_type = ptr_type.fn_type(
+                            &[ptr_type.into(), ptr_type.into()],
+                            false
+                        );
+                        ctx.module.add_function("doohttp_serialize_struct_to_json", fn_type, None)
+                    });
+                
+                // Create handler name string
+                let handler_name_str = ctx.builder
+                    .build_global_string_ptr(user_func_name, "handler_name_for_serialize")
+                    .map(|g| g.as_pointer_value())
+                    .unwrap_or_else(|_| ptr_type.const_null());
+                
+                // Call serialization function
+                let json_ptr = ctx.builder
+                    .build_call(serialize_fn, &[struct_ptr.into(), handler_name_str.into()], "serialized_json")
+                    .ok()
+                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .map(|v| v.into_pointer_value())
+                    .unwrap_or_else(|| ptr_type.const_null());
+                
+                Some(json_ptr.into())
+            } else {
+                user_result
+            }
+        } else {
+            user_result
+        }
+    } else {
+        user_result
+    };
+    
     // Build success result
     let result_size = i64_type.const_int(
         result_struct_type.size_of().unwrap().get_zero_extended_constant().unwrap_or(24),
@@ -2604,7 +2665,7 @@ fn get_or_generate_handler_wrapper<'ctx>(
         .build_struct_gep(result_struct_type, result_ptr, 1, "value_ptr")
         .ok();
     if let Some(value_ptr) = value_ptr {
-        let result_as_ptr = match user_result {
+        let result_as_ptr = match final_result {
             Some(val) if val.is_pointer_value() => val.into_pointer_value(),
             Some(val) if val.is_int_value() => {
                 // Convert int to pointer (for status codes, etc.)
@@ -2860,29 +2921,61 @@ fn build_handler_metadata_json<'ctx>(
         }
     }
     
+    // Helper to collect struct layouts recursively
+    fn collect_struct_layout(
+        registry: &TypeRegistry,
+        type_id: TypeId,
+        struct_layouts: &mut HashMap<String, serde_json::Value>,
+        enum_variants: &mut HashMap<String, Vec<String>>,
+    ) {
+        if let Some(type_info) = registry.get(type_id) {
+            match &type_info.kind {
+                TypeKind::Struct { name, fields, .. } => {
+                    // Skip if already collected
+                    if struct_layouts.contains_key(name) {
+                        return;
+                    }
+                    
+                    let mut field_list: Vec<serde_json::Value> = Vec::new();
+                    for (field_name, field_type_id, _) in fields {
+                        let field_type_name = type_id_to_string_inner(registry, *field_type_id);
+                        field_list.push(serde_json::json!({
+                            "name": field_name,
+                            "type": field_type_name
+                        }));
+                        
+                        // Recursively collect nested structs and enums
+                        collect_struct_layout(registry, *field_type_id, struct_layouts, enum_variants);
+                        collect_enums_from_type(registry, *field_type_id, enum_variants);
+                    }
+                    struct_layouts.insert(name.clone(), serde_json::json!({
+                        "fields": field_list
+                    }));
+                }
+                TypeKind::Array { element } => {
+                    collect_struct_layout(registry, *element, struct_layouts, enum_variants);
+                }
+                TypeKind::Optional { inner } => {
+                    collect_struct_layout(registry, *inner, struct_layouts, enum_variants);
+                }
+                TypeKind::Map { key, value } => {
+                    collect_struct_layout(registry, *key, struct_layouts, enum_variants);
+                    collect_struct_layout(registry, *value, struct_layouts, enum_variants);
+                }
+                _ => {}
+            }
+        }
+    }
+    
     if let Some(type_ids) = param_type_ids {
         for type_id in type_ids {
+            // Recursively collect all struct layouts and enum variants
+            collect_struct_layout(&ctx.type_registry, *type_id, &mut struct_layouts, &mut enum_variants);
+            
             // Get type name from type registry
             if let Some(type_info) = ctx.type_registry.get(*type_id) {
                 let type_name = match &type_info.kind {
-                    TypeKind::Struct { name, fields, .. } => {
-                        // Also capture struct layout
-                        let mut field_list: Vec<serde_json::Value> = Vec::new();
-                        for (field_name, field_type_id, _) in fields {
-                            let field_type_name = type_id_to_string_inner(&ctx.type_registry, *field_type_id);
-                            field_list.push(serde_json::json!({
-                                "name": field_name,
-                                "type": field_type_name
-                            }));
-                            
-                            // Collect any enums referenced by this field
-                            collect_enums_from_type(&ctx.type_registry, *field_type_id, &mut enum_variants);
-                        }
-                        struct_layouts.insert(name.clone(), serde_json::json!({
-                            "fields": field_list
-                        }));
-                        name.clone()
-                    }
+                    TypeKind::Struct { name, .. } => name.clone(),
                     _ => type_id_to_string_inner(&ctx.type_registry, *type_id),
                 };
                 param_types.push(type_name);
@@ -2890,10 +2983,19 @@ fn build_handler_metadata_json<'ctx>(
         }
     }
     
+    // Get return type and include it in metadata
+    let mut return_type = "Void".to_string();
+    if let Some(ret_type_id) = ctx.get_function_return_type(func_name) {
+        // Collect struct layouts for return type
+        collect_struct_layout(&ctx.type_registry, ret_type_id, &mut struct_layouts, &mut enum_variants);
+        return_type = type_id_to_string_inner(&ctx.type_registry, ret_type_id);
+    }
+    
     // Build JSON
     let metadata = serde_json::json!({
         "param_count": param_count,
         "param_types": param_types,
+        "return_type": return_type,
         "struct_layouts": struct_layouts,
         "enum_variants": enum_variants
     });

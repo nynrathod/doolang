@@ -328,6 +328,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
         let param_type_ids: Vec<_> = func.params.iter().map(|p| p.type_id).collect();
         ctx.register_function_param_types(&func.name, param_type_ids);
 
+        // Register return type for struct serialization
+        if let Some(ret_type_id) = func.return_type {
+            ctx.register_function_return_type(&func.name, ret_type_id);
+        }
+
         // Build return type
         // If function has an error_type, it returns a Result struct { i32, ptr }
         let return_type = if func.error_type.is_some() {

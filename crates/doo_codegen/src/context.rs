@@ -106,6 +106,13 @@ pub struct CodegenContext<'ctx> {
     pub function_param_types: FxHashMap<String, Vec<TypeId>>,
 
     // ========================================================================
+    // Function Return Types (for struct serialization in HTTP handlers)
+    // ========================================================================
+    /// Function return types: function_name -> TypeId.
+    /// Tracks the Doo return type of each function for serialization.
+    pub function_return_types: FxHashMap<String, TypeId>,
+
+    // ========================================================================
     // Current Function Return Type (for type conversion in returns)
     // ========================================================================
     /// Current function's return type (for proper return value conversion).
@@ -154,6 +161,7 @@ impl<'ctx> CodegenContext<'ctx> {
             temp_struct_types: FxHashMap::default(),
             variable_types: FxHashMap::default(),
             function_param_types: FxHashMap::default(),
+            function_return_types: FxHashMap::default(),
             current_function_return_type: None,
             borrow_origins: FxHashMap::default(),
             is_closure_function: false,
@@ -223,6 +231,16 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Get function parameter types (for argument coercion during calls).
     pub fn get_function_param_types(&self, func_name: &str) -> Option<&Vec<TypeId>> {
         self.function_param_types.get(func_name)
+    }
+
+    /// Register function return type.
+    pub fn register_function_return_type(&mut self, func_name: &str, return_type: TypeId) {
+        self.function_return_types.insert(func_name.to_string(), return_type);
+    }
+
+    /// Get function return type (for struct serialization).
+    pub fn get_function_return_type(&self, func_name: &str) -> Option<TypeId> {
+        self.function_return_types.get(func_name).copied()
     }
 
     // ========================================================================

@@ -121,14 +121,23 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         };
                         build_response(200, &body)
                     } else {
-                        // Error
-                        let status = get_last_error_status();
-                        let body = if !res.value.is_null() {
-                            c_to_string(res.value as *const i8)
+                        // Error - value is a pointer to error response struct {i32 status, ptr body, ptr content_type}
+                        if !res.value.is_null() {
+                            // Extract status and body from the error response struct
+                            let error_struct = res.value as *const i8;
+                            let error_status = *(error_struct as *const i32);
+                            let body_ptr = *((error_struct as *const u8).add(8) as *const *const i8);
+                            let body = if body_ptr.is_null() {
+                                get_last_error_json()
+                            } else {
+                                c_to_string(body_ptr)
+                            };
+                            build_response(error_status, &body)
                         } else {
-                            get_last_error_json()
-                        };
-                        build_response(if status > 0 { status } else { 500 }, &body)
+                            let status = get_last_error_status();
+                            let body = get_last_error_json();
+                            build_response(if status > 0 { status } else { 500 }, &body)
+                        }
                     }
                 }
             }
