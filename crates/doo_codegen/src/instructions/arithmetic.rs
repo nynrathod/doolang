@@ -87,7 +87,22 @@ fn operand_to_value<'ctx>(
     match operand {
         MirOperand::Const(c) => Some(const_to_value(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
-            ctx.get_value(name)
+            // First try to get as a value (local variable, temp, etc.)
+            if let Some(val) = ctx.get_value(name) {
+                return Some(val);
+            }
+            // Fall back to function reference - convert function to pointer value
+            if let Some(func) = ctx.get_function(name) {
+                return Some(func.as_global_value().as_pointer_value().into());
+            }
+            None
+        }
+        MirOperand::FuncRef(name) => {
+            // FuncRef is an explicit function reference - convert to pointer
+            if let Some(func) = ctx.get_function(name) {
+                return Some(func.as_global_value().as_pointer_value().into());
+            }
+            None
         }
     }
 }

@@ -302,6 +302,8 @@ pub enum MirOperand {
     Temp(String),
     /// Global reference
     Global(String),
+    /// Function reference (for passing functions as values to FFI)
+    FuncRef(String),
 }
 
 /// Constant values in MIR.

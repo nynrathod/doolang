@@ -107,6 +107,7 @@ fn get_operand_name(operand: &MirOperand) -> Option<&str> {
             Some(name.as_str())
         }
         MirOperand::Const(_) => None,
+        MirOperand::FuncRef(name) => Some(name.as_str()),
     }
 }
 

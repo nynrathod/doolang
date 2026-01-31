@@ -15,8 +15,30 @@ pub fn operand_to_value<'ctx>(
     operand: &MirOperand,
 ) -> Option<BasicValueEnum<'ctx>> {
     match operand {
-        MirOperand::Local(name) | MirOperand::Temp(name) => ctx.get_value(name.as_str()),
-        MirOperand::Global(name) => ctx.get_value(name.as_str()), // TODO: proper global lookup
+        MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
+            // First try to get as a value (local variable, temp, etc.)
+            if let Some(val) = ctx.get_value(name.as_str()) {
+                return Some(val);
+            }
+            // Fall back to function reference - convert function to pointer value
+            // This handles cases like passing `getUserHandler` as a callback argument
+            if let Some(func) = ctx.get_function(name) {
+                return Some(func.as_global_value().as_pointer_value().into());
+            }
+            None
+        }
+        MirOperand::FuncRef(name) => {
+            // Explicit function reference - return function as pointer value
+            // Used when passing functions to FFI (e.g., app.get("/users", getUserHandler))
+            if let Some(func) = ctx.get_function(name) {
+                return Some(func.as_global_value().as_pointer_value().into());
+            }
+            // Try mangled name for methods
+            if let Some(func) = ctx.get_function(&format!("_{}", name)) {
+                return Some(func.as_global_value().as_pointer_value().into());
+            }
+            None
+        }
         MirOperand::Const(c) => match c {
             MirConst::Int(val) => Some(ctx.const_i64(*val).into()),
             MirConst::Float(val) => Some(ctx.const_f64(*val).into()),

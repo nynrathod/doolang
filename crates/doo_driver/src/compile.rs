@@ -751,6 +751,23 @@ fn compile_to_object(
 // Linking
 // ============================================================================
 
+/// Normalize FFI library name from @ffi decorator to actual DLL name.
+/// Examples: doo_http -> doo_ffi_http, doo_db -> doo_ffi_db
+fn normalize_ffi_lib_name(name: &str) -> String {
+    // Map short names to full names
+    match name {
+        "doo_http" => "doo_ffi_http".to_string(),
+        "doo_db" | "doo_database" => "doo_ffi_db".to_string(),
+        "doo_auth" => "doo_ffi_auth".to_string(),
+        "doo_file" => "doo_ffi_file".to_string(),
+        "doo_json" => "doo_ffi_json".to_string(),
+        "doo_core" => "doo_ffi_core".to_string(),
+        // Already normalized or unknown - pass through
+        _ if name.starts_with("doo_ffi_") => name.to_string(),
+        _ => name.to_string(),
+    }
+}
+
 /// Link object file into executable.
 fn link_object_file(
     obj_file: &Path,
@@ -758,10 +775,11 @@ fn link_object_file(
     mir_program: &doo_mir::MirProgram,
 ) -> Result<PathBuf, String> {
     // Collect FFI libraries from MIR (ffi field contains FfiLinkage with library name)
+    // Normalize library names: doo_http -> doo_ffi_http, doo_db -> doo_ffi_db, etc.
     let mut ffi_libs: HashSet<String> = mir_program
         .functions
         .iter()
-        .filter_map(|f| f.ffi.as_ref().map(|l| l.library.clone()))
+        .filter_map(|f| f.ffi.as_ref().map(|l| normalize_ffi_lib_name(&l.library)))
         .collect();
 
     // Always include core runtime library (new naming: doo_ffi_core)

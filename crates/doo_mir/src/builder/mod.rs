@@ -18,6 +18,38 @@ use rustc_hash::FxHashMap;
 
 use crate::types::*;
 
+/// FFI function information extracted from @extern decorator.
+///
+/// SINGLE SOURCE OF TRUTH for FFI linkage.
+#[derive(Debug, Clone)]
+pub struct FfiFunctionInfo {
+    /// The FFI library name (e.g., "doo_http")
+    pub library: String,
+    /// The FFI symbol name (e.g., "doo_http_server_new")
+    pub symbol: String,
+}
+
+/// Derive FFI symbol from library and function name.
+///
+/// Examples:
+/// - ("doo_http", "Server.new") -> "doo_http_server_new"
+/// - ("doo_http", "Server.get") -> "doo_http_server_get"
+/// - ("doo_db", "Query.exec") -> "doo_db_query_exec"
+fn derive_ffi_symbol(library: &str, func_name: &str) -> String {
+    // Split function name by '.' for methods
+    let parts: Vec<&str> = func_name.split('.').collect();
+
+    if parts.len() == 2 {
+        // Method: Server.get -> {library}_server_get
+        let type_name = parts[0].to_lowercase();
+        let method_name = parts[1].to_lowercase();
+        format!("{}_{}", library, format!("{}_{}", type_name, method_name))
+    } else {
+        // Plain function: myFunc -> {library}_myfunc
+        format!("{}_{}", library, func_name.to_lowercase())
+    }
+}
+
 /// HIR to MIR builder.
 pub struct MirBuilder<'a> {
     /// Current function being built.
@@ -64,6 +96,10 @@ pub struct MirBuilder<'a> {
     /// Closure return types for type propagation.
     /// Key: closure function name, Value: return type
     pub(crate) closure_return_types: FxHashMap<String, CoreTypeId>,
+
+    /// FFI function registry: maps function name to FFI info (library, symbol).
+    /// Used to emit FfiCall instead of Call for FFI functions.
+    pub(crate) ffi_functions: FxHashMap<String, FfiFunctionInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +128,7 @@ impl<'a> MirBuilder<'a> {
             closure_counter: 0,
             pending_closures: Vec::new(),
             closure_return_types: FxHashMap::default(),
+            ffi_functions: FxHashMap::default(),
         }
     }
 
@@ -117,6 +154,7 @@ impl<'a> MirBuilder<'a> {
             closure_counter: 0,
             pending_closures: Vec::new(),
             closure_return_types: FxHashMap::default(),
+            ffi_functions: FxHashMap::default(),
         }
     }
 
@@ -134,7 +172,7 @@ impl<'a> MirBuilder<'a> {
     pub fn build(&mut self, hir: &HirProgram) -> MirProgram {
         let mut program = MirProgram::new();
 
-        // First pass: collect all function return types and parameter types for type propagation
+        // First pass: collect all function return types, parameter types, and FFI info
         for item in &hir.items {
             if let HirItem::Function(f) = item {
                 // For functions with error types, track them separately
@@ -160,6 +198,15 @@ impl<'a> MirBuilder<'a> {
                 if !param_types.is_empty() {
                     self.function_param_types
                         .insert(f.name.clone(), param_types);
+                }
+
+                // Extract FFI info from @extern decorator (SINGLE SOURCE OF TRUTH)
+                if let Some(ffi_info) = self.extract_ffi_info(&f.decorators, &f.name) {
+                    if std::env::var("DOO_DEBUG").is_ok() {
+                        eprintln!("[MIR] Registered FFI function: {} -> lib={} sym={}", 
+                            f.name, ffi_info.library, ffi_info.symbol);
+                    }
+                    self.ffi_functions.insert(f.name.clone(), ffi_info);
                 }
             }
         }
@@ -338,6 +385,14 @@ impl<'a> MirBuilder<'a> {
             .collect();
         func.return_type = hir.return_type;
         func.error_type = hir.error_type;
+
+        // Set FFI linkage info if this is an FFI function
+        if let Some(ffi_info) = self.ffi_functions.get(&hir.name) {
+            func.ffi = Some(FfiLinkage {
+                library: ffi_info.library.clone(),
+                symbol: Some(ffi_info.symbol.clone()),
+            });
+        }
 
         // Create entry block
         func.blocks.push(MirBlock::new("entry".to_string()));
@@ -706,6 +761,11 @@ impl<'a> MirBuilder<'a> {
         self.function_return_types.get(name).copied()
     }
 
+    /// Check if a name refers to a known function (not a variable).
+    pub(crate) fn is_function_name(&self, name: &str) -> bool {
+        self.function_return_types.contains_key(name) || self.ffi_functions.contains_key(name)
+    }
+
     /// Get the return type for a builtin method call based on receiver type and method name.
     /// This is the SINGLE SOURCE OF TRUTH lookup using doo_core::methods.
     pub(crate) fn get_builtin_method_return_type(
@@ -865,6 +925,7 @@ impl<'a> MirBuilder<'a> {
                     .unwrap_or(builtin::ANY)
             }
             MirOperand::Global(_) => builtin::ANY,
+            MirOperand::FuncRef(_) => builtin::ANY, // Function pointers are opaque
         }
     }
 
@@ -873,5 +934,62 @@ impl<'a> MirBuilder<'a> {
             HirUnaryOp::Neg => UnaryOp::Neg,
             HirUnaryOp::Not => UnaryOp::Not,
         }
+    }
+
+    /// Extract FFI info from function decorators.
+    ///
+    /// NEW DESIGN (single decorator):
+    /// - @extern("library", "symbol") - explicit library and symbol
+    /// - @extern("library") - symbol auto-derived from function name
+    ///
+    /// This is the SINGLE SOURCE OF TRUTH for FFI function detection.
+    fn extract_ffi_info(
+        &self,
+        decorators: &[doo_hir::HirDecorator],
+        func_name: &str,
+    ) -> Option<FfiFunctionInfo> {
+        for dec in decorators {
+            if dec.name == "extern" {
+                // Extract string arguments from @extern decorator
+                let args: Vec<_> = dec
+                    .args
+                    .iter()
+                    .filter_map(|arg| {
+                        if let HirExprKind::Const(ConstValue::Str(s)) = &arg.kind {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                match args.len() {
+                    2 => {
+                        // @extern("library", "symbol") - explicit
+                        return Some(FfiFunctionInfo {
+                            library: args[0].clone(),
+                            symbol: args[1].clone(),
+                        });
+                    }
+                    1 => {
+                        // @extern("library") - auto-derive symbol from function name
+                        // Mangle: Server.get -> doo_http_server_get (using library prefix)
+                        let lib = &args[0];
+                        let symbol = derive_ffi_symbol(lib, func_name);
+                        return Some(FfiFunctionInfo {
+                            library: lib.clone(),
+                            symbol,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if a function is an FFI function and get its info.
+    pub(crate) fn get_ffi_info(&self, func_name: &str) -> Option<&FfiFunctionInfo> {
+        self.ffi_functions.get(func_name)
     }
 }

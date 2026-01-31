@@ -297,19 +297,11 @@ fn create_path_concat(prefix: &Expr, path: &Expr, span: Span) -> Expr {
 }
 
 /// Convert handler expression to string literal.
-fn convert_handler_to_string(handler: Expr, span: Span) -> Expr {
-    match &handler.kind {
-        ExprKind::Ident(name) => Expr::new(ExprKind::StrLit(name.clone()), span),
-        ExprKind::Call { func, args } => {
-            if let ExprKind::Ident(func_name) = &func.kind {
-                if func_name == "jwt" && args.is_empty() {
-                    return Expr::new(ExprKind::StrLit("jwt".to_string()), span);
-                }
-            }
-            handler
-        }
-        _ => handler,
-    }
+/// NOTE: Keeping handler as-is for function pointer passing.
+/// The codegen will pass the function pointer, not a string.
+fn convert_handler_to_string(handler: Expr, _span: Span) -> Expr {
+    // Keep the handler expression as-is - the codegen handles function pointers
+    handler
 }
 
 /// Extract identifier name as String.

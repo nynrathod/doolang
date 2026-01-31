@@ -34,7 +34,7 @@ impl RouteRegistry {
         }
     }
 
-    /// Register a route with direct handler function
+    /// Register a route with handler function
     pub fn register(&mut self, method: &str, path: &str, handler: DooHandlerFn) {
         let router = self.routers.entry(method.to_uppercase())
             .or_insert_with(MatchitRouter::new);
@@ -113,6 +113,11 @@ impl RouteRegistry {
             .collect();
         
         Some((matched.value, params))
+    }
+    
+    /// Get total number of registered routes
+    pub fn count(&self) -> usize {
+        self.route_count
     }
 }
 

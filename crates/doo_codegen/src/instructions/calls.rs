@@ -924,7 +924,24 @@ fn operand_to_value<'ctx>(
     match operand {
         MirOperand::Const(c) => Some(const_to_value(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
-            ctx.get_value(name)
+            // First try to get as a value (local variable, temp, etc.)
+            if let Some(val) = ctx.get_value(name) {
+                return Some(val);
+            }
+            // Fall back to function reference - convert function to pointer value
+            // This handles cases like passing `getUserHandler` as a callback argument
+            if let Some(func) = ctx.get_function(name) {
+                return Some(func.as_global_value().as_pointer_value().into());
+            }
+            None
+        }
+        MirOperand::FuncRef(name) => {
+            // Explicit function reference - return function as pointer value
+            // Used when passing functions to FFI (e.g., app.get("/users", getUserHandler))
+            if let Some(func) = ctx.get_function(name) {
+                return Some(func.as_global_value().as_pointer_value().into());
+            }
+            None
         }
     }
 }
@@ -2072,13 +2089,43 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::DOO_FILE_METADATA => Some((&["ptr"], "ptr", false)),
 
         // HTTP FFI
-        ffi_names::DOO_HTTP_SERVER_NEW => Some((&[], "ptr", false)),
-        ffi_names::DOO_HTTP_SERVER_LISTEN => Some((&["ptr", "i32"], "i32", false)),
+        ffi_names::DOO_HTTP_SERVER_NEW => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_HTTP_SERVER_LISTEN => Some((&["ptr"], "ptr", false)),
+        "doo_http_listen" => Some((&["ptr"], "ptr", false)),
+        // Function pointer versions (handler is function pointer, not string)
+        "doo_http_get_fn" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_post_fn" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_put_fn" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_delete_fn" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_patch_fn" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        // String-based versions (legacy)
+        "doo_http_get" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_post" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_put" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_delete" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_patch" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_use" => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_http_group" => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_http_cors_custom" => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_http_ratelimit_custom" => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_http_get_with_middleware" => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_post_with_middleware" => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_put_with_middleware" => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_delete_with_middleware" => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_patch_with_middleware" => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_HTTP_REGISTER_ROUTE => Some((&["ptr", "ptr", "ptr", "ptr"], "void", false)),
         ffi_names::DOO_HTTP_REQ_GET_HEADER => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_HTTP_REQ_GET_BODY => Some((&["ptr"], "ptr", false)),
         ffi_names::DOO_HTTP_REQ_GET_PARAM => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_HTTP_REQ_GET_QUERY => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_http_req_query" => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_http_req_param" => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_http_req_header" => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_http_next_call" => Some((&["ptr"], "ptr", false)),
+        "doo_http_auth" => Some((&["ptr", "ptr", "ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_crud" => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_http_parse_json" => Some((&["ptr"], "ptr", false)),
+        "doo_http_to_json" => Some((&["ptr"], "ptr", false)),
         ffi_names::DOO_HTTP_RES_SET_STATUS => Some((&["ptr", "i32"], "void", false)),
         ffi_names::DOO_HTTP_RES_SET_HEADER => Some((&["ptr", "ptr", "ptr"], "void", false)),
         ffi_names::DOO_HTTP_RES_SET_BODY => Some((&["ptr", "ptr"], "void", false)),
@@ -2086,6 +2133,12 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
 
         // Database FFI
         ffi_names::DOO_DB_POSTGRES => Some((&["ptr"], "ptr", false)),
+        "doo_db_connect_postgres" => Some((&[], "ptr", false)),
+        "doo_db_get_global" => Some((&[], "ptr", false)),
+        "doo_db_raw" => Some((&["ptr", "ptr"], "ptr", false)),
+        "doo_db_raw_param" => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
+        "doo_db_result_free" => Some((&["ptr"], "void", false)),
+        "doo_db_free_string" => Some((&["ptr"], "void", false)),
         ffi_names::DOO_DB_FIND => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_DB_FIND_ALL => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_DB_INSERT => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
@@ -2102,6 +2155,10 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::DOO_AUTH_SIGN_TOKEN => Some((&["ptr", "ptr", "i64"], "ptr", false)),
         ffi_names::DOO_AUTH_VERIFY_TOKEN => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_AUTH_FREE_RESULT => Some((&["ptr"], "void", false)),
+        "doo_auth_sign" => Some((&["ptr", "ptr", "i64"], "ptr", false)),
+        "doo_auth_verify" => Some((&["ptr"], "ptr", false)),
+        "doo_auth_free_string" => Some((&["ptr"], "void", false)),
+        "doo_http_jwt" => Some((&[], "ptr", false)),
 
         // String FFI
         ffi_names::DOO_STRING_LEN_UTF8 => Some((&["ptr"], "i64", false)),
@@ -2255,11 +2312,17 @@ fn emit_ffi_call<'ctx>(
             args.iter().map(|_| None).collect()
         };
 
-    // Convert arguments
+    // Convert arguments - with automatic wrapper generation for FuncRef
     let arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> = args
         .iter()
         .enumerate()
         .filter_map(|(i, a)| {
+            // Special handling for FuncRef - generate wrapper if needed
+            if let MirOperand::FuncRef(func_name) = a {
+                let wrapper = get_or_generate_handler_wrapper(ctx, func_name, symbol);
+                return Some(wrapper.as_global_value().as_pointer_value().into());
+            }
+            
             let val = operand_to_value(ctx, a)?;
             let expected = expected_types.get(i).copied().flatten();
             Some(convert_to_ffi_arg(ctx, val, expected))
@@ -2279,6 +2342,173 @@ fn emit_ffi_call<'ctx>(
 
     // For void functions, return None
     call_site.try_as_basic_value().left()
+}
+
+/// Generate or retrieve a wrapper function that adapts a user handler to FFI signature.
+/// 
+/// This is the COMPILER MAGIC that allows any handler signature to work with FFI.
+/// 
+/// FFI expects: extern "C" fn(*const DooRequest) -> *mut DooResult
+/// User might have: fn() -> Str, fn(Request) -> Response, etc.
+/// 
+/// The wrapper:
+/// 1. Has the FFI-expected signature
+/// 2. Calls the user's function with appropriate arguments
+/// 3. Wraps the return value in DooResult format
+fn get_or_generate_handler_wrapper<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    user_func_name: &str,
+    ffi_symbol: &str,
+) -> FunctionValue<'ctx> {
+    let wrapper_name = format!("__ffi_wrapper_{}", user_func_name);
+    
+    // Check if wrapper already exists
+    if let Some(existing) = ctx.get_function(&wrapper_name) {
+        return existing;
+    }
+    
+    let debug = std::env::var("DOO_DEBUG").is_ok();
+    if debug {
+        eprintln!("[CODEGEN] Generating FFI wrapper for {} (used by {})", user_func_name, ffi_symbol);
+    }
+    
+    // Get the user's function
+    let user_func = match ctx.get_function(user_func_name) {
+        Some(f) => f,
+        None => {
+            // Function not found - create a dummy wrapper that returns null
+            eprintln!("[CODEGEN] Warning: Function {} not found for wrapper generation", user_func_name);
+            return create_dummy_wrapper(ctx, &wrapper_name);
+        }
+    };
+    
+    // Analyze user function signature
+    let user_fn_type = user_func.get_type();
+    let user_param_count = user_fn_type.count_param_types();
+    let user_return_type = user_fn_type.get_return_type();
+    
+    if debug {
+        eprintln!("[CODEGEN] User function {} has {} params, returns {:?}", 
+            user_func_name, user_param_count, user_return_type);
+    }
+    
+    // Create wrapper function with FFI signature: fn(ptr) -> ptr
+    // ptr = *const DooRequest (ignored for simple handlers)
+    // returns *mut DooResult
+    let ptr_type = ctx.ptr_type();
+    let wrapper_fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+    let wrapper_fn = ctx.module.add_function(&wrapper_name, wrapper_fn_type, None);
+    
+    // Save current position
+    let current_block = ctx.builder.get_insert_block();
+    
+    // Create wrapper body
+    let entry = ctx.context.append_basic_block(wrapper_fn, "entry");
+    ctx.builder.position_at_end(entry);
+    
+    // Get the request parameter (may be unused for simple handlers)
+    let _request_ptr = wrapper_fn.get_nth_param(0).unwrap().into_pointer_value();
+    
+    // Call the user's function
+    let user_result = if user_param_count == 0 {
+        // Simple handler: fn() -> Str
+        ctx.builder
+            .build_call(user_func, &[], "user_call")
+            .ok()
+            .and_then(|cs| cs.try_as_basic_value().left())
+    } else {
+        // Handler with Request parameter: fn(Request) -> Response
+        // TODO: Convert DooRequest to user's Request struct format
+        // For now, pass the request pointer directly
+        ctx.builder
+            .build_call(user_func, &[_request_ptr.into()], "user_call")
+            .ok()
+            .and_then(|cs| cs.try_as_basic_value().left())
+    };
+    
+    // Create DooResult struct: { i32 tag, ptr value, i8 owner }
+    // Allocate on heap for FFI ownership
+    let result_struct_type = ctx.context.struct_type(
+        &[ctx.i32_type().into(), ptr_type.into(), ctx.context.i8_type().into()],
+        false
+    );
+    
+    // Allocate result on heap
+    let malloc_fn = ctx.module.get_function("malloc").unwrap_or_else(|| {
+        let fn_type = ptr_type.fn_type(&[ctx.i64_type().into()], false);
+        ctx.module.add_function("malloc", fn_type, None)
+    });
+    
+    let result_size = ctx.i64_type().const_int(
+        result_struct_type.size_of().unwrap().get_zero_extended_constant().unwrap_or(24),
+        false
+    );
+    let result_ptr = ctx.builder
+        .build_call(malloc_fn, &[result_size.into()], "result_alloc")
+        .ok()
+        .and_then(|cs| cs.try_as_basic_value().left())
+        .map(|v| v.into_pointer_value())
+        .unwrap_or_else(|| ptr_type.const_null());
+    
+    // Set tag = 0 (Ok)
+    let tag_ptr = ctx.builder
+        .build_struct_gep(result_struct_type, result_ptr, 0, "tag_ptr")
+        .ok();
+    if let Some(tag_ptr) = tag_ptr {
+        let _ = ctx.builder.build_store(tag_ptr, ctx.i32_type().const_int(0, false));
+    }
+    
+    // Set value = user result (as pointer)
+    let value_ptr = ctx.builder
+        .build_struct_gep(result_struct_type, result_ptr, 1, "value_ptr")
+        .ok();
+    if let Some(value_ptr) = value_ptr {
+        let result_as_ptr = match user_result {
+            Some(val) if val.is_pointer_value() => val.into_pointer_value(),
+            Some(val) if val.is_int_value() => {
+                // Convert int to pointer (for status codes, etc.)
+                ctx.builder
+                    .build_int_to_ptr(val.into_int_value(), ptr_type, "int_to_ptr")
+                    .unwrap_or_else(|_| ptr_type.const_null())
+            }
+            _ => ptr_type.const_null(),
+        };
+        let _ = ctx.builder.build_store(value_ptr, result_as_ptr);
+    }
+    
+    // Set owner = 1 (FFI owns)
+    let owner_ptr = ctx.builder
+        .build_struct_gep(result_struct_type, result_ptr, 2, "owner_ptr")
+        .ok();
+    if let Some(owner_ptr) = owner_ptr {
+        let _ = ctx.builder.build_store(owner_ptr, ctx.context.i8_type().const_int(1, false));
+    }
+    
+    // Return the result pointer
+    let _ = ctx.builder.build_return(Some(&result_ptr));
+    
+    // Restore position
+    if let Some(block) = current_block {
+        ctx.builder.position_at_end(block);
+    }
+    
+    wrapper_fn
+}
+
+/// Create a dummy wrapper that returns null (for error cases)
+fn create_dummy_wrapper<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    wrapper_name: &str,
+) -> FunctionValue<'ctx> {
+    let ptr_type = ctx.ptr_type();
+    let wrapper_fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+    let wrapper_fn = ctx.module.add_function(wrapper_name, wrapper_fn_type, None);
+    
+    let entry = ctx.context.append_basic_block(wrapper_fn, "entry");
+    ctx.builder.position_at_end(entry);
+    let _ = ctx.builder.build_return(Some(&ptr_type.const_null()));
+    
+    wrapper_fn
 }
 
 // ============================================================================

@@ -22,6 +22,7 @@ fn get_operand_name(operand: &MirOperand) -> Option<&str> {
             Some(name.as_str())
         }
         MirOperand::Const(_) => None,
+        MirOperand::FuncRef(name) => Some(name.as_str()),
     }
 }
 
@@ -421,6 +422,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                                 assigned_vars.get(name).copied().unwrap_or(builtin::ANY)
                             }
                             MirOperand::Global(_) => builtin::ANY,
+                            MirOperand::FuncRef(_) => builtin::ANY, // Function references are opaque
                         };
                         // Only update if we have a concrete type (not ANY) or dest is unknown
                         if type_id != builtin::ANY || !assigned_vars.contains_key(dest) {

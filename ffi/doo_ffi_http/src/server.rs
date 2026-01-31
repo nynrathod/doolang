@@ -28,6 +28,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     
+    // Built-in health check endpoint for server readiness
+    if path == "/health" && method == "GET" {
+        return Ok(build_response(200, r#"{"status":"ok"}"#));
+    }
+    
     // Set thread-local request path for RFC 7807
     set_current_request_path(&path);
     clear_last_error();
@@ -80,36 +85,38 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         req_ptr
     };
     
-    // Execute handler (with middleware chain)
+    // Execute handler - all handlers have unified signature thanks to compiler wrappers
     let handler = route_entry.handler;
     drop(registry);
     
-    let result = handler(doo_request);
-    
-    // Process result
-    let response = unsafe {
-        if result.is_null() {
-            let err = internal_error("Handler returned null", &path);
-            build_response(500, &err.to_json())
-        } else {
-            let res = &*result;
-            if res.tag == 0 {
-                // Success
-                let body = if res.value.is_null() {
-                    "{}".to_string()
-                } else {
-                    c_to_string(res.value as *const i8)
-                };
-                build_response(200, &body)
+    let response = {
+        let result = handler(doo_request);
+        
+        // Process result
+        unsafe {
+            if result.is_null() {
+                let err = internal_error("Handler returned null", &path);
+                build_response(500, &err.to_json())
             } else {
-                // Error
-                let status = get_last_error_status();
-                let body = if !res.value.is_null() {
-                    c_to_string(res.value as *const i8)
+                let res = &*result;
+                if res.tag == 0 {
+                    // Success - value is the response body string
+                    let body = if res.value.is_null() {
+                        "{}".to_string()
+                    } else {
+                        c_to_string(res.value as *const i8)
+                    };
+                    build_response(200, &body)
                 } else {
-                    get_last_error_json()
-                };
-                build_response(if status > 0 { status } else { 500 }, &body)
+                    // Error
+                    let status = get_last_error_status();
+                    let body = if !res.value.is_null() {
+                        c_to_string(res.value as *const i8)
+                    } else {
+                        get_last_error_json()
+                    };
+                    build_response(if status > 0 { status } else { 500 }, &body)
+                }
             }
         }
     };
@@ -162,6 +169,10 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             .map(|s| s.elapsed().as_millis())
             .unwrap_or(0);
         
+        // Count registered routes
+        let routes = get_routes();
+        let total_routes = routes.lock().map(|r| r.count()).unwrap_or(0);
+        
         // Print banner
         println!("\x1b[36m  ____              ");
         println!(" |  _ \\  ___   ___  ");
@@ -169,10 +180,14 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
         println!(" | |_| | (_) | (_) |");
         println!(" |____/ \\___/ \\___/          Doo v{}\x1b[0m", VERSION);
         println!("-------------------------------------------");
+        println!("Info Server Online");
+        println!("-------------------------------------------");
         println!("• Boot Time:            {} ms", boot_time);
         println!("• Listening on:         http://{}:{}", addr.ip(), port);
+        println!("• Handlers Loaded:      {}", total_routes);
+        println!("• Process ID:           {}", std::process::id());
         println!("-------------------------------------------");
-        println!("🚀 Server Started\n");
+        println!("🚀 Server Started on http://{}:{}\n", addr.ip(), port);
         
         loop {
             let (stream, _) = listener.accept().await

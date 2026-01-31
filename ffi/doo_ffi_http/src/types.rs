@@ -5,7 +5,9 @@ use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::collections::HashMap;
 
-/// Handler function pointer type
+/// Handler function pointer type - universal signature
+/// All handlers from Doo are compiled to this signature by the compiler
+/// The compiler generates wrapper code to adapt any user handler to this
 pub type DooHandlerFn = extern "C" fn(*const DooRequest) -> *mut DooResult;
 
 /// Middleware function pointer type
@@ -20,10 +22,10 @@ pub struct DooRequest {
     pub method: *const c_char,
     pub path: *const c_char,
     pub body: *const c_char,
-    pub headers: *mut c_void,  // HashMap<String, String>
-    pub params: *mut c_void,   // HashMap<String, String>
-    pub query: *mut c_void,    // HashMap<String, String>
-    pub user_id: *const c_char, // Set by JWT middleware
+    pub headers: *mut c_void,
+    pub params: *mut c_void,
+    pub query: *mut c_void,
+    pub user_id: *const c_char,
 }
 
 /// HTTP Response - FFI compatible

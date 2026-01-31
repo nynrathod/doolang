@@ -96,6 +96,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 return MirOperand::Global(name.clone());
             }
             
+            // Check if this is a function reference (not a variable)
+            // Function references are used when passing functions to FFI (e.g., handlers)
+            if builder.is_function_name(name) {
+                return MirOperand::FuncRef(name.clone());
+            }
+            
             // Check ownership decision for this variable use
             if let Some(decision) = builder.get_ownership_decision(name, expr.span) {
                 let dest = builder.new_temp();
@@ -317,6 +323,25 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     span,
                 );
                 MirOperand::Temp(dest)
+            } else if let Some(ffi_info) = builder.get_ffi_info(&func_name).cloned() {
+                // FFI function call - emit FfiCall instead of Call
+                let dest = builder.new_temp();
+                builder.emit(
+                    MirInstrKind::FfiCall {
+                        dest: Some(dest.clone()),
+                        lib: ffi_info.library.clone(),
+                        symbol: ffi_info.symbol.clone(),
+                        args: arg_ops,
+                    },
+                    span,
+                );
+
+                // Record the return type of the call for type propagation
+                if let Some(return_type) = builder.get_function_return_type(&func_name) {
+                    builder.set_temp_type(&dest, return_type);
+                }
+
+                MirOperand::Temp(dest)
             } else {
                 let dest = builder.new_temp();
                 builder.emit(
@@ -451,7 +476,36 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let is_module_receiver = matches!(&receiver.kind, HirExprKind::Local { name } 
                 if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false));
 
-// Get receiver type - try HIR type first, then look up from locals/temps
+            // Get the receiver's type name for FFI method lookup
+            // For static calls like Server::new, use the receiver name directly
+            // For instance calls like app.get, we need to get the struct type name
+            let receiver_type_name: Option<String> = if is_module_receiver {
+                if let HirExprKind::Local { name } = &receiver.kind {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            } else {
+                // Try to get type name from receiver type
+                receiver.type_id
+                    .or_else(|| {
+                        if let HirExprKind::Local { name } = &receiver.kind {
+                            builder.get_local_type(name)
+                        } else {
+                            None
+                        }
+                    })
+                    .and_then(|tid| {
+                        builder.type_registry.get(tid).and_then(|info| {
+                            if let TypeKind::Struct { name, .. } = &info.kind {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+            };
+
             // Build receiver - for modules, use Global instead of Local
             let recv = if is_module_receiver {
                 if let HirExprKind::Local { name } = &receiver.kind {
@@ -531,18 +585,42 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 builder.set_temp_type(&dest, rt);
             }
 
-            builder.emit(
-                MirInstrKind::MethodCall {
-                    dest: Some(dest.clone()),
-                    receiver: recv.clone(),
-                    receiver_type,
-                    method: method.clone(),
-                    args: arg_ops,
-                    arg_types,
-                    return_type,
-                },
-                span,
-            );
+            // Check if this method is an FFI function
+            // Method functions are named _method_{TypeName}_{method}
+            let mangled_method_name = receiver_type_name.as_ref()
+                .map(|type_name| format!("_method_{}_{}", type_name, method));
+            
+            let ffi_info = mangled_method_name.as_ref()
+                .and_then(|name| builder.get_ffi_info(name).cloned());
+
+            if let Some(ffi) = ffi_info {
+                // FFI method call - emit FfiCall with receiver as first argument
+                let mut ffi_args = vec![recv.clone()];
+                ffi_args.extend(arg_ops);
+                
+                builder.emit(
+                    MirInstrKind::FfiCall {
+                        dest: Some(dest.clone()),
+                        lib: ffi.library.clone(),
+                        symbol: ffi.symbol.clone(),
+                        args: ffi_args,
+                    },
+                    span,
+                );
+            } else {
+                builder.emit(
+                    MirInstrKind::MethodCall {
+                        dest: Some(dest.clone()),
+                        receiver: recv.clone(),
+                        receiver_type,
+                        method: method.clone(),
+                        args: arg_ops,
+                        arg_types,
+                        return_type,
+                    },
+                    span,
+                );
+            }
 
             MirOperand::Temp(dest)
         }
@@ -836,6 +914,33 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             variant,
             payload,
         } => {
+            // Check if this is actually an associated function call (e.g., Server::new(...))
+            // rather than a true enum variant creation
+            let mangled_name = format!("_method_{}_{}", enum_name, variant);
+            if let Some(ffi_info) = builder.get_ffi_info(&mangled_name).cloned() {
+                // This is an FFI associated function call, not enum creation
+                let dest = builder.new_temp();
+                let args: Vec<MirOperand> = payload.iter().map(|e| builder.build_expr(e)).collect();
+                
+                builder.emit(
+                    MirInstrKind::FfiCall {
+                        dest: Some(dest.clone()),
+                        lib: ffi_info.library.clone(),
+                        symbol: ffi_info.symbol.clone(),
+                        args,
+                    },
+                    span,
+                );
+                
+                // Set the return type of the temp based on the associated type
+                if let Some(type_id) = builder.type_registry.lookup(enum_name) {
+                    builder.set_temp_type(&dest, type_id);
+                }
+                
+                return MirOperand::Temp(dest);
+            }
+            
+            // Regular enum variant creation
             let payload_op = if payload.is_empty() {
                 None
             } else if payload.len() == 1 {

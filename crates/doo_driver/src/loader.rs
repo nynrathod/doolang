@@ -362,7 +362,28 @@ pub fn resolve_imports(
 
         let import_all = requested.contains_key("*");
 
-        // Extract requested items
+        // First pass: collect struct/enum names that will be imported
+        // so we can also import their associated functions
+        let mut imported_type_names: HashSet<String> = HashSet::new();
+        for item in &module_program.items {
+            match item {
+                Item::Struct(s) => {
+                    let is_wanted = import_all || requested.contains_key(&s.name);
+                    if is_wanted {
+                        imported_type_names.insert(s.name.clone());
+                    }
+                }
+                Item::Enum(e) => {
+                    let is_wanted = import_all || requested.contains_key(&e.name);
+                    if is_wanted {
+                        imported_type_names.insert(e.name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Second pass: extract requested items including associated functions
         for item in &module_program.items {
             match item {
                 Item::Function(f) => {
@@ -373,13 +394,41 @@ pub fn resolve_imports(
                         .next()
                         .map(|c| c.is_uppercase())
                         .unwrap_or(false);
-                    let is_wanted = import_all || requested.contains_key(&f.name);
 
-                    if is_public && is_wanted && !imported_names.contains(&f.name) {
+                    // Check if this is an associated function for an imported type
+                    let is_associated_with_imported_type = f
+                        .associated_type
+                        .as_ref()
+                        .map(|t| imported_type_names.contains(t))
+                        .unwrap_or(false);
+
+                    let is_wanted = import_all
+                        || requested.contains_key(&f.name)
+                        || is_associated_with_imported_type;
+
+                    // Create a unique key for the function to avoid duplicates
+                    let func_key = if let Some(ref assoc_type) = f.associated_type {
+                        format!("{}.{}", assoc_type, f.name)
+                    } else {
+                        f.name.clone()
+                    };
+
+                    if (is_public || is_associated_with_imported_type)
+                        && is_wanted
+                        && !imported_names.contains(&func_key)
+                    {
                         if debug {
-                            eprintln!("[LOADER]   Importing function: {}", f.name);
+                            if is_associated_with_imported_type {
+                                eprintln!(
+                                    "[LOADER]   Importing associated function: {}.{}",
+                                    f.associated_type.as_deref().unwrap_or("?"),
+                                    f.name
+                                );
+                            } else {
+                                eprintln!("[LOADER]   Importing function: {}", f.name);
+                            }
                         }
-                        imported_names.insert(f.name.clone());
+                        imported_names.insert(func_key);
                         result.items.push(item.clone());
                     }
                 }
@@ -450,7 +499,40 @@ pub fn resolve_imports(
             })
             .collect();
 
-        // Extract requested items
+        // First pass: collect struct/enum names that will be imported
+        // so we can also import their associated functions
+        let mut imported_type_names: HashSet<String> = HashSet::new();
+        for item in &module_program.items {
+            match item {
+                Item::Struct(s) => {
+                    let is_public = s
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
+                    let is_wanted = import_all || requested_symbols.contains(&s.name);
+                    if is_public && is_wanted {
+                        imported_type_names.insert(s.name.clone());
+                    }
+                }
+                Item::Enum(e) => {
+                    let is_public = e
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
+                    let is_wanted = import_all || requested_symbols.contains(&e.name);
+                    if is_public && is_wanted {
+                        imported_type_names.insert(e.name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Second pass: extract requested items including associated functions
         for item in &module_program.items {
             match item {
                 Item::Function(f) => {
@@ -461,13 +543,41 @@ pub fn resolve_imports(
                         .next()
                         .map(|c| c.is_uppercase())
                         .unwrap_or(false);
-                    let is_wanted = import_all || requested_symbols.contains(&f.name);
 
-                    if is_public && is_wanted && !imported_names.contains(&f.name) {
+                    // Check if this is an associated function for an imported type
+                    let is_associated_with_imported_type = f
+                        .associated_type
+                        .as_ref()
+                        .map(|t| imported_type_names.contains(t))
+                        .unwrap_or(false);
+
+                    let is_wanted = import_all
+                        || requested_symbols.contains(&f.name)
+                        || is_associated_with_imported_type;
+
+                    // Create a unique key for the function to avoid duplicates
+                    let func_key = if let Some(ref assoc_type) = f.associated_type {
+                        format!("{}.{}", assoc_type, f.name)
+                    } else {
+                        f.name.clone()
+                    };
+
+                    if (is_public || is_associated_with_imported_type)
+                        && is_wanted
+                        && !imported_names.contains(&func_key)
+                    {
                         if debug {
-                            eprintln!("[LOADER]   Importing local function: {}", f.name);
+                            if is_associated_with_imported_type {
+                                eprintln!(
+                                    "[LOADER]   Importing local associated function: {}.{}",
+                                    f.associated_type.as_deref().unwrap_or("?"),
+                                    f.name
+                                );
+                            } else {
+                                eprintln!("[LOADER]   Importing local function: {}", f.name);
+                            }
                         }
-                        imported_names.insert(f.name.clone());
+                        imported_names.insert(func_key);
                         result.items.push(item.clone());
                     }
                 }
