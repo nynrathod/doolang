@@ -1,17 +1,27 @@
-// HTTP Server and routing via FFI
-// Complete implementation for Phase 1, 2, 3, 4, 5
+// ============================================================================
+// HTTP Server and Routing - Doo Standard Library
+// ============================================================================
+//
+// NEW FFI DESIGN: Single @extern decorator
+// - @extern("library", "symbol") for explicit symbol
+// - @extern("library") for auto-derived symbol
 //
 // Usage:
 //   import std::Http;
 //
+//   fn getUsers(req: Request) -> Response {
+//       return Response.json("{\"users\": []}", 200);
+//   }
+//
 //   fn main() {
 //       let app = Server::new(":3000");
-//       app.post("/signup", signup);
-//       app.get("/profile", getProfile);
+//       app.get("/users", getUsers);
 //       app.start();
 //   }
 
-// === Structs ===
+// ============================================================================
+// Core Types
+// ============================================================================
 
 // HTTP Error struct for error handling
 struct HttpError {
@@ -72,132 +82,105 @@ fn StatusNotImplemented() -> Int { return 501; }
 fn StatusBadGateway() -> Int { return 502; }
 fn StatusServiceUnavailable() -> Int { return 503; }
 
-// === Server Constructor ===
+// ============================================================================
+// Server - FFI Functions
+// ============================================================================
 
-@ffi("doo_http")
-@extern("doo_http_server_new")
+// Constructor
+@extern("doo_http", "doo_http_server_new")
 fn Server.new(addr: Str) -> Server {}
 
-// === Server Methods - Route Registration ===
+// Route registration with function pointer handlers
+// All handlers MUST have signature: fn(Request) -> Response
+// The FFI expects this exact signature
+@extern("doo_http", "doo_http_get_fn")
+fn Server.get(self, path: Str, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_get")
-fn Server.get(self, path: Str, handler: Str) -> ! HttpError {}
+@extern("doo_http", "doo_http_post_fn")
+fn Server.post(self, path: Str, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_post")
-fn Server.post(self, path: Str, handler: Str) -> ! HttpError {}
+@extern("doo_http", "doo_http_put_fn")
+fn Server.put(self, path: Str, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_put")
-fn Server.put(self, path: Str, handler: Str) -> ! HttpError {}
+@extern("doo_http", "doo_http_delete_fn")
+fn Server.delete(self, path: Str, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_delete")
-fn Server.delete(self, path: Str, handler: Str) -> ! HttpError {}
+@extern("doo_http", "doo_http_patch_fn")
+fn Server.patch(self, path: Str, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_patch")
-fn Server.patch(self, path: Str, handler: Str) -> ! HttpError {}
+// Route registration with middleware (function pointers)
+@extern("doo_http", "doo_http_get_with_middleware")
+fn Server.getWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
 
-// === Route Registration with Middleware ===
+@extern("doo_http", "doo_http_post_with_middleware")
+fn Server.postWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_get_with_middleware")
-fn Server.getWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+@extern("doo_http", "doo_http_put_with_middleware")
+fn Server.putWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_post_with_middleware")
-fn Server.postWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+@extern("doo_http", "doo_http_delete_with_middleware")
+fn Server.deleteWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_put_with_middleware")
-fn Server.putWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+@extern("doo_http", "doo_http_patch_with_middleware")
+fn Server.patchWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_delete_with_middleware")
-fn Server.deleteWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+// Middleware registration (function pointer)
+@extern("doo_http", "doo_http_use")
+fn Server.use(self, middleware: Fn) -> Server {}
 
-@ffi("doo_http")
-@extern("doo_http_patch_with_middleware")
-fn Server.patchWithMiddleware(self, path: Str, middleware: Str, handler: Str) -> ! HttpError {}
+// Route groups
+@extern("doo_http", "doo_http_group")
+fn Server.group(self, prefix: Str) -> !HttpError {}
 
-// === Middleware Registration ===
-// Usage:
-//   app.use(LogMiddleware);              // Single middleware
-//   app.use(AuthMiddleware);             // Chain multiple via separate calls
-// Or method chaining:
-//   let app = Server::new(":3000")
-//       .use(LogMiddleware);
+// Server lifecycle
+@extern("doo_http", "doo_http_listen")
+fn Server.start(self) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_use")
-fn Server.use(self, middleware: Str) -> Server {}
+@extern("doo_http", "doo_http_listen")
+fn Server.listen(self, port: Int) -> !HttpError {}
 
-// === Route Groups ===
+// Auth and CRUD helpers
+@extern("doo_http", "doo_http_auth")
+fn Server.auth(self, signupPath: Str, loginPath: Str, userStruct: Str, db: Str) -> !HttpError {}
 
-@ffi("doo_http")
-@extern("doo_http_group")
-fn Server.group(self, prefix: Str) -> ! HttpError {}
+@extern("doo_http", "doo_http_crud")
+fn Server.crud(self, basePath: Str, resourceStruct: Str, db: Str) -> !HttpError {}
 
-// === Server Lifecycle ===
-
-@ffi("doo_http")
-@extern("doo_http_listen")
-fn Server.start(self) -> ! HttpError {}
-
-@ffi("doo_http")
-@extern("doo_http_listen")
-fn Server.listen(self, port: Int) -> ! HttpError {}
-
-// === Auth and CRUD Methods ===
-
-@ffi("doo_http")
-@extern("doo_http_auth")
-fn Server.auth(self, signupPath: Str, loginPath: Str, userStruct: Str, db: Str) -> ! HttpError {}
-
-@ffi("doo_http")
-@extern("doo_http_crud")
-fn Server.crud(self, basePath: Str, resourceStruct: Str, db: Str) -> ! HttpError {}
-
-// === CORS and Rate Limiting Middleware ===
-
-@ffi("doo_http")
-@extern("doo_http_cors_custom")
+// CORS and rate limiting middleware
+@extern("doo_http", "doo_http_cors_custom")
 fn Server.cors(self, options: {Str: Str}?) -> Server {}
 
-@ffi("doo_http")
-@extern("doo_http_ratelimit_custom")
+@extern("doo_http", "doo_http_ratelimit_custom")
 fn Server.ratelimit(self, options: {Str: Str}?) -> Server {}
 
-// === Request Methods ===
+// ============================================================================
+// Request - FFI Functions
+// ============================================================================
 
-@ffi("doo_http")
-@extern("doo_http_req_query")
+@extern("doo_http", "doo_http_req_query")
 fn Request.query(self, name: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doo_http_req_param")
+@extern("doo_http", "doo_http_req_param")
 fn Request.param(self, name: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doo_http_req_header")
+@extern("doo_http", "doo_http_req_header")
 fn Request.header(self, name: Str) -> Str {}
 
-// === Next Methods ===
+// ============================================================================
+// Next - Middleware Chaining
+// ============================================================================
 
-@ffi("doo_http")
-@extern("doo_http_next_call")
+@extern("doo_http", "doo_http_next_call")
 fn Next.call(self) -> Response {}
 
-// === JSON Helpers (Phase 4) ===
+// ============================================================================
+// JSON Helpers
+// ============================================================================
 
-@ffi("doo_http")
-@extern("doo_http_parse_json")
+@extern("doo_http", "doo_http_parse_json")
 fn parseJson(body: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doo_http_to_json")
+@extern("doo_http", "doo_http_to_json")
 fn toJson(data: Str) -> Str {}
 
 // === Helper Functions ===
@@ -242,47 +225,38 @@ fn InternalErrorResponse(message: Str) -> Response {
     return ErrorResponse(500, message);
 }
 
-// === RFC 7807 Error Response Helpers ===
-// These functions create RFC 7807 compliant error responses
+// ============================================================================
+// RFC 7807 Error Response Helpers
+// ============================================================================
 
-@ffi("doo_http")
-@extern("doohttp_error_rfc7807")
+@extern("doo_http", "doohttp_error_rfc7807")
 fn ErrorRfc7807(status: Int, detail: Str, instance: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doohttp_error_rfc7807_with_method")
+@extern("doo_http", "doohttp_error_rfc7807_with_method")
 fn ErrorRfc7807WithMethod(status: Int, detail: Str, instance: Str, method: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doohttp_error_rfc7807_validation")
+@extern("doo_http", "doohttp_error_rfc7807_validation")
 fn ErrorRfc7807Validation(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doohttp_error_rfc7807_bad_request_with_fields")
+@extern("doo_http", "doohttp_error_rfc7807_bad_request_with_fields")
 fn ErrorRfc7807BadRequestWithFields(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doohttp_error_rfc7807_method_not_allowed")
+@extern("doo_http", "doohttp_error_rfc7807_method_not_allowed")
 fn ErrorRfc7807MethodNotAllowed(detail: Str, instance: Str, allowedMethods: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doohttp_error_rfc7807_parameter")
+@extern("doo_http", "doohttp_error_rfc7807_parameter")
 fn ErrorRfc7807Parameter(detail: Str, instance: Str, name: Str, expected: Str, received: Str, message: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doohttp_error_rfc7807_unknown_fields")
+@extern("doo_http", "doohttp_error_rfc7807_unknown_fields")
 fn ErrorRfc7807UnknownFields(detail: Str, instance: Str, unknownFieldsCsv: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doohttp_error_rfc7807_content_type")
+@extern("doo_http", "doohttp_error_rfc7807_content_type")
 fn ErrorRfc7807ContentType(detail: Str, instance: Str, expected: Str, received: Str) -> Str {}
 
-@ffi("doo_http")
-@extern("doohttp_last_error_status")
+@extern("doo_http", "doohttp_last_error_status")
 fn LastErrorStatus() -> Int {}
 
-@ffi("doo_http")
-@extern("doohttp_last_error_json")
+@extern("doo_http", "doohttp_last_error_json")
 fn LastErrorJson() -> Str {}
 
 // Convenience functions for RFC 7807 error responses

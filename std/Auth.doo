@@ -32,46 +32,39 @@ struct AuthError {
 // === Password Hashing Functions ===
 
 // Hash a password using bcrypt
-@ffi("doo_auth")
-@extern("doo_auth_hash_password")
-fn hashPassword(password: Str) -> Str ! AuthError {}
+@extern("doo_auth", "doo_auth_hash_password")
+fn hashPassword(password: Str) -> Str !AuthError {}
 
 // Verify a password against a hash
-@ffi("doo_auth")
-@extern("doo_auth_verify_password")
-fn verifyPassword(password: Str, hashed: Str) -> Bool ! AuthError {}
+@extern("doo_auth", "doo_auth_verify_password")
+fn verifyPassword(password: Str, hashed: Str) -> Bool !AuthError {}
 
 // === JWT Functions ===
 
 // Sign a JWT token
 // Automatically reads JWT_SECRET from environment
 // expiresSeconds: token validity duration (e.g., 3600 for 1 hour)
-@ffi("doo_auth")
-@extern("doo_auth_sign")
-fn signJwt(sub: Str, dataJson: Str, expiresSeconds: Int) -> Str ! AuthError {}
+@extern("doo_auth", "doo_auth_sign")
+fn signJwt(sub: Str, dataJson: Str, expiresSeconds: Int) -> Str !AuthError {}
 
 // Verify and decode a JWT token
 // Returns JSON string with claims
-@ffi("doo_auth")
-@extern("doo_auth_verify")
-fn verifyJwt(token: Str) -> Str ! AuthError {}
+@extern("doo_auth", "doo_auth_verify")
+fn verifyJwt(token: Str) -> Str !AuthError {}
 
 // === Helper Functions ===
 
 // Free auth result
-@ffi("doo_auth")
-@extern("doo_auth_free_result")
+@extern("doo_auth", "doo_auth_free_result")
 fn freeAuthResult(ptr: Ptr) {}
 
 // Free string from auth
-@ffi("doo_auth")
-@extern("doo_auth_free_string")
+@extern("doo_auth", "doo_auth_free_string")
 fn freeAuthString(ptr: Ptr) {}
 
 // === JWT Middleware ===
 
 // JWT middleware function for route protection
 // Usage: import Auth::jwt; app.get("/profile", jwt(), handler)
-@ffi("doo_http")
-@extern("doo_http_jwt")
+@extern("doo_http", "doo_http_jwt")
 fn jwt() -> Str {}

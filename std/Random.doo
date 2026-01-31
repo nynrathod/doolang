@@ -1,5 +1,4 @@
 struct Random {}
 
-@ffi("doo_runtime")
-@extern("doo_random_base62")
+@extern("doo_runtime", "doo_random_base62")
 fn Random.string(len: Int) -> Str {}
