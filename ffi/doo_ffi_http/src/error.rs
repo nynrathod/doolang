@@ -1,90 +1,31 @@
 //! RFC 7807 Error System
-//! Centralized error response generation following RFC 7807 Problem Details.
+//!
+//! Re-exports centralized RFC 7807 errors from doo_ffi_core.
+//! SINGLE SOURCE OF TRUTH: All error types come from doo_ffi_core::rfc7807
+//!
+//! This module provides HTTP-specific convenience constructors that wrap
+//! the core Rfc7807Error with HTTP context (instance path).
 
-use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
-/// Error type enum matching RFC 7807 type URIs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ErrorType {
-    BadRequest,
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    MethodNotAllowed,
-    Conflict,
-    UnprocessableEntity,
-    TooManyRequests,
-    InternalServerError,
-    NotImplemented,
-    BadGateway,
-    ServiceUnavailable,
-}
+// Re-export the centralized RFC 7807 types
+pub use doo_ffi_core::FieldError as CoreFieldError;
+pub use doo_ffi_core::Rfc7807Error;
 
-impl ErrorType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::BadRequest => "bad_request",
-            Self::Unauthorized => "unauthorized",
-            Self::Forbidden => "forbidden",
-            Self::NotFound => "not_found",
-            Self::MethodNotAllowed => "method_not_allowed",
-            Self::Conflict => "conflict",
-            Self::UnprocessableEntity => "unprocessable_entity",
-            Self::TooManyRequests => "too_many_requests",
-            Self::InternalServerError => "internal_server_error",
-            Self::NotImplemented => "not_implemented",
-            Self::BadGateway => "bad_gateway",
-            Self::ServiceUnavailable => "service_unavailable",
-        }
-    }
-    
-    pub fn title(&self) -> &'static str {
-        match self {
-            Self::BadRequest => "Bad Request",
-            Self::Unauthorized => "Unauthorized",
-            Self::Forbidden => "Forbidden",
-            Self::NotFound => "Not Found",
-            Self::MethodNotAllowed => "Method Not Allowed",
-            Self::Conflict => "Conflict",
-            Self::UnprocessableEntity => "Unprocessable Entity",
-            Self::TooManyRequests => "Too Many Requests",
-            Self::InternalServerError => "Internal Server Error",
-            Self::NotImplemented => "Not Implemented",
-            Self::BadGateway => "Bad Gateway",
-            Self::ServiceUnavailable => "Service Unavailable",
-        }
-    }
-    
-    pub fn status_code(&self) -> u16 {
-        match self {
-            Self::BadRequest => 400,
-            Self::Unauthorized => 401,
-            Self::Forbidden => 403,
-            Self::NotFound => 404,
-            Self::MethodNotAllowed => 405,
-            Self::Conflict => 409,
-            Self::UnprocessableEntity => 422,
-            Self::TooManyRequests => 429,
-            Self::InternalServerError => 500,
-            Self::NotImplemented => 501,
-            Self::BadGateway => 502,
-            Self::ServiceUnavailable => 503,
-        }
-    }
-}
+// Convenience type alias for backward compatibility
+pub type ErrorResponse = Rfc7807Error;
 
-/// Field-level validation error
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// ============================================================================
+// HTTP-specific FieldError (for backward compatibility with existing code)
+// ============================================================================
+
+/// HTTP-specific field error (for validation_error function)
+/// This provides a simpler API compatible with existing code.
+#[derive(Debug, Clone)]
 pub struct FieldError {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub expected: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub received: Option<String>,
 }
 
@@ -93,118 +34,114 @@ impl FieldError {
         Self {
             rule: None,
             message: message.into(),
-            value: None,
             expected: None,
             received: None,
         }
     }
-    
+
     pub fn with_rule(mut self, rule: impl Into<String>) -> Self {
         self.rule = Some(rule.into());
         self
     }
-    
+
     pub fn with_expected(mut self, expected: impl Into<String>) -> Self {
         self.expected = Some(expected.into());
         self
     }
-    
+
     pub fn with_received(mut self, received: impl Into<String>) -> Self {
         self.received = Some(received.into());
         self
     }
-}
 
-/// RFC 7807 Error Response
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorResponse {
-    #[serde(rename = "type")]
-    pub error_type: String,
-    pub title: String,
-    pub status: u16,
-    pub detail: String,
-    pub instance: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub fields: HashMap<String, FieldError>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub unknown_fields: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub allowed_methods: Vec<String>,
-}
-
-impl ErrorResponse {
-    pub fn new(error_type: ErrorType, detail: impl Into<String>, instance: impl Into<String>) -> Self {
-        Self {
-            error_type: error_type.as_str().to_string(),
-            title: error_type.title().to_string(),
-            status: error_type.status_code(),
-            detail: detail.into(),
-            instance: instance.into(),
-            method: None,
-            fields: HashMap::new(),
-            unknown_fields: Vec::new(),
-            allowed_methods: Vec::new(),
+    /// Convert to core FieldError
+    pub fn to_core(&self, field_name: &str) -> CoreFieldError {
+        let mut fe = CoreFieldError::new(field_name, &self.message);
+        if let Some(ref rule) = self.rule {
+            fe = fe.with_rule(rule);
         }
-    }
-    
-    pub fn with_field(mut self, name: impl Into<String>, error: FieldError) -> Self {
-        self.fields.insert(name.into(), error);
-        self
-    }
-    
-    pub fn with_method(mut self, method: impl Into<String>) -> Self {
-        self.method = Some(method.into());
-        self
-    }
-    
-    pub fn with_allowed_methods(mut self, methods: Vec<String>) -> Self {
-        self.allowed_methods = methods;
-        self
-    }
-    
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+        if let Some(ref expected) = self.expected {
+            fe = fe.with_expected(expected);
+        }
+        if let Some(ref received) = self.received {
+            fe = fe.with_received(received);
+        }
+        fe
     }
 }
 
-// Convenience constructors
-pub fn bad_request(detail: impl Into<String>, instance: impl Into<String>) -> ErrorResponse {
-    ErrorResponse::new(ErrorType::BadRequest, detail, instance)
+// ============================================================================
+// HTTP-specific convenience constructors
+// These wrap the core Rfc7807Error with HTTP-specific context (instance path)
+// ============================================================================
+
+/// 400 Bad Request
+pub fn bad_request(detail: impl Into<String>, instance: impl Into<String>) -> Rfc7807Error {
+    Rfc7807Error::bad_request(detail).with_instance(instance)
 }
 
-pub fn unauthorized(detail: impl Into<String>, instance: impl Into<String>) -> ErrorResponse {
-    ErrorResponse::new(ErrorType::Unauthorized, detail, instance)
+/// 401 Unauthorized
+pub fn unauthorized(detail: impl Into<String>, instance: impl Into<String>) -> Rfc7807Error {
+    Rfc7807Error::unauthorized()
+        .with_detail(detail)
+        .with_instance(instance)
 }
 
-pub fn forbidden(detail: impl Into<String>, instance: impl Into<String>) -> ErrorResponse {
-    ErrorResponse::new(ErrorType::Forbidden, detail, instance)
+/// 403 Forbidden
+pub fn forbidden(detail: impl Into<String>, instance: impl Into<String>) -> Rfc7807Error {
+    Rfc7807Error::forbidden()
+        .with_detail(detail)
+        .with_instance(instance)
 }
 
-pub fn not_found(detail: impl Into<String>, instance: impl Into<String>) -> ErrorResponse {
-    ErrorResponse::new(ErrorType::NotFound, detail, instance)
+/// 404 Not Found
+pub fn not_found(detail: impl Into<String>, instance: impl Into<String>) -> Rfc7807Error {
+    Rfc7807Error::new(404, "Not Found")
+        .with_detail(detail)
+        .with_instance(instance)
 }
 
-pub fn conflict(detail: impl Into<String>, instance: impl Into<String>) -> ErrorResponse {
-    ErrorResponse::new(ErrorType::Conflict, detail, instance)
+/// 405 Method Not Allowed
+pub fn method_not_allowed(
+    detail: impl Into<String>,
+    instance: impl Into<String>,
+    _allowed: Vec<String>,
+) -> Rfc7807Error {
+    Rfc7807Error::new(405, "Method Not Allowed")
+        .with_detail(detail)
+        .with_instance(instance)
 }
 
-pub fn internal_error(detail: impl Into<String>, instance: impl Into<String>) -> ErrorResponse {
-    ErrorResponse::new(ErrorType::InternalServerError, detail, instance)
+/// 409 Conflict
+pub fn conflict(detail: impl Into<String>, instance: impl Into<String>) -> Rfc7807Error {
+    Rfc7807Error::conflict(detail).with_instance(instance)
 }
 
-pub fn too_many_requests(detail: impl Into<String>, instance: impl Into<String>) -> ErrorResponse {
-    ErrorResponse::new(ErrorType::TooManyRequests, detail, instance)
+/// 422 Validation Error
+pub fn validation_error(
+    detail: impl Into<String>,
+    instance: impl Into<String>,
+    errors: HashMap<String, FieldError>,
+) -> Rfc7807Error {
+    // Convert HTTP FieldErrors to core FieldErrors
+    let core_errors: Vec<CoreFieldError> = errors
+        .into_iter()
+        .map(|(field, err)| err.to_core(&field))
+        .collect();
+
+    Rfc7807Error::validation_error(core_errors)
+        .with_detail(detail)
+        .with_instance(instance)
 }
 
-pub fn validation_error(detail: impl Into<String>, instance: impl Into<String>, fields: HashMap<String, FieldError>) -> ErrorResponse {
-    let mut err = ErrorResponse::new(ErrorType::UnprocessableEntity, detail, instance);
-    err.fields = fields;
-    err
+/// 429 Too Many Requests
+pub fn too_many_requests(detail: impl Into<String>, instance: impl Into<String>) -> Rfc7807Error {
+    Rfc7807Error::rate_limited()
+        .with_detail(detail)
+        .with_instance(instance)
 }
 
-pub fn method_not_allowed(detail: impl Into<String>, instance: impl Into<String>, allowed: Vec<String>) -> ErrorResponse {
-    ErrorResponse::new(ErrorType::MethodNotAllowed, detail, instance)
-        .with_allowed_methods(allowed)
+/// 500 Internal Server Error
+pub fn internal_error(detail: impl Into<String>, instance: impl Into<String>) -> Rfc7807Error {
+    Rfc7807Error::internal(detail).with_instance(instance)
 }

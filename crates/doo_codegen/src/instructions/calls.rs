@@ -2320,6 +2320,13 @@ fn emit_ffi_call<'ctx>(
             // Special handling for FuncRef - generate wrapper if needed
             if let MirOperand::FuncRef(func_name) = a {
                 let wrapper = get_or_generate_handler_wrapper(ctx, func_name, symbol);
+                
+                // If this is an HTTP route registration, also register handler metadata
+                // Check for doo_http_get_fn, doo_http_post_fn, etc.
+                if symbol.starts_with("doo_http_") && symbol.ends_with("_fn") {
+                    emit_handler_metadata_registration(ctx, func_name, &wrapper);
+                }
+                
                 return Some(wrapper.as_global_value().as_pointer_value().into());
             }
             
@@ -2406,40 +2413,174 @@ fn get_or_generate_handler_wrapper<'ctx>(
     let entry = ctx.context.append_basic_block(wrapper_fn, "entry");
     ctx.builder.position_at_end(entry);
     
-    // Get the request parameter (may be unused for simple handlers)
-    let _request_ptr = wrapper_fn.get_nth_param(0).unwrap().into_pointer_value();
+    // Get the request parameter
+    let request_ptr = wrapper_fn.get_nth_param(0).unwrap().into_pointer_value();
+    
+    // Types we'll need
+    let i32_type = ctx.i32_type();
+    let i64_type = ctx.i64_type();
+    let i8_type = ctx.context.i8_type();
+    
+    // Allocate result on heap (we'll need this for both success and error paths)
+    let result_struct_type = ctx.context.struct_type(
+        &[i32_type.into(), ptr_type.into(), i8_type.into()],
+        false
+    );
+    
+    let malloc_fn = ctx.module.get_function("malloc").unwrap_or_else(|| {
+        let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
+        ctx.module.add_function("malloc", fn_type, None)
+    });
     
     // Call the user's function
     let user_result = if user_param_count == 0 {
-        // Simple handler: fn() -> Str
+        // Simple handler: fn() -> Str - no validation needed
         ctx.builder
             .build_call(user_func, &[], "user_call")
             .ok()
             .and_then(|cs| cs.try_as_basic_value().left())
     } else {
-        // Handler with Request parameter: fn(Request) -> Response
-        // TODO: Convert DooRequest to user's Request struct format
-        // For now, pass the request pointer directly
+        // Handler with struct parameter: validate request body first
+        // Get or declare doohttp_populate_struct_from_request
+        let populate_fn = ctx.module.get_function("doohttp_populate_struct_from_request")
+            .unwrap_or_else(|| {
+                let fn_type = i32_type.fn_type(
+                    &[ptr_type.into(), ptr_type.into(), i32_type.into(), ptr_type.into()],
+                    false
+                );
+                ctx.module.add_function("doohttp_populate_struct_from_request", fn_type, None)
+            });
+        
+        // Get handler name as C string for the validation call
+        let handler_name_str = ctx.const_string(user_func_name);
+        
+        // Call populate_struct_from_request to validate the body
+        // Arguments: request_ptr, struct_ptr (null - we just want validation), source_type (0=body), handler_name
+        let validate_result = ctx.builder
+            .build_call(
+                populate_fn,
+                &[
+                    request_ptr.into(),
+                    ptr_type.const_null().into(), // struct_ptr - null since we just want validation
+                    i32_type.const_int(0, false).into(), // source_type = 0 (body)
+                    handler_name_str.into(),
+                ],
+                "validate_result",
+            )
+            .ok()
+            .and_then(|cs| cs.try_as_basic_value().left())
+            .map(|v| v.into_int_value())
+            .unwrap_or_else(|| i32_type.const_int(0, false));
+        
+        // Check if validation failed (non-zero = error)
+        let validation_failed = ctx.builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                validate_result,
+                i32_type.const_zero(),
+                "validation_failed",
+            )
+            .ok();
+        
+        if let Some(validation_failed) = validation_failed {
+            // Create error and success blocks
+            let parent = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+            let error_block = ctx.context.append_basic_block(parent, "validation_error");
+            let success_block = ctx.context.append_basic_block(parent, "validation_success");
+            
+            ctx.builder.build_conditional_branch(validation_failed, error_block, success_block).ok();
+            
+            // Error block: return RFC 7807 error from last_error
+            ctx.builder.position_at_end(error_block);
+            
+            // Get error status and JSON
+            let get_status_fn = ctx.module.get_function("doohttp_last_error_status")
+                .unwrap_or_else(|| {
+                    let fn_type = i32_type.fn_type(&[], false);
+                    ctx.module.add_function("doohttp_last_error_status", fn_type, None)
+                });
+            
+            let get_json_fn = ctx.module.get_function("doohttp_last_error_json")
+                .unwrap_or_else(|| {
+                    let fn_type = ptr_type.fn_type(&[], false);
+                    ctx.module.add_function("doohttp_last_error_json", fn_type, None)
+                });
+            
+            let error_status = ctx.builder
+                .build_call(get_status_fn, &[], "error_status")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+                .map(|v| v.into_int_value())
+                .unwrap_or_else(|| i32_type.const_int(400, false));
+            
+            let error_json = ctx.builder
+                .build_call(get_json_fn, &[], "error_json")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+                .map(|v| v.into_pointer_value())
+                .unwrap_or_else(|| ptr_type.const_null());
+            
+            // Build error response struct { status, body, content_type }
+            let error_response_type = ctx.context.struct_type(
+                &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                false
+            );
+            let error_response_size = i64_type.const_int(24, false);
+            let error_response_ptr = ctx.builder
+                .build_call(malloc_fn, &[error_response_size.into()], "error_response")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+                .map(|v| v.into_pointer_value())
+                .unwrap_or_else(|| ptr_type.const_null());
+            
+            // Set status
+            if let Ok(status_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 0, "status_ptr") {
+                let _ = ctx.builder.build_store(status_ptr, error_status);
+            }
+            // Set body
+            if let Ok(body_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 1, "body_ptr") {
+                let _ = ctx.builder.build_store(body_ptr, error_json);
+            }
+            // Set content_type (application/json)
+            let json_content_type = ctx.const_string("application/json");
+            if let Ok(ct_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 2, "ct_ptr") {
+                let _ = ctx.builder.build_store(ct_ptr, json_content_type);
+            }
+            
+            // Build DooResult for error: { tag=1, value=error_response, owner=1 }
+            let result_size = i64_type.const_int(24, false);
+            let error_result_ptr = ctx.builder
+                .build_call(malloc_fn, &[result_size.into()], "error_result")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+                .map(|v| v.into_pointer_value())
+                .unwrap_or_else(|| ptr_type.const_null());
+            
+            if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, error_result_ptr, 0, "error_tag_ptr") {
+                let _ = ctx.builder.build_store(tag_ptr, i32_type.const_int(1, false)); // tag = 1 (error)
+            }
+            if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, error_result_ptr, 1, "error_value_ptr") {
+                let _ = ctx.builder.build_store(value_ptr, error_response_ptr);
+            }
+            if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, error_result_ptr, 2, "error_owner_ptr") {
+                let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false)); // owner = 1 (FFI)
+            }
+            
+            let _ = ctx.builder.build_return(Some(&error_result_ptr));
+            
+            // Success block: call the user's function
+            ctx.builder.position_at_end(success_block);
+        }
+        
+        // Call user function with request pointer
         ctx.builder
-            .build_call(user_func, &[_request_ptr.into()], "user_call")
+            .build_call(user_func, &[request_ptr.into()], "user_call")
             .ok()
             .and_then(|cs| cs.try_as_basic_value().left())
     };
     
-    // Create DooResult struct: { i32 tag, ptr value, i8 owner }
-    // Allocate on heap for FFI ownership
-    let result_struct_type = ctx.context.struct_type(
-        &[ctx.i32_type().into(), ptr_type.into(), ctx.context.i8_type().into()],
-        false
-    );
-    
-    // Allocate result on heap
-    let malloc_fn = ctx.module.get_function("malloc").unwrap_or_else(|| {
-        let fn_type = ptr_type.fn_type(&[ctx.i64_type().into()], false);
-        ctx.module.add_function("malloc", fn_type, None)
-    });
-    
-    let result_size = ctx.i64_type().const_int(
+    // Build success result
+    let result_size = i64_type.const_int(
         result_struct_type.size_of().unwrap().get_zero_extended_constant().unwrap_or(24),
         false
     );
@@ -2629,4 +2770,180 @@ fn emit_panic<'ctx>(ctx: &mut CodegenContext<'ctx>, message: &str) -> Option<()>
 
     ctx.builder.build_unreachable().ok()?;
     Some(())
+}
+/// Emit a call to doo_http_register_handler_with_metadata to register handler metadata.
+/// This is called when an HTTP route is registered, allowing the FFI to validate
+/// request bodies against the expected struct types.
+fn emit_handler_metadata_registration<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    handler_name: &str,
+    wrapper_fn: &FunctionValue<'ctx>,
+) {
+    let debug = std::env::var("DOO_DEBUG").is_ok();
+    
+    // Build metadata JSON from function parameter types
+    let metadata_json = build_handler_metadata_json(ctx, handler_name);
+    
+    if debug {
+        eprintln!("[CODEGEN] Registering handler metadata for {}: {}", handler_name, metadata_json);
+    }
+    
+    // Get or declare doo_http_register_handler_with_metadata
+    let void_type = ctx.context.void_type();
+    let ptr_type = ctx.ptr_type();
+    let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+    
+    let register_fn = ctx.module.get_function("doo_http_register_handler_with_metadata")
+        .unwrap_or_else(|| ctx.module.add_function("doo_http_register_handler_with_metadata", fn_type, None));
+    
+    // Create string constants for handler name and metadata
+    let handler_name_ptr = ctx.const_string(handler_name);
+    let metadata_ptr = ctx.const_string(&metadata_json);
+    
+    // Get wrapper function pointer
+    let wrapper_ptr = wrapper_fn.as_global_value().as_pointer_value();
+    
+    // Call doo_http_register_handler_with_metadata(name, wrapper_ptr, metadata_json)
+    let _ = ctx.builder.build_call(
+        register_fn,
+        &[handler_name_ptr.into(), wrapper_ptr.into(), metadata_ptr.into()],
+        "register_handler_meta",
+    );
+}
+
+/// Build metadata JSON string for a handler function.
+/// Format: {"param_count":N,"param_types":["TypeName"],"struct_layouts":{...}}
+fn build_handler_metadata_json<'ctx>(
+    ctx: &CodegenContext<'ctx>,
+    func_name: &str,
+) -> String {
+    use std::collections::HashMap;
+    use doo_core::types::{TypeRegistry, TypeKind, TypeId};
+    
+    // Get function parameter types
+    let param_type_ids = ctx.get_function_param_types(func_name);
+    let param_count = param_type_ids.map(|v| v.len()).unwrap_or(0);
+    
+    let mut param_types: Vec<String> = Vec::new();
+    let mut struct_layouts: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut enum_variants: HashMap<String, Vec<String>> = HashMap::new();
+    
+    // Helper to collect enums referenced by a type
+    fn collect_enums_from_type(
+        registry: &TypeRegistry,
+        type_id: TypeId,
+        enum_variants: &mut HashMap<String, Vec<String>>,
+    ) {
+        if let Some(type_info) = registry.get(type_id) {
+            match &type_info.kind {
+                TypeKind::Enum { name, variants, .. } => {
+                    if !enum_variants.contains_key(name) {
+                        // Extract just the variant names from (String, Option<TypeId>)
+                        let variant_names: Vec<String> = variants.iter()
+                            .map(|(variant_name, _)| variant_name.clone())
+                            .collect();
+                        enum_variants.insert(name.clone(), variant_names);
+                    }
+                }
+                TypeKind::Array { element } => {
+                    collect_enums_from_type(registry, *element, enum_variants);
+                }
+                TypeKind::Optional { inner } => {
+                    collect_enums_from_type(registry, *inner, enum_variants);
+                }
+                TypeKind::Map { key, value } => {
+                    collect_enums_from_type(registry, *key, enum_variants);
+                    collect_enums_from_type(registry, *value, enum_variants);
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    if let Some(type_ids) = param_type_ids {
+        for type_id in type_ids {
+            // Get type name from type registry
+            if let Some(type_info) = ctx.type_registry.get(*type_id) {
+                let type_name = match &type_info.kind {
+                    TypeKind::Struct { name, fields, .. } => {
+                        // Also capture struct layout
+                        let mut field_list: Vec<serde_json::Value> = Vec::new();
+                        for (field_name, field_type_id, _) in fields {
+                            let field_type_name = type_id_to_string_inner(&ctx.type_registry, *field_type_id);
+                            field_list.push(serde_json::json!({
+                                "name": field_name,
+                                "type": field_type_name
+                            }));
+                            
+                            // Collect any enums referenced by this field
+                            collect_enums_from_type(&ctx.type_registry, *field_type_id, &mut enum_variants);
+                        }
+                        struct_layouts.insert(name.clone(), serde_json::json!({
+                            "fields": field_list
+                        }));
+                        name.clone()
+                    }
+                    _ => type_id_to_string_inner(&ctx.type_registry, *type_id),
+                };
+                param_types.push(type_name);
+            }
+        }
+    }
+    
+    // Build JSON
+    let metadata = serde_json::json!({
+        "param_count": param_count,
+        "param_types": param_types,
+        "struct_layouts": struct_layouts,
+        "enum_variants": enum_variants
+    });
+    
+    metadata.to_string()
+}
+
+/// Convert TypeId to a string representation for metadata, resolving nested types
+fn type_id_to_string_inner(registry: &doo_core::types::TypeRegistry, type_id: doo_core::types::TypeId) -> String {
+    use doo_core::types::TypeKind;
+    
+    if let Some(type_info) = registry.get(type_id) {
+        match &type_info.kind {
+            TypeKind::Int => "Int".to_string(),
+            TypeKind::Float => "Float".to_string(),
+            TypeKind::Bool => "Bool".to_string(),
+            TypeKind::Str => "Str".to_string(),
+            TypeKind::Void => "Void".to_string(),
+            TypeKind::Array { element } => {
+                let elem_str = type_id_to_string_inner(registry, *element);
+                format!("[{}]", elem_str)
+            }
+            TypeKind::Optional { inner } => {
+                let inner_str = type_id_to_string_inner(registry, *inner);
+                format!("Optional({})", inner_str)
+            }
+            TypeKind::Struct { name, .. } => name.clone(),
+            TypeKind::Enum { name, .. } => name.clone(),
+            TypeKind::Function { .. } => "Function".to_string(),
+            TypeKind::Map { key, value } => {
+                let key_str = type_id_to_string_inner(registry, *key);
+                let value_str = type_id_to_string_inner(registry, *value);
+                format!("Map<{},{}>", key_str, value_str)
+            }
+            TypeKind::Result { ok, err } => {
+                let ok_str = type_id_to_string_inner(registry, *ok);
+                let err_str = type_id_to_string_inner(registry, *err);
+                format!("Result<{},{}>", ok_str, err_str)
+            }
+            TypeKind::Tuple { elements } => {
+                let elem_strs: Vec<String> = elements.iter()
+                    .map(|e| type_id_to_string_inner(registry, *e))
+                    .collect();
+                format!("({})", elem_strs.join(","))
+            }
+            TypeKind::TypeRef { name } => name.clone(),
+            TypeKind::Any => "Any".to_string(),
+            TypeKind::Error => "Error".to_string(),
+        }
+    } else {
+        "Unknown".to_string()
+    }
 }

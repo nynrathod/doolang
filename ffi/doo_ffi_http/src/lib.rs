@@ -657,13 +657,17 @@ pub extern "C" fn doohttp_populate_struct_from_request(
 ) -> i32 {
     clear_last_error();
 
-    if request_ptr.is_null() || struct_ptr.is_null() {
+    // Request pointer is required, but struct_ptr can be null for validation-only mode
+    if request_ptr.is_null() {
         return -1;
     }
 
     if handler_name.is_null() {
         return 0; // No handler name, can't look up metadata
     }
+
+    // Track if we're in validation-only mode (struct_ptr is null)
+    let _validation_only = struct_ptr.is_null();
 
     let handler_name_str = c_to_string(handler_name);
 
@@ -798,6 +802,143 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                     continue;
                 }
 
+                // Type validation for body params (JSON body)
+                if effective_source_type == 0 {
+                    if let Some(value) = source_data.get(field_name) {
+                        // Validate array element types
+                        if field_type.starts_with("[") && field_type.ends_with("]") {
+                            // Extract element type e.g. "[Str]" -> "Str"
+                            let elem_type = &field_type[1..field_type.len() - 1];
+
+                            if let serde_json::Value::Array(arr) = value {
+                                for (i, elem) in arr.iter().enumerate() {
+                                    let elem_valid = match elem_type {
+                                        "Int" => elem.is_i64() || elem.is_u64(),
+                                        "Float" => elem.is_f64(),
+                                        "Bool" => elem.is_boolean(),
+                                        "Str" | "String" => elem.is_string(),
+                                        _ => true, // Complex types - skip for now
+                                    };
+
+                                    if !elem_valid {
+                                        let received_type = match elem {
+                                            serde_json::Value::Null => "null",
+                                            serde_json::Value::Bool(_) => "Bool",
+                                            serde_json::Value::Number(n) => {
+                                                if n.is_i64() || n.is_u64() {
+                                                    "Int"
+                                                } else {
+                                                    "Float"
+                                                }
+                                            }
+                                            serde_json::Value::String(_) => "Str",
+                                            serde_json::Value::Array(_) => "Array",
+                                            serde_json::Value::Object(_) => "Object",
+                                        };
+
+                                        let err = FieldError::new(format!(
+                                            "Element [{}] has wrong type: expected {}, got {}",
+                                            i, elem_type, received_type
+                                        ))
+                                        .with_rule("type_mismatch")
+                                        .with_expected(elem_type.to_string())
+                                        .with_received(received_type.to_string());
+                                        field_errors.insert(format!("{}[{}]", field_name, i), err);
+                                    }
+                                }
+                            } else {
+                                // Expected array but got something else
+                                let received_type = match value {
+                                    serde_json::Value::Null => "null",
+                                    serde_json::Value::Bool(_) => "Bool",
+                                    serde_json::Value::Number(_) => "Number",
+                                    serde_json::Value::String(_) => "Str",
+                                    serde_json::Value::Object(_) => "Object",
+                                    serde_json::Value::Array(_) => "Array",
+                                };
+                                let err = FieldError::new(format!(
+                                    "Expected array, got {}",
+                                    received_type
+                                ))
+                                .with_rule("type_mismatch")
+                                .with_expected(field_type.to_string())
+                                .with_received(received_type.to_string());
+                                field_errors.insert(field_name.to_string(), err);
+                            }
+                        } else {
+                            // Validate primitive types and enums in body
+                            let type_valid = match field_type {
+                                "Int" => value.is_i64() || value.is_u64(),
+                                "Float" => value.is_f64(),
+                                "Bool" => value.is_boolean(),
+                                "Str" | "String" => value.is_string(),
+                                enum_name => {
+                                    // Check if it's an enum type
+                                    if let Some(variants) = metadata.enum_variants.get(enum_name) {
+                                        // Enum value must be a string matching one of the variants
+                                        if let Some(s) = value.as_str() {
+                                            variants.contains(&s.to_string())
+                                        } else {
+                                            false // Non-string value for enum
+                                        }
+                                    } else {
+                                        true // Unknown type, skip validation
+                                    }
+                                }
+                            };
+
+                            if !type_valid {
+                                // Check if this was an enum validation failure for better error messages
+                                if let Some(variants) = metadata.enum_variants.get(field_type) {
+                                    let received_str = if let Some(s) = value.as_str() {
+                                        s.to_string()
+                                    } else {
+                                        match value {
+                                            serde_json::Value::Null => "null".to_string(),
+                                            serde_json::Value::Bool(b) => b.to_string(),
+                                            serde_json::Value::Number(n) => n.to_string(),
+                                            serde_json::Value::Array(_) => "Array".to_string(),
+                                            serde_json::Value::Object(_) => "Object".to_string(),
+                                            serde_json::Value::String(s) => s.clone(),
+                                        }
+                                    };
+                                    let err = FieldError::new(format!(
+                                        "Invalid enum value '{}', expected one of: {:?}",
+                                        received_str, variants
+                                    ))
+                                    .with_rule("enum_value")
+                                    .with_expected(format!("{:?}", variants))
+                                    .with_received(received_str);
+                                    field_errors.insert(field_name.to_string(), err);
+                                } else {
+                                    let received_type = match value {
+                                        serde_json::Value::Null => "null",
+                                        serde_json::Value::Bool(_) => "Bool",
+                                        serde_json::Value::Number(n) => {
+                                            if n.is_i64() || n.is_u64() {
+                                                "Int"
+                                            } else {
+                                                "Float"
+                                            }
+                                        }
+                                        serde_json::Value::String(_) => "Str",
+                                        serde_json::Value::Array(_) => "Array",
+                                        serde_json::Value::Object(_) => "Object",
+                                    };
+                                    let err = FieldError::new(format!(
+                                        "Invalid type, expected {}",
+                                        field_type
+                                    ))
+                                    .with_rule("type_mismatch")
+                                    .with_expected(field_type.to_string())
+                                    .with_received(received_type.to_string());
+                                    field_errors.insert(field_name.to_string(), err);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Type validation for path/query params
                 if effective_source_type == 1 || effective_source_type == 2 {
                     if let Some(value) = source_data.get(field_name) {
@@ -826,9 +967,10 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             }
 
             if !field_errors.is_empty() {
-                let err = validation_error("Validation failed", path_str, field_errors);
-                set_last_error(422, err.to_json());
-                return 422;
+                // Type mismatch errors are parsing errors (400), not validation errors (422)
+                let err = validation_error("Request body parsing failed", path_str, field_errors);
+                set_last_error(400, err.to_json());
+                return 400;
             }
         }
     }
@@ -918,9 +1060,66 @@ pub extern "C" fn doo_http_register_handler_with_metadata(
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
 
-    // Parse metadata (simplified)
-    let metadata = HandlerMetadata::default();
+    // Parse metadata JSON properly
+    let metadata = if metadata_json.is_null() {
+        HandlerMetadata::default()
+    } else {
+        let json_str = c_to_string(metadata_json);
+        parse_handler_metadata(&json_str).unwrap_or_default()
+    };
+
     registry.register_handler_with_metadata(&name_str, handler, metadata);
+}
+
+/// Parse handler metadata JSON into HandlerMetadata struct
+fn parse_handler_metadata(json_str: &str) -> Option<HandlerMetadata> {
+    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let obj = parsed.as_object()?;
+
+    // Extract param_types array
+    let param_types = obj
+        .get("param_types")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Extract struct_layouts map
+    let struct_layouts = obj
+        .get("struct_layouts")
+        .and_then(|v| v.as_object())
+        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+
+    // Extract enum_variants map
+    let enum_variants = obj
+        .get("enum_variants")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| {
+                    v.as_array().map(|arr| {
+                        let variants: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect();
+                        (k.clone(), variants)
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(HandlerMetadata {
+        param_types,
+        return_type: String::new(),
+        struct_decorators: HashMap::new(),
+        struct_layouts,
+        enum_variants,
+    })
 }
 
 // ============================================================================

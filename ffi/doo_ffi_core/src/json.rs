@@ -8,10 +8,90 @@
 //! CRITICAL: Never use CString::into_raw() - it uses Rust allocator causing heap corruption.
 //! CRITICAL: Never return null_mut() for collection types - always return valid empty collection.
 
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
 use crate::memory::{doo_alloc, doo_alloc_empty_string, doo_alloc_string, MIN_ALLOCATION_SIZE};
+use crate::rfc7807::{FieldError, Rfc7807Error};
+
+// ============================================================================
+// Parse Error State (Thread-Local) - Uses RFC 7807 format
+// ============================================================================
+
+/// Thread-local storage for JSON parse errors
+/// Uses RFC 7807 format for consistency across all FFI modules
+thread_local! {
+    static PARSE_ERROR: RefCell<Option<Rfc7807Error>> = const { RefCell::new(None) };
+}
+
+/// Set a parse error (RFC 7807 format)
+fn set_parse_error_rfc7807(field: &str, expected: &str, received: &str) {
+    let error = Rfc7807Error::new(400, "Bad Request")
+        .with_detail(format!(
+            "Type mismatch at '{}': expected {}, got {}",
+            field, expected, received
+        ))
+        .with_errors(vec![FieldError::type_mismatch(field, expected, received)]);
+    PARSE_ERROR.with(|e| {
+        *e.borrow_mut() = Some(error);
+    });
+}
+
+/// Clear the parse error
+#[no_mangle]
+pub extern "C" fn doo_json_clear_parse_error() {
+    PARSE_ERROR.with(|e| {
+        *e.borrow_mut() = None;
+    });
+}
+
+/// Check if there's a parse error
+#[no_mangle]
+pub extern "C" fn doo_json_has_parse_error() -> bool {
+    PARSE_ERROR.with(|e| e.borrow().is_some())
+}
+
+/// Get the parse error status (0 if no error)
+#[no_mangle]
+pub extern "C" fn doo_json_get_parse_error_status() -> i32 {
+    PARSE_ERROR.with(|e| {
+        e.borrow()
+            .as_ref()
+            .map(|err| err.status as i32)
+            .unwrap_or(0)
+    })
+}
+
+/// Get the parse error as RFC 7807 JSON string (empty string if no error)
+/// OWNERSHIP: Caller owns the returned string
+#[no_mangle]
+pub extern "C" fn doo_json_get_parse_error_json() -> *mut c_char {
+    PARSE_ERROR.with(|e| {
+        e.borrow()
+            .as_ref()
+            .map(|err| doo_alloc_string(&err.to_json()))
+            .unwrap_or_else(doo_alloc_empty_string)
+    })
+}
+
+/// Helper to get JSON value type as string
+fn json_value_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "Bool",
+        serde_json::Value::Number(n) => {
+            if n.is_i64() {
+                "Int"
+            } else {
+                "Float"
+            }
+        }
+        serde_json::Value::String(_) => "Str",
+        serde_json::Value::Array(_) => "Array",
+        serde_json::Value::Object(_) => "Object",
+    }
+}
 
 /// Check if debug mode is enabled (cached)
 #[inline]
@@ -459,6 +539,7 @@ pub extern "C" fn doo_json_parse_str(json_str: *const c_char) -> *mut c_char {
 /// Returns pointer to data section (after 16-byte header)
 /// OWNERSHIP: Caller owns the returned array.
 /// NEVER returns null - returns empty array on error
+/// Sets parse error if any element has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 {
     debug_println!("[FFI] doo_json_parse_array_int: ENTER");
@@ -476,13 +557,33 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     debug_println!("[FFI] doo_json_parse_array_int: input={:?}", s);
 
-    let elements: Vec<i64> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_array()
-                .map(|arr| arr.iter().filter_map(|e| e.as_i64()).collect())
-        })
-        .unwrap_or_default();
+    // Parse JSON and validate ALL elements are integers
+    let arr = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Array(arr)) => arr,
+        _ => {
+            debug_println!("[FFI] doo_json_parse_array_int: not an array -> empty");
+            return alloc_empty_array() as *mut i64;
+        }
+    };
+
+    // Validate all elements and collect
+    let mut elements = Vec::with_capacity(arr.len());
+    for (i, elem) in arr.iter().enumerate() {
+        match elem.as_i64() {
+            Some(v) => elements.push(v),
+            None => {
+                // Type mismatch - set error and return empty array
+                let received = json_value_type_name(elem);
+                set_parse_error_rfc7807(&format!("[{}]", i), "Int", received);
+                debug_println!(
+                    "[FFI] doo_json_parse_array_int: type mismatch at [{}], expected Int, got {}",
+                    i,
+                    received
+                );
+                return alloc_empty_array() as *mut i64;
+            }
+        }
+    }
 
     debug_println!(
         "[FFI] doo_json_parse_array_int: parsed {} elements: {:?}",
@@ -541,6 +642,7 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
 /// Parse JSON array to [Float]
 /// OWNERSHIP: Caller owns the returned array.
 /// NEVER returns null - returns empty array on error
+/// Sets parse error if any element has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_float(json_str: *const c_char) -> *mut f64 {
     if json_str.is_null() {
@@ -548,13 +650,25 @@ pub extern "C" fn doo_json_parse_array_float(json_str: *const c_char) -> *mut f6
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
 
-    let elements: Vec<f64> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_array()
-                .map(|arr| arr.iter().filter_map(|e| e.as_f64()).collect())
-        })
-        .unwrap_or_default();
+    // Parse JSON and validate ALL elements are numbers
+    let arr = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Array(arr)) => arr,
+        _ => return alloc_empty_array() as *mut f64,
+    };
+
+    // Validate all elements and collect
+    let mut elements = Vec::with_capacity(arr.len());
+    for (i, elem) in arr.iter().enumerate() {
+        match elem.as_f64() {
+            Some(v) => elements.push(v),
+            None => {
+                // Type mismatch - set error and return empty array
+                let received = json_value_type_name(elem);
+                set_parse_error_rfc7807(&format!("[{}]", i), "Float", received);
+                return alloc_empty_array() as *mut f64;
+            }
+        }
+    }
 
     let data_size = elements.len() * std::mem::size_of::<f64>();
     let total_size = 16 + data_size; // 16-byte header
@@ -578,6 +692,7 @@ pub extern "C" fn doo_json_parse_array_float(json_str: *const c_char) -> *mut f6
 
 /// Parse JSON array to [Bool]
 /// OWNERSHIP: Caller owns the returned array.
+/// Sets parse error if any element has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 {
     debug_println!("[FFI] doo_json_parse_array_bool: ENTER");
@@ -589,17 +704,30 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     debug_println!("[FFI] doo_json_parse_array_bool: input={:?}", s);
 
-    let elements: Vec<u8> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|e| e.as_bool())
-                    .map(|b| if b { 1u8 } else { 0u8 })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    // Parse JSON and validate ALL elements are booleans
+    let arr = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Array(arr)) => arr,
+        _ => return alloc_empty_array() as *mut u8,
+    };
+
+    // Validate all elements and collect
+    let mut elements = Vec::with_capacity(arr.len());
+    for (i, elem) in arr.iter().enumerate() {
+        match elem.as_bool() {
+            Some(b) => elements.push(if b { 1u8 } else { 0u8 }),
+            None => {
+                // Type mismatch - set error and return empty array
+                let received = json_value_type_name(elem);
+                set_parse_error_rfc7807(&format!("[{}]", i), "Bool", received);
+                debug_println!(
+                    "[FFI] doo_json_parse_array_bool: type mismatch at [{}], expected Bool, got {}",
+                    i,
+                    received
+                );
+                return alloc_empty_array() as *mut u8;
+            }
+        }
+    }
 
     debug_println!(
         "[FFI] doo_json_parse_array_bool: parsed {} elements",
@@ -642,6 +770,7 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
 /// Parse JSON array to [Str]
 /// Returns pointer to data section (after 16-byte header) containing raw C string pointers
 /// OWNERSHIP: Caller owns the returned array and all strings in it.
+/// Sets parse error if any element has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut c_char {
     debug_println!("[FFI] doo_json_parse_array_str: ENTER");
@@ -653,16 +782,30 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     debug_println!("[FFI] doo_json_parse_array_str: input={:?}", s);
 
-    let elements: Vec<String> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|e| e.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    // Parse JSON and validate ALL elements are strings
+    let arr = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Array(arr)) => arr,
+        _ => return alloc_empty_array() as *mut *mut c_char,
+    };
+
+    // Validate all elements and collect
+    let mut elements = Vec::with_capacity(arr.len());
+    for (i, elem) in arr.iter().enumerate() {
+        match elem.as_str() {
+            Some(s) => elements.push(s.to_string()),
+            None => {
+                // Type mismatch - set error and return empty array
+                let received = json_value_type_name(elem);
+                set_parse_error_rfc7807(&format!("[{}]", i), "Str", received);
+                debug_println!(
+                    "[FFI] doo_json_parse_array_str: type mismatch at [{}], expected Str, got {}",
+                    i,
+                    received
+                );
+                return alloc_empty_array() as *mut *mut c_char;
+            }
+        }
+    }
 
     debug_println!(
         "[FFI] doo_json_parse_array_str: parsed {} elements",
