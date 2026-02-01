@@ -298,6 +298,10 @@ impl TypeChecker {
 
                 if let Some(sym) = self.scopes.lookup(name) {
                     sym.type_id.unwrap_or(builtin::ANY)
+                } else if let Some(type_id) = self.registry.lookup(name) {
+                    // Check if it's a registered type (struct or enum) used as a type reference
+                    // This handles cases like `app.auth(..., User, db)` where User is a struct name
+                    type_id
                 } else {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::Undefined(name.clone()),

@@ -61,6 +61,12 @@ impl ParserExpr for Parser {
                 ))
             }
 
+            TokenKind::StringTemplate => {
+                let text = self.current().text.clone();
+                self.advance();
+                self.parse_string_interpolation(&text, start)
+            }
+
             TokenKind::True => {
                 self.advance();
                 Ok(Expr::new(ExprKind::BoolLit(true), start))
@@ -627,4 +633,92 @@ fn parse_cast(parser: &mut Parser, expr: Expr) -> ParseResult<Expr> {
         },
         start.merge(&parser.prev_span()),
     ))
+}
+
+// ============================================================================
+// STRING INTERPOLATION PARSER
+// Parses "hello ${expr} world" into StringInterpolation(Vec<StringPart>)
+// ============================================================================
+
+impl Parser {
+    /// Parse a string template into StringInterpolation expression
+    /// Template format: "Hello ${name}, you have ${count} messages"
+    pub(super) fn parse_string_interpolation(
+        &mut self,
+        template: &str,
+        span: Span,
+    ) -> ParseResult<Expr> {
+        use crate::ast::StringPart;
+        use crate::lexer::Lexer;
+
+        let mut parts: Vec<StringPart> = Vec::new();
+        let chars: Vec<char> = template.chars().collect();
+        let mut pos = 0;
+
+        while pos < chars.len() {
+            // Find next ${
+            let remaining: String = chars[pos..].iter().collect();
+            if let Some(dollar_idx) = remaining.find("${") {
+                // Add literal part before ${
+                if dollar_idx > 0 {
+                    let literal: String = chars[pos..pos + dollar_idx].iter().collect();
+                    parts.push(StringPart::Literal(Self::process_escapes(&literal)));
+                }
+
+                // Find matching closing brace
+                let expr_start = pos + dollar_idx + 2;
+                let mut brace_depth = 1;
+                let mut expr_end = expr_start;
+
+                while expr_end < chars.len() && brace_depth > 0 {
+                    match chars[expr_end] {
+                        '{' => brace_depth += 1,
+                        '}' => brace_depth -= 1,
+                        _ => {}
+                    }
+                    if brace_depth > 0 {
+                        expr_end += 1;
+                    }
+                }
+
+                if brace_depth != 0 {
+                    return Err(CompilerError::new(
+                        ErrorCode::UnexpectedToken,
+                        "Unclosed ${} in string interpolation",
+                        span,
+                    ));
+                }
+
+                // Extract and parse the expression inside ${}
+                let expr_str: String = chars[expr_start..expr_end].iter().collect();
+
+                // Create a new lexer and parser for the embedded expression
+                let tokens = Lexer::new(&expr_str, 0).tokenize();
+                let mut expr_parser = Parser::from_tokens(tokens, 0);
+                let expr = expr_parser.parse_expression()?;
+
+                parts.push(StringPart::Expr(Box::new(expr)));
+                pos = expr_end + 1;
+            } else {
+                // No more interpolations, add remaining as literal
+                let literal: String = chars[pos..].iter().collect();
+                parts.push(StringPart::Literal(Self::process_escapes(&literal)));
+                break;
+            }
+        }
+
+        // If no parts (empty string), add empty literal
+        if parts.is_empty() {
+            parts.push(StringPart::Literal(String::new()));
+        }
+
+        // If only one literal part, return as simple string
+        if parts.len() == 1 {
+            if let StringPart::Literal(s) = &parts[0] {
+                return Ok(Expr::new(ExprKind::StrLit(s.clone()), span));
+            }
+        }
+
+        Ok(Expr::new(ExprKind::StringInterpolation(parts), span))
+    }
 }
