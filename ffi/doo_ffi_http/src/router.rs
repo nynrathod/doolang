@@ -13,6 +13,19 @@ pub struct RouteEntry {
     pub middleware: Vec<DooMiddlewareFn>,
 }
 
+/// Configuration for auth routes
+pub struct AuthConfig {
+    pub signup_path: String,
+    pub login_path: String,
+    pub user_struct: String,
+}
+
+/// Configuration for CRUD routes
+pub struct CrudConfig {
+    pub base_path: String,
+    pub resource_struct: String,
+}
+
 /// Route registry with method-based routing
 pub struct RouteRegistry {
     routers: HashMap<String, MatchitRouter<RouteEntry>>,
@@ -21,6 +34,8 @@ pub struct RouteRegistry {
     pub named_handlers: HashMap<String, DooHandlerFn>,
     pub handler_metadata: HashMap<String, HandlerMetadata>,
     pub route_count: usize,
+    pub auth_config: Option<AuthConfig>,
+    pub crud_configs: Vec<CrudConfig>,
 }
 
 impl RouteRegistry {
@@ -32,6 +47,8 @@ impl RouteRegistry {
             named_handlers: HashMap::new(),
             handler_metadata: HashMap::new(),
             route_count: 0,
+            auth_config: None,
+            crud_configs: Vec::new(),
         }
     }
 

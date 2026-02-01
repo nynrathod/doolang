@@ -267,7 +267,6 @@ impl ParserItems for Parser {
     }
 
     fn parse_field_decl(&mut self) -> ParseResult<FieldDecl> {
-        let decorators = self.parse_decorators()?;
         let start = self.current_span();
 
         let name = self.expect_ident()?;
@@ -282,6 +281,9 @@ impl ParserItems for Parser {
 
         self.expect(TokenKind::Colon)?;
         let type_expr = self.parse_type_expr()?;
+
+        // Parse decorators AFTER type expression (e.g., `Email: Str @email`)
+        let decorators = self.parse_decorators()?;
 
         // Default value
         let default = if self.check(TokenKind::Eq) {

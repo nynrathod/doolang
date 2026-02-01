@@ -1688,6 +1688,7 @@ pub extern "C" fn doo_json_get_field(
 /// Returns the variant name as a C string
 /// OWNERSHIP: Caller owns the returned string.
 /// Returns empty string if invalid JSON or not a variant (never returns null)
+/// NOTE: Normalizes variant names to PascalCase for consistent matching
 #[no_mangle]
 pub extern "C" fn doo_json_get_variant_name(json_str: *const c_char) -> *mut c_char {
     if json_str.is_null() {
@@ -1704,7 +1705,20 @@ pub extern "C" fn doo_json_get_variant_name(json_str: *const c_char) -> *mut c_c
             }
             _ => None,
         })
-        .map(|s| doo_alloc_string(&s))
+        .map(|s| {
+            // Normalize to PascalCase: capitalize first letter, keep rest as-is
+            // This allows "user" to match "User", "admin" to match "Admin", etc.
+            let normalized = if !s.is_empty() {
+                let mut chars = s.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => s,
+                }
+            } else {
+                s
+            };
+            doo_alloc_string(&normalized)
+        })
         .unwrap_or_else(|| doo_alloc_string(""))
 }
 

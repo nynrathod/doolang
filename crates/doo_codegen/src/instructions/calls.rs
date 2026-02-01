@@ -2312,6 +2312,12 @@ fn emit_ffi_call<'ctx>(
             args.iter().map(|_| None).collect()
         };
 
+    // Special handling for auth/crud: register struct/enum metadata before calling
+    // This is needed so the FFI can validate incoming data at runtime
+    if symbol == "doo_http_auth" || symbol == "doo_http_crud" {
+        emit_struct_metadata_registration_for_auth_crud(ctx, symbol, args);
+    }
+
     // Convert arguments - with automatic wrapper generation for FuncRef
     let arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> = args
         .iter()
@@ -2592,11 +2598,79 @@ fn get_or_generate_handler_wrapper<'ctx>(
             ctx.builder.position_at_end(success_block);
         }
         
-        // Call user function with request pointer
-        ctx.builder
-            .build_call(user_func, &[request_ptr.into()], "user_call")
-            .ok()
-            .and_then(|cs| cs.try_as_basic_value().left())
+        // Get the first parameter type of the user function
+        let param_type_ids = ctx.get_function_param_types(user_func_name);
+        let first_param_type = param_type_ids.and_then(|types| types.first().copied());
+        
+        // Check if the first parameter is a special "Request" type that receives raw pointer
+        let is_raw_request = first_param_type.map_or(false, |tid| {
+            match ctx.get_type_kind(tid) {
+                Some(doo_core::types::TypeKind::Struct { name, .. }) => {
+                    name == "Request" || name == "DooRequest"
+                }
+                _ => false
+            }
+        });
+        
+        if is_raw_request || first_param_type.is_none() {
+            // User function expects raw request pointer
+            ctx.builder
+                .build_call(user_func, &[request_ptr.into()], "user_call")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+        } else {
+            // User function expects a parsed struct - extract body and parse it
+            // DooRequest layout: { *method, *path, *body, *headers, *params, *query, *user_id }
+            // body is at index 2
+            let doo_request_type = ctx.context.struct_type(
+                &[
+                    ptr_type.into(), // method
+                    ptr_type.into(), // path
+                    ptr_type.into(), // body
+                    ptr_type.into(), // headers
+                    ptr_type.into(), // params
+                    ptr_type.into(), // query
+                    ptr_type.into(), // user_id
+                ],
+                false
+            );
+            
+            // Load the body pointer from the request
+            let body_ptr = ctx.builder
+                .build_struct_gep(doo_request_type, request_ptr, 2, "body_field_ptr")
+                .ok()
+                .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "body_json").ok())
+                .map(|v| v.into_pointer_value())
+                .unwrap_or_else(|| ptr_type.const_null());
+            
+            // Parse the body JSON into the expected struct type
+            let param_type = first_param_type.unwrap();
+            let parsed_struct = JsonBuiltins::emit_parse(
+                ctx,
+                body_ptr.into(),
+                Some(param_type),
+            );
+            
+            // Call user function with the parsed struct
+            match parsed_struct {
+                Some(struct_val) => {
+                    ctx.builder
+                        .build_call(user_func, &[struct_val.into()], "user_call")
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().left())
+                }
+                None => {
+                    // Fallback to passing request_ptr if parsing fails
+                    if debug {
+                        eprintln!("[CODEGEN] Warning: Failed to parse body for {}, falling back to request_ptr", user_func_name);
+                    }
+                    ctx.builder
+                        .build_call(user_func, &[request_ptr.into()], "user_call")
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().left())
+                }
+            }
+        }
     };
     
     // If user returns a struct, serialize it to JSON
@@ -2870,6 +2944,154 @@ fn emit_handler_metadata_registration<'ctx>(
         &[handler_name_ptr.into(), wrapper_ptr.into(), metadata_ptr.into()],
         "register_handler_meta",
     );
+}
+
+/// Emit struct/enum metadata registration for auth/crud calls.
+/// When app.auth() or app.crud() is called with a struct type, we need to register
+/// the struct's field layout and any enum types it references so the FFI can
+/// validate incoming requests at runtime.
+fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    symbol: &str,
+    args: &[MirOperand],
+) {
+    let debug = std::env::var("DOO_DEBUG").is_ok();
+    
+    // For auth: args are [server, signup_path, login_path, struct_name, db]
+    // For crud: args are [server, base_path, struct_name, db]
+    let struct_name_arg_idx = if symbol == "doo_http_auth" { 3 } else { 2 };
+    
+    let struct_name = match args.get(struct_name_arg_idx) {
+        Some(MirOperand::Const(MirConst::Str(name))) => name.clone(),
+        _ => return, // Not a constant string, can't determine at compile time
+    };
+    
+    if debug {
+        eprintln!("[CODEGEN] Registering struct metadata for {}: {}", symbol, struct_name);
+    }
+    
+    // Look up the struct in the type registry
+    let struct_type_id = match ctx.type_registry.lookup(&struct_name) {
+        Some(id) => id,
+        None => return,
+    };
+    
+    // Build struct metadata JSON
+    let struct_metadata = build_struct_metadata_json(ctx, struct_type_id);
+    
+    // Get or declare doo_http_register_struct_metadata
+    let void_type = ctx.context.void_type();
+    let ptr_type = ctx.ptr_type();
+    let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+    
+    let register_fn = ctx.module.get_function("doo_http_register_struct_metadata")
+        .unwrap_or_else(|| ctx.module.add_function("doo_http_register_struct_metadata", fn_type, None));
+    
+    // Create string constants
+    let struct_name_ptr = ctx.const_string(&struct_name);
+    let metadata_ptr = ctx.const_string(&struct_metadata);
+    
+    // Call doo_http_register_struct_metadata(name, metadata_json)
+    let _ = ctx.builder.build_call(
+        register_fn,
+        &[struct_name_ptr.into(), metadata_ptr.into()],
+        "register_struct_meta",
+    );
+    
+    // Collect field type IDs first to avoid borrow conflict
+    let field_type_ids: Vec<doo_core::types::TypeId> = ctx.type_registry.get(struct_type_id)
+        .and_then(|info| {
+            if let TypeKind::Struct { fields, .. } = &info.kind {
+                Some(fields.iter().map(|(_, tid, _)| *tid).collect())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    
+    // Register any enum types referenced by this struct
+    for field_type_id in field_type_ids {
+        emit_enum_metadata_if_needed(ctx, field_type_id);
+    }
+}
+
+/// Emit enum metadata registration if the type is an enum.
+fn emit_enum_metadata_if_needed<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    type_id: doo_core::types::TypeId,
+) {
+    let type_info = match ctx.type_registry.get(type_id) {
+        Some(info) => info,
+        None => return,
+    };
+    
+    if let TypeKind::Enum { name, variants, .. } = &type_info.kind {
+        let debug = std::env::var("DOO_DEBUG").is_ok();
+        
+        if debug {
+            eprintln!("[CODEGEN] Registering enum metadata: {}", name);
+        }
+        
+        // Build variants JSON array
+        let variant_names: Vec<&str> = variants.iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let variants_json = serde_json::to_string(&variant_names)
+            .unwrap_or_else(|_| "[]".to_string());
+        
+        // Get or declare doo_http_register_enum_metadata
+        let void_type = ctx.context.void_type();
+        let ptr_type = ctx.ptr_type();
+        let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+        
+        let register_fn = ctx.module.get_function("doo_http_register_enum_metadata")
+            .unwrap_or_else(|| ctx.module.add_function("doo_http_register_enum_metadata", fn_type, None));
+        
+        // Create string constants
+        let enum_name_ptr = ctx.const_string(name);
+        let variants_ptr = ctx.const_string(&variants_json);
+        
+        // Call doo_http_register_enum_metadata(name, variants_json)
+        let _ = ctx.builder.build_call(
+            register_fn,
+            &[enum_name_ptr.into(), variants_ptr.into()],
+            "register_enum_meta",
+        );
+    }
+}
+
+/// Build struct metadata JSON for a given type ID.
+fn build_struct_metadata_json<'ctx>(
+    ctx: &CodegenContext<'ctx>,
+    type_id: doo_core::types::TypeId,
+) -> String {
+    let type_info = match ctx.type_registry.get(type_id) {
+        Some(info) => info,
+        None => return "{}".to_string(),
+    };
+    
+    if let TypeKind::Struct { fields, .. } = &type_info.kind {
+        let field_list: Vec<serde_json::Value> = fields.iter()
+            .map(|(name, field_type_id, _is_public)| {
+                let type_name = type_id_to_string_inner(&ctx.type_registry, *field_type_id);
+                
+                // Decorators are not stored in TypeKind::Struct - they're in the AST/HIR
+                // For now, we'll include just name and type; decorators would require
+                // extending the type registry or looking them up from AST metadata
+                serde_json::json!({
+                    "name": name,
+                    "type": type_name,
+                    "decorators": []
+                })
+            })
+            .collect();
+        
+        serde_json::to_string(&serde_json::json!({
+            "fields": field_list
+        })).unwrap_or_else(|_| "{}".to_string())
+    } else {
+        "{}".to_string()
+    }
 }
 
 /// Build metadata JSON string for a handler function.

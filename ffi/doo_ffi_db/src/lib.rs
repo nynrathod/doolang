@@ -10,6 +10,7 @@ mod pool;
 mod json_utils;
 
 use std::ffi::CStr;
+use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::sync::OnceLock;
 
@@ -64,18 +65,51 @@ fn string_to_c(s: &str) -> *const c_char {
 // CONNECTION
 // ============================================================================
 
+/// Database struct layout matching Doo's Database type
+/// Fields: ConnectionType: Str, Connected: Bool
+#[repr(C)]
+struct DatabaseStruct {
+    connection_type: *const c_char, // ptr to "postgres"
+    connected: bool,                // i1 in LLVM
+}
+
 /// Connect to PostgreSQL database using DATABASE_URL env var
+/// Returns a pointer to a Database struct (not DooResult) for compatibility
 #[no_mangle]
-pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
+pub extern "C" fn doo_db_connect_postgres() -> *mut c_void {
     let conn_str = match std::env::var("DATABASE_URL") {
         Ok(s) => s,
-        Err(_) => return DooResult::err_str(500, "DATABASE_URL not set").into_raw(),
+        Err(_) => {
+            // For development/testing, create a mock database connection
+            // In production, this should fail or use a default URL
+            eprintln!("[DB] WARNING: DATABASE_URL not set, using mock connection");
+            return create_database_struct("mock", false);
+        }
     };
     
     let rt = get_runtime();
     match rt.block_on(init_pool(&conn_str)) {
-        Ok(_) => DooResult::ok_empty().into_raw(),
-        Err(e) => DooResult::err_str(500, &format!("Connection failed: {}", e)).into_raw(),
+        Ok(_) => create_database_struct("postgres", true),
+        Err(e) => {
+            eprintln!("[DB] Connection failed: {}", e);
+            create_database_struct("postgres", false)
+        }
+    }
+}
+
+fn create_database_struct(conn_type: &str, connected: bool) -> *mut c_void {
+    unsafe {
+        // Allocate Database struct: { ptr, i1 } aligned properly
+        // In LLVM this is typically 16 bytes due to padding
+        let ptr = libc::malloc(16) as *mut u8;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        // Store ConnectionType (ptr) at offset 0
+        *(ptr as *mut *const c_char) = string_to_c(conn_type);
+        // Store Connected (bool) at offset 8
+        *(ptr.add(8) as *mut bool) = connected;
+        ptr as *mut c_void
     }
 }
 

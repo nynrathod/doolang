@@ -101,6 +101,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             if builder.is_function_name(name) {
                 return MirOperand::FuncRef(name.clone());
             }
+
+            // Check if this is a type name (struct or enum) used as a value
+            // Type names are converted to their string representation for FFI
+            // This handles cases like `app.auth("/signup", "/login", User, db)`
+            // where `User` is a struct name passed to FFI expecting its string name
+            if builder.is_type_name(name) {
+                return MirOperand::Const(MirConst::Str(name.clone()));
+            }
             
             // Check ownership decision for this variable use
             if let Some(decision) = builder.get_ownership_decision(name, expr.span) {

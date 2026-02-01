@@ -19,3 +19,5 @@ chrono = "0.4"
 urlencoding = "2"
 lazy_static = "1.4"
 doo_ffi_core = { path = "../doo_ffi_core" }
+bcrypt = "0.18"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }

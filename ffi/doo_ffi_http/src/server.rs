@@ -167,7 +167,7 @@ fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
 
     Response::builder()
         .status(status_code)
-        .header("Content-Type", "application/json")
+        .header("Content-Type", CONTENT_TYPE_JSON)
         .body(Full::new(Bytes::from(body.to_string())))
         .unwrap_or_else(|_| {
             Response::new(Full::new(Bytes::from(

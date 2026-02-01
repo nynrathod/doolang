@@ -203,8 +203,10 @@ impl<'a> MirBuilder<'a> {
                 // Extract FFI info from @extern decorator (SINGLE SOURCE OF TRUTH)
                 if let Some(ffi_info) = self.extract_ffi_info(&f.decorators, &f.name) {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[MIR] Registered FFI function: {} -> lib={} sym={}", 
-                            f.name, ffi_info.library, ffi_info.symbol);
+                        eprintln!(
+                            "[MIR] Registered FFI function: {} -> lib={} sym={}",
+                            f.name, ffi_info.library, ffi_info.symbol
+                        );
                     }
                     self.ffi_functions.insert(f.name.clone(), ffi_info);
                 }
@@ -764,6 +766,17 @@ impl<'a> MirBuilder<'a> {
     /// Check if a name refers to a known function (not a variable).
     pub(crate) fn is_function_name(&self, name: &str) -> bool {
         self.function_return_types.contains_key(name) || self.ffi_functions.contains_key(name)
+    }
+
+    /// Check if a name refers to a registered type (struct or enum).
+    /// Returns true if the name is found in the type registry as a struct or enum type.
+    pub(crate) fn is_type_name(&self, name: &str) -> bool {
+        if let Some(type_id) = self.type_registry.lookup(name) {
+            if let Some(info) = self.type_registry.get(type_id) {
+                return matches!(info.kind, TypeKind::Struct { .. } | TypeKind::Enum { .. });
+            }
+        }
+        false
     }
 
     /// Get the return type for a builtin method call based on receiver type and method name.
