@@ -1444,6 +1444,47 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         source_type
     };
 
+    // Helper to coerce string values to typed JSON based on struct layout from metadata
+    fn coerce_string_to_typed_value(
+        key: &str, 
+        value: &str, 
+        metadata: &HandlerMetadata
+    ) -> serde_json::Value {
+        // Find the expected type for this field from the struct layout
+        let struct_name = metadata.param_types.first().cloned().unwrap_or_default();
+        if let Some(layout) = metadata.struct_layouts.get(&struct_name) {
+            if let Some(fields) = layout.get("fields").and_then(|f| f.as_array()) {
+                for field in fields {
+                    if let Some(obj) = field.as_object() {
+                        let field_name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let field_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("Str");
+                        if field_name == key {
+                            return match field_type {
+                                "Int" => value.parse::<i64>()
+                                    .map(serde_json::Value::from)
+                                    .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
+                                "Float" => value.parse::<f64>()
+                                    .map(|f| serde_json::Value::from(f))
+                                    .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
+                                "Bool" => {
+                                    let lower = value.to_lowercase();
+                                    match lower.as_str() {
+                                        "true" | "1" => serde_json::Value::Bool(true),
+                                        "false" | "0" => serde_json::Value::Bool(false),
+                                        _ => serde_json::Value::String(value.to_string()),
+                                    }
+                                }
+                                _ => serde_json::Value::String(value.to_string()),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        // Default: keep as string
+        serde_json::Value::String(value.to_string())
+    }
+
     // Parse source data based on effective_source_type
     let source_data: serde_json::Map<String, serde_json::Value> = match effective_source_type {
         0 => {
@@ -1465,26 +1506,26 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             }
         }
         1 => {
-            // Extract from path params
+            // Extract from path params - coerce to proper types
             if request.params.is_null() {
                 serde_json::Map::new()
             } else {
                 let params_map = unsafe { &*(request.params as *const HashMap<String, String>) };
                 params_map
                     .iter()
-                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .map(|(k, v)| (k.clone(), coerce_string_to_typed_value(k, v, &metadata)))
                     .collect()
             }
         }
         2 => {
-            // Extract from query params
+            // Extract from query params - coerce to proper types based on metadata
             if request.query.is_null() {
                 serde_json::Map::new()
             } else {
                 let query_map = unsafe { &*(request.query as *const HashMap<String, String>) };
                 query_map
                     .iter()
-                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .map(|(k, v)| (k.clone(), coerce_string_to_typed_value(k, v, &metadata)))
                     .collect()
             }
         }
@@ -1715,6 +1756,19 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             .with_errors(core_errors);
         set_last_error(400, err.to_json());
         return 400;
+    }
+
+    // For query/params sources, update request.body with the typed JSON
+    // so that codegen's body parsing works correctly
+    if effective_source_type != 0 && !source_data.is_empty() {
+        let json_obj = serde_json::Value::Object(source_data);
+        if let Ok(json_str) = serde_json::to_string(&json_obj) {
+            let request_mut = unsafe { &mut *(request_ptr as *mut DooRequest) };
+            // Free old body if it exists (to avoid memory leak)
+            // Note: We need to be careful here - if body was stack allocated, don't free
+            // For now, just overwrite since body is typically empty for GET requests
+            request_mut.body = string_to_c(&json_str);
+        }
     }
 
     0 // Success
