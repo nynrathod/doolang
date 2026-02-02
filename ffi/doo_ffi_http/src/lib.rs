@@ -205,10 +205,12 @@ fn register_route_fn(method: &str, path: *const c_char, handler: DooHandlerFn) -
 use std::sync::Mutex as StdMutex;
 
 /// Global struct metadata registry - stores field info for structs
-static STRUCT_REGISTRY: std::sync::OnceLock<StdMutex<HashMap<String, StructMetadata>>> = std::sync::OnceLock::new();
+static STRUCT_REGISTRY: std::sync::OnceLock<StdMutex<HashMap<String, StructMetadata>>> =
+    std::sync::OnceLock::new();
 
 /// Global enum metadata registry - stores variants for enums
-static ENUM_REGISTRY: std::sync::OnceLock<StdMutex<HashMap<String, Vec<String>>>> = std::sync::OnceLock::new();
+static ENUM_REGISTRY: std::sync::OnceLock<StdMutex<HashMap<String, Vec<String>>>> =
+    std::sync::OnceLock::new();
 
 fn get_struct_registry() -> &'static StdMutex<HashMap<String, StructMetadata>> {
     STRUCT_REGISTRY.get_or_init(|| StdMutex::new(HashMap::new()))
@@ -255,7 +257,11 @@ pub extern "C" fn doo_http_register_struct_metadata(
                     let decorators: Vec<String> = field
                         .get("decorators")
                         .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_default();
 
                     fields.push(FieldMetadata {
@@ -311,7 +317,9 @@ fn validate_item_against_schema(
     let struct_name = {
         let routes = get_routes();
         let registry = routes.lock().unwrap();
-        registry.crud_configs.iter()
+        registry
+            .crud_configs
+            .iter()
             .find(|c| c.base_path.trim_start_matches('/') == resource_name)
             .map(|c| c.resource_struct.clone())
     };
@@ -329,10 +337,12 @@ fn validate_item_against_schema(
 
     let obj = match item.as_object() {
         Some(o) => o,
-        None => return Err(format!(
-            r#"{{"type":"about:blank","title":"Bad Request","status":400,"detail":"Expected JSON object","instance":"{}"}}"#,
-            path
-        )),
+        None => {
+            return Err(format!(
+                r#"{{"type":"about:blank","title":"Bad Request","status":400,"detail":"Expected JSON object","instance":"{}"}}"#,
+                path
+            ))
+        }
     };
 
     // Validate each field against its type and decorators
@@ -384,7 +394,7 @@ fn validate_decorator(
             }
         }
     } else if decorator.starts_with("min(") && decorator.ends_with(')') {
-        let min_str = &decorator[4..decorator.len()-1];
+        let min_str = &decorator[4..decorator.len() - 1];
         if let Ok(min_val) = min_str.parse::<i64>() {
             // Check if it's a string length or numeric min
             if let Some(s) = value.as_str() {
@@ -404,7 +414,7 @@ fn validate_decorator(
             }
         }
     } else if decorator.starts_with("max(") && decorator.ends_with(')') {
-        let max_str = &decorator[4..decorator.len()-1];
+        let max_str = &decorator[4..decorator.len() - 1];
         if let Ok(max_val) = max_str.parse::<i64>() {
             if let Some(s) = value.as_str() {
                 if (s.len() as i64) > max_val {
@@ -423,7 +433,7 @@ fn validate_decorator(
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -432,7 +442,8 @@ fn validate_decorator(
 // ============================================================================
 
 /// In-memory user store for auth (simplified for demo; production would use DB)
-static AUTH_USERS: std::sync::OnceLock<StdMutex<HashMap<String, AuthUser>>> = std::sync::OnceLock::new();
+static AUTH_USERS: std::sync::OnceLock<StdMutex<HashMap<String, AuthUser>>> =
+    std::sync::OnceLock::new();
 
 fn get_auth_users() -> &'static StdMutex<HashMap<String, AuthUser>> {
     AUTH_USERS.get_or_init(|| StdMutex::new(HashMap::new()))
@@ -455,7 +466,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     let body = unsafe { c_to_string((*req).body) };
-    
+
     // Parse full JSON body - supports any fields the user defines
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
     let json = match parsed {
@@ -465,21 +476,23 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     };
 
     // Extract email (required, case-insensitive field lookup)
-    let email = json.iter()
+    let email = json
+        .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("email"))
         .and_then(|(_, v)| v.as_str())
         .map(|s| s.to_string());
-    
+
     let email = match email {
         Some(e) => e,
         None => return make_err_http(400, "Missing 'email' field"),
     };
 
     // Extract password (required, case-insensitive field lookup)
-    let password = json.iter()
+    let password = json
+        .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("password"))
         .and_then(|(_, v)| v.as_str());
-    
+
     let password = match password {
         Some(p) => p,
         None => return make_err_http(400, "Missing 'password' field"),
@@ -510,16 +523,19 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     // Store user with all fields
     {
         let mut users = get_auth_users().lock().unwrap();
-        users.insert(email.clone(), AuthUser {
-            email: email.clone(),
-            password_hash,
-            extra_fields: serde_json::Value::Object(extra_fields.clone()),
-        });
+        users.insert(
+            email.clone(),
+            AuthUser {
+                email: email.clone(),
+                password_hash,
+                extra_fields: serde_json::Value::Object(extra_fields.clone()),
+            },
+        );
     }
 
     // Generate JWT token
     let token = generate_jwt_token(&email);
-    
+
     // Build response with email and any extra fields (but not password)
     let mut response_data = serde_json::json!({
         "token": token,
@@ -542,7 +558,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     let body = unsafe { c_to_string((*req).body) };
-    
+
     // Parse full JSON body - supports any fields the user defines
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
     let json = match parsed {
@@ -552,21 +568,23 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     };
 
     // Extract email (required, case-insensitive field lookup)
-    let email = json.iter()
+    let email = json
+        .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("email"))
         .and_then(|(_, v)| v.as_str())
         .map(|s| s.to_string());
-    
+
     let email = match email {
         Some(e) => e,
         None => return make_err_http(400, "Missing 'email' field"),
     };
 
     // Extract password (required, case-insensitive field lookup)
-    let password = json.iter()
+    let password = json
+        .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("password"))
         .and_then(|(_, v)| v.as_str());
-    
+
     let password = match password {
         Some(p) => p,
         None => return make_err_http(400, "Missing 'password' field"),
@@ -591,7 +609,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
 
     // Generate JWT token
     let token = generate_jwt_token(&email);
-    
+
     // Build response with email, token, and any extra fields stored during signup
     let mut response_data = serde_json::json!({
         "token": token,
@@ -611,7 +629,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
 /// Generate a JWT token for the given subject
 fn generate_jwt_token(sub: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Serialize, Deserialize)]
@@ -663,7 +681,7 @@ pub extern "C" fn doo_http_auth(
 
     // Register signup POST route
     registry.register("POST", &signup_str, auth_signup_handler);
-    
+
     // Register login POST route
     registry.register("POST", &login_str, auth_login_handler);
 
@@ -682,7 +700,8 @@ pub extern "C" fn doo_http_auth(
 // ============================================================================
 
 /// In-memory store for CRUD resources (simplified for demo; production would use DB)
-static CRUD_STORES: std::sync::OnceLock<StdMutex<HashMap<String, CrudStore>>> = std::sync::OnceLock::new();
+static CRUD_STORES: std::sync::OnceLock<StdMutex<HashMap<String, CrudStore>>> =
+    std::sync::OnceLock::new();
 
 fn get_crud_stores() -> &'static StdMutex<HashMap<String, CrudStore>> {
     CRUD_STORES.get_or_init(|| StdMutex::new(HashMap::new()))
@@ -695,7 +714,10 @@ struct CrudStore {
 
 impl CrudStore {
     fn new() -> Self {
-        Self { items: Vec::new(), next_id: 1 }
+        Self {
+            items: Vec::new(),
+            next_id: 1,
+        }
     }
 }
 
@@ -712,7 +734,12 @@ extern "C" fn crud_list_handler(req: *const DooRequest) -> *mut DooResult {
 
     let path = unsafe { c_to_string((*req).path) };
     // Extract resource name from path (e.g., "/tasks" -> "tasks")
-    let resource = path.trim_start_matches('/').split('/').next().unwrap_or("").to_string();
+    let resource = path
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
 
     let stores = get_crud_stores().lock().unwrap();
     let items = match stores.get(&resource) {
@@ -732,9 +759,14 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
 
     let path = unsafe { c_to_string((*req).path) };
     let body = unsafe { c_to_string((*req).body) };
-    
+
     // Extract resource name from path
-    let resource = path.trim_start_matches('/').split('/').next().unwrap_or("").to_string();
+    let resource = path
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
 
     // Parse body JSON
     let mut item: serde_json::Value = match serde_json::from_str(&body) {
@@ -748,8 +780,10 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     let mut stores = get_crud_stores().lock().unwrap();
-    let store = stores.entry(resource.clone()).or_insert_with(CrudStore::new);
-    
+    let store = stores
+        .entry(resource.clone())
+        .or_insert_with(CrudStore::new);
+
     // Add ID to item
     if let Some(obj) = item.as_object_mut() {
         obj.insert("id".to_string(), serde_json::json!(store.next_id));
@@ -769,22 +803,31 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
 
     let path = unsafe { c_to_string((*req).path) };
     let params = unsafe { (*req).params as *const HashMap<String, String> };
-    
+
     // Extract resource and ID from path
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     let resource = parts.first().unwrap_or(&"").to_string();
-    
+
     let id: i64 = if !params.is_null() {
-        unsafe { (*params).get("id").and_then(|s| s.parse().ok()).unwrap_or(0) }
+        unsafe {
+            (*params)
+                .get("id")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        }
     } else {
         parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
     };
 
     let stores = get_crud_stores().lock().unwrap();
-    let item = stores.get(&resource)
-        .and_then(|store| store.items.iter().find(|i| {
-            i.get("id").and_then(|v| v.as_i64()) == Some(id)
-        }))
+    let item = stores
+        .get(&resource)
+        .and_then(|store| {
+            store
+                .items
+                .iter()
+                .find(|i| i.get("id").and_then(|v| v.as_i64()) == Some(id))
+        })
         .cloned();
 
     match item {
@@ -805,12 +848,17 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
     let path = unsafe { c_to_string((*req).path) };
     let body = unsafe { c_to_string((*req).body) };
     let params = unsafe { (*req).params as *const HashMap<String, String> };
-    
+
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     let resource = parts.first().unwrap_or(&"").to_string();
-    
+
     let id: i64 = if !params.is_null() {
-        unsafe { (*params).get("id").and_then(|s| s.parse().ok()).unwrap_or(0) }
+        unsafe {
+            (*params)
+                .get("id")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        }
     } else {
         parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
     };
@@ -821,10 +869,12 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
     };
 
     let mut stores = get_crud_stores().lock().unwrap();
-    let item = stores.get_mut(&resource)
-        .and_then(|store| store.items.iter_mut().find(|i| {
-            i.get("id").and_then(|v| v.as_i64()) == Some(id)
-        }));
+    let item = stores.get_mut(&resource).and_then(|store| {
+        store
+            .items
+            .iter_mut()
+            .find(|i| i.get("id").and_then(|v| v.as_i64()) == Some(id))
+    });
 
     match item {
         Some(i) => {
@@ -848,21 +898,29 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
 
     let path = unsafe { c_to_string((*req).path) };
     let params = unsafe { (*req).params as *const HashMap<String, String> };
-    
+
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     let resource = parts.first().unwrap_or(&"").to_string();
-    
+
     let id: i64 = if !params.is_null() {
-        unsafe { (*params).get("id").and_then(|s| s.parse().ok()).unwrap_or(0) }
+        unsafe {
+            (*params)
+                .get("id")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        }
     } else {
         parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
     };
 
     let mut stores = get_crud_stores().lock().unwrap();
-    let removed = stores.get_mut(&resource)
+    let removed = stores
+        .get_mut(&resource)
         .map(|store| {
             let before = store.items.len();
-            store.items.retain(|i| i.get("id").and_then(|v| v.as_i64()) != Some(id));
+            store
+                .items
+                .retain(|i| i.get("id").and_then(|v| v.as_i64()) != Some(id));
             before != store.items.len()
         })
         .unwrap_or(false);
@@ -895,7 +953,9 @@ pub extern "C" fn doo_http_crud(
     let resource_key = base_str.trim_start_matches('/').to_string();
     {
         let mut stores = get_crud_stores().lock().unwrap();
-        stores.entry(resource_key.clone()).or_insert_with(CrudStore::new);
+        stores
+            .entry(resource_key.clone())
+            .or_insert_with(CrudStore::new);
     }
 
     // Register CRUD routes
@@ -904,17 +964,17 @@ pub extern "C" fn doo_http_crud(
 
     // GET /resource - list all
     registry.register("GET", &base_str, crud_list_handler);
-    
+
     // POST /resource - create
     registry.register("POST", &base_str, crud_create_handler);
-    
+
     // GET /resource/:id - get one
     let get_one_path = format!("{}/:id", base_str);
     registry.register("GET", &get_one_path, crud_get_handler);
-    
+
     // PUT /resource/:id - update
     registry.register("PUT", &get_one_path, crud_update_handler);
-    
+
     // DELETE /resource/:id - delete
     registry.register("DELETE", &get_one_path, crud_delete_handler);
 
@@ -1422,37 +1482,15 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         None => return 0, // No metadata, skip validation
     };
 
-    // Get HTTP method for smart source detection
-    let method_str = c_to_string(request.method).to_uppercase();
-
-    // Smart source_type detection:
-    // For GET/DELETE with no body, automatically use query params
-    let effective_source_type = if source_type == 0 {
-        let has_body = if request.body.is_null() {
-            false
-        } else {
-            let body_str = c_to_string(request.body);
-            !body_str.is_empty()
-        };
-
-        if !has_body && (method_str == "GET" || method_str == "DELETE") {
-            2 // Use query params for GET/DELETE without body
-        } else {
-            0 // Use body for POST/PUT/PATCH or when body exists
-        }
-    } else {
-        source_type
-    };
-
     // Helper to coerce string values to typed JSON based on struct layout from metadata
+    // Searches ALL struct layouts to find the field type (for multi-param handlers)
     fn coerce_string_to_typed_value(
-        key: &str, 
-        value: &str, 
-        metadata: &HandlerMetadata
+        key: &str,
+        value: &str,
+        metadata: &HandlerMetadata,
     ) -> serde_json::Value {
-        // Find the expected type for this field from the struct layout
-        let struct_name = metadata.param_types.first().cloned().unwrap_or_default();
-        if let Some(layout) = metadata.struct_layouts.get(&struct_name) {
+        // Search ALL struct layouts to find the expected type for this field
+        for (_struct_name, layout) in &metadata.struct_layouts {
             if let Some(fields) = layout.get("fields").and_then(|f| f.as_array()) {
                 for field in fields {
                     if let Some(obj) = field.as_object() {
@@ -1460,12 +1498,18 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                         let field_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("Str");
                         if field_name == key {
                             return match field_type {
-                                "Int" => value.parse::<i64>()
+                                "Int" => value
+                                    .parse::<i64>()
                                     .map(serde_json::Value::from)
-                                    .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
-                                "Float" => value.parse::<f64>()
+                                    .unwrap_or_else(|_| {
+                                        serde_json::Value::String(value.to_string())
+                                    }),
+                                "Float" => value
+                                    .parse::<f64>()
                                     .map(|f| serde_json::Value::from(f))
-                                    .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
+                                    .unwrap_or_else(|_| {
+                                        serde_json::Value::String(value.to_string())
+                                    }),
                                 "Bool" => {
                                     let lower = value.to_lowercase();
                                     match lower.as_str() {
@@ -1485,66 +1529,58 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         serde_json::Value::String(value.to_string())
     }
 
-    // Parse source data based on effective_source_type
-    let source_data: serde_json::Map<String, serde_json::Value> = match effective_source_type {
-        0 => {
-            // Parse body JSON
-            if request.body.is_null() {
-                return 0;
+    // Build source_data by merging ALL sources for multi-param handler support
+    // Priority: path params > query params > body (later sources don't override earlier)
+    let mut source_data: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+
+    // 1. Start with path params (highest priority for path-based fields like userId)
+    if !request.params.is_null() {
+        let params_map = unsafe { &*(request.params as *const HashMap<String, String>) };
+        for (k, v) in params_map.iter() {
+            source_data.insert(k.clone(), coerce_string_to_typed_value(k, v, &metadata));
+        }
+    }
+
+    // 2. Add query params (for GET requests with query strings)
+    if !request.query.is_null() {
+        let query_map = unsafe { &*(request.query as *const HashMap<String, String>) };
+        for (k, v) in query_map.iter() {
+            // Don't override path params
+            if !source_data.contains_key(k) {
+                source_data.insert(k.clone(), coerce_string_to_typed_value(k, v, &metadata));
             }
-            let body_str = c_to_string(request.body);
-            if body_str.is_empty() {
-                return 0;
-            }
-            match serde_json::from_str::<serde_json::Value>(&body_str) {
-                Ok(serde_json::Value::Object(obj)) => obj,
-                _ => {
-                    let err = bad_request("Invalid JSON body", path_str.clone());
-                    set_last_error(400, err.to_json());
-                    return 400;
+        }
+    }
+
+    // 3. Merge body JSON (for POST/PUT/PATCH with JSON body)
+    if !request.body.is_null() {
+        let body_str = c_to_string(request.body);
+        if !body_str.is_empty() {
+            if let Ok(serde_json::Value::Object(body_obj)) =
+                serde_json::from_str::<serde_json::Value>(&body_str)
+            {
+                for (k, v) in body_obj {
+                    // Don't override path params or query params
+                    if !source_data.contains_key(&k) {
+                        source_data.insert(k, v);
+                    }
                 }
             }
         }
-        1 => {
-            // Extract from path params - coerce to proper types
-            if request.params.is_null() {
-                serde_json::Map::new()
-            } else {
-                let params_map = unsafe { &*(request.params as *const HashMap<String, String>) };
-                params_map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), coerce_string_to_typed_value(k, v, &metadata)))
-                    .collect()
-            }
-        }
-        2 => {
-            // Extract from query params - coerce to proper types based on metadata
-            if request.query.is_null() {
-                serde_json::Map::new()
-            } else {
-                let query_map = unsafe { &*(request.query as *const HashMap<String, String>) };
-                query_map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), coerce_string_to_typed_value(k, v, &metadata)))
-                    .collect()
-            }
-        }
-        _ => serde_json::Map::new(),
-    };
+    }
 
-    // Get struct name from param_types
-    let struct_name = if !metadata.param_types.is_empty() {
-        metadata
-            .param_types
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "Unknown".to_string())
-    } else {
-        "Unknown".to_string()
-    };
+    // If no data at all and it's a GET/DELETE, that's fine (might have no params)
+    // But for POST/PUT/PATCH, empty data when params expected is an error
+    // This will be caught by validation below
 
-    // Special types that receive raw request pointer - skip validation
-    if struct_name == "Request" || struct_name == "DooRequest" || struct_name == "Unknown" {
+    // Check if first param type is a special raw request type - skip validation
+    let first_param = metadata.param_types.first().cloned().unwrap_or_default();
+    if first_param == "Request" || first_param == "DooRequest" {
+        return 0;
+    }
+
+    // Skip validation if no param types defined
+    if metadata.param_types.is_empty() {
         return 0;
     }
 
@@ -1560,7 +1596,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             Some(layout) => layout,
             None => return, // Unknown struct, skip validation
         };
-        
+
         let fields = match struct_layout.get("fields").and_then(|f| f.as_array()) {
             Some(f) => f,
             None => return,
@@ -1618,7 +1654,11 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     serde_json::Value::Null => "null",
                                     serde_json::Value::Bool(_) => "Bool",
                                     serde_json::Value::Number(n) => {
-                                        if n.is_i64() || n.is_u64() { "Int" } else { "Float" }
+                                        if n.is_i64() || n.is_u64() {
+                                            "Int"
+                                        } else {
+                                            "Float"
+                                        }
                                     }
                                     serde_json::Value::String(_) => "Str",
                                     serde_json::Value::Array(_) => "Array",
@@ -1652,8 +1692,9 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                     }
                 } else {
                     // Check primitive types first
-                    let is_primitive = matches!(field_type, "Int" | "Float" | "Bool" | "Str" | "String");
-                    
+                    let is_primitive =
+                        matches!(field_type, "Int" | "Float" | "Bool" | "Str" | "String");
+
                     if is_primitive {
                         let type_valid = match field_type {
                             "Int" => value.is_i64() || value.is_u64(),
@@ -1668,16 +1709,21 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 serde_json::Value::Null => "null",
                                 serde_json::Value::Bool(_) => "Bool",
                                 serde_json::Value::Number(n) => {
-                                    if n.is_i64() || n.is_u64() { "Int" } else { "Float" }
+                                    if n.is_i64() || n.is_u64() {
+                                        "Int"
+                                    } else {
+                                        "Float"
+                                    }
                                 }
                                 serde_json::Value::String(_) => "Str",
                                 serde_json::Value::Array(_) => "Array",
                                 serde_json::Value::Object(_) => "Object",
                             };
-                            let err = FieldError::new(format!("Invalid type, expected {}", field_type))
-                                .with_rule("type_mismatch")
-                                .with_expected(field_type.to_string())
-                                .with_received(received_type.to_string());
+                            let err =
+                                FieldError::new(format!("Invalid type, expected {}", field_type))
+                                    .with_rule("type_mismatch")
+                                    .with_expected(field_type.to_string())
+                                    .with_received(received_type.to_string());
                             field_errors.insert(full_field_name, err);
                         }
                     } else if let Some(variants) = metadata.enum_variants.get(field_type) {
@@ -1688,7 +1734,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                         } else {
                             false
                         };
-                        
+
                         if !valid {
                             let received_str = match value {
                                 serde_json::Value::String(s) => s.clone(),
@@ -1726,10 +1772,11 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 serde_json::Value::Array(_) => "Array",
                                 serde_json::Value::Object(_) => "Object",
                             };
-                            let err = FieldError::new(format!("Expected object, got {}", received_type))
-                                .with_rule("type_mismatch")
-                                .with_expected(field_type.to_string())
-                                .with_received(received_type.to_string());
+                            let err =
+                                FieldError::new(format!("Expected object, got {}", received_type))
+                                    .with_rule("type_mismatch")
+                                    .with_expected(field_type.to_string())
+                                    .with_received(received_type.to_string());
                             field_errors.insert(full_field_name, err);
                         }
                     }
@@ -1739,9 +1786,15 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         }
     }
 
-    // Validate fields and populate struct using struct_layouts
+    // Validate fields for ALL param types (multi-param handler support)
     let mut field_errors: HashMap<String, FieldError> = HashMap::new();
-    validate_struct_fields(&source_data, &struct_name, "", &metadata, &mut field_errors);
+    for param_type in &metadata.param_types {
+        // Skip special types
+        if param_type == "Request" || param_type == "DooRequest" {
+            continue;
+        }
+        validate_struct_fields(&source_data, param_type, "", &metadata, &mut field_errors);
+    }
 
     if !field_errors.is_empty() {
         // Type mismatch errors are parsing errors (400), not validation errors (422)
@@ -1750,7 +1803,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             .into_iter()
             .map(|(field, err)| err.to_core(&field))
             .collect();
-        
+
         let err = doo_ffi_core::Rfc7807Error::bad_request("Request body parsing failed")
             .with_instance(path_str)
             .with_errors(core_errors);
@@ -1758,15 +1811,12 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         return 400;
     }
 
-    // For query/params sources, update request.body with the typed JSON
-    // so that codegen's body parsing works correctly
-    if effective_source_type != 0 && !source_data.is_empty() {
+    // Always update request.body with the merged/typed JSON
+    // so that codegen's body parsing works correctly for all sources
+    if !source_data.is_empty() {
         let json_obj = serde_json::Value::Object(source_data);
         if let Ok(json_str) = serde_json::to_string(&json_obj) {
             let request_mut = unsafe { &mut *(request_ptr as *mut DooRequest) };
-            // Free old body if it exists (to avoid memory leak)
-            // Note: We need to be careful here - if body was stack allocated, don't free
-            // For now, just overwrite since body is typically empty for GET requests
             request_mut.body = string_to_c(&json_str);
         }
     }
@@ -1818,15 +1868,15 @@ pub extern "C" fn doohttp_last_error_json() -> *const c_char {
 }
 
 /// Parse request body JSON and return a raw pointer suitable for passing to user function.
-/// 
+///
 /// This function:
 /// 1. Extracts the JSON body from the request
 /// 2. Validates it against the handler's expected struct type
 /// 3. Returns the raw JSON string pointer (user function receives this)
-/// 
+///
 /// The user function's wrapper in codegen will handle the actual struct parsing.
 /// This is a simpler approach that just validates and passes through.
-/// 
+///
 /// Returns: Pointer to body JSON string, or null on error (check doohttp_last_error_*)
 #[no_mangle]
 pub extern "C" fn doohttp_get_validated_body(
@@ -1834,47 +1884,57 @@ pub extern "C" fn doohttp_get_validated_body(
     handler_name: *const c_char,
 ) -> *const c_char {
     clear_last_error();
-    
+
     if request_ptr.is_null() {
-        set_last_error(400, r#"{"type":"about:blank","title":"Bad Request","status":400,"detail":"Null request"}"#.to_string());
+        set_last_error(
+            400,
+            r#"{"type":"about:blank","title":"Bad Request","status":400,"detail":"Null request"}"#
+                .to_string(),
+        );
         return std::ptr::null();
     }
-    
+
     let handler_name_str = if handler_name.is_null() {
         return std::ptr::null();
     } else {
         c_to_string(handler_name)
     };
-    
+
     let request = unsafe { &*(request_ptr as *const DooRequest) };
     let path_str = c_to_string(request.path);
     set_current_request_path(&path_str);
-    
+
     // Get body
     if request.body.is_null() {
-        set_last_error(400, bad_request("Missing request body", path_str.clone()).to_json());
+        set_last_error(
+            400,
+            bad_request("Missing request body", path_str.clone()).to_json(),
+        );
         return std::ptr::null();
     }
-    
+
     let body_str = c_to_string(request.body);
     if body_str.is_empty() {
-        set_last_error(400, bad_request("Empty request body", path_str.clone()).to_json());
+        set_last_error(
+            400,
+            bad_request("Empty request body", path_str.clone()).to_json(),
+        );
         return std::ptr::null();
     }
-    
+
     // Validate body using populate_struct_from_request
     let validate_result = doohttp_populate_struct_from_request(
         request_ptr,
         std::ptr::null_mut(), // validation only
-        0, // body
+        0,                    // body
         handler_name,
     );
-    
+
     if validate_result != 0 {
         // Error already set by populate_struct_from_request
         return std::ptr::null();
     }
-    
+
     // Return the body string (the codegen's JSON parser will use this)
     string_to_c(&body_str)
 }
@@ -2050,7 +2110,7 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
     };
 
     let return_type = &metadata.return_type;
-    
+
     // If return type is a primitive, just return it as-is
     if return_type == "Str" {
         let s = c_to_string(struct_ptr as *const c_char);
@@ -2078,7 +2138,7 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         return_type,
         &metadata.struct_layouts,
     );
-    
+
     string_to_c(&json.to_string())
 }
 
@@ -2123,7 +2183,7 @@ fn serialize_struct_recursive(
 
         // Calculate alignment and size for the field type
         let (field_size, field_align) = get_type_size_align(field_type, struct_layouts);
-        
+
         // Align offset to field alignment
         offset = align_up(offset, field_align);
 
@@ -2157,7 +2217,7 @@ fn serialize_struct_recursive(
                     if arr_data.is_null() {
                         serde_json::Value::Array(vec![])
                     } else {
-                        let elem_type = &t[1..t.len()-1];
+                        let elem_type = &t[1..t.len() - 1];
                         serialize_array(arr_data, elem_type, struct_layouts)
                     }
                 }
@@ -2166,9 +2226,7 @@ fn serialize_struct_recursive(
                     let nested_ptr = *(field_ptr as *const *const u8);
                     serialize_struct_recursive(nested_ptr, field_type, struct_layouts)
                 }
-                _ => {
-                    serde_json::Value::Null
-                }
+                _ => serde_json::Value::Null,
             };
             json_obj.insert(field_name.to_string(), field_value);
             offset += field_size;
@@ -2187,15 +2245,18 @@ fn align_up(offset: usize, align: usize) -> usize {
 }
 
 /// Get the size and alignment for a type
-fn get_type_size_align(type_name: &str, struct_layouts: &HashMap<String, serde_json::Value>) -> (usize, usize) {
+fn get_type_size_align(
+    type_name: &str,
+    struct_layouts: &HashMap<String, serde_json::Value>,
+) -> (usize, usize) {
     match type_name {
-        "Str" => (8, 8),    // pointer
-        "Int" => (8, 8),    // i64
-        "Float" => (8, 8),  // double
-        "Bool" => (1, 1),   // i1/i8
+        "Str" => (8, 8),                                       // pointer
+        "Int" => (8, 8),                                       // i64
+        "Float" => (8, 8),                                     // double
+        "Bool" => (1, 1),                                      // i1/i8
         t if t.starts_with("[") && t.ends_with("]") => (8, 8), // pointer to array data
         _ if struct_layouts.contains_key(type_name) => (8, 8), // pointer to struct
-        _ => (8, 8), // default to pointer size
+        _ => (8, 8),                                           // default to pointer size
     }
 }
 
@@ -2214,27 +2275,27 @@ fn serialize_array(
     unsafe {
         let header_ptr = arr_data_ptr.offset(-16);
         let len = *(header_ptr as *const i64) as usize;
-        
+
         if len == 0 {
             return serde_json::Value::Array(vec![]);
         }
-        
+
         let mut arr = Vec::with_capacity(len);
-        
+
         // Get element size for iteration
         let elem_size = match elem_type {
-            "Str" => 8,    // pointer
-            "Int" => 8,    // i64
-            "Float" => 8,  // double
-            "Bool" => 1,   // i1/i8
+            "Str" => 8,                                       // pointer
+            "Int" => 8,                                       // i64
+            "Float" => 8,                                     // double
+            "Bool" => 1,                                      // i1/i8
             _ if struct_layouts.contains_key(elem_type) => 8, // pointer
             _ => 8,
         };
-        
+
         for i in 0..len {
             let elem_offset = i * elem_size;
             let elem_ptr = arr_data_ptr.add(elem_offset);
-            
+
             let elem = match elem_type {
                 "Str" => {
                     let str_ptr = *(elem_ptr as *const *const c_char);
@@ -2266,7 +2327,7 @@ fn serialize_array(
             };
             arr.push(elem);
         }
-        
+
         serde_json::Value::Array(arr)
     }
 }
@@ -2311,7 +2372,7 @@ fn make_err_http(status: i32, message: &str) -> *mut DooResult {
         if error_response.is_null() {
             return std::ptr::null_mut();
         }
-        
+
         // Now allocate and fill DooResult
         let ptr = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
         if ptr.is_null() {

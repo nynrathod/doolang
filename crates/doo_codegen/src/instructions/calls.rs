@@ -2598,9 +2598,12 @@ fn get_or_generate_handler_wrapper<'ctx>(
             ctx.builder.position_at_end(success_block);
         }
         
-        // Get the first parameter type of the user function
+        // Get ALL parameter types of the user function
         let param_type_ids = ctx.get_function_param_types(user_func_name);
-        let first_param_type = param_type_ids.and_then(|types| types.first().copied());
+        let all_param_types: Vec<doo_core::types::TypeId> = param_type_ids
+            .map(|types| types.to_vec())
+            .unwrap_or_default();
+        let first_param_type = all_param_types.first().copied();
         
         // Check if the first parameter is a special "Request" type that receives raw pointer
         let is_raw_request = first_param_type.map_or(false, |tid| {
@@ -2619,23 +2622,22 @@ fn get_or_generate_handler_wrapper<'ctx>(
                 .ok()
                 .and_then(|cs| cs.try_as_basic_value().left())
         } else {
-            // User function expects a parsed struct - extract body and parse it
+            // User function expects parsed struct(s) - handle single and multi-param cases
             // DooRequest layout: { *method, *path, *body, *headers, *params, *query, *user_id }
-            // body is at index 2
             let doo_request_type = ctx.context.struct_type(
                 &[
-                    ptr_type.into(), // method
-                    ptr_type.into(), // path
-                    ptr_type.into(), // body
-                    ptr_type.into(), // headers
-                    ptr_type.into(), // params
-                    ptr_type.into(), // query
-                    ptr_type.into(), // user_id
+                    ptr_type.into(), // 0: method
+                    ptr_type.into(), // 1: path
+                    ptr_type.into(), // 2: body
+                    ptr_type.into(), // 3: headers
+                    ptr_type.into(), // 4: params
+                    ptr_type.into(), // 5: query
+                    ptr_type.into(), // 6: user_id
                 ],
                 false
             );
             
-            // Load the body pointer from the request
+            // Load body pointer from request (index 2)
             let body_ptr = ctx.builder
                 .build_struct_gep(doo_request_type, request_ptr, 2, "body_field_ptr")
                 .ok()
@@ -2643,32 +2645,44 @@ fn get_or_generate_handler_wrapper<'ctx>(
                 .map(|v| v.into_pointer_value())
                 .unwrap_or_else(|| ptr_type.const_null());
             
-            // Parse the body JSON into the expected struct type
-            let param_type = first_param_type.unwrap();
-            let parsed_struct = JsonBuiltins::emit_parse(
-                ctx,
-                body_ptr.into(),
-                Some(param_type),
-            );
+            // Build arguments for the user function call
+            let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::new();
+            let param_count = all_param_types.len();
             
-            // Call user function with the parsed struct
-            match parsed_struct {
-                Some(struct_val) => {
-                    ctx.builder
-                        .build_call(user_func, &[struct_val.into()], "user_call")
-                        .ok()
-                        .and_then(|cs| cs.try_as_basic_value().left())
-                }
-                None => {
-                    // Fallback to passing request_ptr if parsing fails
+            for (idx, param_type) in all_param_types.iter().enumerate() {
+                // For multi-param handlers:
+                // - First param: typically path params (parsed from body which FFI populates)
+                // - Last param (if 2+ params): typically body params
+                // For single param: parse from body (which FFI populates with query/path/body)
+                
+                // All params parse from body - the FFI layer already populates body with
+                // the correct JSON (from query params for GET, path params, or actual body)
+                let parsed = JsonBuiltins::emit_parse(ctx, body_ptr.into(), Some(*param_type));
+                
+                if let Some(val) = parsed {
+                    call_args.push(val.into());
+                } else {
+                    // Fallback: pass null pointer for this param
                     if debug {
-                        eprintln!("[CODEGEN] Warning: Failed to parse body for {}, falling back to request_ptr", user_func_name);
+                        eprintln!("[CODEGEN] Warning: Failed to parse param {} for {}", idx, user_func_name);
                     }
-                    ctx.builder
-                        .build_call(user_func, &[request_ptr.into()], "user_call")
-                        .ok()
-                        .and_then(|cs| cs.try_as_basic_value().left())
+                    call_args.push(ptr_type.const_null().into());
                 }
+            }
+            
+            // Call user function with all parsed arguments
+            if call_args.len() == param_count {
+                ctx.builder
+                    .build_call(user_func, &call_args, "user_call")
+                    .ok()
+                    .and_then(|cs| cs.try_as_basic_value().left())
+            } else {
+                // Fallback to passing request_ptr if parsing fails
+                if debug {
+                    eprintln!("[CODEGEN] Warning: Param count mismatch for {}, expected {} got {}", 
+                        user_func_name, param_count, call_args.len());
+                }
+                None
             }
         }
     };
