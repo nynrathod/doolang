@@ -486,37 +486,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let is_module_receiver = matches!(&receiver.kind, HirExprKind::Local { name } 
                 if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false));
 
-            // Get the receiver's type name for FFI method lookup
-            // For static calls like Server::new, use the receiver name directly
-            // For instance calls like app.get, we need to get the struct type name
-            let receiver_type_name: Option<String> = if is_module_receiver {
-                if let HirExprKind::Local { name } = &receiver.kind {
-                    Some(name.clone())
-                } else {
-                    None
-                }
-            } else {
-                // Try to get type name from receiver type
-                receiver.type_id
-                    .or_else(|| {
-                        if let HirExprKind::Local { name } = &receiver.kind {
-                            builder.get_local_type(name)
-                        } else {
-                            None
-                        }
-                    })
-                    .and_then(|tid| {
-                        builder.type_registry.get(tid).and_then(|info| {
-                            if let TypeKind::Struct { name, .. } = &info.kind {
-                                Some(name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-            };
-
-            // Build receiver - for modules, use Global instead of Local
+            // Build receiver FIRST - for modules, use Global instead of Local
+            // We need the receiver built before we can determine its type for FFI lookup
             let recv = if is_module_receiver {
                 if let HirExprKind::Local { name } = &receiver.kind {
                     MirOperand::Global(name.clone())
@@ -527,6 +498,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 builder.build_expr(receiver)
             };
 
+            // Compute receiver_type using all available sources (HIR, local, temp)
             let receiver_type = receiver
                 .type_id
                 .or_else(|| match &receiver.kind {
@@ -535,6 +507,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 })
                 .or_else(|| {
                     // If HIR didn't have type, check the built operand
+                    // This is CRITICAL for method chaining like .use(...).use(...)
+                    // where the receiver is a temp from a previous call
                     match &recv {
                         MirOperand::Temp(name) => builder.get_temp_type(name),
                         MirOperand::Local(name) => builder.get_local_type(name),
@@ -542,6 +516,27 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     }
                 })
                 .unwrap_or(builtin::ANY);
+
+            // Get the receiver's type name for FFI method lookup
+            // For static calls like Server::new, use the receiver name directly
+            // For instance calls like app.get, we need to get the struct type name
+            // IMPORTANT: This is computed AFTER receiver is built so we can use temp types
+            let receiver_type_name: Option<String> = if is_module_receiver {
+                if let HirExprKind::Local { name } = &receiver.kind {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            } else {
+                // Get type name from receiver_type (already computed with all fallbacks)
+                builder.type_registry.get(receiver_type).and_then(|info| {
+                    if let TypeKind::Struct { name, .. } = &info.kind {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+            };
 
             let arg_ops: Vec<_> = args.iter().map(|a| builder.build_expr(a)).collect();
 
