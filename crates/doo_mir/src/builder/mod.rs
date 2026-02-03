@@ -100,6 +100,11 @@ pub struct MirBuilder<'a> {
     /// FFI function registry: maps function name to FFI info (library, symbol).
     /// Used to emit FfiCall instead of Call for FFI functions.
     pub(crate) ffi_functions: FxHashMap<String, FfiFunctionInfo>,
+
+    /// Function name aliases: maps simple import names to mangled names.
+    /// e.g., "postgres" -> "_method_Database_postgres"
+    /// This allows calling imported associated functions by their simple name.
+    pub(crate) function_aliases: FxHashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +134,7 @@ impl<'a> MirBuilder<'a> {
             pending_closures: Vec::new(),
             closure_return_types: FxHashMap::default(),
             ffi_functions: FxHashMap::default(),
+            function_aliases: FxHashMap::default(),
         }
     }
 
@@ -155,6 +161,7 @@ impl<'a> MirBuilder<'a> {
             pending_closures: Vec::new(),
             closure_return_types: FxHashMap::default(),
             ffi_functions: FxHashMap::default(),
+            function_aliases: FxHashMap::default(),
         }
     }
 
@@ -209,6 +216,25 @@ impl<'a> MirBuilder<'a> {
                         );
                     }
                     self.ffi_functions.insert(f.name.clone(), ffi_info);
+                }
+
+                // Create alias from simple name to mangled name for imported associated functions
+                // e.g., "_method_Database_postgres" -> alias "postgres" -> "_method_Database_postgres"
+                if f.name.starts_with("_method_") {
+                    // Extract simple name: "_method_TypeName_MethodName" -> "MethodName"
+                    if let Some(pos) = f.name[8..].find('_') {
+                        let simple_name = &f.name[8 + pos + 1..];
+                        if !simple_name.is_empty() {
+                            self.function_aliases
+                                .insert(simple_name.to_string(), f.name.clone());
+                            if std::env::var("DOO_DEBUG").is_ok() {
+                                eprintln!(
+                                    "[MIR] Registered function alias: {} -> {}",
+                                    simple_name, f.name
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -759,13 +785,25 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// Get the return type of a function by name.
+    /// Resolves aliases before lookup.
     pub(crate) fn get_function_return_type(&self, name: &str) -> Option<CoreTypeId> {
-        self.function_return_types.get(name).copied()
+        // First try direct lookup
+        if let Some(tid) = self.function_return_types.get(name).copied() {
+            return Some(tid);
+        }
+        // Then try through alias
+        if let Some(resolved) = self.function_aliases.get(name) {
+            return self.function_return_types.get(resolved).copied();
+        }
+        None
     }
 
     /// Check if a name refers to a known function (not a variable).
+    /// Resolves aliases before lookup.
     pub(crate) fn is_function_name(&self, name: &str) -> bool {
-        self.function_return_types.contains_key(name) || self.ffi_functions.contains_key(name)
+        let resolved = self.resolve_function_name(name);
+        self.function_return_types.contains_key(&resolved)
+            || self.ffi_functions.contains_key(&resolved)
     }
 
     /// Check if a name refers to a registered type (struct or enum).
@@ -900,8 +938,17 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// Get the parameter types of a function by name.
+    /// Resolves aliases before lookup.
     pub(crate) fn get_function_param_types(&self, name: &str) -> Option<&Vec<CoreTypeId>> {
-        self.function_param_types.get(name)
+        // First try direct lookup
+        if let Some(types) = self.function_param_types.get(name) {
+            return Some(types);
+        }
+        // Then try through alias
+        if let Some(resolved) = self.function_aliases.get(name) {
+            return self.function_param_types.get(resolved);
+        }
+        None
     }
 
     /// Set the type of a temporary variable.
@@ -1001,8 +1048,27 @@ impl<'a> MirBuilder<'a> {
         None
     }
 
+    /// Resolve a function name through aliases.
+    /// Returns the canonical (mangled) function name if an alias exists,
+    /// or the original name otherwise.
+    pub(crate) fn resolve_function_name(&self, name: &str) -> String {
+        self.function_aliases
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
+    }
+
     /// Check if a function is an FFI function and get its info.
+    /// Resolves aliases before lookup.
     pub(crate) fn get_ffi_info(&self, func_name: &str) -> Option<&FfiFunctionInfo> {
-        self.ffi_functions.get(func_name)
+        // First try direct lookup
+        if let Some(info) = self.ffi_functions.get(func_name) {
+            return Some(info);
+        }
+        // Then try through alias
+        if let Some(resolved) = self.function_aliases.get(func_name) {
+            return self.ffi_functions.get(resolved);
+        }
+        None
     }
 }

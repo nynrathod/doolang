@@ -275,6 +275,11 @@ impl<'a> DropInserter<'a> {
             HirExprKind::Spread(inner) => {
                 self.scan_expr_for_uses(inner);
             }
+            HirExprKind::RouteBlock { routes } => {
+                for route in routes {
+                    self.scan_expr_for_uses(route);
+                }
+            }
             HirExprKind::Cast { value, .. } => {
                 self.scan_expr_for_uses(value);
             }

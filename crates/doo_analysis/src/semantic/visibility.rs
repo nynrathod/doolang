@@ -620,6 +620,11 @@ impl<'a> FieldVisibilityChecker<'a> {
                     self.check_expr(p);
                 }
             }
+            HirExprKind::RouteBlock { routes } => {
+                for route in routes {
+                    self.check_expr(route);
+                }
+            }
             // Leaf nodes - no sub-expressions to check
             HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}
         }

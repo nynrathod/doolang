@@ -141,14 +141,24 @@ pub extern "C" fn ratelimit_middleware_handler(req: *const DooRequest, next: Doo
 // Helper functions
 // ============================================================================
 
+/// Create an error result with proper error response struct format
+/// Error response struct layout: { i32 status, ptr body, ptr content_type }
+/// This matches the format expected by server.rs handle_request
 fn make_err_response(status: i32, message: &str) -> *mut DooResult {
+    set_last_error(status, message.to_string());
     unsafe {
+        // Use centralized helper to build error response struct
+        let error_response = alloc_error_response(status, message);
+        if error_response.is_null() {
+            return std::ptr::null_mut();
+        }
+
         let result = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
         if result.is_null() {
             return std::ptr::null_mut();
         }
-        (*result).tag = 1;
-        (*result).value = string_to_c(message) as *mut std::ffi::c_void;
+        (*result).tag = 1; // Error
+        (*result).value = error_response;
         (*result).owner = owner::FFI;
         result
     }

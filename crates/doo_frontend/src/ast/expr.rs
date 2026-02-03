@@ -163,6 +163,13 @@ pub enum ExprKind {
         return_type: Option<TypeExpr>,
         error_type: Option<TypeExpr>,
     },
+
+    // === HTTP Route Block ===
+    /// Route block: `{ get("/path", Handler), post("/path", Handler) }`
+    /// Used in app.group() for inline route definitions
+    RouteBlock {
+        routes: Vec<Expr>,
+    },
 }
 
 /// Binary operators.

@@ -402,8 +402,13 @@ pub fn resolve_imports(
                         .map(|t| imported_type_names.contains(t))
                         .unwrap_or(false);
 
+                    // Check if this function is explicitly requested by name
+                    // This allows importing associated functions like `postgres` from Database
+                    // even if the struct itself isn't imported
+                    let is_explicitly_requested = requested.contains_key(&f.name);
+
                     let is_wanted = import_all
-                        || requested.contains_key(&f.name)
+                        || is_explicitly_requested
                         || is_associated_with_imported_type;
 
                     // Create a unique key for the function to avoid duplicates
@@ -413,7 +418,11 @@ pub fn resolve_imports(
                         f.name.clone()
                     };
 
-                    if (is_public || is_associated_with_imported_type)
+                    // Import if:
+                    // 1. Explicitly requested by name (e.g., import std::Database::{postgres})
+                    // 2. Public and wanted (import_all or associated with imported type)
+                    // 3. Associated with an imported type
+                    if (is_explicitly_requested || is_public || is_associated_with_imported_type)
                         && is_wanted
                         && !imported_names.contains(&func_key)
                     {

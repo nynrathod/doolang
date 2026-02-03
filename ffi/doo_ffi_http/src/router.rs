@@ -88,6 +88,25 @@ impl RouteRegistry {
         }
     }
 
+    /// Register a route by handler name with middleware
+    pub fn register_by_name_with_middleware(
+        &mut self,
+        method: &str,
+        path: &str,
+        handler_name: &str,
+        middleware: Vec<DooMiddlewareFn>,
+    ) {
+        if let Some(&handler) = self.named_handlers.get(handler_name) {
+            self.register_with_middleware_and_name(
+                method,
+                path,
+                handler,
+                middleware,
+                Some(handler_name.to_string()),
+            );
+        }
+    }
+
     /// Register a route with specific middleware
     pub fn register_with_middleware(
         &mut self,

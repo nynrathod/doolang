@@ -200,6 +200,12 @@ pub enum HirExprKind {
         message: Box<HirExpr>,
     },
 
+    // === Route Block (for app.group() inline routes) ===
+    /// Collection of route definitions.
+    RouteBlock {
+        routes: Vec<HirExpr>,
+    },
+
     // === Ownership Annotations (filled by analysis) ===
     /// Move value.
     Move(Box<HirExpr>),

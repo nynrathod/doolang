@@ -154,6 +154,10 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
                 }
                 calls
             }
+            ExprKind::RouteBlock { routes } => {
+                // Handle the new RouteBlock syntax: { get(...), post(...) }
+                routes.iter().filter_map(|r| extract_route_call(r)).collect()
+            }
             _ => {
                 if let Some(call) = extract_route_call(block) {
                     vec![call]
@@ -623,13 +627,14 @@ fn transform_expr_recursive(expr: &mut Expr) {
                         middleware_names.push(extract_identifier_name(&args[i]));
                     }
                     let middleware_str = middleware_names.join(",");
-                    let handler_name = extract_identifier_name(&args[args.len() - 1]);
+                    // Keep handler as-is (identifier) for function pointer passing
+                    let handler = args[args.len() - 1].clone();
 
                     *method = format!("{}WithMiddleware", method);
                     *args = vec![
                         args[0].clone(),
                         Expr::new(ExprKind::StrLit(middleware_str), expr.span),
-                        Expr::new(ExprKind::StrLit(handler_name), expr.span),
+                        handler,  // Keep as identifier, not string
                     ];
                 } else if method == "use" && args.len() > 1 {
                     // Middleware chaining: app.use(M1, M2, M3) -> nested calls

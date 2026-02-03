@@ -129,7 +129,12 @@ impl Parser {
         result
     }
 
-    /// Lookahead helper for object vs map vs block.
+    /// Check if identifier is an HTTP route method name.
+    fn is_route_method_name(name: &str) -> bool {
+        matches!(name, "get" | "post" | "put" | "delete" | "patch" | "head" | "options")
+    }
+
+    /// Lookahead helper for object vs map vs block vs route block.
     pub(super) fn lookahead_brace_type(&mut self) -> BraceType {
         let saved = self.pos;
         if !self.check(TokenKind::LBrace) {
@@ -192,10 +197,23 @@ impl Parser {
             return BraceType::Block;
         }
 
-        // Identifier - could be Object or Block
+        // Identifier - could be Object, Block, or RouteBlock
         if !self.check(TokenKind::Ident) {
             self.pos = saved;
             return BraceType::Block;
+        }
+
+        // Check for RouteBlock pattern: `{ get(...)` or `{ post(...)` etc.
+        let ident_text = self.current().text.clone();
+        if Self::is_route_method_name(&ident_text) {
+            self.advance();
+            if self.check(TokenKind::LParen) {
+                self.pos = saved;
+                return BraceType::RouteBlock;
+            }
+            // Reset and continue with normal logic
+            self.pos = saved;
+            self.advance(); // skip LBrace again
         }
 
         let mut depth = 0;
@@ -269,7 +287,8 @@ impl Parser {
 
 /// Brace disambiguation result.
 pub enum BraceType {
-    Object, // {key: value}
-    Map,    // {"str": value} or {...}
-    Block,  // { stmt; }
+    Object,     // {key: value}
+    Map,        // {"str": value} or {...}
+    Block,      // { stmt; }
+    RouteBlock, // { get("/path", Handler), post(...) }
 }

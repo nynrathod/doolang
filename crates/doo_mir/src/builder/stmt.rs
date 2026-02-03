@@ -72,15 +72,19 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
         } => {
             // Check if this is a call to a Result-returning function
             // If so, use ManualErrorExtract instead of TupleLet
+            // Resolve aliases to handle imported associated functions
             let is_result_call = if let HirExprKind::Call { func, .. } = &value.kind {
                 // Extract function name
                 let func_name = match &func.kind {
                     HirExprKind::Local { name } => Some(name.as_str()),
                     _ => None,
                 };
-                // Check if it returns a Result
+                // Check if it returns a Result (resolve alias first)
                 func_name
-                    .map(|name| builder.function_result_types.contains_key(name))
+                    .map(|name| {
+                        let resolved_name = builder.resolve_function_name(name);
+                        builder.function_result_types.contains_key(&resolved_name)
+                    })
                     .unwrap_or(false)
             } else {
                 false
@@ -100,11 +104,13 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 };
 
                 // Get Result's ok and err types from function_result_types
+                // Resolve aliases to handle imported associated functions
                 let (ok_type, err_type) = if let HirExprKind::Call { func, .. } = &value.kind {
                     if let HirExprKind::Local { name } = &func.kind {
+                        let resolved_name = builder.resolve_function_name(name);
                         builder
                             .function_result_types
-                            .get(name.as_str())
+                            .get(&resolved_name)
                             .copied()
                             .unwrap_or((builtin::ANY, builtin::ANY))
                     } else {

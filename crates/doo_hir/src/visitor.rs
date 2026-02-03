@@ -216,6 +216,11 @@ pub trait HirVisitor {
             HirExprKind::Spread(inner) => {
                 self.visit_expr(inner);
             }
+            HirExprKind::RouteBlock { routes } => {
+                for route in routes {
+                    self.visit_expr(route);
+                }
+            }
             HirExprKind::Cast { value, .. } => {
                 self.visit_expr(value);
             }
@@ -432,6 +437,11 @@ pub trait HirVisitorMut {
             }
             HirExprKind::Spread(inner) => {
                 self.visit_expr_mut(inner);
+            }
+            HirExprKind::RouteBlock { routes } => {
+                for route in routes {
+                    self.visit_expr_mut(route);
+                }
             }
             HirExprKind::Cast { value, .. } => {
                 self.visit_expr_mut(value);

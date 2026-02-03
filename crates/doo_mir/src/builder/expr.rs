@@ -288,6 +288,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
         HirExprKind::Call { func, args } => {
             let func_name = builder.expr_to_name(func);
+            // Resolve alias to get canonical function name
+            let resolved_func_name = builder.resolve_function_name(&func_name);
             
             // Get expected parameter types for this function call
             // This enables JSON.parse and similar to use the expected type
@@ -355,7 +357,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 builder.emit(
                     MirInstrKind::Call {
                         dest: Some(dest.clone()),
-                        func: func_name.clone(),
+                        func: resolved_func_name.clone(),
                         args: arg_ops,
                     },
                     span,
@@ -1295,9 +1297,11 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             });
             
             // Check if it's a Result type by looking for the function in function_result_types
+            // Resolve aliases to handle imported associated functions (e.g., postgres -> _method_Database_postgres)
             let is_result_type = if let HirExprKind::Call { func, .. } = &inner.kind {
                 if let HirExprKind::Local { name } = &func.kind {
-                    builder.function_result_types.contains_key(name.as_str())
+                    let resolved_name = builder.resolve_function_name(name);
+                    builder.function_result_types.contains_key(&resolved_name)
                 } else {
                     false
                 }
@@ -1448,9 +1452,11 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 })
             }).or_else(|| {
                 // Fallback: try to get from function call if inner is a Call
+                // Resolve aliases to handle imported associated functions
                 if let HirExprKind::Call { func, .. } = &inner.kind {
                     if let HirExprKind::Local { name } | HirExprKind::Global { name } = &func.kind {
-                        builder.function_result_types.get(name.as_str()).map(|(ok, _)| *ok)
+                        let resolved_name = builder.resolve_function_name(name);
+                        builder.function_result_types.get(&resolved_name).map(|(ok, _)| *ok)
                     } else {
                         None
                     }
@@ -1554,6 +1560,27 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         HirExprKind::Spread(inner) => {
             // Spread is just passing through the inner expression
             builder.build_expr(inner)
+        }
+
+        HirExprKind::RouteBlock { routes } => {
+            // Route block is a collection of route expressions.
+            // Build each route (side effects for registering routes),
+            // and return an array of their results.
+            let elements: Vec<MirOperand> = routes
+                .iter()
+                .map(|r| builder.build_expr(r))
+                .collect();
+            let dest = builder.new_temp();
+            let span = builder.convert_span(expr.span);
+            builder.emit(
+                MirInstrKind::ArrayCreate {
+                    dest: dest.clone(),
+                    elements,
+                    elem_type: doo_core::types::builtin::ANY,
+                },
+                span,
+            );
+            MirOperand::Temp(dest)
         }
 
         HirExprKind::Cast { value, to_type } => {

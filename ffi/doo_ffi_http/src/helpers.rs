@@ -40,11 +40,25 @@ impl RawErrorResponse {
     /// Create a new RawErrorResponse with proper ownership transfer
     /// The strings are allocated with CString and leaked for C compatibility
     /// Ownership transfers to the returned struct
+    /// Body is automatically formatted as JSON if it's not already
     pub fn new(status: i32, body: &str) -> Self {
+        // Format body as JSON if it's not already JSON
+        let json_body = if body.starts_with('{') || body.starts_with('[') {
+            body.to_string()
+        } else {
+            // Format plain message as RFC 7807-style JSON
+            serde_json::json!({
+                "type": "about:blank",
+                "title": status_to_title(status),
+                "status": status,
+                "detail": body
+            }).to_string()
+        };
+        
         Self {
             status,
             _padding: 0,
-            body: string_to_c(body),
+            body: string_to_c(&json_body),
             content_type: string_to_c(CONTENT_TYPE_JSON),
         }
     }
@@ -53,6 +67,24 @@ impl RawErrorResponse {
     /// Caller must free via `free_error_response`
     pub fn into_raw(self) -> *mut c_void {
         Box::into_raw(Box::new(self)) as *mut c_void
+    }
+}
+
+/// Convert HTTP status code to standard title
+fn status_to_title(status: i32) -> &'static str {
+    match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Error",
     }
 }
 

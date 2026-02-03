@@ -193,6 +193,11 @@ impl Lower {
             HirExprKind::Spread(inner) => {
                 self.substitute_local_in_expr(inner, old_name, new_name);
             }
+            HirExprKind::RouteBlock { routes } => {
+                for route in routes {
+                    self.substitute_local_in_expr(route, old_name, new_name);
+                }
+            }
             HirExprKind::If {
                 condition,
                 then_expr,
@@ -1117,6 +1122,157 @@ impl Lower {
     }
 
     // ========================================================================
+    // HTTP Route Middleware Helpers
+    // ========================================================================
+
+    /// Check if a method name is an HTTP route method.
+    fn is_http_route_method(method: &str) -> bool {
+        matches!(method, "get" | "post" | "put" | "delete" | "patch" | "head" | "options")
+    }
+
+    /// Transform a route method call with middleware arguments.
+    /// app.get("/path", middleware, Handler) -> HirExpr for method call with middleware array
+    fn transform_route_with_middleware(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> HirExpr {
+        // args format: [path, middleware1, middleware2, ..., handler]
+        // Transform to: Server.{method}WithMiddleware(path, middleware_str, handler)
+        let receiver = Box::new(self.lower_expr(object));
+        let path = self.lower_expr(&args[0]);
+        let handler = self.lower_expr(args.last().unwrap());
+        
+        // Collect middleware names (args[1..len-1]) as comma-separated string
+        // Each middleware arg should be a call that returns a string (e.g., jwt() returns "jwt")
+        let middleware_args: Vec<HirExpr> = args[1..args.len()-1]
+            .iter()
+            .map(|a| self.lower_expr(a))
+            .collect();
+        
+        // For single middleware, pass it directly
+        // For multiple middlewares, we'd need to concatenate strings
+        // For now, use the first middleware if any
+        let middleware = if middleware_args.is_empty() {
+            HirExpr::new(HirExprKind::Const(ConstValue::Str("".to_string())), span)
+        } else if middleware_args.len() == 1 {
+            middleware_args.into_iter().next().unwrap()
+        } else {
+            // TODO: Concatenate multiple middleware names
+            middleware_args.into_iter().next().unwrap()
+        };
+        
+        // Create method name with "WithMiddleware" suffix
+        let new_method = format!("{}WithMiddleware", method);
+        
+        // Args: [path, middleware, handler]
+        let new_args = vec![path, middleware, handler];
+        
+        HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver,
+                method: new_method,
+                args: new_args,
+            },
+            span,
+        )
+    }
+
+    /// Transform app.group with a route block.
+    /// app.group("/api", middleware, { get(...), post(...) }) -> expand each route
+    fn transform_group_with_routes(
+        &mut self,
+        object: &Expr,
+        args: &[Expr],
+        span: Span,
+    ) -> HirExpr {
+        // For now, just lower the group call normally, the FFI will handle it at runtime
+        // args[0] = prefix, args[1..n-1] = middleware, args[n-1] = RouteBlock
+        let receiver = Box::new(self.lower_expr(object));
+        let lowered_args: Vec<HirExpr> = args.iter().map(|a| self.lower_expr(a)).collect();
+        
+        HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver,
+                method: "group".to_string(),
+                args: lowered_args,
+            },
+            span,
+        )
+    }
+
+    /// Typed version: Transform route with middleware
+    fn transform_route_with_middleware_typed(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[Expr],
+        span: Span,
+        registry: &mut TypeRegistry,
+    ) -> HirExpr {
+        // args format: [path, middleware1, middleware2, ..., handler]
+        // Transform to: Server.{method}WithMiddleware(path, middleware_str, handler)
+        let receiver = Box::new(self.lower_expr_typed(object, registry));
+        let path = self.lower_expr_typed(&args[0], registry);
+        let handler = self.lower_expr_typed(args.last().unwrap(), registry);
+        
+        // Collect middleware names (args[1..len-1])
+        let middleware_args: Vec<HirExpr> = args[1..args.len()-1]
+            .iter()
+            .map(|a| self.lower_expr_typed(a, registry))
+            .collect();
+        
+        // For single middleware, pass it directly
+        let middleware = if middleware_args.is_empty() {
+            HirExpr::new(HirExprKind::Const(ConstValue::Str("".to_string())), span)
+        } else if middleware_args.len() == 1 {
+            middleware_args.into_iter().next().unwrap()
+        } else {
+            // TODO: Concatenate multiple middleware names
+            middleware_args.into_iter().next().unwrap()
+        };
+        
+        // Create method name with "WithMiddleware" suffix
+        let new_method = format!("{}WithMiddleware", method);
+        
+        // Args: [path, middleware, handler]
+        let new_args = vec![path, middleware, handler];
+        
+        HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver,
+                method: new_method,
+                args: new_args,
+            },
+            span,
+        )
+    }
+
+    /// Typed version: Transform app.group with a route block
+    fn transform_group_with_routes_typed(
+        &mut self,
+        object: &Expr,
+        args: &[Expr],
+        span: Span,
+        registry: &mut TypeRegistry,
+    ) -> HirExpr {
+        // For now, just lower the group call normally
+        let receiver = Box::new(self.lower_expr_typed(object, registry));
+        let lowered_args: Vec<HirExpr> = args.iter().map(|a| self.lower_expr_typed(a, registry)).collect();
+        
+        HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver,
+                method: "group".to_string(),
+                args: lowered_args,
+            },
+            span,
+        )
+    }
+
+    // ========================================================================
     // Expressions
     // ========================================================================
 
@@ -1150,10 +1306,29 @@ impl Lower {
                 object,
                 method,
                 args,
-            } => HirExprKind::MethodCall {
-                receiver: Box::new(self.lower_expr(object)),
-                method: method.clone(),
-                args: args.iter().map(|a| self.lower_expr(a)).collect(),
+            } => {
+                // Transform HTTP route methods with middleware arguments
+                // app.get("/path", middleware, Handler) -> app.getWithMiddleware("/path", "middleware", Handler)
+                // app.get("/path", m1, m2, Handler) -> app.getWithMiddleware("/path", "m1,m2", Handler)
+                if Self::is_http_route_method(method) && args.len() > 2 {
+                    return self.transform_route_with_middleware(object, method, args, expr.span);
+                }
+                
+                // Transform app.group with route block
+                // app.group("/api", middleware, { routes }) -> expand routes with prefix and middleware
+                if method == "group" && args.len() >= 2 {
+                    if let Some(route_block_arg) = args.last() {
+                        if matches!(route_block_arg, Expr { kind: ExprKind::RouteBlock { .. }, .. }) {
+                            return self.transform_group_with_routes(object, args, expr.span);
+                        }
+                    }
+                }
+                
+                HirExprKind::MethodCall {
+                    receiver: Box::new(self.lower_expr(object)),
+                    method: method.clone(),
+                    args: args.iter().map(|a| self.lower_expr(a)).collect(),
+                }
             },
 
             ExprKind::Field { object, field } => HirExprKind::Field {
@@ -1275,6 +1450,10 @@ impl Lower {
 
             ExprKind::Spread(inner) => HirExprKind::Spread(Box::new(self.lower_expr(inner))),
 
+            ExprKind::RouteBlock { routes } => HirExprKind::RouteBlock {
+                routes: routes.iter().map(|r| self.lower_expr(r)).collect(),
+            },
+
             ExprKind::StringInterpolation(parts) => {
                 // Desugar: "a ${b} c" -> "a" + (b as Str) + "c"
                 if parts.is_empty() {
@@ -1353,13 +1532,30 @@ impl Lower {
                 object,
                 method,
                 args,
-            } => HirExprKind::MethodCall {
-                receiver: Box::new(self.lower_expr_typed(object, registry)),
-                method: method.clone(),
-                args: args
-                    .iter()
-                    .map(|a| self.lower_expr_typed(a, registry))
-                    .collect(),
+            } => {
+                // Transform HTTP route methods with middleware arguments
+                // app.get("/path", middleware, Handler) -> app.getWithMiddleware("/path", "middleware", Handler)
+                if Self::is_http_route_method(method) && args.len() > 2 {
+                    return self.transform_route_with_middleware_typed(object, method, args, expr.span, registry);
+                }
+                
+                // Transform app.group with route block
+                if method == "group" && args.len() >= 2 {
+                    if let Some(route_block_arg) = args.last() {
+                        if matches!(route_block_arg, Expr { kind: ExprKind::RouteBlock { .. }, .. }) {
+                            return self.transform_group_with_routes_typed(object, args, expr.span, registry);
+                        }
+                    }
+                }
+                
+                HirExprKind::MethodCall {
+                    receiver: Box::new(self.lower_expr_typed(object, registry)),
+                    method: method.clone(),
+                    args: args
+                        .iter()
+                        .map(|a| self.lower_expr_typed(a, registry))
+                        .collect(),
+                }
             },
 
             ExprKind::Field { object, field } => HirExprKind::Field {
@@ -1533,6 +1729,10 @@ impl Lower {
             ExprKind::Spread(inner) => {
                 HirExprKind::Spread(Box::new(self.lower_expr_typed(inner, registry)))
             }
+
+            ExprKind::RouteBlock { routes } => HirExprKind::RouteBlock {
+                routes: routes.iter().map(|r| self.lower_expr_typed(r, registry)).collect(),
+            },
 
             ExprKind::StringInterpolation(parts) => {
                 if parts.is_empty() {

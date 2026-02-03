@@ -197,6 +197,168 @@ fn register_route_fn(method: &str, path: *const c_char, handler: DooHandlerFn) -
 }
 
 // ============================================================================
+// ROUTE REGISTRATION WITH MIDDLEWARE - Single Source of Truth
+// ============================================================================
+// All *_with_middleware functions use this centralized helper
+
+/// Centralized helper: Register route with middleware names (comma-separated) and function pointer handler
+fn register_route_with_middleware_fn(
+    method: &str,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
+    let path_str = c_to_string(path);
+    let middleware_str = c_to_string(middleware_names);
+
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    // Parse middleware names (comma-separated)
+    let middleware_list: Vec<String> = if middleware_str.is_empty() {
+        vec![]
+    } else {
+        middleware_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+
+    // Lookup middleware functions and auto-register built-ins
+    let mut middleware_fns = Vec::new();
+    for mw_name in middleware_list {
+        // Auto-register built-in middleware if referenced
+        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+            registry
+                .middleware_handlers
+                .insert("jwt".to_string(), jwt_middleware_handler);
+        }
+        if mw_name == "cors" && !registry.middleware_handlers.contains_key("cors") {
+            registry
+                .middleware_handlers
+                .insert("cors".to_string(), cors_middleware_handler);
+        }
+        if mw_name == "ratelimit" && !registry.middleware_handlers.contains_key("ratelimit") {
+            registry
+                .middleware_handlers
+                .insert("ratelimit".to_string(), ratelimit_middleware_handler);
+        }
+
+        if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
+            middleware_fns.push(mw_fn);
+        }
+    }
+
+    registry.register_with_middleware(method, &path_str, handler, middleware_fns);
+    make_ok_void()
+}
+
+/// Centralized helper: Register route with middleware names (comma-separated) and handler name
+fn register_route_with_middleware(
+    method: &str,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler_name: *const c_char,
+) -> *mut DooResult {
+    let path_str = c_to_string(path);
+    let middleware_str = c_to_string(middleware_names);
+    let handler_str = c_to_string(handler_name);
+
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+
+    // Parse middleware names (comma-separated)
+    let middleware_list: Vec<String> = if middleware_str.is_empty() {
+        vec![]
+    } else {
+        middleware_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+
+    // Lookup middleware functions and auto-register built-ins
+    let mut middleware_fns = Vec::new();
+    for mw_name in middleware_list {
+        // Auto-register built-in middleware if referenced
+        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+            registry
+                .middleware_handlers
+                .insert("jwt".to_string(), jwt_middleware_handler);
+        }
+        if mw_name == "cors" && !registry.middleware_handlers.contains_key("cors") {
+            registry
+                .middleware_handlers
+                .insert("cors".to_string(), cors_middleware_handler);
+        }
+        if mw_name == "ratelimit" && !registry.middleware_handlers.contains_key("ratelimit") {
+            registry
+                .middleware_handlers
+                .insert("ratelimit".to_string(), ratelimit_middleware_handler);
+        }
+
+        if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
+            middleware_fns.push(mw_fn);
+        }
+    }
+
+    registry.register_by_name_with_middleware(method, &path_str, &handler_str, middleware_fns);
+    make_ok_void()
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_get_with_middleware(
+    _server: *const c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
+    register_route_with_middleware_fn("GET", path, middleware_names, handler)
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_post_with_middleware(
+    _server: *const c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
+    register_route_with_middleware_fn("POST", path, middleware_names, handler)
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_put_with_middleware(
+    _server: *const c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
+    register_route_with_middleware_fn("PUT", path, middleware_names, handler)
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_delete_with_middleware(
+    _server: *const c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
+    register_route_with_middleware_fn("DELETE", path, middleware_names, handler)
+}
+
+#[no_mangle]
+pub extern "C" fn doo_http_patch_with_middleware(
+    _server: *const c_void,
+    path: *const c_char,
+    middleware_names: *const c_char,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
+    register_route_with_middleware_fn("PATCH", path, middleware_names, handler)
+}
+
+// ============================================================================
 // GLOBAL STRUCT/ENUM METADATA REGISTRY
 // ============================================================================
 // Single Source of Truth for struct/enum metadata used by auth, crud, and handlers.

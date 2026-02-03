@@ -73,26 +73,64 @@ struct DatabaseStruct {
     connected: bool,                // i1 in LLVM
 }
 
+/// Result struct that matches LLVM codegen expectations: { i32 tag, ptr value }
+/// tag = 0 for Ok, tag = 1 for Err
+#[repr(C)]
+struct SimpleResult {
+    tag: i32,
+    value: *mut c_void,
+}
+
+/// Helper to create a SimpleResult for Ok case
+fn simple_result_ok(value: *mut c_void) -> *mut SimpleResult {
+    unsafe {
+        let result = libc::malloc(std::mem::size_of::<SimpleResult>()) as *mut SimpleResult;
+        if !result.is_null() {
+            (*result).tag = 0; // Ok
+            (*result).value = value;
+        }
+        result
+    }
+}
+
+/// Helper to create a SimpleResult for Err case
+fn simple_result_err(error_msg: &str) -> *mut SimpleResult {
+    unsafe {
+        let result = libc::malloc(std::mem::size_of::<SimpleResult>()) as *mut SimpleResult;
+        if !result.is_null() {
+            (*result).tag = 1; // Err
+            (*result).value = string_to_c(error_msg) as *mut c_void;
+        }
+        result
+    }
+}
+
 /// Connect to PostgreSQL database using DATABASE_URL env var
-/// Returns a pointer to a Database struct (not DooResult) for compatibility
+/// Returns a Result struct: { i32 tag, ptr value }
+/// - Ok: tag=0, value=Database struct pointer
+/// - Err: tag=1, value=error message string pointer
 #[no_mangle]
-pub extern "C" fn doo_db_connect_postgres() -> *mut c_void {
+pub extern "C" fn doo_db_connect_postgres() -> *mut SimpleResult {
     let conn_str = match std::env::var("DATABASE_URL") {
         Ok(s) => s,
         Err(_) => {
             // For development/testing, create a mock database connection
             // In production, this should fail or use a default URL
             eprintln!("[DB] WARNING: DATABASE_URL not set, using mock connection");
-            return create_database_struct("mock", false);
+            let db = create_database_struct("mock", true);
+            return simple_result_ok(db);
         }
     };
     
     let rt = get_runtime();
     match rt.block_on(init_pool(&conn_str)) {
-        Ok(_) => create_database_struct("postgres", true),
+        Ok(_) => {
+            let db = create_database_struct("postgres", true);
+            simple_result_ok(db)
+        }
         Err(e) => {
             eprintln!("[DB] Connection failed: {}", e);
-            create_database_struct("postgres", false)
+            simple_result_err(&format!("Database connection failed: {}", e))
         }
     }
 }

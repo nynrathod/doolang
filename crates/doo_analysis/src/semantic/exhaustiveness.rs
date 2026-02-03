@@ -485,6 +485,11 @@ impl<'a> ExhaustivenessChecker<'a> {
             HirExprKind::Spread(inner) => {
                 self.check_expr(inner);
             }
+            HirExprKind::RouteBlock { routes } => {
+                for route in routes {
+                    self.check_expr(route);
+                }
+            }
             HirExprKind::Move(inner) | HirExprKind::Clone(inner) => {
                 self.check_expr(inner);
             }

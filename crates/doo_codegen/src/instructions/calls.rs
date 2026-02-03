@@ -2327,9 +2327,11 @@ fn emit_ffi_call<'ctx>(
             if let MirOperand::FuncRef(func_name) = a {
                 let wrapper = get_or_generate_handler_wrapper(ctx, func_name, symbol);
                 
-                // If this is an HTTP route registration, also register handler metadata
-                // Check for doo_http_get_fn, doo_http_post_fn, etc.
-                if symbol.starts_with("doo_http_") && symbol.ends_with("_fn") {
+                // If this is an HTTP route registration, register handler metadata
+                // Check for doo_http_get_fn, doo_http_post_fn, etc. AND *_with_middleware variants
+                let is_route_registration = symbol.starts_with("doo_http_") 
+                    && (symbol.ends_with("_fn") || symbol.ends_with("_with_middleware"));
+                if is_route_registration {
                     emit_handler_metadata_registration(ctx, func_name, &wrapper);
                 }
                 

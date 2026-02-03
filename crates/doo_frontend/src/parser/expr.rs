@@ -104,6 +104,7 @@ impl ParserExpr for Parser {
                 BraceType::Object => parse_object(self, start),
                 BraceType::Map => parse_map(self, start),
                 BraceType::Block => parse_block(self, start),
+                BraceType::RouteBlock => parse_route_block(self, start),
             },
 
             TokenKind::If => parse_if_expr(self, start),
@@ -335,6 +336,21 @@ fn parse_block(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     parser.expect(TokenKind::RBrace)?;
     Ok(Expr::new(
         ExprKind::Block(stmts, final_expr),
+        start.merge(&parser.prev_span()),
+    ))
+}
+
+/// Parse a route block: `{ get("/path", Handler), post("/path", Handler) }`
+/// Used in app.group() calls for defining multiple routes inline.
+fn parse_route_block(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
+    parser.expect(TokenKind::LBrace)?;
+    let routes = parser.parse_list(TokenKind::RBrace, |p| {
+        // Each route is a function call like `get("/path", Handler)`
+        p.parse_expression()
+    })?;
+    parser.expect(TokenKind::RBrace)?;
+    Ok(Expr::new(
+        ExprKind::RouteBlock { routes },
         start.merge(&parser.prev_span()),
     ))
 }

@@ -21,6 +21,81 @@ use tokio::net::TcpListener;
 static STARTUP_INSTANT: OnceLock<Instant> = OnceLock::new();
 const VERSION: &str = "0.4.0";
 
+// ============================================================================
+// MIDDLEWARE EXECUTION - Single Source of Truth
+// ============================================================================
+
+/// Execute middleware chain then handler
+/// This is the centralized middleware execution point - no duplication
+fn execute_middleware_chain(
+    req: *const DooRequest,
+    middleware: &[DooMiddlewareFn],
+    handler: DooHandlerFn,
+) -> *mut DooResult {
+    if middleware.is_empty() {
+        // No middleware - call handler directly
+        return handler(req);
+    }
+
+    // Build the next function chain
+    // Each middleware gets a "next" function that calls either the next middleware or the handler
+    execute_middleware_at_index(req, middleware, 0, handler)
+}
+
+/// Execute middleware at given index, with next pointing to rest of chain
+fn execute_middleware_at_index(
+    req: *const DooRequest,
+    middleware: &[DooMiddlewareFn],
+    index: usize,
+    handler: DooHandlerFn,
+) -> *mut DooResult {
+    if index >= middleware.len() {
+        // All middleware executed, call the handler
+        return handler(req);
+    }
+
+    let current_mw = middleware[index];
+
+    // Create next function that continues the chain
+    // We use a thread-local to pass the chain context since FFI can't capture closures
+    MIDDLEWARE_CONTEXT.with(|ctx| {
+        let mut ctx = ctx.borrow_mut();
+        ctx.middleware = middleware.to_vec();
+        ctx.current_index = index;
+        ctx.handler = Some(handler);
+    });
+
+    // Call middleware with next function
+    current_mw(req, middleware_next)
+}
+
+/// Thread-local context for middleware chain execution
+thread_local! {
+    static MIDDLEWARE_CONTEXT: std::cell::RefCell<MiddlewareContext> = 
+        std::cell::RefCell::new(MiddlewareContext::default());
+}
+
+#[derive(Default)]
+struct MiddlewareContext {
+    middleware: Vec<DooMiddlewareFn>,
+    current_index: usize,
+    handler: Option<DooHandlerFn>,
+}
+
+/// The "next" function passed to middleware
+/// Continues execution to the next middleware or handler
+extern "C" fn middleware_next(req: *const DooRequest) -> *mut DooResult {
+    MIDDLEWARE_CONTEXT.with(|ctx| {
+        let ctx = ctx.borrow();
+        let next_index = ctx.current_index + 1;
+        let middleware = ctx.middleware.clone();
+        let handler = ctx.handler.expect("Handler must be set");
+        drop(ctx);
+
+        execute_middleware_at_index(req, &middleware, next_index, handler)
+    })
+}
+
 /// Handle incoming HTTP request
 async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let start = Instant::now();
@@ -85,15 +160,18 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         req_ptr
     };
 
-    // Execute handler - all handlers have unified signature thanks to compiler wrappers
+    // Execute middleware chain then handler
+    // Middleware support: each middleware can call next() or return early
     let handler = route_entry.handler;
+    let middleware_chain: Vec<_> = route_entry.middleware.clone();
     drop(registry);
 
     // Clear any previous parse errors before calling handler
     doo_ffi_core::doo_json_clear_parse_error();
 
     let response = {
-        let result = handler(doo_request);
+        // Execute middleware chain, then handler
+        let result = execute_middleware_chain(doo_request, &middleware_chain, handler);
 
         // Check for JSON parse errors first (e.g., type mismatches in arrays)
         // This catches errors that occur during struct field parsing
