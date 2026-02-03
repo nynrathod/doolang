@@ -113,6 +113,13 @@ pub struct CodegenContext<'ctx> {
     pub function_return_types: FxHashMap<String, TypeId>,
 
     // ========================================================================
+    // Function Error Types (for middleware error handling)
+    // ========================================================================
+    /// Function error types: function_name -> TypeId.
+    /// Tracks the Doo error type for functions that return Result<T, E>.
+    pub function_error_types: FxHashMap<String, TypeId>,
+
+    // ========================================================================
     // Current Function Return Type (for type conversion in returns)
     // ========================================================================
     /// Current function's return type (for proper return value conversion).
@@ -162,6 +169,7 @@ impl<'ctx> CodegenContext<'ctx> {
             variable_types: FxHashMap::default(),
             function_param_types: FxHashMap::default(),
             function_return_types: FxHashMap::default(),
+            function_error_types: FxHashMap::default(),
             current_function_return_type: None,
             borrow_origins: FxHashMap::default(),
             is_closure_function: false,
@@ -235,12 +243,24 @@ impl<'ctx> CodegenContext<'ctx> {
 
     /// Register function return type.
     pub fn register_function_return_type(&mut self, func_name: &str, return_type: TypeId) {
-        self.function_return_types.insert(func_name.to_string(), return_type);
+        self.function_return_types
+            .insert(func_name.to_string(), return_type);
     }
 
     /// Get function return type (for struct serialization).
     pub fn get_function_return_type(&self, func_name: &str) -> Option<TypeId> {
         self.function_return_types.get(func_name).copied()
+    }
+
+    /// Register function error type (for Result<T, E> functions).
+    pub fn register_function_error_type(&mut self, func_name: &str, error_type: TypeId) {
+        self.function_error_types
+            .insert(func_name.to_string(), error_type);
+    }
+
+    /// Get function error type (for middleware error handling).
+    pub fn get_function_error_type(&self, func_name: &str) -> Option<TypeId> {
+        self.function_error_types.get(func_name).copied()
     }
 
     // ========================================================================

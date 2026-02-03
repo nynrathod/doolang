@@ -333,6 +333,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
             ctx.register_function_return_type(&func.name, ret_type_id);
         }
 
+        // Register error type for middleware error handling
+        if let Some(err_type_id) = func.error_type {
+            ctx.register_function_error_type(&func.name, err_type_id);
+        }
+
         // Build return type
         // If function has an error_type, it returns a Result struct { i32, ptr }
         let return_type = if func.error_type.is_some() {

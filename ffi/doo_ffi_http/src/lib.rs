@@ -467,6 +467,53 @@ fn get_enum_variants(name: &str) -> Option<Vec<String>> {
     registry.get(name).cloned()
 }
 
+/// Map error enum variant name to HTTP status code.
+/// This is the centralized mapping for all error enums.
+/// Uses common HTTP error naming conventions (Unauthorized -> 401, Forbidden -> 403, etc.)
+#[no_mangle]
+pub extern "C" fn doohttp_error_variant_to_status(
+    enum_name: *const c_char,
+    variant_name: *const c_char,
+    variant_index: i32,
+) -> i32 {
+    let _enum_name = c_to_string(enum_name);
+    let variant_str = c_to_string(variant_name);
+    
+    // Common error status mappings based on variant name
+    match variant_str.as_str() {
+        "Unauthorized" => 401,
+        "Forbidden" => 403,
+        "NotFound" => 404,
+        "MethodNotAllowed" => 405,
+        "Conflict" => 409,
+        "ValidationError" => 422,
+        "TooManyRequests" => 429,
+        "InternalError" | "ServerError" => 500,
+        "BadRequest" => 400,
+        "NotImplemented" => 501,
+        "ServiceUnavailable" => 503,
+        // Default to 500 + variant_index for unknown variants
+        _ => 500 + variant_index,
+    }
+}
+
+/// Build RFC 7807 error JSON from status code and title
+#[no_mangle]
+pub extern "C" fn doohttp_build_rfc7807_error(
+    status: i32,
+    title: *const c_char,
+) -> *const c_char {
+    let title_str = c_to_string(title);
+    
+    // Build RFC 7807 compliant error JSON
+    let error_json = format!(
+        r#"{{"type":"about:blank","title":"{}","status":{},"detail":"Request failed"}}"#,
+        title_str, status
+    );
+    
+    string_to_c(&error_json)
+}
+
 /// Validate an item against its struct schema using centralized metadata.
 /// Returns Ok(()) if valid, Err(error_json) if validation fails.
 fn validate_item_against_schema(
@@ -1153,19 +1200,34 @@ pub extern "C" fn doo_http_crud(
 // MIDDLEWARE
 // ============================================================================
 
+/// Register a middleware function pointer for global use
+/// The middleware parameter is a function pointer (DooMiddlewareFn) despite the type signature
+/// The compiler passes the wrapper function pointer directly
 #[no_mangle]
 pub extern "C" fn doo_http_use(
     server: *const c_void,
-    middleware_name: *const c_char,
+    middleware_fn: DooMiddlewareFn,
 ) -> *const c_void {
-    let mw_str = c_to_string(middleware_name);
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
 
-    if let Some(&mw_fn) = registry.middleware_handlers.get(&mw_str) {
-        registry.add_middleware(mw_fn);
-    }
+    // Add the middleware function directly to global middleware
+    registry.add_middleware(middleware_fn);
+
     server
+}
+
+/// Register a user-defined middleware function by name
+/// Called by the compiler to register middleware before route registration
+#[no_mangle]
+pub extern "C" fn doo_http_register_middleware(
+    name: *const c_char,
+    middleware_fn: DooMiddlewareFn,
+) {
+    let name_str = c_to_string(name);
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap();
+    registry.middleware_handlers.insert(name_str, middleware_fn);
 }
 
 #[no_mangle]
@@ -2544,5 +2606,71 @@ fn make_err_http(status: i32, message: &str) -> *mut DooResult {
         (*ptr).value = error_response;
         (*ptr).owner = owner::FFI;
         ptr
+    }
+}
+
+// ============================================================================
+// MIDDLEWARE NEXT CALL
+// ============================================================================
+
+/// Call the next middleware/handler in the chain
+/// The `next` parameter is actually a function pointer (DooNextFn) passed from the wrapper
+/// We need to get the current request from thread-local and call the next function
+#[no_mangle]
+pub extern "C" fn doo_http_next_call(next: *const std::ffi::c_void) -> *mut std::ffi::c_void {
+    use crate::server::get_current_request;
+
+    if next.is_null() {
+        // No next function - return null result
+        return std::ptr::null_mut();
+    }
+
+    // The `next` is actually a DooNextFn: fn(*const DooRequest) -> *mut DooResult
+    // Get the current request from thread-local storage
+    let request_ptr = get_current_request();
+    if request_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    // Cast next to the function type and call it
+    let next_fn: crate::types::DooNextFn = unsafe { std::mem::transmute(next) };
+    let result = next_fn(request_ptr);
+
+    // The result is a DooResult containing a Response
+    // We need to extract the Response pointer and return it
+    if result.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let doo_result = &*result;
+        
+        // Build Response struct from DooResult
+        // Response layout: { i64 Status, ptr Body, ptr ContentType }
+        let response_size = std::mem::size_of::<i64>() + 2 * std::mem::size_of::<*const i8>();
+        let response_ptr = libc::malloc(response_size) as *mut u8;
+        if response_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        
+        if doo_result.tag == 0 {
+            // Ok result - build Response with status 200 and the JSON body
+            *(response_ptr as *mut i64) = 200;
+            *((response_ptr as *mut u8).add(8) as *mut *const i8) = doo_result.value as *const i8;
+            *((response_ptr as *mut u8).add(16) as *mut *const i8) = string_to_c("application/json");
+        } else {
+            // Error result - value is error response struct { i32 status, ptr body, ptr content_type }
+            // Extract fields from error struct and build Response
+            let error_struct = doo_result.value as *const u8;
+            let status = *(error_struct as *const i32) as i64;
+            let body_ptr = *((error_struct as *const u8).add(8) as *const *const i8);
+            let ct_ptr = *((error_struct as *const u8).add(16) as *const *const i8);
+            
+            *(response_ptr as *mut i64) = status;
+            *((response_ptr as *mut u8).add(8) as *mut *const i8) = body_ptr;
+            *((response_ptr as *mut u8).add(16) as *mut *const i8) = ct_ptr;
+        }
+        
+        response_ptr as *mut std::ffi::c_void
     }
 }

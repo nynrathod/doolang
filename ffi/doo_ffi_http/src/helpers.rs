@@ -1,14 +1,14 @@
 //! Helper Functions
 //! String conversion, memory allocation, and utility functions.
-//! 
+//!
 //! Memory Management Strategy:
 //! - All allocations use Rust's Box when possible, converting to raw pointers at FFI boundary
 //! - For C-compatible structs, we use repr(C) and Box::into_raw for ownership transfer
 //! - Caller receives ownership and is responsible for freeing via corresponding free functions
 
+use std::ffi::c_void;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::ffi::c_void;
 
 // ============================================================================
 // CONSTANTS (Single Source of Truth)
@@ -52,9 +52,10 @@ impl RawErrorResponse {
                 "title": status_to_title(status),
                 "status": status,
                 "detail": body
-            }).to_string()
+            })
+            .to_string()
         };
-        
+
         Self {
             status,
             _padding: 0,
@@ -62,7 +63,7 @@ impl RawErrorResponse {
             content_type: string_to_c(CONTENT_TYPE_JSON),
         }
     }
-    
+
     /// Convert to raw pointer, transferring ownership to caller
     /// Caller must free via `free_error_response`
     pub fn into_raw(self) -> *mut c_void {

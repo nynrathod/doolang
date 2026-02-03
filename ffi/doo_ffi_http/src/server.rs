@@ -65,14 +65,31 @@ fn execute_middleware_at_index(
         ctx.handler = Some(handler);
     });
 
+    // Store current request for next.call() to access
+    set_current_request(req);
+
     // Call middleware with next function
     current_mw(req, middleware_next)
 }
 
 /// Thread-local context for middleware chain execution
 thread_local! {
-    static MIDDLEWARE_CONTEXT: std::cell::RefCell<MiddlewareContext> = 
+    static MIDDLEWARE_CONTEXT: std::cell::RefCell<MiddlewareContext> =
         std::cell::RefCell::new(MiddlewareContext::default());
+
+    /// Current request pointer for `next.call()` to access
+    static CURRENT_REQUEST: std::cell::RefCell<*const DooRequest> =
+        std::cell::RefCell::new(std::ptr::null());
+}
+
+/// Set the current request pointer for middleware chain
+pub fn set_current_request(req: *const DooRequest) {
+    CURRENT_REQUEST.with(|r| *r.borrow_mut() = req);
+}
+
+/// Get the current request pointer for `next.call()`
+pub fn get_current_request() -> *const DooRequest {
+    CURRENT_REQUEST.with(|r| *r.borrow())
 }
 
 #[derive(Default)]
@@ -204,7 +221,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                             // Extract status and body from the error response struct
                             let error_struct = res.value as *const i8;
                             let error_status = *(error_struct as *const i32);
-                            let body_ptr = *((error_struct as *const u8).add(8) as *const *const i8);
+                            let body_ptr =
+                                *((error_struct as *const u8).add(8) as *const *const i8);
                             let body = if body_ptr.is_null() {
                                 get_last_error_json()
                             } else {

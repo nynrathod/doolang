@@ -2318,6 +2318,40 @@ fn emit_ffi_call<'ctx>(
         emit_struct_metadata_registration_for_auth_crud(ctx, symbol, args);
     }
 
+    // Special handling for *_with_middleware: register user-defined middleware functions
+    // The middleware names are passed as comma-separated string, we need to register each one
+    if symbol.ends_with("_with_middleware") && args.len() >= 4 {
+        // arg[2] is the middleware names string (e.g., "AuthMiddleware,AdminMiddleware")
+        if let MirOperand::Const(MirConst::Str(middleware_str)) = &args[2] {
+            // Split by comma and register each middleware function
+            for mw_name in middleware_str.split(',').map(|s| s.trim()) {
+                if !mw_name.is_empty() {
+                    // Generate wrapper for middleware and register it
+                    let wrapper = get_or_generate_handler_wrapper(ctx, mw_name, symbol);
+                    
+                    // Call doo_http_register_middleware(name, fn_ptr)
+                    let register_fn = ctx.module.get_function("doo_http_register_middleware")
+                        .unwrap_or_else(|| {
+                            let ptr_type = ctx.ptr_type();
+                            let fn_type = ctx.context.void_type().fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                            ctx.module.add_function("doo_http_register_middleware", fn_type, None)
+                        });
+                    
+                    let mw_name_str = ctx.const_string(mw_name);
+                    let _ = ctx.builder.build_call(
+                        register_fn,
+                        &[mw_name_str.into(), wrapper.as_global_value().as_pointer_value().into()],
+                        "register_mw"
+                    );
+                    
+                    if std::env::var("DOO_DEBUG").is_ok() {
+                        eprintln!("[CODEGEN] Registered middleware: {} -> {}", mw_name, wrapper.get_name().to_string_lossy());
+                    }
+                }
+            }
+        }
+    }
+
     // Convert arguments - with automatic wrapper generation for FuncRef
     let arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> = args
         .iter()
@@ -2422,16 +2456,38 @@ fn get_or_generate_handler_wrapper<'ctx>(
     let user_param_count = user_fn_type.count_param_types();
     let user_return_type = user_fn_type.get_return_type();
     
+    // Check if this is a middleware function (2 params with second being "Next" type)
+    let param_type_ids = ctx.get_function_param_types(user_func_name);
+    let all_param_types: Vec<doo_core::types::TypeId> = param_type_ids
+        .map(|types| types.to_vec())
+        .unwrap_or_default();
+    
+    let is_middleware = user_param_count == 2 && all_param_types.len() == 2 && {
+        // Check if second param is "Next" type
+        all_param_types.get(1).map_or(false, |tid| {
+            match ctx.get_type_kind(*tid) {
+                Some(doo_core::types::TypeKind::Struct { name, .. }) => {
+                    name == "Next" || name == "DooNext"
+                }
+                _ => false
+            }
+        })
+    };
+    
     if debug {
-        eprintln!("[CODEGEN] User function {} has {} params, returns {:?}, return_type_name={:?}, returns_struct={}", 
-            user_func_name, user_param_count, user_return_type, return_type_name, returns_struct);
+        eprintln!("[CODEGEN] User function {} has {} params, returns {:?}, return_type_name={:?}, returns_struct={}, is_middleware={}", 
+            user_func_name, user_param_count, user_return_type, return_type_name, returns_struct, is_middleware);
     }
     
-    // Create wrapper function with FFI signature: fn(ptr) -> ptr
-    // ptr = *const DooRequest (ignored for simple handlers)
-    // returns *mut DooResult
+    // Create wrapper function with FFI signature:
+    // - Handlers: fn(ptr) -> ptr
+    // - Middleware: fn(ptr, fn_ptr) -> ptr (request + next function)
     let ptr_type = ctx.ptr_type();
-    let wrapper_fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+    let wrapper_fn_type = if is_middleware {
+        ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false)
+    } else {
+        ptr_type.fn_type(&[ptr_type.into()], false)
+    };
     let wrapper_fn = ctx.module.add_function(&wrapper_name, wrapper_fn_type, None);
     
     // Save current position
@@ -2461,7 +2517,17 @@ fn get_or_generate_handler_wrapper<'ctx>(
     });
     
     // Call the user's function
-    let user_result = if user_param_count == 0 {
+    let user_result = if is_middleware {
+        // Middleware function: fn(Request, Next) -> Response
+        // Get the next function pointer from wrapper's second param
+        let next_fn_ptr = wrapper_fn.get_nth_param(1).unwrap().into_pointer_value();
+        
+        // Call user's middleware with both request and next
+        ctx.builder
+            .build_call(user_func, &[request_ptr.into(), next_fn_ptr.into()], "user_call")
+            .ok()
+            .and_then(|cs| cs.try_as_basic_value().left())
+    } else if user_param_count == 0 {
         // Simple handler: fn() -> Str - no validation needed
         ctx.builder
             .build_call(user_func, &[], "user_call")
@@ -2688,6 +2754,382 @@ fn get_or_generate_handler_wrapper<'ctx>(
             }
         }
     };
+    
+    // For middleware, we need to wrap the result in DooResult format
+    // Middleware can return either:
+    // - Response directly (ptr) -> wrap in DooResult { tag=0, value=response }
+    // - Result<Response, Error> ({ i32, ptr }) -> extract and rewrap in DooResult
+    if is_middleware {
+        // Check if the LLVM return type is a struct { i32, ptr } which indicates Result type
+        // This is more reliable than checking return_type_name since that might not capture Result wrapper
+        let user_returns_result_struct = user_return_type
+            .map(|rt| {
+                if let inkwell::types::BasicTypeEnum::StructType(st) = rt {
+                    // Result<T, E> is represented as { i32 tag, ptr value }
+                    st.count_fields() == 2
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        
+        // Get the error type info for this middleware function (if it returns Result)
+        let error_type_id = ctx.get_function_error_type(user_func_name);
+        let error_type_name = error_type_id.and_then(|tid| {
+            ctx.get_type_kind(tid).map(|tk| match tk {
+                TypeKind::Enum { name, .. } => name.clone(),
+                _ => String::new(),
+            })
+        });
+        
+        if debug {
+            eprintln!("[CODEGEN] Middleware {} user_returns_result_struct={} error_type={:?}", 
+                user_func_name, user_returns_result_struct, error_type_name);
+        }
+        
+        // Allocate DooResult on heap
+        let result_size = i64_type.const_int(24, false);
+        let doo_result_ptr = ctx.builder
+            .build_call(malloc_fn, &[result_size.into()], "doo_result")
+            .ok()
+            .and_then(|cs| cs.try_as_basic_value().left())
+            .map(|v| v.into_pointer_value())
+            .unwrap_or_else(|| ptr_type.const_null());
+        
+        if let Some(val) = user_result {
+            if debug {
+                eprintln!("[CODEGEN] Middleware {} val.is_struct_value()={}, user_returns_result_struct={}", 
+                    user_func_name, val.is_struct_value(), user_returns_result_struct);
+            }
+            
+            // If the function returns a struct type { i32, ptr }, we need to extract values
+            // Try to convert to struct value if the return type indicates it's a result struct
+            if user_returns_result_struct && error_type_name.is_some() {
+                // The call returns { i32, ptr } directly as a struct value
+                // We need to extract the tag and value from it
+                if let Ok(user_result_struct) = val.try_into() {
+                    let user_result_struct: inkwell::values::StructValue = user_result_struct;
+                    
+                    let tag = ctx.builder
+                        .build_extract_value(user_result_struct, 0, "result_tag")
+                        .map(|v| v.into_int_value())
+                        .unwrap_or_else(|_| i32_type.const_int(0, false));
+                    
+                    let value = ctx.builder
+                        .build_extract_value(user_result_struct, 1, "result_value")
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|_| ptr_type.const_null());
+                    
+                    // Create blocks for Ok and Err paths
+                    let parent = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+                    let ok_block = ctx.context.append_basic_block(parent, "middleware_ok");
+                    let err_block = ctx.context.append_basic_block(parent, "middleware_err");
+                    let merge_block = ctx.context.append_basic_block(parent, "middleware_merge");
+                    
+                    // Branch based on tag (0 = Ok, non-zero = Err)
+                    let is_err = ctx.builder
+                        .build_int_compare(inkwell::IntPredicate::NE, tag, i32_type.const_zero(), "is_err")
+                        .unwrap();
+                    ctx.builder.build_conditional_branch(is_err, err_block, ok_block).ok();
+                    
+                    // OK PATH: Extract Body field from Response struct
+                    // Response struct layout: { i64 Status, ptr Body, ptr ContentType }
+                    ctx.builder.position_at_end(ok_block);
+                    let response_struct_type = ctx.context.struct_type(
+                        &[i64_type.into(), ptr_type.into(), ptr_type.into()],
+                        false
+                    );
+                    
+                    // Load the Body field (index 1) from the Response struct pointer
+                    let body_field_ptr = ctx.builder
+                        .build_struct_gep(response_struct_type, value, 1, "body_field_ptr")
+                        .ok()
+                        .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "response_body").ok())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+                    
+                    // Store in DooResult with tag=0 (Ok)
+                    // The value should be the JSON body string from the Response.Body field
+                    if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 0, "ok_tag_ptr") {
+                        let _ = ctx.builder.build_store(tag_ptr, i32_type.const_zero());
+                    }
+                    if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 1, "ok_value_ptr") {
+                        let _ = ctx.builder.build_store(value_ptr, body_field_ptr);
+                    }
+                    if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 2, "ok_owner_ptr") {
+                        let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false));
+                    }
+                    ctx.builder.build_unconditional_branch(merge_block).ok();
+                    
+                    // ERROR PATH: Map error enum variant to HTTP status and build error response
+                    ctx.builder.position_at_end(err_block);
+                    
+                    // Get error enum name and variant index from the value pointer
+                    // The value pointer points to a struct { i32 variant_index, ptr payload }
+                    let error_struct_type = ctx.context.struct_type(
+                        &[i32_type.into(), ptr_type.into()],
+                        false
+                    );
+                    
+                    let variant_index = ctx.builder
+                        .build_struct_gep(error_struct_type, value, 0, "variant_idx_ptr")
+                        .ok()
+                        .and_then(|gep| ctx.builder.build_load(i32_type, gep, "variant_idx").ok())
+                        .map(|v| v.into_int_value())
+                        .unwrap_or_else(|| i32_type.const_zero());
+                    
+                    // Get enum metadata to get variant names
+                    let enum_name_str = error_type_name.as_ref().unwrap();
+                    let variant_names = if let Some(TypeKind::Enum { variants, .. }) = error_type_id.and_then(|tid| ctx.get_type_kind(tid)) {
+                        variants.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>()
+                    } else {
+                        vec!["Unknown".to_string()]
+                    };
+                    
+                    // Build variant name lookup using a simple select/switch approach
+                    // For enums with 2 variants (like AuthError), just use a select instruction
+                    // For larger enums, we'd build a proper switch, but for now this is simpler
+                    let variant_name_ptr = if variant_names.len() == 2 {
+                        // Simple case: use select for binary choice
+                        // select i1 (variant_idx == 0), ptr "Unauthorized", ptr "Forbidden"
+                        let is_zero = ctx.builder
+                            .build_int_compare(inkwell::IntPredicate::EQ, variant_index, i32_type.const_zero(), "is_variant_0")
+                            .unwrap();
+                        let name0 = ctx.const_string(&variant_names[0]);
+                        let name1 = ctx.const_string(&variant_names[1]);
+                        ctx.builder
+                            .build_select(is_zero, name0, name1, "variant_name")
+                            .ok()
+                            .map(|v| v.into_pointer_value())
+                            .unwrap_or_else(|| ptr_type.const_null())
+                    } else {
+                        // Fallback: just use first variant name (should build proper switch for 3+ variants)
+                        ctx.const_string(&variant_names.get(0).cloned().unwrap_or_else(|| "Unknown".to_string()))
+                    };
+                    
+                    // Call doohttp_error_variant_to_status to get HTTP status code
+                    let error_mapping_fn = ctx.module.get_function("doohttp_error_variant_to_status")
+                        .unwrap_or_else(|| {
+                            let fn_type = i32_type.fn_type(
+                                &[ptr_type.into(), ptr_type.into(), i32_type.into()],
+                                false
+                            );
+                            ctx.module.add_function("doohttp_error_variant_to_status", fn_type, None)
+                        });
+                    
+                    let enum_name_cstr = ctx.const_string(enum_name_str);
+                    
+                    let http_status = ctx.builder
+                        .build_call(
+                            error_mapping_fn,
+                            &[enum_name_cstr.into(), variant_name_ptr.into(), variant_index.into()],
+                            "http_status"
+                        )
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .map(|v| v.into_int_value())
+                        .unwrap_or_else(|| i32_type.const_int(500, false));
+                    
+                    // Get the doohttp_build_rfc7807_error function to create proper error JSON
+                    let build_error_fn = ctx.module.get_function("doohttp_build_rfc7807_error")
+                        .unwrap_or_else(|| {
+                            let fn_type = ptr_type.fn_type(
+                                &[i32_type.into(), ptr_type.into()],
+                                false
+                            );
+                            ctx.module.add_function("doohttp_build_rfc7807_error", fn_type, None)
+                        });
+                    
+                    // Build RFC 7807 error JSON using the helper
+                    let error_json_ptr = ctx.builder
+                        .build_call(build_error_fn, &[http_status.into(), variant_name_ptr.into()], "error_json")
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+                    
+                    // Build error response struct { i32 status, ptr body, ptr content_type }
+                    let error_response_type = ctx.context.struct_type(
+                        &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                        false
+                    );
+                    let error_response_size = i64_type.const_int(24, false);
+                    let error_response_ptr = ctx.builder
+                        .build_call(malloc_fn, &[error_response_size.into()], "error_response")
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+                    
+                    if let Ok(status_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 0, "err_status_ptr") {
+                        let _ = ctx.builder.build_store(status_ptr, http_status);
+                    }
+                    if let Ok(body_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 1, "err_body_ptr") {
+                        let _ = ctx.builder.build_store(body_ptr, error_json_ptr);
+                    }
+                    let json_content_type = ctx.const_string("application/json");
+                    if let Ok(ct_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 2, "err_ct_ptr") {
+                        let _ = ctx.builder.build_store(ct_ptr, json_content_type);
+                    }
+                    
+                    // Store in DooResult with tag=1 (Err)
+                    if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 0, "err_tag_ptr") {
+                        let _ = ctx.builder.build_store(tag_ptr, i32_type.const_int(1, false));
+                    }
+                    if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 1, "err_value_ptr") {
+                        let _ = ctx.builder.build_store(value_ptr, error_response_ptr);
+                    }
+                    if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 2, "err_owner_ptr") {
+                        let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false));
+                    }
+                    ctx.builder.build_unconditional_branch(merge_block).ok();
+                    
+                    // MERGE: Return the DooResult
+                    ctx.builder.position_at_end(merge_block);
+                } else {
+                    // Fallback: treat as pointer
+                    if debug {
+                        eprintln!("[CODEGEN] Warning: Failed to extract struct value for {}", user_func_name);
+                    }
+                    let response_ptr = if val.is_pointer_value() {
+                        val.into_pointer_value()
+                    } else {
+                        ptr_type.const_null()
+                    };
+                    
+                    // Check if return type is Response - if so, extract Body field
+                    let should_extract_body = return_type_name.as_deref() == Some("Response");
+                    
+                    let result_value = if should_extract_body {
+                        // Extract Body field (index 1) from Response struct
+                        let response_struct_type = ctx.context.struct_type(
+                            &[i64_type.into(), ptr_type.into(), ptr_type.into()],
+                            false
+                        );
+                        
+                        ctx.builder
+                            .build_struct_gep(response_struct_type, response_ptr, 1, "body_field_ptr")
+                            .ok()
+                            .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "response_body").ok())
+                            .map(|v| v.into_pointer_value())
+                            .unwrap_or_else(|| ptr_type.const_null())
+                    } else {
+                        // Serialize the Response struct to JSON
+                        let serialize_fn = ctx.module.get_function("doohttp_serialize_struct_to_json")
+                            .unwrap_or_else(|| {
+                                let fn_type = ptr_type.fn_type(
+                                    &[ptr_type.into(), ptr_type.into()],
+                                    false
+                                );
+                                ctx.module.add_function("doohttp_serialize_struct_to_json", fn_type, None)
+                            });
+                        
+                        let handler_name_str = ctx.builder
+                            .build_global_string_ptr(user_func_name, "middleware_name_fallback")
+                            .map(|g| g.as_pointer_value())
+                            .unwrap_or_else(|_| ptr_type.const_null());
+                        
+                        ctx.builder
+                            .build_call(serialize_fn, &[response_ptr.into(), handler_name_str.into()], "serialized_fallback")
+                            .ok()
+                            .and_then(|cs| cs.try_as_basic_value().left())
+                            .map(|v| v.into_pointer_value())
+                            .unwrap_or_else(|| ptr_type.const_null())
+                    };
+                    
+                    if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 0, "tag_ptr") {
+                        let _ = ctx.builder.build_store(tag_ptr, i32_type.const_int(0, false));
+                    }
+                    if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 1, "value_ptr") {
+                        let _ = ctx.builder.build_store(value_ptr, result_value);
+                    }
+                    if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 2, "owner_ptr") {
+                        let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false));
+                    }
+                }
+            } else {
+                // User returned Response directly (pointer) - extract Body field
+                // Response struct layout: { i64 Status, ptr Body, ptr ContentType }
+                let response_ptr = if val.is_pointer_value() {
+                    val.into_pointer_value()
+                } else {
+                    ptr_type.const_null()
+                };
+                
+                // Check if return type name is "Response" - if so, extract Body field
+                // Otherwise serialize as before (for other return types)
+                let should_extract_body = return_type_name.as_deref() == Some("Response");
+                
+                let result_value = if should_extract_body {
+                    // Extract Body field (index 1) from Response struct { i64, ptr, ptr }
+                    let response_struct_type = ctx.context.struct_type(
+                        &[i64_type.into(), ptr_type.into(), ptr_type.into()],
+                        false
+                    );
+                    
+                    ctx.builder
+                        .build_struct_gep(response_struct_type, response_ptr, 1, "body_field_ptr")
+                        .ok()
+                        .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "response_body").ok())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null())
+                } else {
+                    // Serialize the struct to JSON (for non-Response return types)
+                    let serialize_fn = ctx.module.get_function("doohttp_serialize_struct_to_json")
+                        .unwrap_or_else(|| {
+                            let fn_type = ptr_type.fn_type(
+                                &[ptr_type.into(), ptr_type.into()],
+                                false
+                            );
+                            ctx.module.add_function("doohttp_serialize_struct_to_json", fn_type, None)
+                        });
+                    
+                    let handler_name_str = ctx.builder
+                        .build_global_string_ptr(user_func_name, "middleware_name_direct")
+                        .map(|g| g.as_pointer_value())
+                        .unwrap_or_else(|_| ptr_type.const_null());
+                    
+                    ctx.builder
+                        .build_call(serialize_fn, &[response_ptr.into(), handler_name_str.into()], "serialized_direct")
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null())
+                };
+                
+                // Store in DooResult with tag=0 (Ok)
+                if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 0, "tag_ptr") {
+                    let _ = ctx.builder.build_store(tag_ptr, i32_type.const_int(0, false));
+                }
+                if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 1, "value_ptr") {
+                    let _ = ctx.builder.build_store(value_ptr, result_value);
+                }
+                if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 2, "owner_ptr") {
+                    let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false));
+                }
+            }
+        } else {
+            // No result - return error
+            if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 0, "tag_ptr") {
+                let _ = ctx.builder.build_store(tag_ptr, i32_type.const_int(1, false));
+            }
+            if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 1, "value_ptr") {
+                let _ = ctx.builder.build_store(value_ptr, ptr_type.const_null());
+            }
+            if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 2, "owner_ptr") {
+                let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false));
+            }
+        }
+        
+        let _ = ctx.builder.build_return(Some(&doo_result_ptr));
+        
+        // Restore position
+        if let Some(block) = current_block {
+            ctx.builder.position_at_end(block);
+        }
+        
+        return wrapper_fn;
+    }
     
     // If user returns a struct, serialize it to JSON
     let final_result = if returns_struct {
