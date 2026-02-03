@@ -65,19 +65,32 @@ impl RouteRegistry {
         handler: DooHandlerFn,
         handler_name: Option<String>,
     ) {
+        let method_upper = method.to_uppercase();
         let router = self
             .routers
-            .entry(method.to_uppercase())
+            .entry(method_upper.clone())
             .or_insert_with(MatchitRouter::new);
 
         let entry = RouteEntry {
             handler,
-            handler_name,
+            handler_name: handler_name.clone(),
             middleware: self.global_middleware.clone(),
         };
 
-        if router.insert(path, entry).is_ok() {
-            self.route_count += 1;
+        match router.insert(path, entry) {
+            Ok(_) => {
+                self.route_count += 1;
+                eprintln!(
+                    "[ROUTER] Registered: {} {} (total: {})",
+                    method_upper, path, self.route_count
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[ROUTER] Failed to register {} {}: {:?}",
+                    method_upper, path, e
+                );
+            }
         }
     }
 
@@ -127,9 +140,10 @@ impl RouteRegistry {
         middleware: Vec<DooMiddlewareFn>,
         handler_name: Option<String>,
     ) {
+        let method_upper = method.to_uppercase();
         let router = self
             .routers
-            .entry(method.to_uppercase())
+            .entry(method_upper.clone())
             .or_insert_with(MatchitRouter::new);
 
         let mut mw = self.global_middleware.clone();
@@ -137,12 +151,24 @@ impl RouteRegistry {
 
         let entry = RouteEntry {
             handler,
-            handler_name,
+            handler_name: handler_name.clone(),
             middleware: mw,
         };
 
-        if router.insert(path, entry).is_ok() {
-            self.route_count += 1;
+        match router.insert(path, entry) {
+            Ok(_) => {
+                self.route_count += 1;
+                eprintln!(
+                    "[ROUTER] Registered (w/ middleware): {} {} (total: {})",
+                    method_upper, path, self.route_count
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[ROUTER] Failed to register {} {}: {:?}",
+                    method_upper, path, e
+                );
+            }
         }
     }
 
@@ -179,16 +205,46 @@ impl RouteRegistry {
         method: &str,
         path: &str,
     ) -> Option<(&RouteEntry, HashMap<String, String>)> {
-        let router = self.routers.get(&method.to_uppercase())?;
-        let matched = router.at(path).ok()?;
+        let method_upper = method.to_uppercase();
 
-        let params: HashMap<String, String> = matched
-            .params
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
+        // Debug: list all routers and their state
+        eprintln!(
+            "[ROUTER DEBUG] Looking for {} in routers. Available methods: {:?}",
+            method_upper,
+            self.routers.keys().collect::<Vec<_>>()
+        );
 
-        Some((matched.value, params))
+        let router = match self.routers.get(&method_upper) {
+            Some(r) => r,
+            None => {
+                eprintln!("[ROUTER] No router for method: {}", method_upper);
+                return None;
+            }
+        };
+
+        eprintln!(
+            "[ROUTER DEBUG] Found router for {}, attempting match on '{}'",
+            method_upper, path
+        );
+
+        match router.at(path) {
+            Ok(matched) => {
+                let params: HashMap<String, String> = matched
+                    .params
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+                eprintln!(
+                    "[ROUTER] Matched: {} {} -> params: {:?}",
+                    method_upper, path, params
+                );
+                Some((matched.value, params))
+            }
+            Err(e) => {
+                eprintln!("[ROUTER] No match for {} {}: {:?}", method_upper, path, e);
+                None
+            }
+        }
     }
 
     /// Get total number of registered routes

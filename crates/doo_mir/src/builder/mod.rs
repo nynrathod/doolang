@@ -191,6 +191,12 @@ impl<'a> MirBuilder<'a> {
                     // Store the Result type components
                     self.function_result_types
                         .insert(f.name.clone(), (return_type, error_type));
+                    if std::env::var("DOO_DEBUG").is_ok() {
+                        eprintln!(
+                            "[MIR] Registered Result function: {} (ok={:?}, err={:?})",
+                            f.name, return_type, error_type
+                        );
+                    }
                     // Also store the return type for the temp type (will be the ok value for unwrapping)
                     self.function_return_types
                         .insert(f.name.clone(), return_type);

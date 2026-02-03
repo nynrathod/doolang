@@ -75,42 +75,37 @@ struct DatabaseStruct {
 
 /// Result struct that matches LLVM codegen expectations: { i32 tag, ptr value }
 /// tag = 0 for Ok, tag = 1 for Err
+/// IMPORTANT: This struct is returned BY VALUE to match the compiler's expectations
+/// The compiler declares FFI functions returning Result as: `{ i32, ptr }`
 #[repr(C)]
-struct SimpleResult {
-    tag: i32,
-    value: *mut c_void,
+#[derive(Clone, Copy)]
+pub struct SimpleResult {
+    pub tag: i32,
+    pub value: *mut c_void,
 }
 
-/// Helper to create a SimpleResult for Ok case
-fn simple_result_ok(value: *mut c_void) -> *mut SimpleResult {
-    unsafe {
-        let result = libc::malloc(std::mem::size_of::<SimpleResult>()) as *mut SimpleResult;
-        if !result.is_null() {
-            (*result).tag = 0; // Ok
-            (*result).value = value;
-        }
-        result
+/// Helper to create a SimpleResult for Ok case (returns by value)
+fn simple_result_ok(value: *mut c_void) -> SimpleResult {
+    SimpleResult {
+        tag: 0, // Ok
+        value,
     }
 }
 
-/// Helper to create a SimpleResult for Err case
-fn simple_result_err(error_msg: &str) -> *mut SimpleResult {
-    unsafe {
-        let result = libc::malloc(std::mem::size_of::<SimpleResult>()) as *mut SimpleResult;
-        if !result.is_null() {
-            (*result).tag = 1; // Err
-            (*result).value = string_to_c(error_msg) as *mut c_void;
-        }
-        result
+/// Helper to create a SimpleResult for Err case (returns by value)
+fn simple_result_err(error_msg: &str) -> SimpleResult {
+    SimpleResult {
+        tag: 1, // Err
+        value: string_to_c(error_msg) as *mut c_void,
     }
 }
 
 /// Connect to PostgreSQL database using DATABASE_URL env var
-/// Returns a Result struct: { i32 tag, ptr value }
+/// Returns a Result struct BY VALUE: { i32 tag, ptr value }
 /// - Ok: tag=0, value=Database struct pointer
 /// - Err: tag=1, value=error message string pointer
 #[no_mangle]
-pub extern "C" fn doo_db_connect_postgres() -> *mut SimpleResult {
+pub extern "C" fn doo_db_connect_postgres() -> SimpleResult {
     let conn_str = match std::env::var("DATABASE_URL") {
         Ok(s) => s,
         Err(_) => {
@@ -132,6 +127,20 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut SimpleResult {
             eprintln!("[DB] Connection failed: {}", e);
             simple_result_err(&format!("Database connection failed: {}", e))
         }
+    }
+}
+
+/// Get global database instance (returns mock if not connected)
+/// Returns a Result struct BY VALUE: { i32 tag, ptr value }
+#[no_mangle]
+pub extern "C" fn doo_db_get_global() -> SimpleResult {
+    if is_pool_initialized() {
+        let db = create_database_struct("postgres", true);
+        simple_result_ok(db)
+    } else {
+        eprintln!("[DB] WARNING: No database connected, using mock");
+        let db = create_database_struct("mock", false);
+        simple_result_ok(db)
     }
 }
 
@@ -164,7 +173,87 @@ pub extern "C" fn doo_db_cleanup_and_exit() {
 }
 
 // ============================================================================
-// QUERY EXECUTION
+// RAW SQL (Returns SimpleResult by value for Result<Str, Error> types)
+// ============================================================================
+
+/// Execute raw SQL query - matches Database.raw(self, sql) -> Str !DatabaseError
+/// First argument (_db) is the database handle (self), second is the SQL string
+/// Returns SimpleResult BY VALUE: { i32 tag, ptr value }
+#[no_mangle]
+pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> SimpleResult {
+    let sql_str = match c_to_string(sql) {
+        Ok(s) => s,
+        Err(e) => return simple_result_err(&e),
+    };
+
+    let rt = get_runtime();
+    match rt.block_on(async {
+        let client = get_client().await?;
+        let rows = client.query(&sql_str, &[]).await?;
+        Ok::<_, Box<dyn std::error::Error>>(rows_to_json(&rows))
+    }) {
+        Ok(json) => simple_result_ok(string_to_c(&json) as *mut c_void),
+        Err(e) => simple_result_err(&format!("Query failed: {}", e)),
+    }
+}
+
+/// Execute raw SQL query with parameters - matches Database.rawWithParams(self, sql, params) -> Str !DatabaseError
+/// First arg (_db) is database handle, second is SQL, third is JSON params
+/// Returns SimpleResult BY VALUE: { i32 tag, ptr value }
+#[no_mangle]
+pub extern "C" fn doo_db_raw_param(
+    _db: *const c_void,
+    sql: *const c_char,
+    params_json: *const c_char,
+) -> SimpleResult {
+    let sql_str = match c_to_string(sql) {
+        Ok(s) => s,
+        Err(e) => return simple_result_err(&e),
+    };
+
+    let params_str = match c_to_string(params_json) {
+        Ok(s) => s,
+        Err(e) => return simple_result_err(&e),
+    };
+
+    // Parse params JSON
+    let params_array: Vec<serde_json::Value> = match serde_json::from_str(&params_str) {
+        Ok(v) => v,
+        Err(e) => return simple_result_err(&format!("Invalid params JSON: {}", e)),
+    };
+
+    let rt = get_runtime();
+    match rt.block_on(async {
+        let client = get_client().await?;
+
+        // Convert JSON values to postgres params (simplified - strings only for now)
+        let param_refs: Vec<String> = params_array
+            .iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Null => "NULL".to_string(),
+                _ => v.to_string(),
+            })
+            .collect();
+
+        // Build params slice
+        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = param_refs
+            .iter()
+            .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+            .collect();
+
+        let rows = client.query(&sql_str, &params[..]).await?;
+        Ok::<_, Box<dyn std::error::Error>>(rows_to_json(&rows))
+    }) {
+        Ok(json) => simple_result_ok(string_to_c(&json) as *mut c_void),
+        Err(e) => simple_result_err(&format!("Query failed: {}", e)),
+    }
+}
+
+// ============================================================================
+// QUERY EXECUTION (Legacy - returns *mut DooResult)
 // ============================================================================
 
 /// Execute raw SQL query (no parameters)

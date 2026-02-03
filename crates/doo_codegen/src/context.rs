@@ -139,6 +139,13 @@ pub struct CodegenContext<'ctx> {
     /// Whether the currently generating function is a closure.
     /// Closures have special calling convention (all params/returns as i64).
     pub is_closure_function: bool,
+
+    // ========================================================================
+    // FFI Symbol Tracking (for wrapper generation)
+    // ========================================================================
+    /// FFI symbols: function_name -> (library, symbol).
+    /// Tracks FFI functions so wrapper generator can call correct symbol.
+    pub ffi_symbols: FxHashMap<String, (String, String)>,
 }
 
 impl<'ctx> CodegenContext<'ctx> {
@@ -173,6 +180,7 @@ impl<'ctx> CodegenContext<'ctx> {
             current_function_return_type: None,
             borrow_origins: FxHashMap::default(),
             is_closure_function: false,
+            ffi_symbols: FxHashMap::default(),
         }
     }
 
@@ -261,6 +269,32 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Get function error type (for middleware error handling).
     pub fn get_function_error_type(&self, func_name: &str) -> Option<TypeId> {
         self.function_error_types.get(func_name).copied()
+    }
+
+    // ========================================================================
+    // FFI Symbol Tracking (Single Source of Truth)
+    // ========================================================================
+
+    /// Register FFI function symbol mapping.
+    /// This allows wrapper generator to call the correct external symbol.
+    pub fn register_ffi_symbol(&mut self, func_name: &str, library: &str, symbol: &str) {
+        self.ffi_symbols.insert(
+            func_name.to_string(),
+            (library.to_string(), symbol.to_string()),
+        );
+    }
+
+    /// Get FFI symbol for a function (if it's an FFI function).
+    /// Returns Some((library, symbol)) if the function is FFI, None otherwise.
+    pub fn get_ffi_symbol(&self, func_name: &str) -> Option<(&str, &str)> {
+        self.ffi_symbols
+            .get(func_name)
+            .map(|(lib, sym)| (lib.as_str(), sym.as_str()))
+    }
+
+    /// Check if a function is an FFI function.
+    pub fn is_ffi_function(&self, func_name: &str) -> bool {
+        self.ffi_symbols.contains_key(func_name)
     }
 
     // ========================================================================
@@ -418,6 +452,12 @@ impl<'ctx> CodegenContext<'ctx> {
             .get(name)
             .copied()
             .or_else(|| self.module.get_function(name))
+    }
+
+    /// Register a function in the cache with an alias name.
+    /// Used for FFI functions where the Doo name differs from the symbol name.
+    pub fn register_function_alias(&mut self, alias: &str, func: FunctionValue<'ctx>) {
+        self.function_cache.insert(alias.to_string(), func);
     }
 
     // ========================================================================

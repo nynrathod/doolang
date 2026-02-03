@@ -478,7 +478,7 @@ pub extern "C" fn doohttp_error_variant_to_status(
 ) -> i32 {
     let _enum_name = c_to_string(enum_name);
     let variant_str = c_to_string(variant_name);
-    
+
     // Common error status mappings based on variant name
     match variant_str.as_str() {
         "Unauthorized" => 401,
@@ -499,18 +499,15 @@ pub extern "C" fn doohttp_error_variant_to_status(
 
 /// Build RFC 7807 error JSON from status code and title
 #[no_mangle]
-pub extern "C" fn doohttp_build_rfc7807_error(
-    status: i32,
-    title: *const c_char,
-) -> *const c_char {
+pub extern "C" fn doohttp_build_rfc7807_error(status: i32, title: *const c_char) -> *const c_char {
     let title_str = c_to_string(title);
-    
+
     // Build RFC 7807 compliant error JSON
     let error_json = format!(
         r#"{{"type":"about:blank","title":"{}","status":{},"detail":"Request failed"}}"#,
         title_str, status
     );
-    
+
     string_to_c(&error_json)
 }
 
@@ -1177,14 +1174,14 @@ pub extern "C" fn doo_http_crud(
     // POST /resource - create
     registry.register("POST", &base_str, crud_create_handler);
 
-    // GET /resource/:id - get one
-    let get_one_path = format!("{}/:id", base_str);
+    // GET /resource/{id} - get one (matchit uses {param} syntax, not :param)
+    let get_one_path = format!("{}/{{id}}", base_str);
     registry.register("GET", &get_one_path, crud_get_handler);
 
-    // PUT /resource/:id - update
+    // PUT /resource/{id} - update
     registry.register("PUT", &get_one_path, crud_update_handler);
 
-    // DELETE /resource/:id - delete
+    // DELETE /resource/{id} - delete
     registry.register("DELETE", &get_one_path, crud_delete_handler);
 
     // Store configuration for reference
@@ -2387,7 +2384,6 @@ fn serialize_struct_recursive(
     };
 
     let mut json_obj = serde_json::Map::new();
-    let mut offset: usize = 0;
 
     for field in fields {
         let field_obj = match field.as_object() {
@@ -2405,11 +2401,11 @@ fn serialize_struct_recursive(
             None => continue,
         };
 
-        // Calculate alignment and size for the field type
-        let (field_size, field_align) = get_type_size_align(field_type, struct_layouts);
-
-        // Align offset to field alignment
-        offset = align_up(offset, field_align);
+        // Use pre-computed offset from metadata (critical for correct struct layout)
+        let offset = match field_obj.get("offset").and_then(|v| v.as_u64()) {
+            Some(o) => o as usize,
+            None => continue, // Skip fields without offset
+        };
 
         unsafe {
             let field_ptr = struct_ptr.add(offset);
@@ -2453,7 +2449,6 @@ fn serialize_struct_recursive(
                 _ => serde_json::Value::Null,
             };
             json_obj.insert(field_name.to_string(), field_value);
-            offset += field_size;
         }
     }
 
@@ -2461,6 +2456,7 @@ fn serialize_struct_recursive(
 }
 
 /// Align a value up to the given alignment
+#[allow(dead_code)]
 fn align_up(offset: usize, align: usize) -> usize {
     if align == 0 {
         return offset;
@@ -2469,6 +2465,7 @@ fn align_up(offset: usize, align: usize) -> usize {
 }
 
 /// Get the size and alignment for a type
+#[allow(dead_code)]
 fn get_type_size_align(
     type_name: &str,
     struct_layouts: &HashMap<String, serde_json::Value>,
@@ -2644,7 +2641,7 @@ pub extern "C" fn doo_http_next_call(next: *const std::ffi::c_void) -> *mut std:
 
     unsafe {
         let doo_result = &*result;
-        
+
         // Build Response struct from DooResult
         // Response layout: { i64 Status, ptr Body, ptr ContentType }
         let response_size = std::mem::size_of::<i64>() + 2 * std::mem::size_of::<*const i8>();
@@ -2652,12 +2649,13 @@ pub extern "C" fn doo_http_next_call(next: *const std::ffi::c_void) -> *mut std:
         if response_ptr.is_null() {
             return std::ptr::null_mut();
         }
-        
+
         if doo_result.tag == 0 {
             // Ok result - build Response with status 200 and the JSON body
             *(response_ptr as *mut i64) = 200;
             *((response_ptr as *mut u8).add(8) as *mut *const i8) = doo_result.value as *const i8;
-            *((response_ptr as *mut u8).add(16) as *mut *const i8) = string_to_c("application/json");
+            *((response_ptr as *mut u8).add(16) as *mut *const i8) =
+                string_to_c("application/json");
         } else {
             // Error result - value is error response struct { i32 status, ptr body, ptr content_type }
             // Extract fields from error struct and build Response
@@ -2665,12 +2663,12 @@ pub extern "C" fn doo_http_next_call(next: *const std::ffi::c_void) -> *mut std:
             let status = *(error_struct as *const i32) as i64;
             let body_ptr = *((error_struct as *const u8).add(8) as *const *const i8);
             let ct_ptr = *((error_struct as *const u8).add(16) as *const *const i8);
-            
+
             *(response_ptr as *mut i64) = status;
             *((response_ptr as *mut u8).add(8) as *mut *const i8) = body_ptr;
             *((response_ptr as *mut u8).add(16) as *mut *const i8) = ct_ptr;
         }
-        
+
         response_ptr as *mut std::ffi::c_void
     }
 }

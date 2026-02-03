@@ -1613,14 +1613,42 @@ impl Lower {
                 enum_name,
                 variant,
                 payload,
-            } => HirExprKind::EnumVariant {
-                enum_name: enum_name.clone(),
-                variant: variant.clone(),
-                payload: payload
-                    .iter()
-                    .map(|e| self.lower_expr_typed(e, registry))
-                    .collect(),
-            },
+            } => {
+                // Check if this is actually a static method call on a struct
+                // e.g., Database::postgres() should be MethodCall, not EnumVariant
+                let type_id = registry.lookup(enum_name);
+                let is_struct = type_id
+                    .and_then(|tid| registry.get(tid))
+                    .map(|info| matches!(info.kind, TypeKind::Struct { .. }))
+                    .unwrap_or(false);
+                
+                if is_struct {
+                    // Convert to MethodCall: Type::method(args) -> Type.method(args)
+                    let receiver = HirExpr::with_type(
+                        HirExprKind::Local { name: enum_name.clone() },
+                        type_id.unwrap(),
+                        expr.span,
+                    );
+                    HirExprKind::MethodCall {
+                        receiver: Box::new(receiver),
+                        method: variant.clone(),
+                        args: payload
+                            .iter()
+                            .map(|e| self.lower_expr_typed(e, registry))
+                            .collect(),
+                    }
+                } else {
+                    // It's a real enum variant
+                    HirExprKind::EnumVariant {
+                        enum_name: enum_name.clone(),
+                        variant: variant.clone(),
+                        payload: payload
+                            .iter()
+                            .map(|e| self.lower_expr_typed(e, registry))
+                            .collect(),
+                    }
+                }
+            }
 
             ExprKind::Range {
                 start,

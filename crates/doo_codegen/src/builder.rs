@@ -15,6 +15,27 @@ use inkwell::values::BasicValueEnum;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Derive FFI symbol from library and function name.
+///
+/// Examples:
+/// - ("doo_http", "Server.new") -> "doo_http_server_new"
+/// - ("doo_http", "Server.get") -> "doo_http_server_get"
+/// - ("doo_db", "Query.exec") -> "doo_db_query_exec"
+fn derive_ffi_symbol(library: &str, func_name: &str) -> String {
+    // Split function name by '.' for methods
+    let parts: Vec<&str> = func_name.split('.').collect();
+
+    if parts.len() == 2 {
+        // Method: Server.get -> {library}_server_get
+        let type_name = parts[0].to_lowercase();
+        let method_name = parts[1].to_lowercase();
+        format!("{}_{}_{}", library, type_name, method_name)
+    } else {
+        // Plain function: myFunc -> {library}_myfunc
+        format!("{}_{}", library, func_name.to_lowercase())
+    }
+}
+
 /// Get the variable name from a MirOperand.
 fn get_operand_name(operand: &MirOperand) -> Option<&str> {
     match operand {
@@ -351,8 +372,8 @@ impl<'ctx> CodegenBuilder<'ctx> {
             func.return_type.map(|t| ctx.get_llvm_type(t))
         };
 
-        // For FFI functions, use external linkage
-        if func.ffi.is_some() {
+        // For FFI functions, use external linkage and register symbol
+        if let Some(ffi) = &func.ffi {
             let param_meta: Vec<_> = param_types.iter().map(|t| (*t).into()).collect();
             let fn_type = match return_type {
                 Some(ret) => {
@@ -361,8 +382,26 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 }
                 None => ctx.context.void_type().fn_type(&param_meta, false),
             };
+
+            // Use explicit symbol if provided, otherwise derive from library + function name
+            let symbol = ffi
+                .symbol
+                .clone()
+                .unwrap_or_else(|| derive_ffi_symbol(&ffi.library, &func.name));
+
+            // Declare FFI function with its EXTERNAL SYMBOL NAME (not the Doo function name)
+            // This is critical: linker will look for this exact symbol name
             ctx.module
-                .add_function(&func.name, fn_type, Some(Linkage::External));
+                .add_function(&symbol, fn_type, Some(Linkage::External));
+
+            // Also register the Doo function name as an alias to the symbol
+            // This allows ctx.get_function("jwt") to find "doo_http_jwt"
+            if let Some(f) = ctx.module.get_function(&symbol) {
+                ctx.register_function_alias(&func.name, f);
+            }
+
+            // Register FFI symbol mapping for wrapper generation
+            ctx.register_ffi_symbol(&func.name, &ffi.library, &symbol);
         } else {
             ctx.declare_function(&func.name, &param_types, return_type);
         }

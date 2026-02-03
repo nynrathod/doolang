@@ -1424,12 +1424,13 @@ pub extern "C" fn doo_http_register_handler_with_metadata(
     let mut registry = routes.lock().unwrap();
     registry.handlers.insert(handler_name.clone(), handler);
 
-    // Parse metadata JSON to extract struct_decorators
+    // Parse metadata JSON
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&metadata_str) {
-        if let Some(struct_decorators_obj) =
+        // Extract struct_decorators if present (optional - default to empty)
+        let struct_decorators = if let Some(struct_decorators_obj) =
             json.get("struct_decorators").and_then(|v| v.as_object())
         {
-            let mut struct_decorators = HashMap::new();
+            let mut decorators_map = HashMap::new();
 
             for (struct_name, fields_obj) in struct_decorators_obj {
                 if let Some(fields_map) = fields_obj.as_object() {
@@ -1465,95 +1466,96 @@ pub extern "C" fn doo_http_register_handler_with_metadata(
                         }
                     }
 
-                    struct_decorators.insert(struct_name.clone(), field_decorators);
+                    decorators_map.insert(struct_name.clone(), field_decorators);
                 }
             }
+            decorators_map
+        } else {
+            HashMap::new()
+        };
 
-            // Also extract struct_fields and struct_layouts from metadata
-            let struct_fields = json
-                .get("struct_fields")
-                .and_then(|v| v.as_object())
-                .map(|obj| {
-                    obj.iter()
-                        .map(|(k, v)| {
-                            let fields = v
-                                .as_array()
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|field_arr| {
-                                            field_arr.as_array().map(|inner| {
-                                                inner
-                                                    .iter()
-                                                    .filter_map(|s| {
-                                                        s.as_str().map(|s| s.to_string())
-                                                    })
-                                                    .collect()
-                                            })
+        // Extract struct_fields and struct_layouts from metadata (always)
+        let struct_fields = json
+            .get("struct_fields")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| {
+                        let fields = v
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|field_arr| {
+                                        field_arr.as_array().map(|inner| {
+                                            inner
+                                                .iter()
+                                                .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                                                .collect()
                                         })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            (k.clone(), fields)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (k.clone(), fields)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-            let struct_layouts = json
-                .get("struct_layouts")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
+        let struct_layouts = json
+            .get("struct_layouts")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
-            let return_type = json
-                .get("return_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown")
-                .to_string();
+        let return_type = json
+            .get("return_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown")
+            .to_string();
 
-            let param_types = json
-                .get("param_types")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
+        let param_types = json
+            .get("param_types")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-            // Parse enum_variants: { "EnumName": ["Variant1", "Variant2"] }
-            let enum_variants = json
-                .get("enum_variants")
-                .and_then(|v| v.as_object())
-                .map(|obj| {
-                    obj.iter()
-                        .map(|(k, v)| {
-                            let variants = v
-                                .as_array()
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|s| s.as_str().map(|s| s.to_string()))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            (k.clone(), variants)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+        // Parse enum_variants: { "EnumName": ["Variant1", "Variant2"] }
+        let enum_variants = json
+            .get("enum_variants")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| {
+                        let variants = v
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (k.clone(), variants)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-            let metadata = HandlerMetadata {
-                param_types,
-                struct_decorators,
-                struct_fields,
-                struct_layouts,
-                enum_variants,
-                return_type,
-            };
+        let metadata = HandlerMetadata {
+            param_types,
+            struct_decorators,
+            struct_fields,
+            struct_layouts,
+            enum_variants,
+            return_type,
+        };
 
-            registry
-                .handler_metadata
-                .insert(handler_name.clone(), metadata);
-        }
+        registry
+            .handler_metadata
+            .insert(handler_name.clone(), metadata);
     }
 
     doo_http_debug!(
@@ -2454,56 +2456,57 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
         let exec_req_ptr = Box::into_raw(doo_request);
 
-        let res_ptr: *mut DooResult = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            set_current_request_path(&exec_path);
-            if !exec_all_middleware.is_empty() {
-                let middleware_vec = exec_all_middleware.clone();
-                let middleware_box = Box::new(middleware_vec);
-                let mw_raw_ptr = Box::into_raw(middleware_box);
+        let res_ptr: *mut DooResult =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                set_current_request_path(&exec_path);
+                if !exec_all_middleware.is_empty() {
+                    let middleware_vec = exec_all_middleware.clone();
+                    let middleware_box = Box::new(middleware_vec);
+                    let mw_raw_ptr = Box::into_raw(middleware_box);
 
-                let next_for_first = Box::new(DooNext {
-                    request: exec_req_ptr,
-                    remaining_middleware: mw_raw_ptr as *mut std::ffi::c_void,
-                    handler: exec_handler,
-                    current_index: 1,
-                });
-                let next_ptr = Box::into_raw(next_for_first);
+                    let next_for_first = Box::new(DooNext {
+                        request: exec_req_ptr,
+                        remaining_middleware: mw_raw_ptr as *mut std::ffi::c_void,
+                        handler: exec_handler,
+                        current_index: 1,
+                    });
+                    let next_ptr = Box::into_raw(next_for_first);
 
-                let first_middleware = exec_all_middleware[0];
-                doo_ffi_enter!(
-                    "middleware_chain",
-                    "req_ptr={:p}, mw_count={}",
-                    exec_req_ptr,
-                    exec_all_middleware.len()
-                );
-                let res = first_middleware(exec_req_ptr, next_ptr);
-                doo_ffi_exit!("middleware_chain", "result_ptr={:p}", res);
-                res
-            } else {
-                doo_handler_call!("direct_handler", exec_req_ptr);
-                let res = exec_handler(exec_req_ptr);
-                doo_ffi_exit!("direct_handler", "result_ptr={:p}", res);
-                res
-            }
-        })) {
-            Ok(ptr) => ptr,
-            Err(panic_payload) => {
-                let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
+                    let first_middleware = exec_all_middleware[0];
+                    doo_ffi_enter!(
+                        "middleware_chain",
+                        "req_ptr={:p}, mw_count={}",
+                        exec_req_ptr,
+                        exec_all_middleware.len()
+                    );
+                    let res = first_middleware(exec_req_ptr, next_ptr);
+                    doo_ffi_exit!("middleware_chain", "result_ptr={:p}", res);
+                    res
                 } else {
-                    "panic".to_string()
-                };
-                let body_json = error::internal_error(
-                    format!("Panic in handler: {}", msg),
-                    exec_path.clone(),
-                )
-                .to_json_string();
-                set_last_error(500, body_json);
-                std::ptr::null_mut()
-            }
-        };
+                    doo_handler_call!("direct_handler", exec_req_ptr);
+                    let res = exec_handler(exec_req_ptr);
+                    doo_ffi_exit!("direct_handler", "result_ptr={:p}", res);
+                    res
+                }
+            })) {
+                Ok(ptr) => ptr,
+                Err(panic_payload) => {
+                    let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "panic".to_string()
+                    };
+                    let body_json = error::internal_error(
+                        format!("Panic in handler: {}", msg),
+                        exec_path.clone(),
+                    )
+                    .to_json_string();
+                    set_last_error(500, body_json);
+                    std::ptr::null_mut()
+                }
+            };
 
         if res_ptr.is_null() {
             if let Some((st, json)) = take_last_error() {
@@ -2544,7 +2547,10 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
         if value.is_null() {
             msg = Some("Unknown error".to_string());
-        } else if doo_runtime::memory::validate_pointer(value as *const std::ffi::c_void, "handler_error_value") {
+        } else if doo_runtime::memory::validate_pointer(
+            value as *const std::ffi::c_void,
+            "handler_error_value",
+        ) {
             let first_i32 = unsafe { *(value as *const i32) };
             let msg_ptr = unsafe { *((value as *const u8).add(8) as *const *const c_char) };
 
@@ -2611,10 +2617,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     };
 
     if let Some(body_json) = outcome.error_json {
-        let status = StatusCode::from_u16(outcome.error_status)
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(outcome.error_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         if status.as_u16() >= 500 {
-            eprintln!("[Doo][ERROR] {} {} -> {} {}", method, path, status.as_u16(), body_json);
+            eprintln!(
+                "[Doo][ERROR] {} {} -> {} {}",
+                method,
+                path,
+                status.as_u16(),
+                body_json
+            );
         }
         let mut builder = Response::builder()
             .status(status)
@@ -2935,7 +2947,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 }
 
 /// Create a new Server instance
-/// Server struct layout: { Port: i32, Host: *const c_char }
+/// Server struct layout: { Port: i64, Host: *const c_char }
 #[no_mangle]
 pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi::c_void {
     let host_port_str = if host_port.is_null() {
@@ -3027,8 +3039,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
         }
     };
 
-    // Allocate Server struct: { Port: i32, Host: *const c_char }
-    let server_size = std::mem::size_of::<i32>() + std::mem::size_of::<*const c_char>();
+    // Allocate Server struct: { Port: i64, Host: *const c_char }
+    // CRITICAL: Doo's Int maps to LLVM i64, not i32
+    let server_size = std::mem::size_of::<i64>() + std::mem::size_of::<*const c_char>();
     let layout = std::alloc::Layout::from_size_align(server_size, 8).unwrap();
     let server_ptr = unsafe { std::alloc::alloc(layout) as *mut u8 };
 
@@ -3037,8 +3050,8 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
     }
 
     unsafe {
-        // Write Port (i32) at offset 0
-        *(server_ptr as *mut i32) = port;
+        // Write Port (i64) at offset 0 - Int is i64 in LLVM
+        *(server_ptr as *mut i64) = port as i64;
         // Write Host (*const c_char) at offset 8 (aligned)
         *(server_ptr.add(8) as *mut *const c_char) = host;
 
@@ -3053,7 +3066,7 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut std::ffi
 #[no_mangle]
 pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut DooResult {
     // Extract port from Server struct
-    // Server struct layout: { Port: i32, Host: *const c_char }
+    // Server struct layout: { Port: i64, Host: *const c_char }
 
     let startup_start = std::time::Instant::now();
     let _ = STARTUP_INSTANT.set(Instant::now());
@@ -3062,9 +3075,9 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
         (3000, "0.0.0.0".to_string())
     } else {
         unsafe {
-            // Read the first i32 field (Port)
-            let port_ptr = server_ptr as *const i32;
-            let port = *port_ptr;
+            // Read the first i64 field (Port) - Int is i64 in LLVM
+            let port_ptr = server_ptr as *const i64;
+            let port = *port_ptr as i32;
 
             // Read Host (*const c_char) at offset 8
             let host_ptr_ptr = (server_ptr as *const u8).add(8) as *const *const c_char;
@@ -3529,9 +3542,9 @@ pub extern "C" fn array_to_json_with_metadata(
 
                 let field_ptr = (elem_ptr as *const u8).offset(offset);
                 let value: Option<serde_json::Value> = match field_type {
-                    "Int" => Some(serde_json::json!(*(field_ptr as *const i32))),
+                    "Int" => Some(serde_json::json!(*(field_ptr as *const i64))),
                     "Float" => Some(serde_json::json!(*(field_ptr as *const f64))),
-                    "Bool" => Some(serde_json::json!(*(field_ptr as *const i32) != 0)),
+                    "Bool" => Some(serde_json::json!(*(field_ptr as *const u8) != 0)),
                     "Str" => {
                         let str_ptr = *(field_ptr as *const *const libc::c_char);
                         if str_ptr.is_null() {
@@ -5739,9 +5752,9 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                 let field_ptr = (struct_ptr as *const u8).offset(offset);
 
                 let field_value: Option<serde_json::Value> = match field_type {
-                    "Int" => Some(serde_json::json!(*(field_ptr as *const i32))),
+                    "Int" => Some(serde_json::json!(*(field_ptr as *const i64))),
                     "Float" => Some(serde_json::json!(*(field_ptr as *const f64))),
-                    "Bool" => Some(serde_json::json!(*(field_ptr as *const i32) != 0)),
+                    "Bool" => Some(serde_json::json!(*(field_ptr as *const u8) != 0)),
                     "Str" => {
                         let str_ptr = *(field_ptr as *const *const libc::c_char);
                         if str_ptr.is_null() {
@@ -5772,7 +5785,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                             let mut arr: Vec<serde_json::Value> = Vec::new();
                             match element_type {
                                 "Int" => {
-                                    let data = data_ptr as *const i32;
+                                    // LLVM uses i64 for Int (see TypeMapper)
+                                    let data = data_ptr as *const i64;
                                     for i in 0..len {
                                         arr.push(serde_json::json!(*data.add(i)));
                                     }
@@ -5784,7 +5798,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                                     }
                                 }
                                 "Bool" => {
-                                    let data = data_ptr as *const i32;
+                                    // LLVM uses i1 (u8 in memory) for Bool (see TypeMapper)
+                                    let data = data_ptr as *const u8;
                                     for i in 0..len {
                                         arr.push(serde_json::json!(*data.add(i) != 0));
                                     }
@@ -5875,7 +5890,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
 
             let field_value: Option<serde_json::Value> = match field_type {
                 "Int" => {
-                    let val = *(field_ptr as *const i32);
+                    // CRITICAL: Doo's Int maps to LLVM i64, not i32
+                    let val = *(field_ptr as *const i64);
                     Some(serde_json::json!(val))
                 }
                 "Float" => {
@@ -5883,7 +5899,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                     Some(serde_json::json!(val))
                 }
                 "Bool" => {
-                    let val = *(field_ptr as *const i32);
+                    // CRITICAL: Bool is i1 in LLVM, stored as u8 in memory
+                    let val = *(field_ptr as *const u8);
                     Some(serde_json::json!(val != 0))
                 }
                 "Str" => {
@@ -5921,7 +5938,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                         let mut arr: Vec<serde_json::Value> = Vec::new();
                         match element_type {
                             "Int" => {
-                                let data = data_ptr as *const i32;
+                                // LLVM uses i64 for Int (see TypeMapper)
+                                let data = data_ptr as *const i64;
                                 for i in 0..len {
                                     arr.push(serde_json::json!(*data.add(i)));
                                 }
@@ -5933,7 +5951,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                                 }
                             }
                             "Bool" => {
-                                let data = data_ptr as *const i32;
+                                // LLVM uses i1 (u8 in memory) for Bool (see TypeMapper)
+                                let data = data_ptr as *const u8;
                                 for i in 0..len {
                                     arr.push(serde_json::json!(*data.add(i) != 0));
                                 }
@@ -6004,7 +6023,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
 
                                         let nf_value: serde_json::Value = match nf_type {
                                             "Int" => {
-                                                let val = *(nf_ptr as *const i32);
+                                                // LLVM uses i64 for Int (see TypeMapper)
+                                                let val = *(nf_ptr as *const i64);
                                                 serde_json::json!(val)
                                             }
                                             "Float" => {
@@ -6012,7 +6032,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
                                                 serde_json::json!(val)
                                             }
                                             "Bool" => {
-                                                let val = *(nf_ptr as *const i32);
+                                                // LLVM uses i1 (u8 in memory) for Bool (see TypeMapper)
+                                                let val = *(nf_ptr as *const u8);
                                                 serde_json::json!(val != 0)
                                             }
                                             "Str" => {
@@ -6705,8 +6726,8 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     };
 
                                     if let Some(num) = parsed_int {
-                                        let n = num as i32;
-                                        std::ptr::write(struct_ptr_u8.add(offset) as *mut i32, n);
+                                        // LLVM uses i64 for Int (see TypeMapper)
+                                        std::ptr::write(struct_ptr_u8.add(offset) as *mut i64, num);
                                     } else {
                                         // Type mismatch - set error
                                         let actual_type = if field_value.is_string() {
@@ -6847,8 +6868,9 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     };
 
                                     if let Some(bool_val) = parsed_bool {
+                                        // LLVM uses i1 (u8 in memory) for Bool (see TypeMapper)
                                         std::ptr::write(
-                                            struct_ptr_u8.add(offset) as *mut i32,
+                                            struct_ptr_u8.add(offset) as *mut u8,
                                             if bool_val { 1 } else { 0 },
                                         );
                                     } else {
@@ -7478,9 +7500,8 @@ extern "C" fn auth_signup_handler(request: *mut DooRequest) -> *mut DooResult {
             }
         }
 
-        let placeholders: Vec<String> = (1..=values_json.len())
-            .map(|i| format!("${}", i))
-            .collect();
+        let placeholders: Vec<String> =
+            (1..=values_json.len()).map(|i| format!("${}", i)).collect();
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({}) RETURNING id",
@@ -8487,9 +8508,8 @@ extern "C" fn crud_create_handler(request: *mut DooRequest) -> *mut DooResult {
             return create_error_result(400, "No valid fields provided");
         }
 
-        let placeholders: Vec<String> = (1..=values_json.len())
-            .map(|i| format!("${}", i))
-            .collect();
+        let placeholders: Vec<String> =
+            (1..=values_json.len()).map(|i| format!("${}", i)).collect();
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({}) RETURNING id",
@@ -9637,15 +9657,13 @@ fn build_create_table_sql(table_name: &str, metadata: &serde_json::Value) -> Str
 
     // Check for autoTimestamp - add created_at and updated_at columns
     let has_auto_timestamp = match metadata.get("autoTimestamp") {
-        Some(v) => {
-            v.as_bool().unwrap_or_else(|| {
-                if let Some(s) = v.as_str() {
-                    !s.is_empty()
-                } else {
-                    v.is_object() || v.is_array()
-                }
-            })
-        }
+        Some(v) => v.as_bool().unwrap_or_else(|| {
+            if let Some(s) = v.as_str() {
+                !s.is_empty()
+            } else {
+                v.is_object() || v.is_array()
+            }
+        }),
         None => false,
     };
     if has_auto_timestamp {
@@ -10578,15 +10596,13 @@ fn migrate_table_columns(table_name: &str, metadata: &serde_json::Value) {
     }
 
     let has_auto_timestamp = match metadata.get("autoTimestamp") {
-        Some(v) => {
-            v.as_bool().unwrap_or_else(|| {
-                if let Some(s) = v.as_str() {
-                    !s.is_empty()
-                } else {
-                    v.is_object() || v.is_array()
-                }
-            })
-        }
+        Some(v) => v.as_bool().unwrap_or_else(|| {
+            if let Some(s) = v.as_str() {
+                !s.is_empty()
+            } else {
+                v.is_object() || v.is_array()
+            }
+        }),
         None => false,
     };
 

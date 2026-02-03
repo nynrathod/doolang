@@ -2421,13 +2421,28 @@ fn get_or_generate_handler_wrapper<'ctx>(
         eprintln!("[CODEGEN] Generating FFI wrapper for {} (used by {})", user_func_name, ffi_symbol);
     }
     
-    // Get the user's function
-    let user_func = match ctx.get_function(user_func_name) {
-        Some(f) => f,
-        None => {
-            // Function not found - create a dummy wrapper that returns null
-            eprintln!("[CODEGEN] Warning: Function {} not found for wrapper generation", user_func_name);
-            return create_dummy_wrapper(ctx, &wrapper_name);
+    // Check if this is an FFI function that needs to be called via its external symbol
+    let ffi_symbol_info = ctx.get_ffi_symbol(user_func_name).map(|(_, sym)| sym.to_string());
+    
+    // Get the user's function (or the FFI external function)
+    let user_func = if let Some(ref ext_symbol) = ffi_symbol_info {
+        // FFI function: get or declare the external symbol
+        ctx.module.get_function(ext_symbol).unwrap_or_else(|| {
+            // Declare the external function with the expected signature
+            let ptr_type = ctx.ptr_type();
+            // For simple FFI functions like jwt() -> Str, we use a simple signature
+            let fn_type = ptr_type.fn_type(&[], false);
+            ctx.module.add_function(ext_symbol, fn_type, Some(inkwell::module::Linkage::External))
+        })
+    } else {
+        // User-defined function: get it directly
+        match ctx.get_function(user_func_name) {
+            Some(f) => f,
+            None => {
+                // Function not found - create a dummy wrapper that returns null
+                eprintln!("[CODEGEN] Warning: Function {} not found for wrapper generation", user_func_name);
+                return create_dummy_wrapper(ctx, &wrapper_name);
+            }
         }
     };
     
@@ -2457,6 +2472,7 @@ fn get_or_generate_handler_wrapper<'ctx>(
     let user_return_type = user_fn_type.get_return_type();
     
     // Check if this is a middleware function (2 params with second being "Next" type)
+    // For FFI functions, we need to check the original function's param types, not the FFI wrapper
     let param_type_ids = ctx.get_function_param_types(user_func_name);
     let all_param_types: Vec<doo_core::types::TypeId> = param_type_ids
         .map(|types| types.to_vec())
@@ -2474,16 +2490,23 @@ fn get_or_generate_handler_wrapper<'ctx>(
         })
     };
     
+    // For FFI functions, check if it's a middleware based on the ffi_symbol being passed to
+    // (e.g., doo_http_get_with_middleware means this is used as middleware)
+    // BUT only if the FFI function actually has the middleware signature (2 params)
+    let is_ffi_middleware = ffi_symbol_info.is_some() 
+        && ffi_symbol.ends_with("_with_middleware")
+        && user_param_count == 2;
+    
     if debug {
-        eprintln!("[CODEGEN] User function {} has {} params, returns {:?}, return_type_name={:?}, returns_struct={}, is_middleware={}", 
-            user_func_name, user_param_count, user_return_type, return_type_name, returns_struct, is_middleware);
+        eprintln!("[CODEGEN] User function {} has {} params, returns {:?}, return_type_name={:?}, returns_struct={}, is_middleware={}, is_ffi={}", 
+            user_func_name, user_param_count, user_return_type, return_type_name, returns_struct, is_middleware, ffi_symbol_info.is_some());
     }
     
     // Create wrapper function with FFI signature:
     // - Handlers: fn(ptr) -> ptr
-    // - Middleware: fn(ptr, fn_ptr) -> ptr (request + next function)
+    // - Middleware (true middleware with 2 params): fn(ptr, fn_ptr) -> ptr (request + next function)
     let ptr_type = ctx.ptr_type();
-    let wrapper_fn_type = if is_middleware {
+    let wrapper_fn_type = if is_middleware || is_ffi_middleware {
         ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false)
     } else {
         ptr_type.fn_type(&[ptr_type.into()], false)
@@ -2516,8 +2539,37 @@ fn get_or_generate_handler_wrapper<'ctx>(
         ctx.module.add_function("malloc", fn_type, None)
     });
     
-    // Call the user's function
-    let user_result = if is_middleware {
+    // Call the user's function (or FFI function via external symbol)
+    // For FFI functions, use their actual parameter count, not the middleware signature
+    let user_result = if ffi_symbol_info.is_some() {
+        // FFI function: call with the function's actual signature
+        // For functions like jwt() that take no params, call with no args
+        if user_param_count == 0 {
+            ctx.builder
+                .build_call(user_func, &[], "user_call")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+        } else if user_param_count == 1 {
+            // FFI function with 1 param (e.g., request)
+            ctx.builder
+                .build_call(user_func, &[request_ptr.into()], "user_call")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+        } else if user_param_count == 2 && (is_middleware || is_ffi_middleware) {
+            // FFI middleware with 2 params (request, next)
+            let next_fn_ptr = wrapper_fn.get_nth_param(1).unwrap().into_pointer_value();
+            ctx.builder
+                .build_call(user_func, &[request_ptr.into(), next_fn_ptr.into()], "user_call")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+        } else {
+            // Fallback: try with request only
+            ctx.builder
+                .build_call(user_func, &[request_ptr.into()], "user_call")
+                .ok()
+                .and_then(|cs| cs.try_as_basic_value().left())
+        }
+    } else if is_middleware {
         // Middleware function: fn(Request, Next) -> Response
         // Get the next function pointer from wrapper's second param
         let next_fn_ptr = wrapper_fn.get_nth_param(1).unwrap().into_pointer_value();
@@ -3617,12 +3669,43 @@ fn build_handler_metadata_json<'ctx>(
                     }
                     
                     let mut field_list: Vec<serde_json::Value> = Vec::new();
+                    let mut current_offset: u64 = 0;
+                    
                     for (field_name, field_type_id, _) in fields {
                         let field_type_name = type_id_to_string_inner(registry, *field_type_id);
+                        
+                        // Calculate field size and alignment based on LLVM type mapping
+                        // CRITICAL: Must match get_llvm_type() in context.rs
+                        // - Int -> i64 (8 bytes), NOT i32
+                        // - Float -> f64 (8 bytes)
+                        // - Bool -> i1 (1 byte, but aligned to 8 for struct fields)
+                        // - Str/ptr -> ptr (8 bytes on 64-bit)
+                        let (field_size, field_align) = match registry.get(*field_type_id).map(|t| &t.kind) {
+                            Some(TypeKind::Int) => (8u64, 8u64),    // i64
+                            Some(TypeKind::Float) => (8, 8),         // f64
+                            Some(TypeKind::Bool) => (1, 1),          // i1 (but struct packs with padding)
+                            Some(TypeKind::Str) => (8, 8),           // pointer
+                            Some(TypeKind::Array { .. }) => (8, 8),  // pointer to array
+                            Some(TypeKind::Map { .. }) => (8, 8),    // pointer to map
+                            Some(TypeKind::Struct { .. }) => (8, 8), // pointer to struct
+                            Some(TypeKind::Optional { .. }) => (8, 8), // pointer
+                            Some(TypeKind::Enum { .. }) => (16, 8),  // { i32, ptr } = 16 bytes
+                            _ => (8, 8), // default to pointer size
+                        };
+                        
+                        // Align current offset to field's alignment
+                        if field_align > 0 && current_offset % field_align != 0 {
+                            current_offset = ((current_offset / field_align) + 1) * field_align;
+                        }
+                        
                         field_list.push(serde_json::json!({
                             "name": field_name,
-                            "type": field_type_name
+                            "type": field_type_name,
+                            "offset": current_offset
                         }));
+                        
+                        // Move offset past this field
+                        current_offset += field_size;
                         
                         // Recursively collect nested structs and enums
                         collect_struct_layout(registry, *field_type_id, struct_layouts, enum_variants);

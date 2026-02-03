@@ -1292,17 +1292,65 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             });
             
             // Check if it's a Result type by looking for the function in function_result_types
-            // Resolve aliases to handle imported associated functions (e.g., postgres -> _method_Database_postgres)
-            let is_result_type = if let HirExprKind::Call { func, .. } = &inner.kind {
-                if let HirExprKind::Local { name } = &func.kind {
-                    let resolved_name = builder.resolve_function_name(name);
-                    builder.function_result_types.contains_key(&resolved_name)
-                } else {
-                    false
+            // Handle both Call and MethodCall expressions
+            let is_result_type = match &inner.kind {
+                HirExprKind::Call { func, .. } => {
+                    if let HirExprKind::Local { name } = &func.kind {
+                        let resolved_name = builder.resolve_function_name(name);
+                        let found = builder.function_result_types.contains_key(&resolved_name);
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!("[MIR] Try: Call '{}' resolved to '{}', is_result={}", name, resolved_name, found);
+                        }
+                        found
+                    } else {
+                        false
+                    }
                 }
-            } else {
-                false
+                HirExprKind::MethodCall { receiver, method, .. } => {
+                    // For method calls like Database::postgres(), we need to check 
+                    // _method_{ReceiverType}_{method} in function_result_types
+                    // First, try to get the receiver type name
+                    let receiver_type_name = if let HirExprKind::Local { name } = &receiver.kind {
+                        // Static method call: Database::postgres() - receiver is the type name
+                        Some(name.clone())
+                    } else {
+                        // Instance method call: db.raw() - get type from receiver
+                        receiver.type_id
+                            .and_then(|tid| builder.type_registry.get(tid))
+                            .and_then(|info| {
+                                if let TypeKind::Struct { name, .. } = &info.kind {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                    };
+                    
+                    if let Some(ref type_name) = receiver_type_name {
+                        let mangled_name = format!("_method_{}_{}", type_name, method);
+                        let found = builder.function_result_types.contains_key(&mangled_name);
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!("[MIR] Try: MethodCall '{}.{}' -> '{}', is_result={}", type_name, method, mangled_name, found);
+                        }
+                        found
+                    } else {
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!("[MIR] Try: MethodCall method='{}' - no receiver type found", method);
+                        }
+                        false
+                    }
+                }
+                _ => {
+                    if std::env::var("DOO_DEBUG").is_ok() {
+                        eprintln!("[MIR] Try: Unknown inner expr kind {:?}", std::mem::discriminant(&inner.kind));
+                    }
+                    false
+                },
             };
+            
+            if std::env::var("DOO_DEBUG").is_ok() {
+                eprintln!("[MIR] Try: is_result_type={}", is_result_type);
+            }
             
             // If not a Result type, just return the value directly
             if !is_result_type {
