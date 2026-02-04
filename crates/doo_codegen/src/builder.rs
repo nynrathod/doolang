@@ -360,11 +360,13 @@ impl<'ctx> CodegenBuilder<'ctx> {
         }
 
         // Build return type
-        // If function has an error_type, it returns a Result struct { i32, ptr }
+        // If function has an error_type, it returns a Result struct { i64, i64 }
+        // Using i64 for both fields ensures proper Windows x64 ABI compatibility.
+        // On Windows x64, a struct of exactly 2x i64 (16 bytes) is returned via RAX:RDX registers.
         let return_type = if func.error_type.is_some() {
-            // Result type: { i32 tag, ptr payload }
+            // Result type: { i64 tag, i64 payload }
             let result_struct_type = ctx.context.struct_type(
-                &[ctx.context.i32_type().into(), ctx.ptr_type().into()],
+                &[ctx.context.i64_type().into(), ctx.context.i64_type().into()],
                 false,
             );
             Some(result_struct_type.into())
@@ -375,7 +377,21 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // For FFI functions, use external linkage and register symbol
         if let Some(ffi) = &func.ffi {
             let param_meta: Vec<_> = param_types.iter().map(|t| (*t).into()).collect();
-            let fn_type = match return_type {
+
+            // For FFI functions with error types, they return *mut SimpleResult (pointer to heap-allocated result)
+            // to avoid Windows x64 sret ABI issues. The caller loads the struct from the pointer.
+            let ffi_return_type = if func.error_type.is_some() {
+                // FFI returns pointer to result, not struct by value
+                Some(
+                    ctx.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .into(),
+                )
+            } else {
+                return_type
+            };
+
+            let fn_type = match ffi_return_type {
                 Some(ret) => {
                     use inkwell::types::BasicType;
                     ret.fn_type(&param_meta, false)
@@ -633,11 +649,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     ctx.builder.position_at_end(bb);
 
                     // Check if this is a Result-returning function (has error_type).
-                    // Result functions return { i32 tag, ptr payload } struct.
+                    // Result functions return { i64 tag, i64 payload } struct for Windows x64 ABI.
                     if func.error_type.is_some() {
-                        // Create a default Result struct: { 0 (Ok tag), null (no payload) }
+                        // Create a default Result struct: { 0 (Ok tag), 0 (null payload as i64) }
                         let result_struct_type = ctx.context.struct_type(
-                            &[ctx.context.i32_type().into(), ctx.ptr_type().into()],
+                            &[ctx.context.i64_type().into(), ctx.context.i64_type().into()],
                             false,
                         );
                         let default_result = result_struct_type.const_zero();
@@ -690,14 +706,46 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
                 let debug = std::env::var("DOO_DEBUG").is_ok();
 
-                if values.is_empty() {
-                    if is_main {
-                        // Main function must return i32 0
-                        let zero = ctx.context.i32_type().const_int(0, false);
-                        ctx.builder.build_return(Some(&zero)).ok();
-                    } else {
-                        ctx.builder.build_return(None).ok();
-                    }
+                if is_main {
+                    // For main function, call exit(0) to bypass Tokio runtime shutdown issues.
+                    // The tokio runtime used by FFI (doo_db, doo_http) can cause crashes at exit
+                    // if we use normal return. Calling exit(0) cleanly terminates the process.
+
+                    // First flush stdout to ensure all output is written
+                    let fflush_fn = ctx.module.get_function("fflush").unwrap_or_else(|| {
+                        let fn_type = ctx.context.i32_type().fn_type(
+                            &[ctx
+                                .context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into()],
+                            false,
+                        );
+                        ctx.module.add_function("fflush", fn_type, None)
+                    });
+                    let null_ptr = ctx
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null();
+                    ctx.builder
+                        .build_call(fflush_fn, &[null_ptr.into()], "flush_stdout")
+                        .ok();
+
+                    // Now call exit(0)
+                    let exit_fn = ctx.module.get_function("exit").unwrap_or_else(|| {
+                        let fn_type = ctx
+                            .context
+                            .void_type()
+                            .fn_type(&[ctx.context.i32_type().into()], false);
+                        ctx.module.add_function("exit", fn_type, None)
+                    });
+                    let zero = ctx.context.i32_type().const_int(0, false);
+                    ctx.builder
+                        .build_call(exit_fn, &[zero.into()], "main_exit")
+                        .ok();
+                    ctx.builder.build_unreachable().ok();
+                } else if values.is_empty() {
+                    // Non-main function with no return values
+                    ctx.builder.build_return(None).ok();
                 } else if values.len() == 1 {
                     if let Some(val) = operand_to_value(ctx, &values[0]) {
                         if debug {
@@ -707,22 +755,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
                                 &values[0]
                             );
                         }
-                        if is_main {
-                            // Main function must return i32
-                            let zero = ctx.context.i32_type().const_int(0, false);
-                            ctx.builder.build_return(Some(&zero)).ok();
-                        } else {
-                            // Convert value to expected return type if needed
-                            // Closures now use actual types, no i64 conversion needed
-                            let final_val = convert_return_value(ctx, val);
-                            ctx.builder.build_return(Some(&final_val)).ok();
-                        }
-                    } else if is_main {
-                        if debug {
-                            eprintln!("[CODEGEN] Return: no value for main, returning 0");
-                        }
-                        let zero = ctx.context.i32_type().const_int(0, false);
-                        ctx.builder.build_return(Some(&zero)).ok();
+                        // Convert value to expected return type if needed
+                        // Closures now use actual types, no i64 conversion needed
+                        let final_val = convert_return_value(ctx, val);
+                        ctx.builder.build_return(Some(&final_val)).ok();
                     } else {
                         if debug {
                             eprintln!("[CODEGEN] WARNING: Return: operand_to_value returned None for {:?}", &values[0]);
@@ -731,69 +767,63 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     }
                 } else {
                     // Multiple return values - return as tuple
-                    if is_main {
-                        let zero = ctx.context.i32_type().const_int(0, false);
-                        ctx.builder.build_return(Some(&zero)).ok();
+                    // Convert all values to LLVM values
+                    let llvm_values: Vec<_> = values
+                        .iter()
+                        .filter_map(|v| operand_to_value(ctx, v))
+                        .collect();
+
+                    if llvm_values.len() != values.len() {
+                        // Some values couldn't be converted
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!(
+                                "[CODEGEN] WARNING: Could not convert all tuple return values"
+                            );
+                        }
+                        ctx.builder.build_return(None).ok();
                     } else {
-                        // Convert all values to LLVM values
-                        let llvm_values: Vec<_> = values
-                            .iter()
-                            .filter_map(|v| operand_to_value(ctx, v))
-                            .collect();
+                        // Get element types
+                        let element_types: Vec<_> =
+                            llvm_values.iter().map(|v| v.get_type()).collect();
 
-                        if llvm_values.len() != values.len() {
-                            // Some values couldn't be converted
-                            if std::env::var("DOO_DEBUG").is_ok() {
-                                eprintln!(
-                                    "[CODEGEN] WARNING: Could not convert all tuple return values"
-                                );
-                            }
-                            ctx.builder.build_return(None).ok();
-                        } else {
-                            // Get element types
-                            let element_types: Vec<_> =
-                                llvm_values.iter().map(|v| v.get_type()).collect();
+                        // Create tuple struct type
+                        let tuple_type = ctx.context.struct_type(&element_types, false);
 
-                            // Create tuple struct type
-                            let tuple_type = ctx.context.struct_type(&element_types, false);
+                        // Allocate space for tuple on heap (so pointer is valid after return)
+                        let ptr_type = ctx.context.ptr_type(inkwell::AddressSpace::default());
+                        let size = tuple_type.size_of().unwrap();
+                        let malloc_fn = ctx.get_function("malloc").unwrap_or_else(|| {
+                            let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
+                            ctx.module.add_function(
+                                "malloc",
+                                fn_type,
+                                Some(inkwell::module::Linkage::External),
+                            )
+                        });
+                        let tuple_ptr = ctx
+                            .builder
+                            .build_call(malloc_fn, &[size.into()], "tuple_alloc")
+                            .ok()
+                            .and_then(|call| call.try_as_basic_value().left())
+                            .map(|v| v.into_pointer_value());
 
-                            // Allocate space for tuple on heap (so pointer is valid after return)
-                            let ptr_type = ctx.context.ptr_type(inkwell::AddressSpace::default());
-                            let size = tuple_type.size_of().unwrap();
-                            let malloc_fn = ctx.get_function("malloc").unwrap_or_else(|| {
-                                let fn_type =
-                                    ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
-                                ctx.module.add_function(
-                                    "malloc",
-                                    fn_type,
-                                    Some(inkwell::module::Linkage::External),
-                                )
-                            });
-                            let tuple_ptr = ctx
-                                .builder
-                                .build_call(malloc_fn, &[size.into()], "tuple_alloc")
-                                .ok()
-                                .and_then(|call| call.try_as_basic_value().left())
-                                .map(|v| v.into_pointer_value());
-
-                            if let Some(tuple_ptr) = tuple_ptr {
-                                // Store each value in the tuple
-                                for (i, val) in llvm_values.iter().enumerate() {
-                                    if let Ok(field_ptr) = ctx.builder.build_struct_gep(
-                                        tuple_type,
-                                        tuple_ptr,
-                                        i as u32,
-                                        &format!("field_{}", i),
-                                    ) {
-                                        ctx.builder.build_store(field_ptr, *val).ok();
-                                    }
+                        if let Some(tuple_ptr) = tuple_ptr {
+                            // Store each value in the tuple
+                            for (i, val) in llvm_values.iter().enumerate() {
+                                if let Ok(field_ptr) = ctx.builder.build_struct_gep(
+                                    tuple_type,
+                                    tuple_ptr,
+                                    i as u32,
+                                    &format!("field_{}", i),
+                                ) {
+                                    ctx.builder.build_store(field_ptr, *val).ok();
                                 }
-
-                                // Return the tuple pointer
-                                ctx.builder.build_return(Some(&tuple_ptr)).ok();
-                            } else {
-                                ctx.builder.build_return(None).ok();
                             }
+
+                            // Return the tuple pointer
+                            ctx.builder.build_return(Some(&tuple_ptr)).ok();
+                        } else {
+                            ctx.builder.build_return(None).ok();
                         }
                     }
                 }

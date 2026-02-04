@@ -73,74 +73,92 @@ struct DatabaseStruct {
     connected: bool,                // i1 in LLVM
 }
 
-/// Result struct that matches LLVM codegen expectations: { i32 tag, ptr value }
+/// Result struct that matches LLVM codegen expectations: { i64 tag, i64 value }
 /// tag = 0 for Ok, tag = 1 for Err
-/// IMPORTANT: This struct is returned BY VALUE to match the compiler's expectations
-/// The compiler declares FFI functions returning Result as: `{ i32, ptr }`
+/// IMPORTANT: On Windows x64 MSVC, structs > 8 bytes are returned via sret (hidden pointer).
+/// To avoid ABI mismatches between Rust and LLVM, we return a POINTER to a heap-allocated result
+/// instead of returning the struct by value. The caller must free the result using doo_db_result_free.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SimpleResult {
-    pub tag: i32,
-    pub value: *mut c_void,
+    pub tag: i64,
+    pub value: i64, // Pointer stored as i64 for ABI compatibility
 }
 
-/// Helper to create a SimpleResult for Ok case (returns by value)
-fn simple_result_ok(value: *mut c_void) -> SimpleResult {
-    SimpleResult {
+/// Helper to create and return a heap-allocated SimpleResult for Ok case
+fn simple_result_ok_ptr(value: *mut c_void) -> *mut SimpleResult {
+    let result = Box::new(SimpleResult {
         tag: 0, // Ok
-        value,
-    }
+        value: value as i64,
+    });
+    eprintln!(
+        "[DB_FFI] simple_result_ok: tag={}, value=0x{:x}",
+        result.tag, result.value
+    );
+    Box::into_raw(result)
 }
 
-/// Helper to create a SimpleResult for Err case (returns by value)
-fn simple_result_err(error_msg: &str) -> SimpleResult {
-    SimpleResult {
+/// Helper to create and return a heap-allocated SimpleResult for Err case
+fn simple_result_err_ptr(error_msg: &str) -> *mut SimpleResult {
+    eprintln!("[DB_FFI] simple_result_err called with: {}", error_msg);
+    let ptr = string_to_c(error_msg);
+    eprintln!("[DB_FFI] string_to_c returned: {:?}", ptr);
+    let result = Box::new(SimpleResult {
         tag: 1, // Err
-        value: string_to_c(error_msg) as *mut c_void,
-    }
+        value: ptr as i64,
+    });
+    Box::into_raw(result)
 }
 
 /// Connect to PostgreSQL database using DATABASE_URL env var
-/// Returns a Result struct BY VALUE: { i32 tag, ptr value }
+/// Returns a POINTER to a heap-allocated Result struct to avoid Windows x64 ABI issues.
+/// The caller must free the result using doo_db_result_free.
 /// - Ok: tag=0, value=Database struct pointer
 /// - Err: tag=1, value=error message string pointer
 #[no_mangle]
-pub extern "C" fn doo_db_connect_postgres() -> SimpleResult {
+pub extern "C" fn doo_db_connect_postgres() -> *mut SimpleResult {
+    eprintln!("[DB_FFI] doo_db_connect_postgres called");
     let conn_str = match std::env::var("DATABASE_URL") {
-        Ok(s) => s,
+        Ok(s) => {
+            eprintln!("[DB_FFI] DATABASE_URL found: {}", s);
+            s
+        }
         Err(_) => {
             // For development/testing, create a mock database connection
             // In production, this should fail or use a default URL
-            eprintln!("[DB] WARNING: DATABASE_URL not set, using mock connection");
+            eprintln!("[DB_FFI] WARNING: DATABASE_URL not set, using mock connection");
             let db = create_database_struct("mock", true);
-            return simple_result_ok(db);
+            return simple_result_ok_ptr(db);
         }
     };
 
+    eprintln!("[DB_FFI] Creating tokio runtime...");
     let rt = get_runtime();
+    eprintln!("[DB_FFI] Calling init_pool...");
     match rt.block_on(init_pool(&conn_str)) {
         Ok(_) => {
+            eprintln!("[DB_FFI] Pool initialized successfully");
             let db = create_database_struct("postgres", true);
-            simple_result_ok(db)
+            simple_result_ok_ptr(db)
         }
         Err(e) => {
             eprintln!("[DB] Connection failed: {}", e);
-            simple_result_err(&format!("Database connection failed: {}", e))
+            simple_result_err_ptr(&format!("Database connection failed: {}", e))
         }
     }
 }
 
 /// Get global database instance (returns mock if not connected)
-/// Returns a Result struct BY VALUE: { i32 tag, ptr value }
+/// Returns a POINTER to a heap-allocated Result struct.
 #[no_mangle]
-pub extern "C" fn doo_db_get_global() -> SimpleResult {
+pub extern "C" fn doo_db_get_global() -> *mut SimpleResult {
     if is_pool_initialized() {
         let db = create_database_struct("postgres", true);
-        simple_result_ok(db)
+        simple_result_ok_ptr(db)
     } else {
         eprintln!("[DB] WARNING: No database connected, using mock");
         let db = create_database_struct("mock", false);
-        simple_result_ok(db)
+        simple_result_ok_ptr(db)
     }
 }
 
@@ -178,12 +196,19 @@ pub extern "C" fn doo_db_cleanup_and_exit() {
 
 /// Execute raw SQL query - matches Database.raw(self, sql) -> Str !DatabaseError
 /// First argument (_db) is the database handle (self), second is the SQL string
-/// Returns SimpleResult BY VALUE: { i32 tag, ptr value }
+/// Returns pointer to heap-allocated SimpleResult (avoids Windows sret ABI issue)
 #[no_mangle]
-pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> SimpleResult {
+pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut SimpleResult {
+    eprintln!("[DB_FFI] doo_db_raw called");
     let sql_str = match c_to_string(sql) {
-        Ok(s) => s,
-        Err(e) => return simple_result_err(&e),
+        Ok(s) => {
+            eprintln!("[DB_FFI] SQL: {}", s);
+            s
+        }
+        Err(e) => {
+            eprintln!("[DB_FFI] Failed to convert SQL string: {}", e);
+            return simple_result_err_ptr(&e);
+        }
     };
 
     let rt = get_runtime();
@@ -192,63 +217,98 @@ pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> SimpleRe
         let rows = client.query(&sql_str, &[]).await?;
         Ok::<_, Box<dyn std::error::Error>>(rows_to_json(&rows))
     }) {
-        Ok(json) => simple_result_ok(string_to_c(&json) as *mut c_void),
-        Err(e) => simple_result_err(&format!("Query failed: {}", e)),
+        Ok(json) => {
+            eprintln!("[DB_FFI] Query succeeded, json length: {}", json.len());
+            simple_result_ok_ptr(string_to_c(&json) as *mut c_void)
+        }
+        Err(e) => {
+            eprintln!("[DB_FFI] Query failed: {}", e);
+            simple_result_err_ptr(&format!("Query failed: {}", e))
+        }
     }
 }
 
 /// Execute raw SQL query with parameters - matches Database.rawWithParams(self, sql, params) -> Str !DatabaseError
 /// First arg (_db) is database handle, second is SQL, third is JSON params
-/// Returns SimpleResult BY VALUE: { i32 tag, ptr value }
+/// Returns pointer to heap-allocated SimpleResult (avoids Windows sret ABI issue)
 #[no_mangle]
 pub extern "C" fn doo_db_raw_param(
     _db: *const c_void,
     sql: *const c_char,
     params_json: *const c_char,
-) -> SimpleResult {
+) -> *mut SimpleResult {
     let sql_str = match c_to_string(sql) {
         Ok(s) => s,
-        Err(e) => return simple_result_err(&e),
+        Err(e) => return simple_result_err_ptr(&e),
     };
 
     let params_str = match c_to_string(params_json) {
         Ok(s) => s,
-        Err(e) => return simple_result_err(&e),
+        Err(e) => return simple_result_err_ptr(&e),
     };
 
-    // Parse params JSON
-    let params_array: Vec<serde_json::Value> = match serde_json::from_str(&params_str) {
-        Ok(v) => v,
-        Err(e) => return simple_result_err(&format!("Invalid params JSON: {}", e)),
+    // Parse params - support both JSON array and simple string
+    // If it's a JSON array like ["Bob", 25], parse it
+    // If it's a simple string like "Bob", wrap it in an array
+    let params_array: Vec<serde_json::Value> = if params_str.trim().starts_with('[') {
+        match serde_json::from_str(&params_str) {
+            Ok(v) => v,
+            Err(e) => return simple_result_err_ptr(&format!("Invalid params JSON: {}", e)),
+        }
+    } else {
+        // Single value - try to parse as number first, otherwise treat as string
+        if let Ok(n) = params_str.parse::<i64>() {
+            vec![serde_json::Value::Number(serde_json::Number::from(n))]
+        } else if let Ok(f) = params_str.parse::<f64>() {
+            vec![serde_json::json!(f)]
+        } else {
+            vec![serde_json::Value::String(params_str)]
+        }
     };
 
     let rt = get_runtime();
     match rt.block_on(async {
         let client = get_client().await?;
 
-        // Convert JSON values to postgres params (simplified - strings only for now)
-        let param_refs: Vec<String> = params_array
+        // Convert JSON values to boxed postgres params to preserve types
+        // Use i32 for integers since PostgreSQL INT is 32-bit
+        let boxed_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = params_array
             .iter()
-            .map(|v| match v {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => b.to_string(),
-                serde_json::Value::Null => "NULL".to_string(),
-                _ => v.to_string(),
+            .map(|v| -> Box<dyn tokio_postgres::types::ToSql + Sync + Send> {
+                match v {
+                    serde_json::Value::String(s) => Box::new(s.clone()),
+                    serde_json::Value::Number(n) => {
+                        // Try i32 first (for PostgreSQL INT/INT4), then i64 (BIGINT), then f64
+                        if let Some(i) = n.as_i64() {
+                            if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+                                Box::new(i as i32)
+                            } else {
+                                Box::new(i)
+                            }
+                        } else if let Some(f) = n.as_f64() {
+                            Box::new(f)
+                        } else {
+                            Box::new(n.to_string())
+                        }
+                    }
+                    serde_json::Value::Bool(b) => Box::new(*b),
+                    serde_json::Value::Null => Box::new(None::<String>),
+                    _ => Box::new(v.to_string()),
+                }
             })
             .collect();
 
-        // Build params slice
-        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = param_refs
+        // Build params slice from boxed values
+        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = boxed_params
             .iter()
-            .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+            .map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync))
             .collect();
 
         let rows = client.query(&sql_str, &params[..]).await?;
         Ok::<_, Box<dyn std::error::Error>>(rows_to_json(&rows))
     }) {
-        Ok(json) => simple_result_ok(string_to_c(&json) as *mut c_void),
-        Err(e) => simple_result_err(&format!("Query failed: {}", e)),
+        Ok(json) => simple_result_ok_ptr(string_to_c(&json) as *mut c_void),
+        Err(e) => simple_result_err_ptr(&format!("Query failed: {}", e)),
     }
 }
 

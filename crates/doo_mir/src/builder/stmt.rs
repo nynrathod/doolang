@@ -55,6 +55,10 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 }
             }
 
+            // Also track the type in temp_types for method call type resolution
+            // This allows db.raw() to know that 'db' is of type Database
+            builder.set_temp_type(name, var_type_id);
+
             builder.emit(
                 MirInstrKind::Assign {
                     dest: name.clone(),

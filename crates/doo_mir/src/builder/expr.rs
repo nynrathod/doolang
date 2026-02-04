@@ -1311,8 +1311,36 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     // _method_{ReceiverType}_{method} in function_result_types
                     // First, try to get the receiver type name
                     let receiver_type_name = if let HirExprKind::Local { name } = &receiver.kind {
-                        // Static method call: Database::postgres() - receiver is the type name
-                        Some(name.clone())
+                        // Check if this is a type name (static call) or a variable (instance call)
+                        // Type names start with uppercase, variables start with lowercase
+                        if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                            // Static method call: Database::postgres() - receiver is the type name
+                            Some(name.clone())
+                        } else {
+                            // Variable name - need to look up its type
+                            // First try the temp type registry for variables
+                            builder.get_temp_type(name)
+                                .and_then(|tid| builder.type_registry.get(tid))
+                                .and_then(|info| {
+                                    if let TypeKind::Struct { name: type_name, .. } = &info.kind {
+                                        Some(type_name.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .or_else(|| {
+                                    // Fallback: try to get from receiver's type_id
+                                    receiver.type_id
+                                        .and_then(|tid| builder.type_registry.get(tid))
+                                        .and_then(|info| {
+                                            if let TypeKind::Struct { name: type_name, .. } = &info.kind {
+                                                Some(type_name.clone())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                })
+                        }
                     } else {
                         // Instance method call: db.raw() - get type from receiver
                         receiver.type_id
