@@ -267,12 +267,15 @@ pub fn resolve_imports(
     let mut local_import_requests: Vec<(&ImportDecl, PathBuf)> = Vec::new();
 
     for import in &imports {
-        if import.path.is_empty() || import.path.len() < 2 {
+        if import.path.is_empty() {
             continue;
         }
 
         if import.path[0] == "std" {
-            // Standard library import
+            // Standard library import - needs at least std::ModuleName
+            if import.path.len() < 2 {
+                continue;
+            }
             let module_name = &import.path[1];
             let module_key = format!("std::{}", module_name);
             let symbols = std_import_requests.entry(module_key).or_default();
@@ -407,9 +410,8 @@ pub fn resolve_imports(
                     // even if the struct itself isn't imported
                     let is_explicitly_requested = requested.contains_key(&f.name);
 
-                    let is_wanted = import_all
-                        || is_explicitly_requested
-                        || is_associated_with_imported_type;
+                    let is_wanted =
+                        import_all || is_explicitly_requested || is_associated_with_imported_type;
 
                     // Create a unique key for the function to avoid duplicates
                     let func_key = if let Some(ref assoc_type) = f.associated_type {

@@ -147,6 +147,10 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // Match route
     let routes = get_routes();
     let registry = routes.lock().unwrap();
+    eprintln!(
+        "[SERVER DEBUG] Route registry has {} routes",
+        registry.count()
+    );
 
     let (route_entry, params) = match registry.match_route(&method, &path) {
         Some(r) => r,
@@ -166,11 +170,15 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             return Ok(build_response(500, &err.to_json()));
         }
 
+        // Convert params HashMap to JSON string for codegen compatibility
+        // The codegen uses doo_json_get_field to extract path params
+        let params_json = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
+
         (*req_ptr).method = string_to_c(&method);
         (*req_ptr).path = string_to_c(&path);
         (*req_ptr).body = string_to_c(&body_str);
         (*req_ptr).headers = Box::into_raw(Box::new(headers_map)) as *mut std::ffi::c_void;
-        (*req_ptr).params = Box::into_raw(Box::new(params.clone())) as *mut std::ffi::c_void;
+        (*req_ptr).params = string_to_c(&params_json) as *mut std::ffi::c_void;
         (*req_ptr).query = Box::into_raw(Box::new(query_map)) as *mut std::ffi::c_void;
         (*req_ptr).user_id = std::ptr::null();
 
@@ -188,7 +196,15 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     let response = {
         // Execute middleware chain, then handler
+        eprintln!(
+            "[SERVER DEBUG] About to execute handler for {} {}",
+            method, path
+        );
         let result = execute_middleware_chain(doo_request, &middleware_chain, handler);
+        eprintln!(
+            "[SERVER DEBUG] Handler returned, result is_null={}",
+            result.is_null()
+        );
 
         // Check for JSON parse errors first (e.g., type mismatches in arrays)
         // This catches errors that occur during struct field parsing
@@ -203,16 +219,29 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             // Process result
             unsafe {
                 if result.is_null() {
+                    eprintln!("[SERVER DEBUG] Handler returned null!");
                     let err = internal_error("Handler returned null", &path);
                     build_response(500, &err.to_json())
                 } else {
                     let res = &*result;
+                    eprintln!(
+                        "[SERVER DEBUG] Result tag={}, value_is_null={}",
+                        res.tag,
+                        res.value.is_null()
+                    );
                     if res.tag == 0 {
                         // Success - value is the response body string
                         let body = if res.value.is_null() {
+                            eprintln!("[SERVER DEBUG] Success but value is null, using {{}}");
                             "{}".to_string()
                         } else {
-                            c_to_string(res.value as *const i8)
+                            let body_str = c_to_string(res.value as *const i8);
+                            eprintln!(
+                                "[SERVER DEBUG] Success with body len={}: {}",
+                                body_str.len(),
+                                &body_str[..body_str.len().min(200)]
+                            );
+                            body_str
                         };
                         build_response(200, &body)
                     } else {

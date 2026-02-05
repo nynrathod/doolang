@@ -1,16 +1,43 @@
 //! JSON Utilities
 //! Convert PostgreSQL rows to JSON.
+//! 
+//! IMPORTANT: Doo uses PascalCase for struct fields (e.g., AuthorId),
+//! but PostgreSQL uses snake_case for column names (e.g., author_id).
+//! This module provides both snake_case output (for SQL queries) and
+//! PascalCase output (for Doo struct deserialization).
 
 use serde_json::Value;
 use tokio_postgres::Row;
 use chrono::{DateTime, NaiveDateTime, Utc};
 
+/// Convert snake_case to PascalCase
+/// Examples: "author_id" -> "AuthorId", "published" -> "Published"
+/// Special case: "id" stays as "id" (Doo convention)
+fn to_pascal_case(s: &str) -> String {
+    // Special case: "id" should stay lowercase
+    if s == "id" {
+        return "id".to_string();
+    }
+    
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
 /// Convert a single row to JSON object
+/// Column names are converted to PascalCase to match Doo struct fields
 pub fn row_to_json(row: &Row) -> String {
     let mut obj = serde_json::Map::new();
     
     for (i, col) in row.columns().iter().enumerate() {
-        let name = col.name().to_string();
+        // Convert PostgreSQL snake_case column name to Doo PascalCase field name
+        let name = to_pascal_case(col.name());
         let value = row_col_to_value(row, i);
         obj.insert(name, value);
     }
@@ -19,11 +46,13 @@ pub fn row_to_json(row: &Row) -> String {
 }
 
 /// Convert multiple rows to JSON array
+/// Column names are converted to PascalCase to match Doo struct fields
 pub fn rows_to_json(rows: &[Row]) -> String {
     let arr: Vec<Value> = rows.iter().map(|row| {
         let mut obj = serde_json::Map::new();
         for (i, col) in row.columns().iter().enumerate() {
-            let name = col.name().to_string();
+            // Convert PostgreSQL snake_case column name to Doo PascalCase field name
+            let name = to_pascal_case(col.name());
             let value = row_col_to_value(row, i);
             obj.insert(name, value);
         }

@@ -15,6 +15,83 @@ use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
+/// Route context for handler wrapper generation.
+/// Provides information about the route pattern and middleware to determine
+/// how to extract handler parameters from the request.
+#[derive(Debug, Clone, Default)]
+struct RouteContext {
+    /// Route path pattern (e.g., "/api/user/:authorId/posts")
+    pub route_path: Option<String>,
+    /// Middleware names (e.g., "jwt", "auth")
+    pub middleware_names: Vec<String>,
+    /// HTTP method (e.g., "GET", "POST")
+    pub http_method: Option<String>,
+}
+
+impl RouteContext {
+    /// Extract path parameter names from route pattern.
+    /// E.g., "/api/user/:authorId/posts" -> ["authorId"]
+    /// Handles both :param and {param} styles.
+    pub fn path_param_names(&self) -> Vec<String> {
+        let Some(path) = &self.route_path else {
+            return vec![];
+        };
+        let mut params = Vec::new();
+        for segment in path.split('/') {
+            if segment.starts_with(':') {
+                params.push(segment[1..].to_string());
+            } else if segment.starts_with('{') && segment.ends_with('}') {
+                params.push(segment[1..segment.len()-1].to_string());
+            }
+        }
+        params
+    }
+    
+    /// Check if a parameter name matches a path parameter.
+    pub fn is_path_param(&self, param_name: &str) -> bool {
+        let path_params = self.path_param_names();
+        path_params.iter().any(|p| {
+            // Case-insensitive match (authorId == AuthorId == authorid)
+            p.eq_ignore_ascii_case(param_name)
+        })
+    }
+    
+    /// Check if handler uses JWT middleware.
+    pub fn has_jwt_middleware(&self) -> bool {
+        self.middleware_names.iter().any(|m| {
+            m.eq_ignore_ascii_case("jwt") || m.eq_ignore_ascii_case("auth")
+        })
+    }
+    
+    /// Determine the source field index in DooRequest for a given parameter.
+    /// DooRequest layout: { *method(0), *path(1), *body(2), *headers(3), *params(4), *query(5), *user_id(6) }
+    pub fn param_source_index(&self, param_name: &str, param_idx: usize, total_params: usize) -> u32 {
+        // Special case: JWT user ID injection
+        // If middleware is jwt and param name suggests user ID, use user_id field
+        if self.has_jwt_middleware() {
+            let lower = param_name.to_lowercase();
+            if lower == "userid" || lower == "user_id" || lower == "id" && total_params == 1 {
+                return 6; // user_id
+            }
+        }
+        
+        // If param name matches a path parameter, use params field
+        if self.is_path_param(param_name) {
+            return 4; // params (path params as JSON)
+        }
+        
+        // For GET requests, use query or params
+        if self.http_method.as_deref() == Some("GET") {
+            // Single param on GET usually comes from path or query params
+            // The FFI layer populates body with merged params for GET
+            return 2; // body (which FFI populates with merged query/path params for GET)
+        }
+        
+        // Default: use body for POST/PUT/PATCH
+        2 // body
+    }
+}
+
 /// Call/invocation instruction handler.
 pub struct CallHandler;
 
@@ -2296,7 +2373,7 @@ fn declare_ffi_function<'ctx>(
 
 /// Convert a Doo value to FFI-compatible value if needed.
 fn convert_to_ffi_arg<'ctx>(
-    ctx: &CodegenContext<'ctx>,
+    ctx: &mut CodegenContext<'ctx>,
     val: BasicValueEnum<'ctx>,
     expected_type: Option<&str>,
 ) -> inkwell::values::BasicMetadataValueEnum<'ctx> {
@@ -2325,6 +2402,61 @@ fn convert_to_ffi_arg<'ctx>(
                     .unwrap();
                 return float_val.into();
             }
+            val.into()
+        }
+        Some("ptr") => {
+            // Convert non-pointer types to string pointers
+            if val.is_int_value() {
+                // Convert i64 to string using sprintf
+                // Allocate buffer for max int64 string: "-9223372036854775808" (20 chars + null)
+                let i8_type = ctx.context.i8_type();
+                let i64_type = ctx.i64_type();
+                let ptr_type = ctx.ptr_type();
+                
+                // Allocate 24 bytes for safety
+                let buffer = ctx.builder.build_array_alloca(i8_type, i64_type.const_int(24, false), "int_to_str_buf").unwrap();
+                
+                // Get or declare sprintf
+                let sprintf = ctx.module.get_function("sprintf").unwrap_or_else(|| {
+                    let i32_type = ctx.i32_type();
+                    let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
+                    ctx.module.add_function("sprintf", fn_type, None)
+                });
+                
+                // Format string: "%lld"
+                let fmt = ctx.const_string("%lld");
+                
+                // Call sprintf(buffer, "%lld", value)
+                let int_val = val.into_int_value();
+                ctx.builder.build_call(sprintf, &[buffer.into(), fmt.into(), int_val.into()], "sprintf_int").ok();
+                
+                return buffer.into();
+            } else if val.is_float_value() {
+                // Convert f64 to string using sprintf
+                let i8_type = ctx.context.i8_type();
+                let i64_type = ctx.i64_type();
+                let ptr_type = ctx.ptr_type();
+                
+                // Allocate 32 bytes for float string
+                let buffer = ctx.builder.build_array_alloca(i8_type, i64_type.const_int(32, false), "float_to_str_buf").unwrap();
+                
+                // Get or declare sprintf
+                let sprintf = ctx.module.get_function("sprintf").unwrap_or_else(|| {
+                    let i32_type = ctx.i32_type();
+                    let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
+                    ctx.module.add_function("sprintf", fn_type, None)
+                });
+                
+                // Format string: "%g" (compact float format)
+                let fmt = ctx.const_string("%g");
+                
+                // Call sprintf(buffer, "%g", value)
+                let float_val = val.into_float_value();
+                ctx.builder.build_call(sprintf, &[buffer.into(), fmt.into(), float_val.into()], "sprintf_float").ok();
+                
+                return buffer.into();
+            }
+            // Already a pointer - pass through
             val.into()
         }
         _ => val.into(),
@@ -2366,13 +2498,26 @@ fn emit_ffi_call<'ctx>(
 
     // Special handling for *_with_middleware: register user-defined middleware functions
     // The middleware names are passed as comma-separated string, we need to register each one
+    // IMPORTANT: Skip built-in middlewares (jwt, cors, etc.) as they have native handlers in the runtime
     if symbol.ends_with("_with_middleware") && args.len() >= 4 {
         // arg[2] is the middleware names string (e.g., "AuthMiddleware,AdminMiddleware")
         if let MirOperand::Const(MirConst::Str(middleware_str)) = &args[2] {
+            // Built-in middlewares that have native handlers in libdoo_http
+            // These should NOT have wrappers generated - they use the runtime's built-in handlers
+            const BUILTIN_MIDDLEWARES: &[&str] = &["jwt", "cors", "auth", "rate_limit"];
+            
             // Split by comma and register each middleware function
             for mw_name in middleware_str.split(',').map(|s| s.trim()) {
                 if !mw_name.is_empty() {
-                    // Generate wrapper for middleware and register it
+                    // Skip built-in middlewares - they register themselves in the runtime
+                    if BUILTIN_MIDDLEWARES.contains(&mw_name) {
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!("[CODEGEN] Skipping built-in middleware registration: {}", mw_name);
+                        }
+                        continue;
+                    }
+                    
+                    // Generate wrapper for user-defined middleware and register it
                     let wrapper = get_or_generate_handler_wrapper(ctx, mw_name, symbol);
                     
                     // Call doo_http_register_middleware(name, fn_ptr)
@@ -2391,38 +2536,44 @@ fn emit_ffi_call<'ctx>(
                     );
                     
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[CODEGEN] Registered middleware: {} -> {}", mw_name, wrapper.get_name().to_string_lossy());
+                        eprintln!("[CODEGEN] Registered user middleware: {} -> {}", mw_name, wrapper.get_name().to_string_lossy());
                     }
                 }
             }
         }
     }
 
+    // Extract route context for handler wrapper generation
+    // For HTTP route registrations, we need to know:
+    // - Route path pattern (args[1]) to extract path param names
+    // - Middleware names (args[2] for *_with_middleware) to detect JWT
+    // - HTTP method (from symbol name)
+    let route_context = extract_route_context(symbol, args);
+
     // Convert arguments - with automatic wrapper generation for FuncRef
-    let arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> = args
-        .iter()
-        .enumerate()
-        .filter_map(|(i, a)| {
-            // Special handling for FuncRef - generate wrapper if needed
-            if let MirOperand::FuncRef(func_name) = a {
-                let wrapper = get_or_generate_handler_wrapper(ctx, func_name, symbol);
-                
-                // If this is an HTTP route registration, register handler metadata
-                // Check for doo_http_get_fn, doo_http_post_fn, etc. AND *_with_middleware variants
-                let is_route_registration = symbol.starts_with("doo_http_") 
-                    && (symbol.ends_with("_fn") || symbol.ends_with("_with_middleware"));
-                if is_route_registration {
-                    emit_handler_metadata_registration(ctx, func_name, &wrapper);
-                }
-                
-                return Some(wrapper.as_global_value().as_pointer_value().into());
+    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::with_capacity(args.len());
+    for (i, a) in args.iter().enumerate() {
+        // Special handling for FuncRef - generate wrapper if needed
+        if let MirOperand::FuncRef(func_name) = a {
+            let wrapper = get_or_generate_handler_wrapper_with_context(ctx, func_name, symbol, &route_context);
+            
+            // If this is an HTTP route registration, register handler metadata
+            // Check for doo_http_get_fn, doo_http_post_fn, etc. AND *_with_middleware variants
+            let is_route_registration = symbol.starts_with("doo_http_") 
+                && (symbol.ends_with("_fn") || symbol.ends_with("_with_middleware"));
+            if is_route_registration {
+                emit_handler_metadata_registration(ctx, func_name, &wrapper);
             }
             
-            let val = operand_to_value(ctx, a)?;
+            arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
+            continue;
+        }
+        
+        if let Some(val) = operand_to_value(ctx, a) {
             let expected = expected_types.get(i).copied().flatten();
-            Some(convert_to_ffi_arg(ctx, val, expected))
-        })
-        .collect();
+            arg_vals.push(convert_to_ffi_arg(ctx, val, expected));
+        }
+    }
 
     // Build call
     let call_site = ctx.builder.build_call(func, &arg_vals, "ffi_call").ok()?;
@@ -2437,6 +2588,55 @@ fn emit_ffi_call<'ctx>(
 
     // For void functions, return None
     call_site.try_as_basic_value().left()
+}
+
+/// Extract route context from FFI call arguments.
+/// For HTTP route registrations like doo_http_get_fn(server, path, handler),
+/// this extracts the route path pattern and middleware information.
+fn extract_route_context(symbol: &str, args: &[MirOperand]) -> RouteContext {
+    let mut ctx = RouteContext::default();
+    
+    // Only process HTTP route registrations
+    if !symbol.starts_with("doo_http_") {
+        return ctx;
+    }
+    
+    // Extract HTTP method from symbol name
+    ctx.http_method = if symbol.contains("_get") {
+        Some("GET".to_string())
+    } else if symbol.contains("_post") {
+        Some("POST".to_string())
+    } else if symbol.contains("_put") {
+        Some("PUT".to_string())
+    } else if symbol.contains("_delete") {
+        Some("DELETE".to_string())
+    } else if symbol.contains("_patch") {
+        Some("PATCH".to_string())
+    } else {
+        None
+    };
+    
+    // For route registrations: args[1] is the path pattern
+    // doo_http_get_fn(server, path, handler)
+    // doo_http_get_with_middleware(server, path, middleware, handler)
+    if args.len() >= 2 {
+        if let MirOperand::Const(MirConst::Str(path)) = &args[1] {
+            ctx.route_path = Some(path.clone());
+        }
+    }
+    
+    // For middleware variants: args[2] is the middleware names
+    if symbol.ends_with("_with_middleware") && args.len() >= 3 {
+        if let MirOperand::Const(MirConst::Str(middleware_str)) = &args[2] {
+            ctx.middleware_names = middleware_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+    }
+    
+    ctx
 }
 
 /// Generate or retrieve a wrapper function that adapts a user handler to FFI signature.
@@ -2454,6 +2654,19 @@ fn get_or_generate_handler_wrapper<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     user_func_name: &str,
     ffi_symbol: &str,
+) -> FunctionValue<'ctx> {
+    // Delegate to context-aware version with empty context
+    get_or_generate_handler_wrapper_with_context(ctx, user_func_name, ffi_symbol, &RouteContext::default())
+}
+
+/// Generate or retrieve a wrapper function with route context.
+/// This version knows about the route pattern and middleware, allowing correct
+/// parameter extraction from path params, JWT claims, etc.
+fn get_or_generate_handler_wrapper_with_context<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    user_func_name: &str,
+    ffi_symbol: &str,
+    route_context: &RouteContext,
 ) -> FunctionValue<'ctx> {
     let wrapper_name = format!("__ffi_wrapper_{}", user_func_name);
     
@@ -2796,34 +3009,87 @@ fn get_or_generate_handler_wrapper<'ctx>(
                     ptr_type.into(), // 1: path
                     ptr_type.into(), // 2: body
                     ptr_type.into(), // 3: headers
-                    ptr_type.into(), // 4: params
+                    ptr_type.into(), // 4: params (path params as JSON)
                     ptr_type.into(), // 5: query
-                    ptr_type.into(), // 6: user_id
+                    ptr_type.into(), // 6: user_id (JWT claims)
                 ],
                 false
             );
             
-            // Load body pointer from request (index 2)
-            let body_ptr = ctx.builder
-                .build_struct_gep(doo_request_type, request_ptr, 2, "body_field_ptr")
-                .ok()
-                .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "body_json").ok())
-                .map(|v| v.into_pointer_value())
-                .unwrap_or_else(|| ptr_type.const_null());
+            // Helper to load a field from request by index
+            let load_request_field = |ctx: &mut CodegenContext<'ctx>, index: u32, name: &str| -> PointerValue<'ctx> {
+                ctx.builder
+                    .build_struct_gep(doo_request_type, request_ptr, index, &format!("{}_field_ptr", name))
+                    .ok()
+                    .and_then(|gep| ctx.builder.build_load(ptr_type, gep, name).ok())
+                    .map(|v| v.into_pointer_value())
+                    .unwrap_or_else(|| ptr_type.const_null())
+            };
             
             // Build arguments for the user function call
             let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::new();
             let param_count = all_param_types.len();
             
+            // Get path param names from route context
+            let path_param_names = route_context.path_param_names();
+            let has_jwt_middleware = route_context.has_jwt_middleware();
+            
+            if debug {
+                eprintln!("[CODEGEN] Handler {} with {} params, path_params={:?}, jwt={}", 
+                    user_func_name, param_count, path_param_names, has_jwt_middleware);
+            }
+            
+            // Get or declare doo_json_get_field for extracting specific fields from params JSON
+            let json_get_field_fn = ctx.module.get_function(ffi_names::DOO_JSON_GET_FIELD)
+                .unwrap_or_else(|| {
+                    let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                    ctx.module.add_function(ffi_names::DOO_JSON_GET_FIELD, fn_type, None)
+                });
+            
             for (idx, param_type) in all_param_types.iter().enumerate() {
-                // For multi-param handlers:
-                // - First param: typically path params (parsed from body which FFI populates)
-                // - Last param (if 2+ params): typically body params
-                // For single param: parse from body (which FFI populates with query/path/body)
+                // Determine the correct source field for this parameter:
+                // 1. JWT middleware + single Int param -> user_id (index 6)
+                // 2. Path param match -> params (index 4), then extract specific field
+                // 3. Otherwise -> body (index 2)
                 
-                // All params parse from body - the FFI layer already populates body with
-                // the correct JSON (from query params for GET, path params, or actual body)
-                let parsed = JsonBuiltins::emit_parse(ctx, body_ptr.into(), Some(*param_type));
+                let is_int_param = ctx.get_type_kind(*param_type)
+                    .map(|k| matches!(k, TypeKind::Int))
+                    .unwrap_or(false);
+                
+                let source_ptr = if has_jwt_middleware && param_count == 1 && is_int_param {
+                    // JWT handler with single Int param - get from user_id field
+                    if debug {
+                        eprintln!("[CODEGEN] Param {} from user_id (JWT)", idx);
+                    }
+                    load_request_field(ctx, 6, "user_id")
+                } else if idx < path_param_names.len() {
+                    // This param corresponds to a path parameter - need to extract the specific field
+                    let path_param_name = path_param_names.get(idx).cloned().unwrap_or_default();
+                    if debug {
+                        eprintln!("[CODEGEN] Param {} from params (path param: {})", idx, path_param_name);
+                    }
+                    let params_json = load_request_field(ctx, 4, "params");
+                    
+                    // Extract the specific field from the params JSON object
+                    // params is like {"authorId": "1"}, we need to extract "authorId" value
+                    let field_name_str = ctx.const_string(&path_param_name);
+                    let field_value = ctx.builder
+                        .build_call(json_get_field_fn, &[params_json.into(), field_name_str.into()], "field_json")
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+                    
+                    field_value
+                } else {
+                    // Default: use body
+                    if debug {
+                        eprintln!("[CODEGEN] Param {} from body", idx);
+                    }
+                    load_request_field(ctx, 2, "body_json")
+                };
+                
+                let parsed = JsonBuiltins::emit_parse(ctx, source_ptr.into(), Some(*param_type));
                 
                 if let Some(val) = parsed {
                     call_args.push(val.into());
@@ -3224,6 +3490,183 @@ fn get_or_generate_handler_wrapper<'ctx>(
             }
         }
         
+        let _ = ctx.builder.build_return(Some(&doo_result_ptr));
+        
+        // Restore position
+        if let Some(block) = current_block {
+            ctx.builder.position_at_end(block);
+        }
+        
+        return wrapper_fn;
+    }
+    
+    // Check if handler returns a Result type (has error type in signature)
+    // This handles non-middleware handlers like GetFeed that return [Post] ! DatabaseError
+    let handler_error_type_id = ctx.get_function_error_type(user_func_name);
+    let handler_returns_result = handler_error_type_id.is_some() && user_return_type.map_or(false, |rt| {
+        if let inkwell::types::BasicTypeEnum::StructType(st) = rt {
+            st.count_fields() == 2  // Result<T, E> is { i64 tag, i64 value }
+        } else {
+            false
+        }
+    });
+    
+    if handler_returns_result {
+        // Handler returns Result<T, Error> - need to extract Ok value or handle Err
+        // Allocate DooResult on heap
+        let result_size = i64_type.const_int(24, false);
+        let doo_result_ptr = ctx.builder
+            .build_call(malloc_fn, &[result_size.into()], "doo_result")
+            .ok()
+            .and_then(|cs| cs.try_as_basic_value().left())
+            .map(|v| v.into_pointer_value())
+            .unwrap_or_else(|| ptr_type.const_null());
+        
+        if let Some(val) = user_result {
+            if let Ok(user_result_struct) = val.try_into() {
+                let user_result_struct: inkwell::values::StructValue = user_result_struct;
+                
+                // Extract i64 tag (0 = Ok, 1 = Err)
+                let tag = ctx.builder
+                    .build_extract_value(user_result_struct, 0, "result_tag")
+                    .map(|v| v.into_int_value())
+                    .unwrap_or_else(|_| i64_type.const_int(0, false));
+                
+                // Extract i64 value and convert to pointer
+                let value_i64 = ctx.builder
+                    .build_extract_value(user_result_struct, 1, "result_value_i64")
+                    .map(|v| v.into_int_value())
+                    .unwrap_or_else(|_| i64_type.const_zero());
+                let value = ctx.builder
+                    .build_int_to_ptr(value_i64, ptr_type, "result_value")
+                    .unwrap_or_else(|_| ptr_type.const_null());
+                
+                // Create blocks for Ok and Err paths
+                let parent = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+                let ok_block = ctx.context.append_basic_block(parent, "handler_ok");
+                let err_block = ctx.context.append_basic_block(parent, "handler_err");
+                
+                // Branch based on tag (0 = Ok, non-zero = Err)
+                let is_err = ctx.builder
+                    .build_int_compare(inkwell::IntPredicate::NE, tag, i64_type.const_zero(), "is_err")
+                    .unwrap();
+                ctx.builder.build_conditional_branch(is_err, err_block, ok_block).ok();
+                
+                // OK PATH: Serialize the result to JSON
+                ctx.builder.position_at_end(ok_block);
+                
+                // For array results [T], we need to serialize the array
+                // The value pointer points to the array data
+                // Call doohttp_serialize_struct_to_json or similar
+                let serialize_fn = ctx.module.get_function("doohttp_serialize_struct_to_json")
+                    .unwrap_or_else(|| {
+                        let fn_type = ptr_type.fn_type(
+                            &[ptr_type.into(), ptr_type.into()],
+                            false
+                        );
+                        ctx.module.add_function("doohttp_serialize_struct_to_json", fn_type, None)
+                    });
+                
+                let handler_name_str = ctx.builder
+                    .build_global_string_ptr(user_func_name, "handler_name_for_serialize")
+                    .map(|g| g.as_pointer_value())
+                    .unwrap_or_else(|_| ptr_type.const_null());
+                
+                let json_ptr = ctx.builder
+                    .build_call(serialize_fn, &[value.into(), handler_name_str.into()], "serialized_json")
+                    .ok()
+                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .map(|v| v.into_pointer_value())
+                    .unwrap_or_else(|| ptr_type.const_null());
+                
+                // Store in DooResult with tag=0 (Ok)
+                if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 0, "ok_tag_ptr") {
+                    let _ = ctx.builder.build_store(tag_ptr, i32_type.const_zero());
+                }
+                if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 1, "ok_value_ptr") {
+                    let _ = ctx.builder.build_store(value_ptr, json_ptr);
+                }
+                if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 2, "ok_owner_ptr") {
+                    let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false));
+                }
+                let _ = ctx.builder.build_return(Some(&doo_result_ptr));
+                
+                // ERROR PATH: Build error response with actual error message
+                ctx.builder.position_at_end(err_block);
+                
+                // Call doohttp_format_error_as_json to format the error message from the result
+                // The 'value' variable contains the error message pointer
+                let format_error_fn = ctx.module.get_function("doohttp_format_error_as_json")
+                    .unwrap_or_else(|| {
+                        let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+                        ctx.module.add_function("doohttp_format_error_as_json", fn_type, None)
+                    });
+                
+                let error_json_str = ctx.builder
+                    .build_call(format_error_fn, &[value.into()], "formatted_error_json")
+                    .ok()
+                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .map(|v| v.into_pointer_value())
+                    .unwrap_or_else(|| ctx.const_string("{\"error\": \"Internal server error\"}"));
+                
+                // Build error response struct { status=500, body, content_type }
+                let error_response_type = ctx.context.struct_type(
+                    &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                    false
+                );
+                let error_response_size = i64_type.const_int(24, false);
+                let error_response_ptr = ctx.builder
+                    .build_call(malloc_fn, &[error_response_size.into()], "error_response")
+                    .ok()
+                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .map(|v| v.into_pointer_value())
+                    .unwrap_or_else(|| ptr_type.const_null());
+                
+                // Set status = 500
+                if let Ok(status_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 0, "status_ptr") {
+                    let _ = ctx.builder.build_store(status_ptr, i32_type.const_int(500, false));
+                }
+                // Set body
+                if let Ok(body_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 1, "body_ptr") {
+                    let _ = ctx.builder.build_store(body_ptr, error_json_str);
+                }
+                // Set content_type
+                let json_content_type = ctx.const_string("application/json");
+                if let Ok(ct_ptr) = ctx.builder.build_struct_gep(error_response_type, error_response_ptr, 2, "ct_ptr") {
+                    let _ = ctx.builder.build_store(ct_ptr, json_content_type);
+                }
+                
+                // Build DooResult for error: { tag=1, value=error_response, owner=1 }
+                if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 0, "error_tag_ptr") {
+                    let _ = ctx.builder.build_store(tag_ptr, i32_type.const_int(1, false));
+                }
+                if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 1, "error_value_ptr") {
+                    let _ = ctx.builder.build_store(value_ptr, error_response_ptr);
+                }
+                if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 2, "error_owner_ptr") {
+                    let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false));
+                }
+                let _ = ctx.builder.build_return(Some(&doo_result_ptr));
+                
+                // Restore position
+                if let Some(block) = current_block {
+                    ctx.builder.position_at_end(block);
+                }
+                
+                return wrapper_fn;
+            }
+        }
+        
+        // Fallback if we couldn't extract struct - return null result
+        if let Ok(tag_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 0, "tag_ptr") {
+            let _ = ctx.builder.build_store(tag_ptr, i32_type.const_int(1, false));
+        }
+        if let Ok(value_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 1, "value_ptr") {
+            let _ = ctx.builder.build_store(value_ptr, ptr_type.const_null());
+        }
+        if let Ok(owner_ptr) = ctx.builder.build_struct_gep(result_struct_type, doo_result_ptr, 2, "owner_ptr") {
+            let _ = ctx.builder.build_store(owner_ptr, i8_type.const_int(1, false));
+        }
         let _ = ctx.builder.build_return(Some(&doo_result_ptr));
         
         // Restore position

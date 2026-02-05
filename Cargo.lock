@@ -713,6 +713,7 @@ dependencies = [
 name = "doo_ffi_http"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bcrypt 0.18.0",
  "chrono",
  "doo_ffi_core",
@@ -722,6 +723,7 @@ dependencies = [
  "jsonwebtoken 10.3.0",
  "lazy_static",
  "libc",
+ "libloading",
  "matchit",
  "serde",
  "serde_json",
@@ -1385,6 +1387,16 @@ name = "libc"
 version = "0.2.178"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "libm"

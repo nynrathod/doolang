@@ -480,19 +480,32 @@ fn json_value_to_doo_ptr(v: serde_json::Value) -> *mut std::ffi::c_void {
 // ============================================================================
 
 /// Parse JSON to Int
+/// Handles both JSON numbers (123) and JSON strings containing numbers ("123")
 #[no_mangle]
 pub extern "C" fn doo_json_parse_int(json_str: *const c_char) -> i64 {
+    eprintln!("[JSON] doo_json_parse_int called, json_str={:?}", json_str);
     if json_str.is_null() {
+        eprintln!("[JSON] doo_json_parse_int: null input");
         return 0;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    serde_json::from_str::<serde_json::Value>(&s)
+    eprintln!("[JSON] doo_json_parse_int: input='{}'", s);
+    let result = serde_json::from_str::<serde_json::Value>(&s)
         .ok()
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0)
+        .and_then(|v| {
+            // First try as direct integer
+            v.as_i64().or_else(|| {
+                // If it's a string, try parsing the string content as an integer
+                v.as_str().and_then(|s| s.parse::<i64>().ok())
+            })
+        })
+        .unwrap_or(0);
+    eprintln!("[JSON] doo_json_parse_int: result={}", result);
+    result
 }
 
 /// Parse JSON to Float
+/// Handles both JSON numbers (1.5) and JSON strings containing numbers ("1.5")
 #[no_mangle]
 pub extern "C" fn doo_json_parse_float(json_str: *const c_char) -> f64 {
     if json_str.is_null() {
@@ -501,11 +514,18 @@ pub extern "C" fn doo_json_parse_float(json_str: *const c_char) -> f64 {
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     serde_json::from_str::<serde_json::Value>(&s)
         .ok()
-        .and_then(|v| v.as_f64())
+        .and_then(|v| {
+            // First try as direct float
+            v.as_f64().or_else(|| {
+                // If it's a string, try parsing the string content as a float
+                v.as_str().and_then(|s| s.parse::<f64>().ok())
+            })
+        })
         .unwrap_or(0.0)
 }
 
 /// Parse JSON to Bool
+/// Handles both JSON booleans (true) and JSON strings containing booleans ("true")
 #[no_mangle]
 pub extern "C" fn doo_json_parse_bool(json_str: *const c_char) -> bool {
     if json_str.is_null() {
@@ -514,7 +534,13 @@ pub extern "C" fn doo_json_parse_bool(json_str: *const c_char) -> bool {
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     serde_json::from_str::<serde_json::Value>(&s)
         .ok()
-        .and_then(|v| v.as_bool())
+        .and_then(|v| {
+            // First try as direct boolean
+            v.as_bool().or_else(|| {
+                // If it's a string, try parsing the string content as a boolean
+                v.as_str().and_then(|s| s.parse::<bool>().ok())
+            })
+        })
         .unwrap_or(false)
 }
 
@@ -1663,14 +1689,17 @@ pub extern "C" fn doo_json_get_field(
     json_str: *const c_char,
     field_name: *const c_char,
 ) -> *mut c_char {
+    eprintln!("[JSON] doo_json_get_field called, json_str={:?}, field_name={:?}", json_str, field_name);
     if json_str.is_null() || field_name.is_null() {
+        eprintln!("[JSON] doo_json_get_field: null input");
         // Return empty JSON object instead of null to prevent crashes
         return doo_alloc_string("{}");
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     let field = unsafe { CStr::from_ptr(field_name).to_string_lossy() };
+    eprintln!("[JSON] doo_json_get_field: json='{}', field='{}'", s, field);
 
-    serde_json::from_str::<serde_json::Value>(&s)
+    let result = serde_json::from_str::<serde_json::Value>(&s)
         .ok()
         .and_then(|v| {
             v.as_object()
@@ -1678,7 +1707,9 @@ pub extern "C" fn doo_json_get_field(
         })
         .and_then(|field_val| serde_json::to_string(&field_val).ok())
         .map(|s| doo_alloc_string(&s))
-        .unwrap_or_else(|| doo_alloc_string("null"))
+        .unwrap_or_else(|| doo_alloc_string("null"));
+    eprintln!("[JSON] doo_json_get_field: returning {:?}", result);
+    result
 }
 
 /// Get enum variant name from JSON

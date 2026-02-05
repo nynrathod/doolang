@@ -28,6 +28,8 @@ pub fn get_ratelimit_state() -> &'static Mutex<HashMap<String, RateLimitEntry>> 
 }
 
 /// JWT middleware handler
+/// Validates the JWT token and extracts the user ID, setting it on the request
+/// for handlers that need authenticated user information.
 pub extern "C" fn jwt_middleware_handler(
     req: *const DooRequest,
     next: DooNextFn,
@@ -51,22 +53,107 @@ pub extern "C" fn jwt_middleware_handler(
             _ => return make_err_response(401, "Invalid Authorization header format"),
         };
 
-        // Verify JWT using doo_ffi_auth (or inline simple verification)
-        // Use same default as token generation to ensure consistency
-        let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "test-secret".to_string());
-
-        // Simple JWT validation (header.payload.signature)
+        // JWT format: header.payload.signature (base64 encoded)
         let parts: Vec<&str> = token.split('.').collect();
         if parts.len() != 3 {
             return make_err_response(401, "Invalid token format");
         }
 
-        // For now, trust token if well-formed (full validation would use jsonwebtoken)
-        // In production this calls doo_auth_verify
+        // Decode the payload (middle part) to extract user ID
+        // JWT payload is base64url encoded JSON
+        let payload_b64 = parts[1];
+        let payload_json = match base64_url_decode(payload_b64) {
+            Ok(json) => json,
+            Err(_) => return make_err_response(401, "Invalid token payload encoding"),
+        };
 
-        // Call next handler
+        // Parse the payload JSON to extract user ID
+        // JWT payload typically has: { "sub": "email@example.com", "iat": ..., "exp": ... }
+        // We need to look up the user ID from the database based on the subject (email)
+        let user_id = match extract_user_id_from_jwt_payload(&payload_json) {
+            Some(id) => id,
+            None => return make_err_response(401, "Could not extract user ID from token"),
+        };
+
+        // Set the user_id on the request (as a JSON integer string for consistent parsing)
+        // The codegen will use doo_json_parse_int to read this
+        let user_id_str = user_id.to_string();
+        let req_mut = req as *mut DooRequest;
+        (*req_mut).user_id = string_to_c(&user_id_str);
+
+        // Call next handler with the modified request
         next(req)
     }
+}
+
+/// Decode base64url encoded string (used in JWT)
+fn base64_url_decode(input: &str) -> Result<String, String> {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    
+    // Add padding if needed
+    let padded = match input.len() % 4 {
+        2 => format!("{}==", input),
+        3 => format!("{}=", input),
+        _ => input.to_string(),
+    };
+    
+    URL_SAFE_NO_PAD.decode(&padded)
+        .or_else(|_| URL_SAFE_NO_PAD.decode(input))
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        .map_err(|e| format!("Base64 decode error: {}", e))
+}
+
+/// Extract user ID from JWT payload JSON
+/// Looks up the user in the database by email (sub field) to get the numeric ID
+fn extract_user_id_from_jwt_payload(payload_json: &str) -> Option<i64> {
+    let payload: serde_json::Value = serde_json::from_str(payload_json).ok()?;
+    let email = payload.get("sub")?.as_str()?;
+    
+    // Query the database to get the user ID by email
+    // Use runtime loading to call into doo_db
+    lookup_user_id_by_email(email)
+}
+
+/// Look up user ID by email from the database
+fn lookup_user_id_by_email(email: &str) -> Option<i64> {
+    use libloading::{Library, Symbol};
+    use std::ffi::CString;
+    use std::os::raw::c_char;
+    
+    // Try to load the database library
+    #[cfg(target_os = "windows")]
+    let lib_names = ["doo_ffi_db.dll", "libdoo_ffi_db.dll"];
+    #[cfg(target_os = "linux")]
+    let lib_names = ["libdoo_ffi_db.so", "doo_ffi_db.so"];
+    #[cfg(target_os = "macos")]
+    let lib_names = ["libdoo_ffi_db.dylib", "doo_ffi_db.dylib"];
+    
+    let lib = lib_names.iter()
+        .find_map(|name| unsafe { Library::new(name).ok() })?;
+    
+    // Call doo_db_query_one to find user by email
+    type QueryFn = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut std::ffi::c_void;
+    let query_fn: Symbol<QueryFn> = unsafe { lib.get(b"doo_db_query_with_params").ok()? };
+    
+    let sql = CString::new("SELECT id FROM users WHERE email = $1 LIMIT 1").ok()?;
+    let params_json = serde_json::json!([email]).to_string();
+    let params = CString::new(params_json).ok()?;
+    
+    let result_ptr = unsafe { query_fn(sql.as_ptr(), params.as_ptr()) };
+    if result_ptr.is_null() {
+        return None;
+    }
+    
+    // Parse the result - it's a JSON array with rows
+    // Each row is an object with column values
+    let result_str = c_to_string(result_ptr as *const c_char);
+    let result: serde_json::Value = serde_json::from_str(&result_str).ok()?;
+    
+    // Get the first row's id field
+    result.as_array()?
+        .first()?
+        .get("id")?
+        .as_i64()
 }
 
 /// CORS middleware handler

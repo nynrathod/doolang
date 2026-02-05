@@ -24,6 +24,89 @@ pub use middleware::*;
 pub use router::*;
 pub use types::*;
 
+// =============================================================================
+// RUNTIME DYNAMIC LOADING FOR DATABASE FFI
+// =============================================================================
+// We load doo_db symbols at runtime to avoid static duplication between DLLs.
+// Each DLL would have its own copy of POOL static if we used Rust imports.
+// Runtime loading ensures we call into the SAME doo_db.dll that was initialized.
+
+use libloading::{Library, Symbol};
+use std::sync::OnceLock;
+
+/// Cached handle to the doo_db library
+static DB_LIB: OnceLock<Option<Library>> = OnceLock::new();
+
+/// Get or load the doo_db library
+fn get_db_lib() -> Option<&'static Library> {
+    DB_LIB
+        .get_or_init(|| {
+            // Try platform-specific library names
+            // IMPORTANT: Library name is doo_ffi_db (from Cargo.toml name = "doo_ffi_db")
+            #[cfg(target_os = "windows")]
+            let names = ["doo_ffi_db.dll", "libdoo_ffi_db.dll", "doo_db.dll", "libdoo_db.dll"];
+            #[cfg(target_os = "linux")]
+            let names = ["libdoo_ffi_db.so", "doo_ffi_db.so", "libdoo_db.so", "doo_db.so"];
+            #[cfg(target_os = "macos")]
+            let names = ["libdoo_ffi_db.dylib", "doo_ffi_db.dylib", "libdoo_db.dylib", "doo_db.dylib"];
+
+            for name in &names {
+                if let Ok(lib) = unsafe { Library::new(name) } {
+                    eprintln!("[HTTP] Successfully loaded database library: {}", name);
+                    return Some(lib);
+                }
+            }
+            eprintln!("[HTTP] Warning: Could not load doo_db library (tried: {:?})", names);
+            None
+        })
+        .as_ref()
+}
+
+/// Check if database pool is initialized (calls doo_db at runtime)
+fn is_pool_initialized() -> bool {
+    let Some(lib) = get_db_lib() else {
+        return false;
+    };
+
+    type FnType = unsafe extern "C" fn() -> bool;
+    let func: Result<Symbol<FnType>, _> = unsafe { lib.get(b"doo_db_is_connected") };
+
+    match func {
+        Ok(f) => unsafe { f() },
+        Err(_) => false,
+    }
+}
+
+/// Execute SQL and return JSON result (calls doo_db at runtime)
+fn call_db_execute_sql(sql: *const c_char) -> *mut std::ffi::c_void {
+    let Some(lib) = get_db_lib() else {
+        return std::ptr::null_mut();
+    };
+
+    type FnType = unsafe extern "C" fn(*const c_char) -> *mut std::ffi::c_void;
+    let func: Result<Symbol<FnType>, _> = unsafe { lib.get(b"doo_db_execute_sql") };
+
+    match func {
+        Ok(f) => unsafe { f(sql) },
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Execute parameterized query (calls doo_db at runtime)
+fn call_db_query_with_params(sql: *const c_char, params: *const c_char) -> *mut std::ffi::c_void {
+    let Some(lib) = get_db_lib() else {
+        return std::ptr::null_mut();
+    };
+
+    type FnType = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut std::ffi::c_void;
+    let func: Result<Symbol<FnType>, _> = unsafe { lib.get(b"doo_db_query_with_params") };
+
+    match func {
+        Ok(f) => unsafe { f(sql, params) },
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 // ============================================================================
 // SERVER LIFECYCLE
 // ============================================================================
@@ -467,6 +550,348 @@ fn get_enum_variants(name: &str) -> Option<Vec<String>> {
     registry.get(name).cloned()
 }
 
+// ============================================================================
+// DATABASE-BACKED CRUD HELPERS
+// ============================================================================
+
+/// Convert PascalCase or camelCase to snake_case
+/// Examples: "AuthorId" -> "author_id", "firstName" -> "first_name"
+fn to_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(ch.to_lowercase().next().unwrap_or(ch));
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Generate CREATE TABLE SQL from struct metadata
+/// Uses snake_case for column names (PostgreSQL convention)
+fn generate_create_table_sql(table_name: &str, metadata: &StructMetadata) -> String {
+    let mut columns = Vec::new();
+
+    for field in &metadata.fields {
+        // Convert field name to snake_case for PostgreSQL convention
+        let col_name = to_snake_case(&field.name);
+
+        // Smart fallback: if field is named "id" with Int type, make it SERIAL PRIMARY KEY
+        // This is needed because decorators are not passed from codegen
+        let is_id_field = col_name == "id" && field.field_type == "Int";
+
+        if is_id_field {
+            columns.push(format!("  {} SERIAL PRIMARY KEY", col_name));
+            continue;
+        }
+
+        // Map Doo types to PostgreSQL types
+        let sql_type = match field.field_type.as_str() {
+            "Int" => "INTEGER",
+            "Float" => "REAL",
+            "Bool" => "BOOLEAN",
+            "Str" | "String" => "TEXT",
+            _ => "TEXT", // Default to TEXT for unknown types
+        };
+
+        let mut col_def = format!("  {} {}", col_name, sql_type);
+
+        // Check decorators (if they ever get passed)
+        for dec in &field.decorators {
+            if dec == "primary" || dec == "@primary" {
+                col_def.push_str(" PRIMARY KEY");
+            }
+            if dec == "auto" || dec == "@auto" {
+                col_def = format!("  {} SERIAL PRIMARY KEY", col_name);
+            }
+            if dec == "unique" || dec == "@unique" {
+                col_def.push_str(" UNIQUE");
+            }
+            if dec.starts_with("default(") || dec.starts_with("@default(") {
+                // Extract default value
+                let start = dec.find('(').unwrap_or(0) + 1;
+                let end = dec.rfind(')').unwrap_or(dec.len());
+                let default_val = &dec[start..end];
+                // Quote strings, leave numbers/booleans as-is
+                if default_val == "true" || default_val == "false" {
+                    col_def.push_str(&format!(" DEFAULT {}", default_val));
+                } else if default_val.parse::<i64>().is_ok() || default_val.parse::<f64>().is_ok() {
+                    col_def.push_str(&format!(" DEFAULT {}", default_val));
+                } else {
+                    // String value - remove surrounding quotes if present
+                    let clean_val = default_val.trim_matches('"').trim_matches('\'');
+                    col_def.push_str(&format!(" DEFAULT '{}'", clean_val));
+                }
+            }
+        }
+
+        columns.push(col_def);
+    }
+
+    format!(
+        "CREATE TABLE IF NOT EXISTS {} (\n{}\n)",
+        table_name,
+        columns.join(",\n")
+    )
+}
+
+// ============================================================================
+// DATABASE EXECUTION HELPERS - Using FFI calls to doo_db.dll
+// ============================================================================
+// CRITICAL: All database operations must call FFI functions in doo_db.dll
+// to ensure we use the correct shared POOL state.
+
+/// Execute SQL query and return JSON result via FFI
+fn execute_db_query(sql: &str) -> Result<String, String> {
+    if !is_pool_initialized() {
+        return Err("Database not connected".to_string());
+    }
+
+    let sql_c = unsafe {
+        let len = sql.len();
+        let ptr = libc::malloc(len + 1) as *mut u8;
+        if ptr.is_null() {
+            return Err("Memory allocation failed".to_string());
+        }
+        std::ptr::copy_nonoverlapping(sql.as_ptr(), ptr, len);
+        *ptr.add(len) = 0;
+        ptr as *const c_char
+    };
+
+    let result = call_db_execute_sql(sql_c);
+    unsafe {
+        libc::free(sql_c as *mut std::ffi::c_void);
+    }
+
+    if result.is_null() {
+        return Err("Query execution failed".to_string());
+    }
+
+    let json = unsafe {
+        let c_str = std::ffi::CStr::from_ptr(result as *const c_char);
+        let s = c_str.to_string_lossy().into_owned();
+        libc::free(result);
+        s
+    };
+
+    Ok(json)
+}
+
+/// Execute SQL statement (INSERT/UPDATE/DELETE) via FFI
+fn execute_db_statement(sql: &str) -> Result<u64, String> {
+    if !is_pool_initialized() {
+        return Err("Database not connected".to_string());
+    }
+
+    let sql_c = unsafe {
+        let len = sql.len();
+        let ptr = libc::malloc(len + 1) as *mut u8;
+        if ptr.is_null() {
+            return Err("Memory allocation failed".to_string());
+        }
+        std::ptr::copy_nonoverlapping(sql.as_ptr(), ptr, len);
+        *ptr.add(len) = 0;
+        ptr as *const c_char
+    };
+
+    let result = call_db_execute_sql(sql_c);
+    unsafe {
+        libc::free(sql_c as *mut std::ffi::c_void);
+    }
+
+    if result.is_null() {
+        return Err("Statement execution failed".to_string());
+    }
+
+    let json = unsafe {
+        let c_str = std::ffi::CStr::from_ptr(result as *const c_char);
+        let s = c_str.to_string_lossy().into_owned();
+        libc::free(result);
+        s
+    };
+
+    // Parse {"affected_rows": N} response
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+        if let Some(n) = v.get("affected_rows").and_then(|v| v.as_u64()) {
+            return Ok(n);
+        }
+    }
+
+    Ok(0)
+}
+
+/// Helper to create C string from Rust string
+fn string_to_c_local(s: &str) -> *const c_char {
+    unsafe {
+        let len = s.len();
+        let ptr = libc::malloc(len + 1) as *mut u8;
+        if ptr.is_null() {
+            return std::ptr::null();
+        }
+        std::ptr::copy_nonoverlapping(s.as_ptr(), ptr, len);
+        *ptr.add(len) = 0;
+        ptr as *const c_char
+    }
+}
+
+/// Execute parameterized query with a single string param and return JSON result
+fn execute_db_query_with_string_param(sql: &str, param: &str) -> Result<String, String> {
+    if !is_pool_initialized() {
+        return Err("Database not connected".to_string());
+    }
+
+    let params_json = serde_json::to_string(&vec![param]).unwrap_or_else(|_| "[]".to_string());
+
+    let sql_c = string_to_c_local(sql);
+    let params_c = string_to_c_local(&params_json);
+
+    let result = call_db_query_with_params(sql_c, params_c);
+
+    unsafe {
+        libc::free(sql_c as *mut std::ffi::c_void);
+        libc::free(params_c as *mut std::ffi::c_void);
+    }
+
+    if result.is_null() {
+        return Err("Query execution failed".to_string());
+    }
+
+    let json = unsafe {
+        let c_str = std::ffi::CStr::from_ptr(result as *const c_char);
+        let s = c_str.to_string_lossy().into_owned();
+        libc::free(result);
+        s
+    };
+
+    Ok(json)
+}
+
+/// Execute INSERT with JSON values as parameters and return the result
+fn execute_db_insert(sql: &str, values: &[serde_json::Value]) -> Result<String, String> {
+    if !is_pool_initialized() {
+        return Err("Database not connected".to_string());
+    }
+
+    let params_json = serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string());
+
+    let sql_c = string_to_c_local(sql);
+    let params_c = string_to_c_local(&params_json);
+
+    let result = call_db_query_with_params(sql_c, params_c);
+
+    unsafe {
+        libc::free(sql_c as *mut std::ffi::c_void);
+        libc::free(params_c as *mut std::ffi::c_void);
+    }
+
+    if result.is_null() {
+        return Err("Insert execution failed".to_string());
+    }
+
+    let json = unsafe {
+        let c_str = std::ffi::CStr::from_ptr(result as *const c_char);
+        let s = c_str.to_string_lossy().into_owned();
+        libc::free(result);
+        s
+    };
+
+    Ok(json)
+}
+
+/// Execute parameterized query by ID and return JSON result
+fn execute_db_query_by_id(sql: &str, id: i32) -> Result<String, String> {
+    if !is_pool_initialized() {
+        return Err("Database not connected".to_string());
+    }
+
+    let params_json = serde_json::to_string(&vec![id]).unwrap_or_else(|_| "[]".to_string());
+
+    let sql_c = string_to_c_local(sql);
+    let params_c = string_to_c_local(&params_json);
+
+    let result = call_db_query_with_params(sql_c, params_c);
+
+    unsafe {
+        libc::free(sql_c as *mut std::ffi::c_void);
+        libc::free(params_c as *mut std::ffi::c_void);
+    }
+
+    if result.is_null() {
+        return Err("Query execution failed".to_string());
+    }
+
+    let json = unsafe {
+        let c_str = std::ffi::CStr::from_ptr(result as *const c_char);
+        let s = c_str.to_string_lossy().into_owned();
+        libc::free(result);
+        s
+    };
+
+    Ok(json)
+}
+
+/// Execute delete by ID
+fn execute_db_delete_by_id(sql: &str, id: i32) -> Result<u64, String> {
+    if !is_pool_initialized() {
+        return Err("Database not connected".to_string());
+    }
+
+    let params_json = serde_json::to_string(&vec![id]).unwrap_or_else(|_| "[]".to_string());
+
+    let sql_c = string_to_c_local(sql);
+    let params_c = string_to_c_local(&params_json);
+
+    let result = call_db_query_with_params(sql_c, params_c);
+
+    unsafe {
+        libc::free(sql_c as *mut std::ffi::c_void);
+        libc::free(params_c as *mut std::ffi::c_void);
+    }
+
+    if result.is_null() {
+        return Err("Delete execution failed".to_string());
+    }
+
+    let json = unsafe {
+        let c_str = std::ffi::CStr::from_ptr(result as *const c_char);
+        let s = c_str.to_string_lossy().into_owned();
+        libc::free(result);
+        s
+    };
+
+    // Parse {"affected_rows": N} response
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+        if let Some(n) = v.get("affected_rows").and_then(|v| v.as_u64()) {
+            return Ok(n);
+        }
+    }
+
+    Ok(0)
+}
+
+/// Convert snake_case to PascalCase for JSON field names
+/// Special case: "id" stays "id" (Doo convention)
+fn to_pascal_case(s: &str) -> String {
+    // Special case: "id" should stay lowercase
+    if s == "id" {
+        return "id".to_string();
+    }
+
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
 /// Map error enum variant name to HTTP status code.
 /// This is the centralized mapping for all error enums.
 /// Uses common HTTP error naming conventions (Unauthorized -> 401, Forbidden -> 403, etc.)
@@ -508,6 +933,28 @@ pub extern "C" fn doohttp_build_rfc7807_error(status: i32, title: *const c_char)
         title_str, status
     );
 
+    string_to_c(&error_json)
+}
+
+/// Format an error message string as JSON with {"error": "message"} format.
+/// This is used by generated wrapper code to format database/FFI errors for HTTP responses.
+#[no_mangle]
+pub extern "C" fn doohttp_format_error_as_json(error_msg: *const c_char) -> *const c_char {
+    let msg = if error_msg.is_null() {
+        "Unknown error".to_string()
+    } else {
+        c_to_string(error_msg)
+    };
+
+    // Escape any special JSON characters in the message
+    let escaped = msg
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+
+    let error_json = format!(r#"{{"error":"{}"}}"#, escaped);
     string_to_c(&error_json)
 }
 
@@ -647,17 +1094,72 @@ fn validate_decorator(
 // AUTH AND CRUD HELPERS
 // ============================================================================
 
-/// In-memory user store for auth (simplified for demo; production would use DB)
+/// In-memory user store for auth (fallback when no database connected)
 static AUTH_USERS: std::sync::OnceLock<StdMutex<HashMap<String, AuthUser>>> =
     std::sync::OnceLock::new();
+
+/// Counter for generating user IDs (in-memory; production would use DB auto-increment)
+static AUTH_USER_ID_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+
+/// Store which auth table has been created in the database
+static AUTH_DB_TABLE: std::sync::OnceLock<StdMutex<Option<String>>> = std::sync::OnceLock::new();
 
 fn get_auth_users() -> &'static StdMutex<HashMap<String, AuthUser>> {
     AUTH_USERS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
+fn get_auth_db_table() -> &'static StdMutex<Option<String>> {
+    AUTH_DB_TABLE.get_or_init(|| StdMutex::new(None))
+}
+
+/// Check if auth is using the database
+fn is_auth_db_backed() -> bool {
+    if !is_pool_initialized() {
+        return false;
+    }
+    let table = get_auth_db_table().lock().unwrap();
+    table.is_some()
+}
+
+/// Get the auth table name (e.g., "users")
+fn get_auth_table_name() -> Option<String> {
+    let table = get_auth_db_table().lock().unwrap();
+    table.clone()
+}
+
+/// Basic email format validation
+/// Returns true if email has valid format: something@something.something
+fn is_valid_email(email: &str) -> bool {
+    // Basic validation: must have exactly one @, non-empty parts, and at least one . after @
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let local = parts[0];
+    let domain = parts[1];
+
+    // Local part must be non-empty
+    if local.is_empty() {
+        return false;
+    }
+
+    // Domain must have at least one dot and non-empty parts
+    if !domain.contains('.') {
+        return false;
+    }
+
+    let domain_parts: Vec<&str> = domain.split('.').collect();
+    if domain_parts.iter().any(|p| p.is_empty()) {
+        return false;
+    }
+
+    true
+}
+
 /// Generic auth user that stores all fields from the user's struct
 #[derive(Clone)]
 struct AuthUser {
+    id: i64,
     email: String,
     password_hash: String,
     /// Additional fields from the user's struct (stored as JSON)
@@ -667,18 +1169,28 @@ struct AuthUser {
 /// Signup handler - registers a new user
 /// Generic: works with any struct that has email and password fields, plus any additional fields
 extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
+    eprintln!("[AUTH] auth_signup_handler called");
+
     if req.is_null() {
+        eprintln!("[AUTH] Error: Invalid request (null)");
         return make_err_http(400, "Invalid request");
     }
 
     let body = unsafe { c_to_string((*req).body) };
+    eprintln!("[AUTH] Request body: {}", body);
 
     // Parse full JSON body - supports any fields the user defines
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
     let json = match parsed {
         Ok(serde_json::Value::Object(obj)) => obj,
-        Ok(_) => return make_err_http(400, "Request body must be a JSON object"),
-        Err(_) => return make_err_http(400, "Invalid JSON body"),
+        Ok(_) => {
+            eprintln!("[AUTH] Error: Request body is not a JSON object");
+            return make_err_http(400, "Request body must be a JSON object");
+        }
+        Err(e) => {
+            eprintln!("[AUTH] Error: Invalid JSON body: {}", e);
+            return make_err_http(400, "Invalid JSON body");
+        }
     };
 
     // Extract email (required, case-insensitive field lookup)
@@ -690,8 +1202,20 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
 
     let email = match email {
         Some(e) => e,
-        None => return make_err_http(400, "Missing 'email' field"),
+        None => {
+            eprintln!("[AUTH] Error: Missing 'email' field");
+            return make_err_http(400, "Missing 'email' field");
+        }
     };
+
+    // Validate email format
+    if !is_valid_email(&email) {
+        eprintln!("[AUTH] Error: Invalid email format: {}", email);
+        return make_err_http(
+            400,
+            "Invalid email format. Email must be in format: name@domain.tld",
+        );
+    }
 
     // Extract password (required, case-insensitive field lookup)
     let password = json
@@ -701,16 +1225,11 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
 
     let password = match password {
         Some(p) => p,
-        None => return make_err_http(400, "Missing 'password' field"),
-    };
-
-    // Check if user already exists
-    {
-        let users = get_auth_users().lock().unwrap();
-        if users.contains_key(&email) {
-            return make_err_http(409, "User already exists");
+        None => {
+            eprintln!("[AUTH] Error: Missing 'password' field");
+            return make_err_http(400, "Missing 'password' field");
         }
-    }
+    };
 
     // Hash password using bcrypt
     let password_hash = match bcrypt::hash(password, 8) {
@@ -726,26 +1245,145 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
+    // Try database-backed auth first
+    if is_auth_db_backed() {
+        if let Some(table_name) = get_auth_table_name() {
+            eprintln!("[AUTH] Using database-backed auth, table: {}", table_name);
+
+            // Check if user already exists
+            let check_sql = format!("SELECT id FROM {} WHERE email = $1", table_name);
+            match execute_db_query_with_string_param(&check_sql, &email) {
+                Ok(json) => {
+                    let rows: Vec<serde_json::Value> =
+                        serde_json::from_str(&json).unwrap_or_default();
+                    if !rows.is_empty() {
+                        eprintln!("[AUTH] Error: User already exists in DB: {}", email);
+                        return make_err_http(409, "User already exists");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[AUTH] DB error checking existing user: {}", e);
+                }
+            }
+
+            // Build dynamic INSERT based on extra_fields from request
+            // Required: email, password; Optional: all other fields from the struct
+            let mut columns = vec!["email".to_string(), "password".to_string()];
+            let mut values: Vec<serde_json::Value> = vec![
+                serde_json::json!(email),
+                serde_json::json!(password_hash.clone()),
+            ];
+            let mut placeholders: Vec<String> = vec!["$1".to_string(), "$2".to_string()];
+            let mut idx = 3;
+
+            // Add extra fields dynamically
+            for (key, value) in extra_fields.iter() {
+                let col_name = to_snake_case(key);
+                columns.push(col_name);
+                placeholders.push(format!("${}", idx));
+                values.push(value.clone());
+                idx += 1;
+            }
+
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({}) RETURNING *",
+                table_name,
+                columns.join(", "),
+                placeholders.join(", ")
+            );
+
+            eprintln!("[AUTH] Inserting user with SQL: {}", insert_sql);
+            eprintln!("[AUTH] Values: {:?}", values);
+
+            match execute_db_insert(&insert_sql, &values) {
+                Ok(json) => {
+                    eprintln!("[AUTH] Insert result: {}", json);
+                    let rows: Vec<serde_json::Value> =
+                        serde_json::from_str(&json).unwrap_or_default();
+                    if let Some(user_row) = rows.into_iter().next() {
+                        let user_id = user_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                        // Generate JWT token
+                        let token = generate_jwt_token(&email);
+
+                        // Build response with all fields from the database row (except password)
+                        let mut response_data = serde_json::json!({
+                            "token": token,
+                        });
+                        if let (Some(obj), Some(row_obj)) =
+                            (response_data.as_object_mut(), user_row.as_object())
+                        {
+                            for (k, v) in row_obj {
+                                if k != "password" {
+                                    obj.insert(k.clone(), v.clone());
+                                }
+                            }
+                        }
+
+                        let response = serde_json::json!({ "data": response_data }).to_string();
+                        eprintln!("[AUTH] Signup success (DB): {}", response);
+                        return make_ok_json(&response);
+                    } else {
+                        eprintln!("[AUTH] DB insert returned no rows, falling back");
+                        // Fall through to in-memory
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[AUTH] DB insert error: {}", e);
+                    // Check for unique constraint violation
+                    if e.contains("duplicate key") || e.contains("unique constraint") {
+                        return make_err_http(409, "User already exists");
+                    }
+                    return make_err_http(500, &format!("Database error: {}", e));
+                }
+            }
+        }
+    }
+
+    // Fallback to in-memory auth
+    eprintln!("[AUTH] Using in-memory auth fallback");
+
+    // Check if user already exists (in-memory check)
+    {
+        let users = get_auth_users().lock().unwrap();
+        if users.contains_key(&email) {
+            eprintln!("[AUTH] Error: User already exists: {}", email);
+            return make_err_http(409, "User already exists");
+        }
+    }
+
+    // Generate user ID (in-memory counter)
+    let user_id = AUTH_USER_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
     // Store user with all fields
     {
         let mut users = get_auth_users().lock().unwrap();
         users.insert(
             email.clone(),
             AuthUser {
+                id: user_id,
                 email: email.clone(),
                 password_hash,
                 extra_fields: serde_json::Value::Object(extra_fields.clone()),
             },
         );
+        eprintln!(
+            "[AUTH] User stored in memory: {} (id={}), total users: {}",
+            email,
+            user_id,
+            users.len()
+        );
     }
 
     // Generate JWT token
     let token = generate_jwt_token(&email);
+    eprintln!("[AUTH] JWT token generated for: {}", email);
 
-    // Build response with email and any extra fields (but not password)
+    // Build response with id, email and any extra fields (but not password)
     let mut response_data = serde_json::json!({
         "token": token,
         "email": email,
+        "id": user_id,
     });
     if let Some(obj) = response_data.as_object_mut() {
         for (k, v) in extra_fields {
@@ -753,6 +1391,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
     let response = serde_json::json!({ "data": response_data }).to_string();
+    eprintln!("[AUTH] Signup success response: {}", response);
     make_ok_json(&response)
 }
 
@@ -764,6 +1403,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     let body = unsafe { c_to_string((*req).body) };
+    eprintln!("[AUTH] Login request body: {}", body);
 
     // Parse full JSON body - supports any fields the user defines
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
@@ -796,30 +1436,124 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
         None => return make_err_http(400, "Missing 'password' field"),
     };
 
+    // Try database-backed auth first
+    if is_auth_db_backed() {
+        if let Some(table_name) = get_auth_table_name() {
+            eprintln!(
+                "[AUTH] Login: Using database-backed auth, table: {}",
+                table_name
+            );
+
+            // Query ALL fields from user table dynamically
+            let query_sql = format!("SELECT * FROM {} WHERE email = $1", table_name);
+            match execute_db_query_with_string_param(&query_sql, &email) {
+                Ok(json_result) => {
+                    let rows: Vec<serde_json::Value> =
+                        serde_json::from_str(&json_result).unwrap_or_default();
+
+                    if let Some(user_row) = rows.into_iter().next() {
+                        // Case-insensitive lookup for password field (could be "password" or "Password")
+                        let stored_hash = user_row
+                            .as_object()
+                            .and_then(|obj| {
+                                obj.iter()
+                                    .find(|(k, _)| k.eq_ignore_ascii_case("password"))
+                                    .and_then(|(_, v)| v.as_str())
+                            })
+                            .unwrap_or("");
+
+                        // Verify password
+                        match bcrypt::verify(password, stored_hash) {
+                            Ok(true) => {
+                                eprintln!(
+                                    "[AUTH] Login success (DB): Password verified for: {}",
+                                    email
+                                );
+
+                                // Generate JWT token
+                                let token = generate_jwt_token(&email);
+
+                                // Build response with all fields from DB (except password)
+                                let mut response_data = serde_json::json!({
+                                    "token": token,
+                                });
+                                if let (Some(obj), Some(row_obj)) =
+                                    (response_data.as_object_mut(), user_row.as_object())
+                                {
+                                    for (k, v) in row_obj {
+                                        // Exclude password field (case-insensitive)
+                                        if !k.eq_ignore_ascii_case("password") {
+                                            obj.insert(k.clone(), v.clone());
+                                        }
+                                    }
+                                }
+
+                                let response =
+                                    serde_json::json!({ "data": response_data }).to_string();
+                                return make_ok_json(&response);
+                            }
+                            _ => {
+                                eprintln!(
+                                    "[AUTH] Login failed (DB): Invalid password for: {}",
+                                    email
+                                );
+                                return make_err_http(401, "Invalid email or password");
+                            }
+                        }
+                    } else {
+                        eprintln!("[AUTH] Login failed (DB): User not found: {}", email);
+                        return make_err_http(401, "Invalid email or password");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[AUTH] DB error during login: {}", e);
+                    return make_err_http(500, &format!("Database error: {}", e));
+                }
+            }
+        }
+    }
+
+    // Fallback to in-memory auth
+    eprintln!("[AUTH] Login: Using in-memory auth fallback");
+
     // Lookup user
     let user = {
         let users = get_auth_users().lock().unwrap();
+        eprintln!(
+            "[AUTH] Login lookup for: {} (total users in store: {})",
+            email,
+            users.len()
+        );
         users.get(&email).cloned()
     };
 
     let user = match user {
         Some(u) => u,
-        None => return make_err_http(401, "Invalid email or password"),
+        None => {
+            eprintln!("[AUTH] Login failed: User not found: {}", email);
+            return make_err_http(401, "Invalid email or password");
+        }
     };
 
     // Verify password
     match bcrypt::verify(password, &user.password_hash) {
-        Ok(true) => {}
-        _ => return make_err_http(401, "Invalid email or password"),
+        Ok(true) => {
+            eprintln!("[AUTH] Login success: Password verified for: {}", email);
+        }
+        _ => {
+            eprintln!("[AUTH] Login failed: Invalid password for: {}", email);
+            return make_err_http(401, "Invalid email or password");
+        }
     }
 
     // Generate JWT token
     let token = generate_jwt_token(&email);
 
-    // Build response with email, token, and any extra fields stored during signup
+    // Build response with id, email, token, and any extra fields stored during signup
     let mut response_data = serde_json::json!({
         "token": token,
         "email": email,
+        "id": user.id,
     });
     if let Some(obj) = response_data.as_object_mut() {
         if let serde_json::Value::Object(extras) = &user.extra_fields {
@@ -864,6 +1598,7 @@ fn generate_jwt_token(sub: &str) -> String {
 
 /// Set up authentication routes for a user struct.
 /// Creates /signup and /login endpoints that handle user registration and authentication.
+/// If database is connected, creates the users table and uses DB-backed auth.
 #[no_mangle]
 pub extern "C" fn doo_http_auth(
     _server: *const c_void,
@@ -880,6 +1615,43 @@ pub extern "C" fn doo_http_auth(
         "[HTTP] Auth configured: signup={}, login={}, struct={}",
         signup_str, login_str, struct_name
     );
+
+    // Table name for users (lowercase plural)
+    let table_name = "users";
+
+    // Try to create users table in database if connected
+    if is_pool_initialized() {
+        eprintln!("[HTTP] Database connected, setting up DB-backed auth");
+
+        // Get struct metadata to generate CREATE TABLE
+        if let Some(metadata) = get_struct_metadata(&struct_name) {
+            let create_sql = generate_create_table_sql(table_name, &metadata);
+            eprintln!("[HTTP] CREATE TABLE SQL for users:\n{}", create_sql);
+
+            match execute_db_statement(&create_sql) {
+                Ok(_) => {
+                    eprintln!(
+                        "[HTTP] Users table '{}' created/verified successfully",
+                        table_name
+                    );
+                    // Register auth as DB-backed
+                    let mut auth_table = get_auth_db_table().lock().unwrap();
+                    *auth_table = Some(table_name.to_string());
+                }
+                Err(e) => {
+                    eprintln!("[HTTP] Warning: Failed to create users table: {}", e);
+                    // Fall back to in-memory auth
+                }
+            }
+        } else {
+            eprintln!(
+                "[HTTP] Warning: No metadata found for struct '{}', using in-memory auth",
+                struct_name
+            );
+        }
+    } else {
+        eprintln!("[HTTP] No database connection, using in-memory auth");
+    }
 
     // Register auth routes
     let routes = get_routes();
@@ -905,12 +1677,20 @@ pub extern "C" fn doo_http_auth(
 // CRUD HELPERS
 // ============================================================================
 
-/// In-memory store for CRUD resources (simplified for demo; production would use DB)
+/// In-memory store fallback for CRUD resources (used when DB not connected)
 static CRUD_STORES: std::sync::OnceLock<StdMutex<HashMap<String, CrudStore>>> =
+    std::sync::OnceLock::new();
+
+/// Store which resources have been configured for DB-backed CRUD
+static CRUD_DB_TABLES: std::sync::OnceLock<StdMutex<HashMap<String, String>>> =
     std::sync::OnceLock::new();
 
 fn get_crud_stores() -> &'static StdMutex<HashMap<String, CrudStore>> {
     CRUD_STORES.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn get_crud_db_tables() -> &'static StdMutex<HashMap<String, String>> {
+    CRUD_DB_TABLES.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
 struct CrudStore {
@@ -927,6 +1707,51 @@ impl CrudStore {
     }
 }
 
+/// Check if a resource is using database-backed CRUD
+fn is_db_backed_crud(resource: &str) -> bool {
+    if !is_pool_initialized() {
+        return false;
+    }
+    let tables = get_crud_db_tables().lock().unwrap();
+    tables.contains_key(resource)
+}
+
+/// Get the struct name for a CRUD resource
+fn get_crud_struct_name(resource: &str) -> Option<String> {
+    let tables = get_crud_db_tables().lock().unwrap();
+    tables.get(resource).cloned()
+}
+
+/// Extract resource name from CRUD path.
+/// Examples:
+///   "/api/posts" -> "posts"
+///   "/api/posts/1" -> "posts"
+///   "/posts" -> "posts"
+///   "/posts/1" -> "posts"
+fn extract_crud_resource(path: &str) -> String {
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+
+    // For paths like /api/posts or /api/posts/1, find the resource name
+    // The resource is the segment before any numeric ID
+    // Look for the last non-numeric segment (excluding common prefixes like "api")
+
+    for seg in segments.iter().rev() {
+        let s = *seg;
+        // Skip numeric IDs
+        if s.parse::<i64>().is_ok() {
+            continue;
+        }
+        // Skip common API prefixes and empty segments
+        if s == "api" || s == "v1" || s == "v2" || s.is_empty() {
+            continue;
+        }
+        return s.to_string();
+    }
+
+    // Fallback: return empty string
+    String::new()
+}
+
 /// Create CRUD handler that returns all items
 fn make_crud_list_handler(resource: String) -> DooHandlerFn {
     // Since we can't capture, we'll use a single handler that looks up resource from path
@@ -939,14 +1764,27 @@ extern "C" fn crud_list_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     let path = unsafe { c_to_string((*req).path) };
-    // Extract resource name from path (e.g., "/tasks" -> "tasks")
-    let resource = path
-        .trim_start_matches('/')
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .to_string();
+    // Extract resource name from path (e.g., "/api/posts" -> "posts")
+    let resource = extract_crud_resource(&path);
 
+    // Try database-backed CRUD first
+    if is_db_backed_crud(&resource) {
+        let sql = format!("SELECT * FROM {}", resource);
+        match execute_db_query(&sql) {
+            Ok(json) => {
+                let items: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
+                let response = serde_json::to_string(&serde_json::json!({ "data": items }))
+                    .unwrap_or_else(|_| r#"{"data":[]}"#.to_string());
+                return make_ok_json(&response);
+            }
+            Err(e) => {
+                eprintln!("[CRUD] DB list error: {}", e);
+                return make_err_http(500, &format!("Query failed: {}", e));
+            }
+        }
+    }
+
+    // Fallback to in-memory store
     let stores = get_crud_stores().lock().unwrap();
     let items = match stores.get(&resource) {
         Some(store) => store.items.clone(),
@@ -966,18 +1804,24 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
     let path = unsafe { c_to_string((*req).path) };
     let body = unsafe { c_to_string((*req).body) };
 
-    // Extract resource name from path
-    let resource = path
-        .trim_start_matches('/')
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .to_string();
+    // Debug: Print received body to help diagnose issues
+    eprintln!(
+        "[CRUD] POST {} - body length: {}, body: {:?}",
+        path,
+        body.len(),
+        &body[..body.len().min(200)]
+    );
+
+    // Extract resource name from path (e.g., "/api/posts" -> "posts")
+    let resource = extract_crud_resource(&path);
 
     // Parse body JSON
-    let mut item: serde_json::Value = match serde_json::from_str(&body) {
+    let item: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
-        Err(_) => return make_err_http(400, "Invalid JSON body"),
+        Err(e) => {
+            eprintln!("[CRUD] JSON parse error: {:?}", e);
+            return make_err_http(400, "Invalid JSON body");
+        }
     };
 
     // Validate fields using centralized struct/enum metadata
@@ -985,6 +1829,64 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
         return make_err_http(422, &validation_error);
     }
 
+    // Try database-backed CRUD first
+    if is_db_backed_crud(&resource) {
+        if let Some(obj) = item.as_object() {
+            // Build INSERT statement from struct metadata
+            let struct_name = get_crud_struct_name(&resource);
+            if let Some(meta) = struct_name.and_then(|n| get_struct_metadata(&n)) {
+                let mut columns = Vec::new();
+                let mut values = Vec::new();
+                let mut placeholders = Vec::new();
+                let mut idx = 1;
+
+                for field in &meta.fields {
+                    // Skip id field (auto-generated)
+                    if field.name.to_lowercase() == "id" {
+                        continue;
+                    }
+                    let col_name = to_snake_case(&field.name);
+                    if let Some(val) = obj.get(&field.name).or_else(|| obj.get(&col_name)) {
+                        columns.push(col_name);
+                        placeholders.push(format!("${}", idx));
+                        values.push(val.clone());
+                        idx += 1;
+                    }
+                }
+
+                if !columns.is_empty() {
+                    let sql = format!(
+                        "INSERT INTO {} ({}) VALUES ({}) RETURNING *",
+                        resource,
+                        columns.join(", "),
+                        placeholders.join(", ")
+                    );
+                    eprintln!("[CRUD] DB INSERT SQL: {}", sql);
+                    eprintln!("[CRUD] DB INSERT values: {:?}", values);
+
+                    // Execute with parameters
+                    match execute_db_insert(&sql, &values) {
+                        Ok(json) => {
+                            let items: Vec<serde_json::Value> =
+                                serde_json::from_str(&json).unwrap_or_default();
+                            let created = items.into_iter().next().unwrap_or(serde_json::json!({}));
+                            let response =
+                                serde_json::to_string(&serde_json::json!({ "data": created }))
+                                    .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
+                            return make_ok_json(&response);
+                        }
+                        Err(e) => {
+                            eprintln!("[CRUD] DB insert error: {}", e);
+                            return make_err_http(500, &format!("Insert failed: {}", e));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to in-memory store
+    let mut item = item;
     let mut stores = get_crud_stores().lock().unwrap();
     let store = stores
         .entry(resource.clone())
@@ -1008,23 +1910,51 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     let path = unsafe { c_to_string((*req).path) };
-    let params = unsafe { (*req).params as *const HashMap<String, String> };
-
-    // Extract resource and ID from path
-    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    let resource = parts.first().unwrap_or(&"").to_string();
-
-    let id: i64 = if !params.is_null() {
-        unsafe {
-            (*params)
-                .get("id")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0)
-        }
+    // params is now JSON string
+    let params_json = unsafe { (*req).params as *const c_char };
+    let params: serde_json::Value = if !params_json.is_null() {
+        let s = unsafe { std::ffi::CStr::from_ptr(params_json).to_string_lossy() };
+        serde_json::from_str(&s).unwrap_or_default()
     } else {
-        parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
+        serde_json::json!({})
     };
 
+    // Extract resource from path (e.g., "/api/posts/1" -> "posts")
+    let resource = extract_crud_resource(&path);
+
+    // Extract ID from params or path
+    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let id: i64 = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            // Get last numeric segment from path
+            parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0)
+        });
+
+    // Try database-backed CRUD first
+    if is_db_backed_crud(&resource) {
+        let sql = format!("SELECT * FROM {} WHERE id = $1", resource);
+        match execute_db_query_by_id(&sql, id as i32) {
+            Ok(json) => {
+                let items: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
+                if let Some(item) = items.into_iter().next() {
+                    let response = serde_json::to_string(&serde_json::json!({ "data": item }))
+                        .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
+                    return make_ok_json(&response);
+                } else {
+                    return make_err_http(404, "Resource not found");
+                }
+            }
+            Err(e) => {
+                eprintln!("[CRUD] DB get error: {}", e);
+                return make_err_http(500, &format!("Query failed: {}", e));
+            }
+        }
+    }
+
+    // Fallback to in-memory store
     let stores = get_crud_stores().lock().unwrap();
     let item = stores
         .get(&resource)
@@ -1053,27 +1983,89 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
 
     let path = unsafe { c_to_string((*req).path) };
     let body = unsafe { c_to_string((*req).body) };
-    let params = unsafe { (*req).params as *const HashMap<String, String> };
+    // params is now JSON string
+    let params_json = unsafe { (*req).params as *const c_char };
+    let params: serde_json::Value = if !params_json.is_null() {
+        let s = unsafe { std::ffi::CStr::from_ptr(params_json).to_string_lossy() };
+        serde_json::from_str(&s).unwrap_or_default()
+    } else {
+        serde_json::json!({})
+    };
+
+    // Extract resource from path (e.g., "/api/posts/1" -> "posts")
+    let resource = extract_crud_resource(&path);
 
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    let resource = parts.first().unwrap_or(&"").to_string();
-
-    let id: i64 = if !params.is_null() {
-        unsafe {
-            (*params)
-                .get("id")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0)
-        }
-    } else {
-        parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
-    };
+    let id: i64 = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            // Get last numeric segment from path
+            parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0)
+        });
 
     let updates: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(_) => return make_err_http(400, "Invalid JSON body"),
     };
 
+    // Try database-backed CRUD first
+    if is_db_backed_crud(&resource) {
+        if let Some(obj) = updates.as_object() {
+            let struct_name = get_crud_struct_name(&resource);
+            if let Some(meta) = struct_name.and_then(|n| get_struct_metadata(&n)) {
+                let mut set_clauses = Vec::new();
+                let mut values: Vec<serde_json::Value> = Vec::new();
+                let mut idx = 1;
+
+                for field in &meta.fields {
+                    if field.name.to_lowercase() == "id" {
+                        continue;
+                    }
+                    let col_name = to_snake_case(&field.name);
+                    if let Some(val) = obj.get(&field.name).or_else(|| obj.get(&col_name)) {
+                        set_clauses.push(format!("{} = ${}", col_name, idx));
+                        values.push(val.clone());
+                        idx += 1;
+                    }
+                }
+
+                if !set_clauses.is_empty() {
+                    // Add id as the last parameter
+                    values.push(serde_json::json!(id));
+                    let sql = format!(
+                        "UPDATE {} SET {} WHERE id = ${} RETURNING *",
+                        resource,
+                        set_clauses.join(", "),
+                        idx
+                    );
+                    eprintln!("[CRUD] DB UPDATE SQL: {}", sql);
+
+                    match execute_db_insert(&sql, &values) {
+                        Ok(json) => {
+                            let items: Vec<serde_json::Value> =
+                                serde_json::from_str(&json).unwrap_or_default();
+                            if let Some(updated) = items.into_iter().next() {
+                                let response =
+                                    serde_json::to_string(&serde_json::json!({ "data": updated }))
+                                        .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
+                                return make_ok_json(&response);
+                            } else {
+                                return make_err_http(404, "Resource not found");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[CRUD] DB update error: {}", e);
+                            return make_err_http(500, &format!("Update failed: {}", e));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to in-memory store
     let mut stores = get_crud_stores().lock().unwrap();
     let item = stores.get_mut(&resource).and_then(|store| {
         store
@@ -1103,22 +2095,47 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     let path = unsafe { c_to_string((*req).path) };
-    let params = unsafe { (*req).params as *const HashMap<String, String> };
-
-    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    let resource = parts.first().unwrap_or(&"").to_string();
-
-    let id: i64 = if !params.is_null() {
-        unsafe {
-            (*params)
-                .get("id")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0)
-        }
+    // params is now JSON string
+    let params_json = unsafe { (*req).params as *const c_char };
+    let params: serde_json::Value = if !params_json.is_null() {
+        let s = unsafe { std::ffi::CStr::from_ptr(params_json).to_string_lossy() };
+        serde_json::from_str(&s).unwrap_or_default()
     } else {
-        parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
+        serde_json::json!({})
     };
 
+    // Extract resource from path (e.g., "/api/posts/1" -> "posts")
+    let resource = extract_crud_resource(&path);
+
+    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let id: i64 = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            // Get last numeric segment from path
+            parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0)
+        });
+
+    // Try database-backed CRUD first
+    if is_db_backed_crud(&resource) {
+        let sql = format!("DELETE FROM {} WHERE id = $1", resource);
+        match execute_db_delete_by_id(&sql, id as i32) {
+            Ok(affected) => {
+                if affected > 0 {
+                    return make_ok_json(r#"{"data":{"deleted":true}}"#);
+                } else {
+                    return make_err_http(404, "Resource not found");
+                }
+            }
+            Err(e) => {
+                eprintln!("[CRUD] DB delete error: {}", e);
+                return make_err_http(500, &format!("Delete failed: {}", e));
+            }
+        }
+    }
+
+    // Fallback to in-memory store
     let mut stores = get_crud_stores().lock().unwrap();
     let removed = stores
         .get_mut(&resource)
@@ -1140,6 +2157,7 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
 
 /// Set up CRUD routes for a resource struct.
 /// Creates GET, POST, PUT, DELETE endpoints for the resource.
+/// If database is connected, creates the table and uses DB-backed CRUD.
 #[no_mangle]
 pub extern "C" fn doo_http_crud(
     _server: *const c_void,
@@ -1155,8 +2173,51 @@ pub extern "C" fn doo_http_crud(
         base_str, struct_name
     );
 
-    // Initialize store for this resource
-    let resource_key = base_str.trim_start_matches('/').to_string();
+    // Extract resource name (e.g., "posts" from "/api/posts")
+    let resource_key = extract_crud_resource(&base_str);
+    eprintln!("[HTTP] CRUD resource key: {}", resource_key);
+
+    // Try to create table in database if connected
+    if is_pool_initialized() {
+        eprintln!(
+            "[HTTP] Database connected, setting up DB-backed CRUD for {}",
+            resource_key
+        );
+
+        // Get struct metadata to generate CREATE TABLE
+        if let Some(metadata) = get_struct_metadata(&struct_name) {
+            let create_sql = generate_create_table_sql(&resource_key, &metadata);
+            eprintln!("[HTTP] CREATE TABLE SQL:\n{}", create_sql);
+
+            match execute_db_statement(&create_sql) {
+                Ok(_) => {
+                    eprintln!(
+                        "[HTTP] Table '{}' created/verified successfully",
+                        resource_key
+                    );
+                    // Register this resource as DB-backed
+                    let mut tables = get_crud_db_tables().lock().unwrap();
+                    tables.insert(resource_key.clone(), struct_name.clone());
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[HTTP] Warning: Failed to create table '{}': {}",
+                        resource_key, e
+                    );
+                    // Fall back to in-memory store
+                }
+            }
+        } else {
+            eprintln!(
+                "[HTTP] Warning: No metadata found for struct '{}', using in-memory store",
+                struct_name
+            );
+        }
+    } else {
+        eprintln!("[HTTP] No database connection, using in-memory CRUD store");
+    }
+
+    // Initialize in-memory store as fallback
     {
         let mut stores = get_crud_stores().lock().unwrap();
         stores
@@ -1432,15 +2493,25 @@ pub extern "C" fn doo_http_req_param(req: *const DooRequest, key: *const c_char)
         return std::ptr::null();
     }
     unsafe {
-        let params_map = (*req).params as *const HashMap<String, String>;
-        if params_map.is_null() {
+        // params is now stored as a JSON string pointer, not HashMap
+        let params_json = (*req).params as *const c_char;
+        if params_json.is_null() {
             return std::ptr::null();
         }
         let key_str = c_to_string(key);
-        (*params_map)
-            .get(&key_str)
-            .map(|v| string_to_c(v))
-            .unwrap_or(std::ptr::null())
+        let json_str = match std::ffi::CStr::from_ptr(params_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null(),
+        };
+        // Parse JSON and extract field
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+            if let Some(v) = value.get(&key_str) {
+                if let Some(s) = v.as_str() {
+                    return string_to_c(s);
+                }
+            }
+        }
+        std::ptr::null()
     }
 }
 
@@ -1755,10 +2826,21 @@ pub extern "C" fn doohttp_populate_struct_from_request(
     let mut source_data: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
 
     // 1. Start with path params (highest priority for path-based fields like userId)
+    // NOTE: params is stored as a JSON string (e.g., '{"authorId":"1"}') by the server,
+    // NOT as a HashMap pointer. This is consistent with how codegen reads it via doo_json_get_field.
     if !request.params.is_null() {
-        let params_map = unsafe { &*(request.params as *const HashMap<String, String>) };
-        for (k, v) in params_map.iter() {
-            source_data.insert(k.clone(), coerce_string_to_typed_value(k, v, &metadata));
+        let params_json_ptr = request.params as *const c_char;
+        let params_json_str = c_to_string(params_json_ptr);
+        if !params_json_str.is_empty() {
+            if let Ok(serde_json::Value::Object(params_obj)) =
+                serde_json::from_str::<serde_json::Value>(&params_json_str)
+            {
+                for (k, v) in params_obj {
+                    // Path params values are strings in JSON, coerce them to typed values
+                    let value_str = v.as_str().unwrap_or_default();
+                    source_data.insert(k.clone(), coerce_string_to_typed_value(&k, value_str, &metadata));
+                }
+            }
         }
     }
 
@@ -2353,6 +3435,19 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         return string_to_c("null");
     }
 
+    // CRITICAL FIX: When return type is an array (e.g., [Post]) but the actual value
+    // is a JSON string from db.raw(), detect this and pass through directly.
+    // This happens when user writes: let result: [Post] = db.raw("SELECT ...")?;
+    // The db.raw() returns a JSON string, not an in-memory struct array.
+    if return_type.starts_with('[') && return_type.ends_with(']') {
+        // Try to read as a C string first - if it's valid JSON, pass through
+        if let Some(json_str) = try_read_as_json_string(struct_ptr) {
+            // It's already a valid JSON string, return it directly
+            return string_to_c(&json_str);
+        }
+        // Otherwise, fall through to struct serialization (for actual in-memory arrays)
+    }
+
     // Serialize struct recursively
     let json = serialize_struct_recursive(
         struct_ptr as *const u8,
@@ -2361,6 +3456,40 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
     );
 
     string_to_c(&json.to_string())
+}
+
+/// Try to read a pointer as a JSON string. Returns Some(json) if successful, None otherwise.
+/// This is used to detect when db.raw() returns a JSON string that should be passed through.
+fn try_read_as_json_string(ptr: *const c_void) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    unsafe {
+        // First, check if this looks like a valid C string pointer
+        // A valid JSON array from db.raw() starts with '['
+        let byte_ptr = ptr as *const u8;
+
+        // Safety check: try to read the first byte
+        // If the pointer is to a struct with header, the first bytes would be
+        // length/capacity (integers), not a printable character like '['
+        let first_byte = *byte_ptr;
+
+        // JSON arrays start with '[', JSON objects start with '{'
+        // These are the only valid starts for db.raw() results
+        if first_byte == b'[' || first_byte == b'{' {
+            // This looks like it could be a JSON string, try to read it
+            let c_str = std::ffi::CStr::from_ptr(ptr as *const c_char);
+            if let Ok(s) = c_str.to_str() {
+                // Validate that it's actually valid JSON
+                if serde_json::from_str::<serde_json::Value>(s).is_ok() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Recursively serialize a struct to JSON value.
@@ -2571,14 +3700,19 @@ fn make_ok_void() -> *mut DooResult {
 }
 
 fn make_ok_json(json: &str) -> *mut DooResult {
+    eprintln!("[FFI] make_ok_json called with len={}", json.len());
     unsafe {
         let ptr = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
         if ptr.is_null() {
+            eprintln!("[FFI] make_ok_json: malloc failed!");
             return std::ptr::null_mut();
         }
         (*ptr).tag = 0;
-        (*ptr).value = string_to_c(json) as *mut c_void;
+        let value_ptr = string_to_c(json) as *mut c_void;
+        eprintln!("[FFI] make_ok_json: value_ptr={:?}", value_ptr);
+        (*ptr).value = value_ptr;
         (*ptr).owner = owner::FFI;
+        eprintln!("[FFI] make_ok_json: returning DooResult at {:?}", ptr);
         ptr
     }
 }

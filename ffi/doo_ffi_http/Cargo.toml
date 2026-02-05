@@ -21,3 +21,5 @@ lazy_static = "1.4"
 doo_ffi_core = { path = "../doo_ffi_core" }
 bcrypt = "0.18"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+libloading = "0.8"
+base64 = "0.22"
