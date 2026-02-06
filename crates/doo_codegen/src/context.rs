@@ -146,6 +146,19 @@ pub struct CodegenContext<'ctx> {
     /// FFI symbols: function_name -> (library, symbol).
     /// Tracks FFI functions so wrapper generator can call correct symbol.
     pub ffi_symbols: FxHashMap<String, (String, String)>,
+
+    // ========================================================================
+    // Array Element Type Tracking (for enum serialization in FFI calls)
+    // ========================================================================
+    /// Array element types: temp_name -> element TypeId.
+    /// When an array is created, tracks the element type so FFI calls
+    /// can serialize enum arrays to JSON strings.
+    pub array_element_types: FxHashMap<String, TypeId>,
+
+    /// Array element temps: array_temp_name -> list of element temp names.
+    /// When an array is created, tracks the individual element temps so
+    /// mixed-type arrays can be serialized by checking each element.
+    pub array_element_temps: FxHashMap<String, Vec<String>>,
 }
 
 impl<'ctx> CodegenContext<'ctx> {
@@ -181,6 +194,8 @@ impl<'ctx> CodegenContext<'ctx> {
             borrow_origins: FxHashMap::default(),
             is_closure_function: false,
             ffi_symbols: FxHashMap::default(),
+            array_element_types: FxHashMap::default(),
+            array_element_temps: FxHashMap::default(),
         }
     }
 
@@ -507,7 +522,33 @@ impl<'ctx> CodegenContext<'ctx> {
                 // This prevents get_value from returning an old SSA value from a different block
                 self.temps.remove(&name);
             } else {
-                // Type mismatch - store as temp (shadows the local for this scope)
+                // Type mismatch - try implicit conversion before falling back to temp
+                let ptr = *ptr;
+                let alloca_ty = *alloca_ty;
+
+                // ptr -> int conversion: reverses the inttoptr done by UnwrapOk
+                // This handles cases like `let total: Int = db.rawWithParams(...)?;`
+                // where the FFI result was originally an i64, converted to ptr by UnwrapOk,
+                // and now needs to be stored back as an integer.
+                if alloca_ty.is_int_type() && value.is_pointer_value() {
+                    if let Ok(converted) = self.builder.build_ptr_to_int(
+                        value.into_pointer_value(),
+                        alloca_ty.into_int_type(),
+                        &format!("{}_ptrtoint", name),
+                    ) {
+                        let _ = self.builder.build_store(ptr, converted);
+                        self.temps.remove(&name);
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!(
+                                "[CODEGEN] set_local '{}': converted ptr->int via ptrtoint",
+                                name
+                            );
+                        }
+                        return;
+                    }
+                }
+
+                // No conversion possible - store as temp (shadows the local for this scope)
                 // get_value checks temps first, so this will be found before the alloca
                 if std::env::var("DOO_DEBUG").is_ok() {
                     eprintln!(

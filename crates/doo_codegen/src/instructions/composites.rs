@@ -278,6 +278,15 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                 // Nested struct - load as pointer
                                                 ctx.ptr_type().into()
                                             }
+                                            Some(t)
+                                                if matches!(
+                                                    ctx.get_type_kind(t),
+                                                    Some(TypeKind::Enum { .. })
+                                                ) =>
+                                            {
+                                                // Enum field - load as enum struct type { i32, ptr }
+                                                ctx.get_llvm_type(t)
+                                            }
                                             _ => ctx.i64_type().into(), // Int and default
                                         };
 

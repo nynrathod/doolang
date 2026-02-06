@@ -236,6 +236,33 @@ fn emit_binop<'ctx>(
         return Some(result.into());
     }
 
+    // Handle enum comparison (both struct values - compare tags at index 0)
+    if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+        && lhs.is_struct_value()
+        && rhs.is_struct_value()
+    {
+        let lhs_tag = ctx
+            .builder
+            .build_extract_value(lhs.into_struct_value(), 0, "lhs_tag")
+            .ok()?
+            .into_int_value();
+        let rhs_tag = ctx
+            .builder
+            .build_extract_value(rhs.into_struct_value(), 0, "rhs_tag")
+            .ok()?
+            .into_int_value();
+        let result = if matches!(op, BinaryOp::Eq) {
+            ctx.builder
+                .build_int_compare(IntPredicate::EQ, lhs_tag, rhs_tag, "enum_eq")
+                .ok()?
+        } else {
+            ctx.builder
+                .build_int_compare(IntPredicate::NE, lhs_tag, rhs_tag, "enum_ne")
+                .ok()?
+        };
+        return Some(result.into());
+    }
+
     if lhs.is_int_value() && rhs.is_int_value() {
         let lhs_int = lhs.into_int_value();
         let rhs_int = rhs.into_int_value();

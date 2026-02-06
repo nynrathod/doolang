@@ -258,6 +258,10 @@ fn emit_enum_create<'ctx>(
     // Store in temps
     ctx.set_temp(dest, enum_val);
 
+    // Track enum type for this temp (used for enum-to-string conversion in FFI calls)
+    ctx.temp_struct_types
+        .insert(dest.to_string(), enum_name.to_string());
+
     Some(enum_val)
 }
 

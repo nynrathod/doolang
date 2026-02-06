@@ -195,7 +195,15 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                     .build_pointer_cast(data_ptr, elem_ptr_ty, "arr_data_cast")
                     .ok()?;
 
+                // Track element temp names for mixed-type array serialization
+                let mut element_temp_names = Vec::new();
+                
                 for (i, elem) in elements.iter().enumerate() {
+                    // Extract temp name for tracking
+                    if let MirOperand::Temp(name) = elem {
+                        element_temp_names.push(name.clone());
+                    }
+                    
                     let Some(val) = operand_to_value(ctx, elem) else {
                         continue;
                     };
@@ -209,6 +217,15 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 }
 
                 ctx.set_temp(dest, data_ptr.into());
+                
+                // Track array element type for enum serialization in FFI calls
+                ctx.array_element_types.insert(dest.to_string(), *elem_type);
+                
+                // Track element temp names for mixed-type arrays
+                if !element_temp_names.is_empty() {
+                    ctx.array_element_temps.insert(dest.to_string(), element_temp_names);
+                }
+                
                 Some(data_ptr.into())
             }
 

@@ -68,7 +68,13 @@ impl Parser {
 
         while !self.is_at_end() {
             match self.parse_item() {
-                Ok(item) => items.push(item),
+                Ok(item) => {
+                    items.push(item);
+                    // Consume optional semicolon after top-level items (imports, statements, etc.)
+                    while self.check(TokenKind::Semi) {
+                        self.advance();
+                    }
+                }
                 Err(e) => {
                     self.errors.push(e);
                     self.synchronize();

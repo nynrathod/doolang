@@ -207,6 +207,7 @@ pub fn visibility_from_flag(is_public: bool) -> Visibility {
 // Field Visibility Checker (HIR-level)
 // ============================================================================
 
+use doo_core::constants::ffi_names::is_self_returning_method;
 use doo_core::types::{TypeKind, TypeRegistry};
 use doo_hir::{HirExprKind, HirItem, HirProgram, HirStmtKind};
 use std::collections::HashSet;
@@ -419,6 +420,82 @@ impl<'a> FieldVisibilityChecker<'a> {
                     eprintln!("[VISIBILITY] Looking through Clone/Move wrapper");
                 }
                 self.get_expr_struct_type(inner)
+            }
+            // Try expression - unwrap the inner Result type
+            HirExprKind::Try(inner) => {
+                if std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!("[VISIBILITY] Looking through Try wrapper");
+                }
+                // First, try to get struct type from the Try expression's type_id (the unwrapped ok type)
+                if let Some(type_id) = expr.type_id {
+                    if let Some(info) = self.type_registry.get(type_id) {
+                        if let TypeKind::Struct { name, .. } = &info.kind {
+                            return Some(name.clone());
+                        }
+                    }
+                }
+                // Fallback: if inner has type_id that's a Result, extract the ok type
+                if let Some(inner_type_id) = inner.type_id {
+                    if let Some(info) = self.type_registry.get(inner_type_id) {
+                        if let TypeKind::Result { ok, .. } = &info.kind {
+                            if let Some(ok_info) = self.type_registry.get(*ok) {
+                                if let TypeKind::Struct { name, .. } = &ok_info.kind {
+                                    return Some(name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Last resort: recurse into inner (for cases like nested Try or method chains)
+                self.get_expr_struct_type(inner)
+            }
+            // Method call - infer struct type from receiver and method pattern
+            HirExprKind::MethodCall {
+                receiver, method, ..
+            } => {
+                if std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!("[VISIBILITY] Inferring struct type from MethodCall .{}, receiver_kind={:?}", 
+                        method, std::mem::discriminant(&receiver.kind));
+                }
+                // First check the expression's type_id directly
+                if let Some(type_id) = expr.type_id {
+                    if let Some(info) = self.type_registry.get(type_id) {
+                        if let TypeKind::Struct { name, .. } = &info.kind {
+                            return Some(name.clone());
+                        }
+                        // Handle Result type (for failable methods)
+                        if let TypeKind::Result { ok, .. } = &info.kind {
+                            if let Some(ok_info) = self.type_registry.get(*ok) {
+                                if let TypeKind::Struct { name, .. } = &ok_info.kind {
+                                    return Some(name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                // For self-returning patterns: if receiver is Global with struct name
+                // and method is a known self-returning pattern, return receiver name
+                // Uses centralized list from doo_core::constants::ffi_names
+                if let HirExprKind::Global { name: recv_name } = &receiver.kind {
+                    if std::env::var("DOO_DEBUG").is_ok() {
+                        eprintln!("[VISIBILITY] MethodCall receiver is Global({}), imported_structs contains={}", 
+                            recv_name, self.imported_structs.contains(recv_name));
+                    }
+                    // Check if receiver name is an imported struct
+                    if self.imported_structs.contains(recv_name) {
+                        // Check against centralized self-returning method patterns
+                        if is_self_returning_method(method) {
+                            if std::env::var("DOO_DEBUG").is_ok() {
+                                eprintln!(
+                                    "[VISIBILITY] MethodCall {}.{}() returns {}",
+                                    recv_name, method, recv_name
+                                );
+                            }
+                            return Some(recv_name.clone());
+                        }
+                    }
+                }
+                None
             }
             _ => {
                 if std::env::var("DOO_DEBUG").is_ok() {

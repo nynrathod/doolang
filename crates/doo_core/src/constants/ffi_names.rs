@@ -7,7 +7,7 @@
 //! ```
 //! use doo_core::constants::ffi_names;
 //! let malloc_fn = module.get_function(ffi_names::MALLOC)?;
-//! 
+//!
 //! // Check if a name is a built-in module
 //! if ffi_names::is_builtin_module(name) { ... }
 //! ```
@@ -76,7 +76,7 @@ pub const PUTCHAR: &str = "putchar";
 pub const PUTS: &str = "puts";
 
 // ============================================================================
-// Doo Core Runtime Functions  
+// Doo Core Runtime Functions
 // ============================================================================
 
 pub const DOO_ALLOC: &str = "doo_alloc";
@@ -182,6 +182,7 @@ pub const DOO_DB_RAW_WITH_PARAMS: &str = "doo_db_raw_with_params";
 pub const DOO_DB_QUERY: &str = "doo_db_query";
 pub const DOO_DB_EXISTS: &str = "doo_db_exists";
 pub const DOO_DB_RESULT_FREE: &str = "doo_db_result_free";
+pub const DOO_DB_SERIALIZE_ENUM_ARRAY: &str = "doo_db_serialize_enum_array";
 
 // ============================================================================
 // Doo Auth FFI (doo_ffi_auth)
@@ -267,3 +268,52 @@ pub const DOO_MAP_FREE: &str = "doo_map_free";
 
 pub const DOO_STRING_CREATE: &str = "doo_string_create";
 pub const DOO_STRING_FREE: &str = "doo_string_free";
+
+// ============================================================================
+// Self-Returning Method Names - Single Source of Truth
+// ============================================================================
+// These static methods on struct types return the struct type itself.
+// Used by visibility checker to infer types for expressions like:
+//   let db = Database::get()?;    // Database.get() -> Database
+//   let app = Server::new(":3000"); // Server.new() -> Server
+//
+// Patterns:
+// - Constructor methods: create new instances of the type
+// - Accessor methods: get existing instances (singletons, globals, pools)
+// - Connection methods: establish connections that return typed handles
+
+/// Constructor method names that create new instances of the receiver type
+pub const SELF_RETURNING_CONSTRUCTORS: &[&str] = &[
+    "new",     // Type.new() -> Type (most common)
+    "create",  // Type.create() -> Type
+    "build",   // Type.build() -> Type (builder pattern)
+    "default", // Type.default() -> Type (default instance)
+    "init",    // Type.init() -> Type
+];
+
+/// Accessor method names that return existing instances of the receiver type
+pub const SELF_RETURNING_ACCESSORS: &[&str] = &[
+    "get",       // Type.get() -> Type (global/singleton access)
+    "instance",  // Type.instance() -> Type (singleton)
+    "global",    // Type.global() -> Type
+    "singleton", // Type.singleton() -> Type
+    "shared",    // Type.shared() -> Type (shared instance)
+];
+
+/// Connection method names that establish connections returning typed handles
+pub const SELF_RETURNING_CONNECTORS: &[&str] = &[
+    "connect",  // Database.connect() -> Database
+    "postgres", // Database.postgres() -> Database
+    "mysql",    // Database.mysql() -> Database
+    "sqlite",   // Database.sqlite() -> Database
+    "open",     // File.open() -> File
+];
+
+/// Check if a method name is a self-returning pattern
+/// Returns true if the method likely returns an instance of its receiver type
+#[inline]
+pub fn is_self_returning_method(method: &str) -> bool {
+    SELF_RETURNING_CONSTRUCTORS.contains(&method)
+        || SELF_RETURNING_ACCESSORS.contains(&method)
+        || SELF_RETURNING_CONNECTORS.contains(&method)
+}

@@ -264,7 +264,10 @@ pub fn resolve_imports(
 
     // Build import requests: module_key -> set of (symbol_name, optional_alias)
     let mut std_import_requests: HashMap<String, HashMap<String, Option<String>>> = HashMap::new();
-    let mut local_import_requests: Vec<(&ImportDecl, PathBuf)> = Vec::new();
+    // (import_decl, module_path, path_symbols) - path_symbols are symbols extracted
+    // from the import path when the last segment is a symbol name, not a file.
+    // e.g., `import Models::Task;` → module=Models.doo, path_symbols=["Task"]
+    let mut local_import_requests: Vec<(&ImportDecl, PathBuf, Vec<String>)> = Vec::new();
 
     for import in &imports {
         if import.path.is_empty() {
@@ -321,29 +324,60 @@ pub fn resolve_imports(
                 }
             }
         } else {
-            // Local module import (e.g., import defs::types::{PublicUser})
-            // Build path: defs/types.doo relative to project_root
+            // Local module import
+            // Supports two patterns:
+            //   1. Directory-based: `import defs::types::{PublicUser}` → defs/types.doo
+            //   2. Symbol-from-file: `import Models::Task;` → Models.doo, symbol=Task
+            //
+            // Resolution order:
+            //   a) Try full path as file (all segments form the file path)
+            //   b) If not found, treat last segment as symbol name, rest as module path
             let mut module_path = project_root.to_path_buf();
+            let mut path_symbols: Vec<String> = Vec::new();
 
-            // path[0] = "defs", path[1] = "types", items = [PublicUser, CreateUser]
-            // Build path up to but not including the last element (which is the file)
-            for i in 0..import.path.len() - 1 {
-                module_path.push(&import.path[i]);
+            // Build file path from all path segments
+            for segment in &import.path {
+                module_path.push(segment);
             }
-
-            // Last path element is the file name
-            module_path.push(&import.path[import.path.len() - 1]);
             module_path.set_extension("doo");
 
             if module_path.exists() {
+                // Full path exists as a file (e.g., defs/types.doo)
                 if debug {
                     eprintln!("[LOADER] Found local module: {}", module_path.display());
                 }
-                local_import_requests.push((import, module_path));
-            } else {
-                if debug {
-                    eprintln!("[LOADER] Local module not found: {}", module_path.display());
+                local_import_requests.push((import, module_path, path_symbols));
+            } else if import.path.len() >= 2 {
+                // Full path not found. Try treating last segment(s) as symbol names.
+                // e.g., `import Models::Task;` → Models.doo + symbol "Task"
+                let mut alt_path = project_root.to_path_buf();
+                for i in 0..import.path.len() - 1 {
+                    alt_path.push(&import.path[i]);
                 }
+                alt_path.set_extension("doo");
+
+                if alt_path.exists() {
+                    let symbol = import.path.last().unwrap().clone();
+                    if debug {
+                        eprintln!(
+                            "[LOADER] Found local module: {} (importing symbol: {})",
+                            alt_path.display(),
+                            symbol
+                        );
+                    }
+                    path_symbols.push(symbol);
+                    local_import_requests.push((import, alt_path, path_symbols));
+                } else if debug {
+                    eprintln!(
+                        "[LOADER] Local module not found: {}",
+                        module_path.display()
+                    );
+                }
+            } else if debug {
+                eprintln!(
+                    "[LOADER] Local module not found: {}",
+                    module_path.display()
+                );
             }
         }
     }
@@ -471,7 +505,7 @@ pub fn resolve_imports(
     }
 
     // Process local module imports
-    for (import, module_path) in &local_import_requests {
+    for (import, module_path, path_symbols) in &local_import_requests {
         // Read and parse the local module
         let source = match fs::read_to_string(module_path) {
             Ok(s) => s,
@@ -499,16 +533,17 @@ pub fn resolve_imports(
         };
 
         // Determine what symbols to import
-        let import_all = import.wildcard;
-        let requested_symbols: HashSet<String> = import
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                ImportItem::Symbol(name) => Some(name.clone()),
-                ImportItem::Alias { name, .. } => Some(name.clone()),
-                ImportItem::Wildcard => None,
-            })
-            .collect();
+        //
+        // For local modules, we always import ALL public items regardless of the
+        // specific symbols listed in the import declaration. This is because the Doo
+        // compiler uses a merge-based import system where imported items are placed
+        // into a single flat program. Imported functions often reference sibling types
+        // (enums, structs) from their source module, and those types must be present
+        // in the merged program for codegen to work correctly.
+        //
+        // The `{...}` syntax in imports documents usage intent but doesn't restrict
+        // what gets loaded — all public items from the local module are included.
+        let import_all = true;
 
         // First pass: collect struct/enum names that will be imported
         // so we can also import their associated functions
@@ -522,8 +557,7 @@ pub fn resolve_imports(
                         .next()
                         .map(|c| c.is_uppercase())
                         .unwrap_or(false);
-                    let is_wanted = import_all || requested_symbols.contains(&s.name);
-                    if is_public && is_wanted {
+                    if is_public {
                         imported_type_names.insert(s.name.clone());
                     }
                 }
@@ -534,8 +568,7 @@ pub fn resolve_imports(
                         .next()
                         .map(|c| c.is_uppercase())
                         .unwrap_or(false);
-                    let is_wanted = import_all || requested_symbols.contains(&e.name);
-                    if is_public && is_wanted {
+                    if is_public {
                         imported_type_names.insert(e.name.clone());
                     }
                 }
@@ -562,9 +595,7 @@ pub fn resolve_imports(
                         .map(|t| imported_type_names.contains(t))
                         .unwrap_or(false);
 
-                    let is_wanted = import_all
-                        || requested_symbols.contains(&f.name)
-                        || is_associated_with_imported_type;
+                    let is_wanted = is_public || is_associated_with_imported_type;
 
                     // Create a unique key for the function to avoid duplicates
                     let func_key = if let Some(ref assoc_type) = f.associated_type {
@@ -600,9 +631,8 @@ pub fn resolve_imports(
                         .next()
                         .map(|c| c.is_uppercase())
                         .unwrap_or(false);
-                    let is_wanted = import_all || requested_symbols.contains(&s.name);
 
-                    if is_public && is_wanted && !imported_names.contains(&s.name) {
+                    if is_public && !imported_names.contains(&s.name) {
                         if debug {
                             eprintln!("[LOADER]   Importing local struct: {}", s.name);
                         }
@@ -618,9 +648,8 @@ pub fn resolve_imports(
                         .next()
                         .map(|c| c.is_uppercase())
                         .unwrap_or(false);
-                    let is_wanted = import_all || requested_symbols.contains(&e.name);
 
-                    if is_public && is_wanted && !imported_names.contains(&e.name) {
+                    if is_public && !imported_names.contains(&e.name) {
                         if debug {
                             eprintln!("[LOADER]   Importing local enum: {}", e.name);
                         }

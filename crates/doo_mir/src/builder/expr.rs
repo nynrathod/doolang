@@ -599,9 +599,20 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 .and_then(|name| builder.get_ffi_info(name).cloned());
 
             if let Some(ffi) = ffi_info {
-                // FFI method call - emit FfiCall with receiver as first argument
-                let mut ffi_args = vec![recv.clone()];
-                ffi_args.extend(arg_ops);
+                // FFI method call - determine if receiver should be passed as argument
+                // Static calls (is_module_receiver=true): receiver is a type/module name, NOT passed
+                //   e.g. Database::get(), Server::new(":3000") - receiver is just for method lookup
+                // Instance calls (is_module_receiver=false): receiver IS the object, passed as first arg
+                //   e.g. app.get("/path", handler) - receiver is the actual server instance
+                let ffi_args = if is_module_receiver {
+                    // Static call: don't include module/type name as argument
+                    arg_ops
+                } else {
+                    // Instance call: include receiver as first argument
+                    let mut args = vec![recv.clone()];
+                    args.extend(arg_ops);
+                    args
+                };
                 
                 builder.emit(
                     MirInstrKind::FfiCall {
