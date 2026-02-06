@@ -8,7 +8,7 @@
 
 import std::Http::Server;
 import std::Database;
-import Models::Task;
+import Models::{Task, User};
 import Handlers::{GetDone, GetUrgent, GetPending, GetStats};
 
 fn main() {
