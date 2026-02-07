@@ -38,8 +38,14 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                 let val = operand_to_value(ctx, src)?;
                 // Propagate struct type association if present
                 if let Some(src_name) = get_operand_name(src) {
-                    if let Some(struct_name) = ctx.get_temp_struct_type(src_name).cloned() {
-                        ctx.set_temp_struct_type(dest, &struct_name);
+                    // First try temp_struct_type
+                    let struct_name = ctx.get_temp_struct_type(src_name).cloned().or_else(|| {
+                        // Fallback: try variable_type -> TypeKind::Struct
+                        ctx.get_variable_type(src_name)
+                            .and_then(|tid| ctx.get_struct_name_from_type_id(tid))
+                    });
+                    if let Some(name) = struct_name {
+                        ctx.set_temp_struct_type(dest, &name);
                     }
                 }
                 ctx.set_local(dest.clone(), val);
@@ -50,8 +56,14 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                 let val = operand_to_value(ctx, src)?;
                 // Propagate struct type association if present
                 if let Some(src_name) = get_operand_name(src) {
-                    if let Some(struct_name) = ctx.get_temp_struct_type(src_name).cloned() {
-                        ctx.set_temp_struct_type(dest, &struct_name);
+                    // First try temp_struct_type (most specific)
+                    let struct_name = ctx.get_temp_struct_type(src_name).cloned().or_else(|| {
+                        // Fallback: try inferring from variable_type
+                        ctx.get_variable_type(src_name)
+                            .and_then(|tid| ctx.get_struct_name_from_type_id(tid))
+                    });
+                    if let Some(name) = struct_name {
+                        ctx.set_temp_struct_type(dest, &name);
                     }
                 }
                 ctx.set_local(dest.clone(), val);
@@ -65,8 +77,14 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                 let val = operand_to_value(ctx, value)?;
                 // Propagate struct type association if present
                 if let Some(src_name) = get_operand_name(value) {
-                    if let Some(struct_name) = ctx.get_temp_struct_type(src_name).cloned() {
-                        ctx.set_temp_struct_type(dest, &struct_name);
+                    // First try temp_struct_type (most specific)
+                    let struct_name = ctx.get_temp_struct_type(src_name).cloned().or_else(|| {
+                        // Fallback: try inferring from variable_type
+                        ctx.get_variable_type(src_name)
+                            .and_then(|tid| ctx.get_struct_name_from_type_id(tid))
+                    });
+                    if let Some(name) = struct_name {
+                        ctx.set_temp_struct_type(dest, &name);
                     }
                     // Also propagate the variable type from source to dest
                     // This ensures that when a temp with known type is assigned to a local,
@@ -123,7 +141,17 @@ fn emit_deep_clone<'ctx>(
     let type_id = get_operand_name(src).and_then(|name| ctx.get_variable_type(name));
 
     // Get the TypeKind if we have a TypeId
-    let type_kind = type_id.and_then(|tid| ctx.get_type_kind(tid));
+    // CRITICAL: Resolve TypeRef to the actual type to handle imported types correctly
+    let type_kind = type_id.and_then(|tid| {
+        let kind = ctx.get_type_kind(tid)?;
+        // If it's a TypeRef, resolve it to the actual type
+        if let TypeKind::TypeRef { name } = &kind {
+            let resolved_tid = ctx.type_registry.lookup(name)?;
+            ctx.get_type_kind(resolved_tid)
+        } else {
+            Some(kind)
+        }
+    });
 
     // Also check if source has a struct type association to propagate
     let src_struct_type =
@@ -1118,7 +1146,10 @@ fn drop_struct<'ctx>(
                         }) => {
                             let nested_name = nested_name.clone();
                             // Extract just name and type for nested drop_struct
-                            let nested_pairs: Vec<_> = nested_fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                            let nested_pairs: Vec<_> = nested_fields
+                                .iter()
+                                .map(|(n, t, _)| (n.clone(), *t))
+                                .collect();
                             drop_struct(ctx, field_ptr_val, &nested_name, &nested_pairs);
                         }
                         Some(TypeKind::Array { element }) => {

@@ -96,11 +96,30 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             let elem_llvm = ctx.get_llvm_type(elem_ids[*index]);
                             (tuple_struct, elem_llvm)
                         } else {
-                            // Fallback: single i64
-                            (
-                                ctx.context.struct_type(&[ctx.i64_type().into()], false),
-                                ctx.i64_type().into(),
-                            )
+                            // CRITICAL FIX: When tuple_type is not available, use the dest variable's
+                            // known type from variable_types (populated from func.locals in builder.rs).
+                            // This is the single source of truth for variable types.
+                            // Fallback to i64 only if dest type is also unknown.
+                            let dest_type_id = ctx.get_variable_type(dest);
+                            let elem_llvm = match dest_type_id {
+                                Some(tid) => ctx.get_llvm_type(tid),
+                                None => ctx.i64_type().into(),
+                            };
+                            // For the tuple struct type without full type info, use ptr for each element
+                            // since most complex types (structs, arrays, etc.) are passed as pointers.
+                            // This is a conservative estimate that won't cause type mismatches.
+                            let num_elements = (*index + 1).max(2); // At least 2 elements
+                            let element_types: Vec<inkwell::types::BasicTypeEnum> =
+                                (0..num_elements).map(|i| {
+                                    if i == *index {
+                                        elem_llvm
+                                    } else {
+                                        // Other elements: use ptr as conservative default
+                                        ctx.ptr_type().into()
+                                    }
+                                }).collect();
+                            let tuple_struct = ctx.context.struct_type(&element_types, false);
+                            (tuple_struct, elem_llvm)
                         };
 
                         if let Ok(field_ptr) =
@@ -109,6 +128,47 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         {
                             if let Ok(val) = ctx.builder.build_load(elem_type, field_ptr, dest) {
                                 ctx.set_temp(dest, val);
+                                
+                                // CRITICAL: Propagate struct type association for nested struct access.
+                                // If dest is a struct type (or TypeRef to struct), register it so 
+                                // FieldGet/FieldSet work correctly. Must resolve TypeRef to get actual struct name.
+                                if let Some(tid) = ctx.get_variable_type(dest) {
+                                    if let Some(kind) = ctx.get_type_kind(tid) {
+                                        match kind {
+                                            TypeKind::Struct { name, .. } => {
+                                                ctx.set_temp_struct_type(dest, &name);
+                                            }
+                                            // CRITICAL: Resolve TypeRef to the actual struct type
+                                            TypeKind::TypeRef { name: ref_name } => {
+                                                if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
+                                                    if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(resolved_tid) {
+                                                        ctx.set_temp_struct_type(dest, &name);
+                                                    }
+                                                }
+                                            }
+                                            // For Optional<Struct> or Optional<TypeRef>, extract inner type
+                                            TypeKind::Optional { inner } => {
+                                                if let Some(inner_kind) = ctx.get_type_kind(inner) {
+                                                    match inner_kind {
+                                                        TypeKind::Struct { name, .. } => {
+                                                            ctx.set_temp_struct_type(dest, &name);
+                                                        }
+                                                        TypeKind::TypeRef { name: ref_name } => {
+                                                            if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
+                                                                if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(resolved_tid) {
+                                                                    ctx.set_temp_struct_type(dest, &name);
+                                                                }
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                
                                 return Some(val);
                             }
                         }
@@ -219,9 +279,36 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         let ptr = obj_ptr.into_pointer_value();
 
                         // Get struct name from the object operand
+                        // CRITICAL FIX: Try multiple sources for struct type info:
+                        // 1. temp_struct_type (runtime tracking)
+                        // 2. variable_type -> TypeId -> TypeKind::Struct
+                        // 3. variable_type -> TypeId -> TypeKind::TypeRef -> resolved Struct
                         let var_name = Self::get_operand_name(object);
-                        let struct_name =
-                            var_name.and_then(|name| ctx.get_temp_struct_type(name).cloned());
+                        let struct_name = var_name
+                            .and_then(|name| {
+                                // First try temp_struct_type (most specific)
+                                if let Some(st) = ctx.get_temp_struct_type(name).cloned() {
+                                    return Some(st);
+                                }
+                                // Then try variable_type -> TypeKind
+                                if let Some(type_id) = ctx.get_variable_type(name) {
+                                    if let Some(kind) = ctx.get_type_kind(type_id) {
+                                        match kind {
+                                            TypeKind::Struct { name, .. } => return Some(name),
+                                            TypeKind::TypeRef { name: ref_name } => {
+                                                // Resolve TypeRef to the actual struct type
+                                                if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
+                                                    if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(resolved_tid) {
+                                                        return Some(name);
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                None
+                            });
 
                         if debug {
                             if struct_name.is_none() {
@@ -249,8 +336,9 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                 );
                             }
 
-                            // Get the struct type from cache
-                            if let Some(struct_type) = ctx.lookup_struct_type(&struct_name) {
+                            // Get the struct type from cache, or build it from type registry
+                            // This handles imported/cross-module types
+                            if let Some(struct_type) = ctx.get_or_build_struct_type(&struct_name) {
                                 if let Ok(field_ptr) = ctx.builder.build_struct_gep(
                                     struct_type,
                                     ptr,
@@ -262,8 +350,21 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                         ctx.get_struct_field_type(&struct_name, field);
 
                                     // Check if field is a nested struct - if so, propagate struct type info
+                                    // Also handle TypeRef for nested structs
                                     let nested_struct_name = field_type_id
-                                        .and_then(|tid| ctx.get_struct_name_from_type_id(tid));
+                                        .and_then(|tid| {
+                                            // Try direct struct lookup first
+                                            if let Some(name) = ctx.get_struct_name_from_type_id(tid) {
+                                                return Some(name);
+                                            }
+                                            // Try resolving TypeRef
+                                            if let Some(TypeKind::TypeRef { name: ref_name }) = ctx.get_type_kind(tid) {
+                                                if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
+                                                    return ctx.get_struct_name_from_type_id(resolved_tid);
+                                                }
+                                            }
+                                            None
+                                        });
 
                                     let load_type: inkwell::types::BasicTypeEnum =
                                         match field_type_id {
@@ -276,6 +377,15 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                     .is_some() =>
                                             {
                                                 // Nested struct - load as pointer
+                                                ctx.ptr_type().into()
+                                            }
+                                            // Handle TypeRef pointing to struct
+                                            Some(t)
+                                                if matches!(
+                                                    ctx.get_type_kind(t),
+                                                    Some(TypeKind::TypeRef { .. })
+                                                ) && nested_struct_name.is_some() =>
+                                            {
                                                 ctx.ptr_type().into()
                                             }
                                             Some(t)

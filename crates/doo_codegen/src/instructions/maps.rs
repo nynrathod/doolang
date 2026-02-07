@@ -297,10 +297,27 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 key_type,
                 val_type,
             } => {
+                let debug = std::env::var("DOO_DEBUG").is_ok();
+                if debug {
+                    eprintln!("[CODEGEN] MapSet: map={:?}, key={:?}, value={:?}", map, key, value);
+                }
+                
                 let mapv = operand_to_value(ctx, map)?;
+                if debug {
+                    eprintln!("[CODEGEN] MapSet: mapv ok");
+                }
                 let keyv = operand_to_value(ctx, key)?;
+                if debug {
+                    eprintln!("[CODEGEN] MapSet: keyv ok");
+                }
                 let valv = operand_to_value(ctx, value)?;
+                if debug {
+                    eprintln!("[CODEGEN] MapSet: valv ok");
+                }
                 if !mapv.is_pointer_value() {
+                    if debug {
+                        eprintln!("[CODEGEN] MapSet: ERROR - mapv is not pointer!");
+                    }
                     return None;
                 }
 
@@ -315,8 +332,14 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .builder
                     .build_pointer_cast(old_data, pair_ptr_ty, "map_data_cast")
                     .ok()?;
+                if debug {
+                    eprintln!("[CODEGEN] MapSet: old_base ok");
+                }
 
                 let len_i32 = load_len_i32(ctx, old_data)?;
+                if debug {
+                    eprintln!("[CODEGEN] MapSet: len_i32 ok");
+                }
                 let len_i64 = ctx
                     .builder
                     .build_int_z_extend(len_i32, ctx.i64_type(), "len_i64")

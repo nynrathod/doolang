@@ -287,7 +287,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
                     // Determine if this is a Map or Array:
                     // 1. First check container_kinds cache (most reliable for inferred types)
-                    // 2. Then try HIR type_id
+                    // 2. Then try HIR type_id or infer from expression
                     // 3. Then look up from locals
                     let is_map = if let HirExprKind::Local { name } = &object.kind {
                         // Check container_kinds cache first
@@ -302,22 +302,18 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                                 .unwrap_or(false)
                         }
                     } else {
-                        // For non-local objects, use type_id
-                        object
-                            .type_id
+                        // For non-local objects (e.g., field access like self.Users),
+                        // recursively infer the type
+                        builder
+                            .infer_hir_expr_type(object)
                             .and_then(|t| builder.type_registry.get(t))
                             .map(|info| matches!(info.kind, TypeKind::Map { .. }))
                             .unwrap_or(false)
                     };
 
                     // Get container type for extracting key/value types
-                    let container_type = object.type_id.or_else(|| {
-                        if let HirExprKind::Local { name } = &object.kind {
-                            builder.get_local_type(name)
-                        } else {
-                            None
-                        }
-                    });
+                    // Use the recursive infer method for all expression kinds
+                    let container_type = builder.infer_hir_expr_type(object);
 
                     if is_map {
                         // Map set: map[key] = value
@@ -334,7 +330,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
                         builder.emit(
                             MirInstrKind::MapSet {
-                                map: array_operand,
+                                map: array_operand.clone(),
                                 key: index_operand,
                                 value: val_operand,
                                 key_type,
@@ -342,6 +338,25 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                             },
                             span,
                         );
+
+                        // CRITICAL: If the map is a field, write back the potentially
+                        // reallocated pointer. MapSet may realloc the map, updating
+                        // the temp, but the original field still points to old memory.
+                        if let HirExprKind::Field {
+                            object: field_obj,
+                            field,
+                        } = &object.kind
+                        {
+                            let obj_operand = builder.build_expr(field_obj);
+                            builder.emit(
+                                MirInstrKind::FieldSet {
+                                    object: obj_operand,
+                                    field: field.clone(),
+                                    value: array_operand,
+                                },
+                                span,
+                            );
+                        }
                     } else {
                         // Array set: arr[index] = value
                         let elem_type = container_type

@@ -87,6 +87,12 @@ fn build_method_call_with_type(
 pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
     let span = builder.convert_span(expr.span);
 
+    // DEBUG: Track what kind of expressions are being processed
+    let is_add_func = builder.current_func.as_ref().map(|f| f.name.contains("add")).unwrap_or(false);
+    if is_add_func {
+        eprintln!("[DEBUG build_expr] Processing {:?} in add function", expr.kind);
+    }
+
     match &expr.kind {
         HirExprKind::Const(cv) => MirOperand::Const(builder.const_to_mir(cv)),
 

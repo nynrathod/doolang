@@ -118,7 +118,23 @@ impl MirProgram {
     /// Validate all functions
     pub fn validate(&self) -> Result<(), MirError> {
         for func in &self.functions {
-            func.validate()?;
+            if let Err(e) = func.validate() {
+                if std::env::var("DOO_DEBUG").is_ok() {
+                    eprintln!(
+                        "[DEBUG] Validation failed in function '{}': {}",
+                        func.name, e
+                    );
+                    eprintln!(
+                        "[DEBUG]   params: {:?}",
+                        func.params.iter().map(|p| &p.name).collect::<Vec<_>>()
+                    );
+                    eprintln!(
+                        "[DEBUG]   locals: {:?}",
+                        func.locals.iter().map(|l| &l.name).collect::<Vec<_>>()
+                    );
+                }
+                return Err(e);
+            }
         }
         Ok(())
     }
@@ -222,6 +238,28 @@ impl MirFunction {
                             });
                         }
                     }
+                }
+
+                // Check Borrow and Drop sources which use String instead of MirOperand
+                // These are special cases that operands() doesn't return
+                match &instr.kind {
+                    MirInstrKind::Borrow { src, .. } => {
+                        if !defined.contains(src) && !src.starts_with('@') {
+                            return Err(MirError::UndefinedValue {
+                                name: src.clone(),
+                                block: block.label.clone(),
+                            });
+                        }
+                    }
+                    MirInstrKind::Drop { value } => {
+                        if !defined.contains(value) && !value.starts_with('@') {
+                            return Err(MirError::UndefinedValue {
+                                name: value.clone(),
+                                block: block.label.clone(),
+                            });
+                        }
+                    }
+                    _ => {}
                 }
 
                 // Add defined value
@@ -616,7 +654,11 @@ pub enum MirInstrKind {
     IsOk { dest: String, value: MirOperand },
 
     /// Unwrap Ok value (with expected type for proper conversion)
-    UnwrapOk { dest: String, value: MirOperand, expected_type: Option<TypeId> },
+    UnwrapOk {
+        dest: String,
+        value: MirOperand,
+        expected_type: Option<TypeId>,
+    },
 
     /// Unwrap Err value
     UnwrapErr { dest: String, value: MirOperand },
@@ -664,9 +706,7 @@ pub enum MirInstrKind {
     // Control Flow / Panic
     // ========================================================================
     /// Panic with message (abort program execution)
-    Panic {
-        message: MirOperand,
-    },
+    Panic { message: MirOperand },
 }
 
 /// Binary operators

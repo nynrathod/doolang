@@ -352,18 +352,60 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 if let Some(tname) = type_name {
                     let method_name = format!("_method_{}_{}", tname, method);
                     if let Some(func_val) = ctx.get_function(&method_name) {
-                        let mut all_args = vec![recv_val.into()];
-                        for v in &arg_vals {
-                            all_args.push((*v).into());
+                        // CRITICAL FIX: Apply type coercion to method call arguments
+                        // Get parameter types from function signature for proper coercion
+                        let param_types = func_val.get_type().get_param_types();
+                        
+                        // Receiver is always first param (self), args follow
+                        let mut all_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::with_capacity(1 + arg_vals.len());
+                        
+                        // Coerce receiver (self)
+                        let recv_param_type: Option<BasicTypeEnum> = param_types.get(0).and_then(|t| {
+                            match t {
+                                inkwell::types::BasicMetadataTypeEnum::ArrayType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::FloatType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::IntType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::PointerType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::StructType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::VectorType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::ScalableVectorType(t) => Some((*t).into()),
+                                inkwell::types::BasicMetadataTypeEnum::MetadataType(_) => None,
+                            }
+                        });
+                        all_args.push(coerce_arg_to_param_type(ctx, recv_val, recv_param_type));
+                        
+                        // Coerce remaining args
+                        for (i, v) in arg_vals.iter().enumerate() {
+                            let param_type: Option<BasicTypeEnum> = param_types.get(i + 1).and_then(|t| {
+                                match t {
+                                    inkwell::types::BasicMetadataTypeEnum::ArrayType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::FloatType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::IntType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::PointerType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::StructType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::VectorType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::ScalableVectorType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::MetadataType(_) => None,
+                                }
+                            });
+                            all_args.push(coerce_arg_to_param_type(ctx, *v, param_type));
                         }
 
-                        // Ensure we aren't passing garbage if args mismatch (basic check)
                         let call_site =
                             ctx.builder.build_call(func_val, &all_args, "mcall").ok()?;
 
                         if let Some(dest_name) = dest {
                             if let Some(ret_val) = call_site.try_as_basic_value().left() {
                                 ctx.set_temp(dest_name, ret_val);
+                                // CRITICAL: Set variable type from return_type for proper type tracking
+                                // This enables field access on method return values (e.g., dir.list()[0].Name)
+                                if let Some(rt) = return_type {
+                                    ctx.set_variable_type(dest_name, *rt);
+                                    // If return type is a struct, also set temp_struct_type
+                                    if let Some(struct_name) = ctx.get_struct_name_from_type_id(*rt) {
+                                        ctx.set_temp_struct_type(dest_name, &struct_name);
+                                    }
+                                }
                                 return Some(ret_val);
                             }
                         }
@@ -1098,6 +1140,23 @@ fn coerce_arg_to_param_type<'ctx>(
         let loaded = ctx.builder.build_load(expected, val.into_pointer_value(), "arg_load").ok();
         if let Some(v) = loaded {
             return v.into();
+        }
+    }
+    
+    // CRITICAL FIX: IntValue passed where pointer is expected
+    // This can happen when:
+    // 1. Struct type info is lost during tuple extraction (TupleGet fallback)
+    // 2. Field load defaults to i64 when struct type lookup fails
+    // The value is actually a pointer stored as i64, convert it back.
+    // This is a defensive measure - the proper fix is ensuring type info flows correctly.
+    if val.is_int_value() && expected.is_pointer_type() {
+        let int_val = val.into_int_value();
+        if let Ok(ptr) = ctx.builder.build_int_to_ptr(
+            int_val,
+            expected.into_pointer_type(),
+            "int_to_ptr_coerce",
+        ) {
+            return ptr.into();
         }
     }
     

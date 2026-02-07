@@ -780,6 +780,26 @@ impl<'a> MirBuilder<'a> {
             .and_then(|f| f.locals.iter().find(|l| l.name == name).map(|l| l.type_id))
     }
 
+    /// Recursively infer the type of an HIR expression.
+    /// Handles Local, Field, and expressions with type_id set.
+    pub(crate) fn infer_hir_expr_type(&self, expr: &HirExpr) -> Option<CoreTypeId> {
+        // First check if type_id is already set
+        if let Some(tid) = expr.type_id {
+            return Some(tid);
+        }
+
+        // Otherwise, infer based on expression kind
+        match &expr.kind {
+            HirExprKind::Local { name } => self.get_local_type(name),
+            HirExprKind::Field { object, field } => {
+                // Recursively get the object's type, then look up the field type
+                let obj_type = self.infer_hir_expr_type(object)?;
+                self.struct_field_type(obj_type, field)
+            }
+            _ => None,
+        }
+    }
+
     /// Get the return type of the current function being built.
     pub(crate) fn get_current_function_return_type(&self) -> Option<CoreTypeId> {
         self.current_func.as_ref().and_then(|f| f.return_type)

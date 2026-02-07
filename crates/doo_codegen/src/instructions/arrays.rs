@@ -11,6 +11,7 @@ use crate::context::CodegenContext;
 use crate::layout::{alloc_with_header, get_array_length_from_data, int_to_i64};
 use crate::utils::{emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
+use doo_core::types::TypeKind;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
@@ -197,13 +198,13 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 // Track element temp names for mixed-type array serialization
                 let mut element_temp_names = Vec::new();
-                
+
                 for (i, elem) in elements.iter().enumerate() {
                     // Extract temp name for tracking
                     if let MirOperand::Temp(name) = elem {
                         element_temp_names.push(name.clone());
                     }
-                    
+
                     let Some(val) = operand_to_value(ctx, elem) else {
                         continue;
                     };
@@ -217,15 +218,16 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 }
 
                 ctx.set_temp(dest, data_ptr.into());
-                
+
                 // Track array element type for enum serialization in FFI calls
                 ctx.array_element_types.insert(dest.to_string(), *elem_type);
-                
+
                 // Track element temp names for mixed-type arrays
                 if !element_temp_names.is_empty() {
-                    ctx.array_element_temps.insert(dest.to_string(), element_temp_names);
+                    ctx.array_element_temps
+                        .insert(dest.to_string(), element_temp_names);
                 }
-                
+
                 Some(data_ptr.into())
             }
 
@@ -264,6 +266,13 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 ctx.set_temp(dest, val);
                 // Set the type for the temp so Clone knows the correct element type
                 ctx.set_variable_type(dest, *elem_type);
+
+                // CRITICAL: If element type is a struct, propagate struct type info
+                // This enables chained field access like user.name where user comes from array
+                if let Some(struct_name) = ctx.get_struct_name_from_type_id(*elem_type) {
+                    ctx.set_temp_struct_type(dest, &struct_name);
+                }
+
                 Some(val)
             }
 

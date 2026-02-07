@@ -426,6 +426,79 @@ impl<'ctx> CodegenContext<'ctx> {
         self.struct_cache.get(name).copied()
     }
 
+    /// Get or build a struct type by name, using the type registry if not cached.
+    /// This handles imported/cross-module types that weren't pre-declared.
+    pub fn get_or_build_struct_type(&mut self, name: &str) -> Option<StructType<'ctx>> {
+        // First try the cache
+        if let Some(st) = self.struct_cache.get(name).copied() {
+            // Also ensure struct_metadata is populated
+            if !self.struct_metadata.contains_key(name) {
+                // Search for the struct definition to populate metadata
+                if let Some(field_names) = self.find_struct_field_names(name) {
+                    self.struct_metadata.insert(name.to_string(), field_names);
+                }
+            }
+            return Some(st);
+        }
+
+        // Try to build from type registry
+        // Search all types for a Struct with matching name
+        // (handles TypeRef cases where lookup returns the TypeRef, not the actual struct)
+        let (field_type_ids, field_names): (Vec<TypeId>, Vec<String>) = {
+            let mut found = None;
+            for type_id in self.type_registry.all_type_ids() {
+                if let Some(info) = self.type_registry.get(type_id) {
+                    if let TypeKind::Struct {
+                        name: sname,
+                        fields,
+                    } = &info.kind
+                    {
+                        if sname == name {
+                            let ids: Vec<TypeId> = fields.iter().map(|(_, tid, _)| *tid).collect();
+                            let names: Vec<String> =
+                                fields.iter().map(|(n, _, _)| n.clone()).collect();
+                            found = Some((ids, names));
+                            break;
+                        }
+                    }
+                }
+            }
+            found?
+        };
+
+        // Now we can call self methods without borrow conflict
+        let field_types: Vec<BasicTypeEnum<'ctx>> = field_type_ids
+            .iter()
+            .map(|tid| self.get_llvm_type(*tid))
+            .collect();
+
+        // Create and cache the struct type
+        let struct_type = self.context.opaque_struct_type(name);
+        struct_type.set_body(&field_types, false);
+        self.struct_cache.insert(name.to_string(), struct_type);
+        self.struct_metadata.insert(name.to_string(), field_names);
+
+        Some(struct_type)
+    }
+
+    /// Helper to find struct field names from the type registry
+    fn find_struct_field_names(&self, name: &str) -> Option<Vec<String>> {
+        for type_id in self.type_registry.all_type_ids() {
+            if let Some(info) = self.type_registry.get(type_id) {
+                if let TypeKind::Struct {
+                    name: sname,
+                    fields,
+                } = &info.kind
+                {
+                    if sname == name {
+                        return Some(fields.iter().map(|(n, _, _)| n.clone()).collect());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     // ========================================================================
     // Function Management
     // ========================================================================
@@ -772,25 +845,53 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Get field index by name for a struct type.
     ///
     /// Returns the index of the field in the struct, or None if not found.
+    /// First checks the struct_metadata cache, then falls back to the type registry
+    /// for imported/cross-module types.
     pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Option<u32> {
-        self.struct_metadata
+        // First try the cached struct_metadata
+        if let Some(idx) = self
+            .struct_metadata
             .get(struct_name)
             .and_then(|fields| fields.iter().position(|f| f == field_name))
             .map(|idx| idx as u32)
+        {
+            return Some(idx);
+        }
+
+        // Fall back to type registry - search all types for struct with matching name
+        // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
+        for type_id in self.type_registry.all_type_ids() {
+            if let Some(info) = self.type_registry.get(type_id) {
+                if let TypeKind::Struct { name, fields } = &info.kind {
+                    if name == struct_name {
+                        return fields
+                            .iter()
+                            .position(|(n, _, _)| n == field_name)
+                            .map(|idx| idx as u32);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Get the TypeId for a struct field from the type registry.
     pub fn get_struct_field_type(&self, struct_name: &str, field_name: &str) -> Option<TypeId> {
-        let struct_type_id = self.type_registry.lookup(struct_name)?;
-        let type_info = self.type_registry.get(struct_type_id)?;
-        if let TypeKind::Struct { fields, .. } = &type_info.kind {
-            fields
-                .iter()
-                .find(|(name, _, _)| name == field_name)
-                .map(|(_, type_id, _)| *type_id)
-        } else {
-            None
+        // Search all types for struct with matching name
+        // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
+        for type_id in self.type_registry.all_type_ids() {
+            if let Some(info) = self.type_registry.get(type_id) {
+                if let TypeKind::Struct { name, fields } = &info.kind {
+                    if name == struct_name {
+                        return fields
+                            .iter()
+                            .find(|(n, _, _)| n == field_name)
+                            .map(|(_, type_id, _)| *type_id);
+                    }
+                }
+            }
         }
+        None
     }
 
     /// Get the struct name from a TypeId if it's a struct type.
@@ -807,13 +908,18 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Get all field TypeIds for a struct from the type registry.
     /// Returns field types in declaration order.
     pub fn get_struct_field_types(&self, struct_name: &str) -> Option<Vec<TypeId>> {
-        let struct_type_id = self.type_registry.lookup(struct_name)?;
-        let type_info = self.type_registry.get(struct_type_id)?;
-        if let TypeKind::Struct { fields, .. } = &type_info.kind {
-            Some(fields.iter().map(|(_, type_id, _)| *type_id).collect())
-        } else {
-            None
+        // Search all types for struct with matching name
+        // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
+        for type_id in self.type_registry.all_type_ids() {
+            if let Some(info) = self.type_registry.get(type_id) {
+                if let TypeKind::Struct { name, fields } = &info.kind {
+                    if name == struct_name {
+                        return Some(fields.iter().map(|(_, type_id, _)| *type_id).collect());
+                    }
+                }
+            }
         }
+        None
     }
 
     /// Track that a temp/local variable holds a struct instance of a specific type.

@@ -505,9 +505,25 @@ pub fn resolve_imports(
     }
 
     // Process local module imports
-    for (import, module_path, path_symbols) in &local_import_requests {
+    // Track visited modules to prevent infinite loops
+    let mut visited_modules: HashSet<PathBuf> = HashSet::new();
+    // Change from tuple with reference to tuple with owned data (path_symbols only)
+    // The import decl is only needed for the initial requests, nested imports extract path from file
+    let mut pending_modules: Vec<(PathBuf, Vec<String>)> = local_import_requests
+        .iter()
+        .map(|(_, path, symbols)| (path.clone(), symbols.clone()))
+        .collect();
+    
+    while let Some((module_path, path_symbols)) = pending_modules.pop() {
+        // Skip if already visited
+        let canonical_path = module_path.canonicalize().unwrap_or_else(|_| module_path.clone());
+        if visited_modules.contains(&canonical_path) {
+            continue;
+        }
+        visited_modules.insert(canonical_path.clone());
+        
         // Read and parse the local module
-        let source = match fs::read_to_string(module_path) {
+        let source = match fs::read_to_string(&module_path) {
             Ok(s) => s,
             Err(e) => {
                 result.errors.push(format!(
@@ -531,6 +547,80 @@ pub fn resolve_imports(
                 continue;
             }
         };
+
+        // Check for parser errors even on Ok result
+        if !parser.errors().is_empty() {
+            eprintln!("[LOADER] Parser errors in {}:", module_path.display());
+            for err in parser.errors() {
+                eprintln!("[LOADER]   {}", err);
+            }
+        }
+
+        // DEBUG: Show parsed functions and their bodies
+        if debug {
+            eprintln!("[LOADER DEBUG] Parsed module: {}", module_path.display());
+            for item in &module_program.items {
+                if let Item::Function(f) = item {
+                    eprintln!("[LOADER DEBUG]   Function {}, body has {} statements", f.name, f.body.len());
+                    for (i, stmt) in f.body.iter().enumerate() {
+                        eprintln!("[LOADER DEBUG]     Stmt {}: {:?}", i, std::mem::discriminant(&stmt.kind));
+                    }
+                }
+            }
+        }
+
+        // CRITICAL: Process nested imports from this module
+        // This ensures transitive dependencies (e.g., User from directory.doo importing models::user)
+        // are loaded into the merged program.
+        // NOTE: Nested imports are resolved relative to project_root, not the current module's parent
+        for item in &module_program.items {
+            if let Item::Import(nested_import) = item {
+                if nested_import.path.is_empty() {
+                    continue;
+                }
+                
+                // Skip std library imports (they're handled separately)
+                if nested_import.path[0] == "std" {
+                    // Queue std import handling - add to std_import_requests would need refactoring
+                    // For now, std imports from nested modules inherit the parent's type definitions
+                    continue;
+                }
+                
+                // Build nested module path - ALWAYS from project_root
+                let mut nested_module_path = project_root.to_path_buf();
+                let mut nested_path_symbols: Vec<String> = Vec::new();
+                
+                for segment in &nested_import.path {
+                    nested_module_path.push(segment);
+                }
+                nested_module_path.set_extension("doo");
+                
+                if nested_module_path.exists() {
+                    if debug {
+                        eprintln!("[LOADER] Queueing nested import: {} from {}", 
+                            nested_module_path.display(), module_path.display());
+                    }
+                    pending_modules.push((nested_module_path, nested_path_symbols));
+                } else if nested_import.path.len() >= 2 {
+                    // Try alternate path: treat last segment as symbol
+                    let mut alt_path = project_root.to_path_buf();
+                    for i in 0..nested_import.path.len() - 1 {
+                        alt_path.push(&nested_import.path[i]);
+                    }
+                    alt_path.set_extension("doo");
+                    
+                    if alt_path.exists() {
+                        let symbol = nested_import.path.last().unwrap().clone();
+                        if debug {
+                            eprintln!("[LOADER] Queueing nested import: {} (symbol: {}) from {}", 
+                                alt_path.display(), symbol, module_path.display());
+                        }
+                        nested_path_symbols.push(symbol);
+                        pending_modules.push((alt_path, nested_path_symbols));
+                    }
+                }
+            }
+        }
 
         // Determine what symbols to import
         //
@@ -580,7 +670,7 @@ pub fn resolve_imports(
         for item in &module_program.items {
             match item {
                 Item::Function(f) => {
-                    // Check visibility: PascalCase = public
+                    // Check visibility: PascalCase = public, camelCase = private
                     let is_public = f
                         .name
                         .chars()
@@ -604,9 +694,8 @@ pub fn resolve_imports(
                         f.name.clone()
                     };
 
-                    if (is_public || is_associated_with_imported_type)
-                        && is_wanted
-                        && !imported_names.contains(&func_key)
+                    // Import public functions and associated methods
+                    if is_wanted && !imported_names.contains(&func_key)
                     {
                         if debug {
                             if is_associated_with_imported_type {

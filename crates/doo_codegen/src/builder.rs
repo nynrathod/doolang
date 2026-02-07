@@ -333,13 +333,52 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // First, collect all struct information from the registry
         // Fields are now (name, type_id, is_public) tuples
+        // Also resolve TypeRef to include imported struct types
         let structs: Vec<(String, Vec<(String, doo_core::types::TypeId, bool)>)> = ctx
             .type_registry
             .all_type_ids()
             .filter_map(|type_id| {
                 if let Some(type_info) = ctx.type_registry.get(type_id) {
-                    if let doo_core::types::TypeKind::Struct { name, fields } = &type_info.kind {
-                        return Some((name.clone(), fields.clone()));
+                    match &type_info.kind {
+                        doo_core::types::TypeKind::Struct { name, fields } => {
+                            return Some((name.clone(), fields.clone()));
+                        }
+                        // Handle TypeRef to import struct types from other modules
+                        // The TypeRef references struct types from imported modules
+                        doo_core::types::TypeKind::TypeRef { name: ref_name } => {
+                            if debug {
+                                eprintln!(
+                                    "[CODEGEN] Found TypeRef '{}', looking for struct def",
+                                    ref_name
+                                );
+                            }
+                            // Iterate through ALL types to find the struct definition
+                            // The struct might be registered under a different type_id
+                            for other_tid in ctx.type_registry.all_type_ids().collect::<Vec<_>>() {
+                                if let Some(other_info) = ctx.type_registry.get(other_tid) {
+                                    if let doo_core::types::TypeKind::Struct { name, fields } =
+                                        &other_info.kind
+                                    {
+                                        if name == ref_name {
+                                            if debug {
+                                                eprintln!(
+                                                    "[CODEGEN] Found struct '{}' via scan",
+                                                    name
+                                                );
+                                            }
+                                            return Some((name.clone(), fields.clone()));
+                                        }
+                                    }
+                                }
+                            }
+                            if debug {
+                                eprintln!(
+                                    "[CODEGEN] WARNING: Could not find struct for TypeRef '{}'",
+                                    ref_name
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 None
@@ -604,15 +643,64 @@ impl<'ctx> CodegenBuilder<'ctx> {
             // Track parameter type for Clone/Drop
             ctx.set_variable_type(&param.name, param.type_id);
 
-            // CRITICAL: For struct parameters, register the struct type association
+            // CRITICAL: For struct parameters (or TypeRef to struct), register the struct type association
             // This is needed for FieldGet/FieldSet to work correctly when the parameter
             // is passed to another function or when its fields are accessed
-            if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(param.type_id) {
-                ctx.set_temp_struct_type(&param.name, &name);
+            if let Some(kind) = ctx.get_type_kind(param.type_id) {
+                match kind {
+                    TypeKind::Struct { name, .. } => {
+                        ctx.set_temp_struct_type(&param.name, &name);
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!(
+                                "[CODEGEN] Registered struct param {} as type {}",
+                                param.name, name
+                            );
+                        }
+                    }
+                    // CRITICAL: Handle TypeRef for imported/cross-module types
+                    // The TypeRef name IS the struct name, use it directly
+                    TypeKind::TypeRef { name: ref_name } => {
+                        // First try to resolve through lookup
+                        let struct_name =
+                            if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
+                                if let Some(TypeKind::Struct { name, .. }) =
+                                    ctx.get_type_kind(resolved_tid)
+                                {
+                                    Some(name)
+                                } else {
+                                    // If resolution doesn't give a struct, use the TypeRef name directly
+                                    Some(ref_name.clone())
+                                }
+                            } else {
+                                // If lookup fails (common for imported types), use the TypeRef name directly
+                                // This is the struct name used for LLVM type lookup
+                                Some(ref_name.clone())
+                            };
+
+                        if let Some(name) = struct_name {
+                            ctx.set_temp_struct_type(&param.name, &name);
+                            if std::env::var("DOO_DEBUG").is_ok() {
+                                eprintln!(
+                                    "[CODEGEN] Registered TypeRef param {} as struct type {}",
+                                    param.name, name
+                                );
+                            }
+                        }
+                    }
+                    other => {
+                        if std::env::var("DOO_DEBUG").is_ok() {
+                            eprintln!(
+                                "[CODEGEN] Param {} has non-struct type: {:?} (type_id={:?})",
+                                param.name, other, param.type_id
+                            );
+                        }
+                    }
+                }
+            } else {
                 if std::env::var("DOO_DEBUG").is_ok() {
                     eprintln!(
-                        "[CODEGEN] Registered struct param {} as type {}",
-                        param.name, name
+                        "[CODEGEN] WARNING: Param {} has unknown type_id={:?}",
+                        param.name, param.type_id
                     );
                 }
             }
@@ -627,15 +715,47 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 // Track local type for Clone/Drop
                 ctx.set_variable_type(&local.name, local.type_id);
 
-                // CRITICAL: For struct locals, register the struct type association
+                // CRITICAL: For struct locals (or TypeRef to struct), register the struct type association
                 // This is needed for FieldGet/FieldSet to work correctly
-                if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(local.type_id) {
-                    ctx.set_temp_struct_type(&local.name, &name);
-                    if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!(
-                            "[CODEGEN] Registered struct local {} as type {}",
-                            local.name, name
-                        );
+                if let Some(kind) = ctx.get_type_kind(local.type_id) {
+                    match kind {
+                        TypeKind::Struct { name, .. } => {
+                            ctx.set_temp_struct_type(&local.name, &name);
+                            if std::env::var("DOO_DEBUG").is_ok() {
+                                eprintln!(
+                                    "[CODEGEN] Registered struct local {} as type {}",
+                                    local.name, name
+                                );
+                            }
+                        }
+                        // CRITICAL: Handle TypeRef for imported/cross-module types
+                        // The TypeRef name IS the struct name, use it directly
+                        TypeKind::TypeRef { name: ref_name } => {
+                            // First try to resolve through lookup
+                            let struct_name =
+                                if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
+                                    if let Some(TypeKind::Struct { name, .. }) =
+                                        ctx.get_type_kind(resolved_tid)
+                                    {
+                                        Some(name)
+                                    } else {
+                                        Some(ref_name.clone())
+                                    }
+                                } else {
+                                    Some(ref_name.clone())
+                                };
+
+                            if let Some(name) = struct_name {
+                                ctx.set_temp_struct_type(&local.name, &name);
+                                if std::env::var("DOO_DEBUG").is_ok() {
+                                    eprintln!(
+                                        "[CODEGEN] Registered TypeRef local {} as struct type {}",
+                                        local.name, name
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

@@ -447,6 +447,16 @@ impl ParserStmt for Parser {
                     expr.span,
                 ))
             }
+            ExprKind::Field { object, field } => {
+                let object_pattern = self.expr_to_pattern(object)?;
+                Ok(Pattern::new(
+                    PatternKind::Field {
+                        object: Box::new(object_pattern),
+                        field: field.clone(),
+                    },
+                    expr.span,
+                ))
+            }
             _ => Err(CompilerError::new(
                 ErrorCode::InvalidExpression,
                 "Invalid pattern",

@@ -388,6 +388,14 @@ impl Lower {
         f: &FunctionDecl,
         registry: &mut TypeRegistry,
     ) -> HirFunction {
+        eprintln!("[DEBUG lower_function_typed] Lowering function: {}", f.name);
+        eprintln!(
+            "[DEBUG lower_function_typed] Function body has {} statements",
+            f.body.len()
+        );
+        for (i, stmt) in f.body.iter().enumerate() {
+            eprintln!("[DEBUG lower_function_typed]   Stmt {}: {:?}", i, stmt.kind);
+        }
         // Clear variable types for new function scope
         self.var_types.clear();
 
@@ -665,6 +673,10 @@ impl Lower {
             }
 
             StmtKind::Assign { target, value } => {
+                eprintln!(
+                    "[DEBUG lower_stmt NON-TYPED] Assign statement, target pattern: {:?}",
+                    target.kind
+                );
                 let target_expr = self.pattern_to_expr(target);
                 HirStmtKind::Assign {
                     target: target_expr,
@@ -859,6 +871,10 @@ impl Lower {
     }
 
     fn lower_stmt_typed(&mut self, stmt: &Stmt, registry: &mut TypeRegistry) -> HirStmt {
+        eprintln!(
+            "[DEBUG lower_stmt_typed] Processing statement: {:?}",
+            std::mem::discriminant(&stmt.kind)
+        );
         let kind = match &stmt.kind {
             StmtKind::Let {
                 mutable,
@@ -927,6 +943,10 @@ impl Lower {
             }
 
             StmtKind::Assign { target, value } => {
+                eprintln!(
+                    "[DEBUG lower_stmt] Assign statement, target pattern: {:?}",
+                    target.kind
+                );
                 let target_expr = self.pattern_to_expr(target);
                 HirStmtKind::Assign {
                     target: target_expr,
@@ -1127,7 +1147,10 @@ impl Lower {
 
     /// Check if a method name is an HTTP route method.
     fn is_http_route_method(method: &str) -> bool {
-        matches!(method, "get" | "post" | "put" | "delete" | "patch" | "head" | "options")
+        matches!(
+            method,
+            "get" | "post" | "put" | "delete" | "patch" | "head" | "options"
+        )
     }
 
     /// Transform a route method call with middleware arguments.
@@ -1144,14 +1167,14 @@ impl Lower {
         let receiver = Box::new(self.lower_expr(object));
         let path = self.lower_expr(&args[0]);
         let handler = self.lower_expr(args.last().unwrap());
-        
+
         // Collect middleware names (args[1..len-1]) as comma-separated string
         // Each middleware arg should be a call that returns a string (e.g., jwt() returns "jwt")
-        let middleware_args: Vec<HirExpr> = args[1..args.len()-1]
+        let middleware_args: Vec<HirExpr> = args[1..args.len() - 1]
             .iter()
             .map(|a| self.lower_expr(a))
             .collect();
-        
+
         // For single middleware, pass it directly
         // For multiple middlewares, we'd need to concatenate strings
         // For now, use the first middleware if any
@@ -1163,13 +1186,13 @@ impl Lower {
             // TODO: Concatenate multiple middleware names
             middleware_args.into_iter().next().unwrap()
         };
-        
+
         // Create method name with "WithMiddleware" suffix
         let new_method = format!("{}WithMiddleware", method);
-        
+
         // Args: [path, middleware, handler]
         let new_args = vec![path, middleware, handler];
-        
+
         HirExpr::new(
             HirExprKind::MethodCall {
                 receiver,
@@ -1182,17 +1205,12 @@ impl Lower {
 
     /// Transform app.group with a route block.
     /// app.group("/api", middleware, { get(...), post(...) }) -> expand each route
-    fn transform_group_with_routes(
-        &mut self,
-        object: &Expr,
-        args: &[Expr],
-        span: Span,
-    ) -> HirExpr {
+    fn transform_group_with_routes(&mut self, object: &Expr, args: &[Expr], span: Span) -> HirExpr {
         // For now, just lower the group call normally, the FFI will handle it at runtime
         // args[0] = prefix, args[1..n-1] = middleware, args[n-1] = RouteBlock
         let receiver = Box::new(self.lower_expr(object));
         let lowered_args: Vec<HirExpr> = args.iter().map(|a| self.lower_expr(a)).collect();
-        
+
         HirExpr::new(
             HirExprKind::MethodCall {
                 receiver,
@@ -1217,13 +1235,13 @@ impl Lower {
         let receiver = Box::new(self.lower_expr_typed(object, registry));
         let path = self.lower_expr_typed(&args[0], registry);
         let handler = self.lower_expr_typed(args.last().unwrap(), registry);
-        
+
         // Collect middleware names (args[1..len-1])
-        let middleware_args: Vec<HirExpr> = args[1..args.len()-1]
+        let middleware_args: Vec<HirExpr> = args[1..args.len() - 1]
             .iter()
             .map(|a| self.lower_expr_typed(a, registry))
             .collect();
-        
+
         // For single middleware, pass it directly
         let middleware = if middleware_args.is_empty() {
             HirExpr::new(HirExprKind::Const(ConstValue::Str("".to_string())), span)
@@ -1233,13 +1251,13 @@ impl Lower {
             // TODO: Concatenate multiple middleware names
             middleware_args.into_iter().next().unwrap()
         };
-        
+
         // Create method name with "WithMiddleware" suffix
         let new_method = format!("{}WithMiddleware", method);
-        
+
         // Args: [path, middleware, handler]
         let new_args = vec![path, middleware, handler];
-        
+
         HirExpr::new(
             HirExprKind::MethodCall {
                 receiver,
@@ -1260,8 +1278,11 @@ impl Lower {
     ) -> HirExpr {
         // For now, just lower the group call normally
         let receiver = Box::new(self.lower_expr_typed(object, registry));
-        let lowered_args: Vec<HirExpr> = args.iter().map(|a| self.lower_expr_typed(a, registry)).collect();
-        
+        let lowered_args: Vec<HirExpr> = args
+            .iter()
+            .map(|a| self.lower_expr_typed(a, registry))
+            .collect();
+
         HirExpr::new(
             HirExprKind::MethodCall {
                 receiver,
@@ -1313,23 +1334,29 @@ impl Lower {
                 if Self::is_http_route_method(method) && args.len() > 2 {
                     return self.transform_route_with_middleware(object, method, args, expr.span);
                 }
-                
+
                 // Transform app.group with route block
                 // app.group("/api", middleware, { routes }) -> expand routes with prefix and middleware
                 if method == "group" && args.len() >= 2 {
                     if let Some(route_block_arg) = args.last() {
-                        if matches!(route_block_arg, Expr { kind: ExprKind::RouteBlock { .. }, .. }) {
+                        if matches!(
+                            route_block_arg,
+                            Expr {
+                                kind: ExprKind::RouteBlock { .. },
+                                ..
+                            }
+                        ) {
                             return self.transform_group_with_routes(object, args, expr.span);
                         }
                     }
                 }
-                
+
                 HirExprKind::MethodCall {
                     receiver: Box::new(self.lower_expr(object)),
                     method: method.clone(),
                     args: args.iter().map(|a| self.lower_expr(a)).collect(),
                 }
-            },
+            }
 
             ExprKind::Field { object, field } => HirExprKind::Field {
                 object: Box::new(self.lower_expr(object)),
@@ -1536,18 +1563,28 @@ impl Lower {
                 // Transform HTTP route methods with middleware arguments
                 // app.get("/path", middleware, Handler) -> app.getWithMiddleware("/path", "middleware", Handler)
                 if Self::is_http_route_method(method) && args.len() > 2 {
-                    return self.transform_route_with_middleware_typed(object, method, args, expr.span, registry);
+                    return self.transform_route_with_middleware_typed(
+                        object, method, args, expr.span, registry,
+                    );
                 }
-                
+
                 // Transform app.group with route block
                 if method == "group" && args.len() >= 2 {
                     if let Some(route_block_arg) = args.last() {
-                        if matches!(route_block_arg, Expr { kind: ExprKind::RouteBlock { .. }, .. }) {
-                            return self.transform_group_with_routes_typed(object, args, expr.span, registry);
+                        if matches!(
+                            route_block_arg,
+                            Expr {
+                                kind: ExprKind::RouteBlock { .. },
+                                ..
+                            }
+                        ) {
+                            return self.transform_group_with_routes_typed(
+                                object, args, expr.span, registry,
+                            );
                         }
                     }
                 }
-                
+
                 HirExprKind::MethodCall {
                     receiver: Box::new(self.lower_expr_typed(object, registry)),
                     method: method.clone(),
@@ -1556,7 +1593,7 @@ impl Lower {
                         .map(|a| self.lower_expr_typed(a, registry))
                         .collect(),
                 }
-            },
+            }
 
             ExprKind::Field { object, field } => HirExprKind::Field {
                 object: Box::new(self.lower_expr_typed(object, registry)),
@@ -1621,11 +1658,13 @@ impl Lower {
                     .and_then(|tid| registry.get(tid))
                     .map(|info| matches!(info.kind, TypeKind::Struct { .. }))
                     .unwrap_or(false);
-                
+
                 if is_struct {
                     // Convert to MethodCall: Type::method(args) -> Type.method(args)
                     let receiver = HirExpr::with_type(
-                        HirExprKind::Local { name: enum_name.clone() },
+                        HirExprKind::Local {
+                            name: enum_name.clone(),
+                        },
                         type_id.unwrap(),
                         expr.span,
                     );
@@ -1759,7 +1798,10 @@ impl Lower {
             }
 
             ExprKind::RouteBlock { routes } => HirExprKind::RouteBlock {
-                routes: routes.iter().map(|r| self.lower_expr_typed(r, registry)).collect(),
+                routes: routes
+                    .iter()
+                    .map(|r| self.lower_expr_typed(r, registry))
+                    .collect(),
             },
 
             ExprKind::StringInterpolation(parts) => {
@@ -1891,7 +1933,9 @@ impl Lower {
                 if let Some(obj_type) = object.type_id {
                     if let Some(info) = registry.get(obj_type) {
                         if let TypeKind::Struct { fields, .. } = &info.kind {
-                            if let Some((_, field_type, _)) = fields.iter().find(|(n, _, _)| n == field) {
+                            if let Some((_, field_type, _)) =
+                                fields.iter().find(|(n, _, _)| n == field)
+                            {
                                 out.type_id = Some(*field_type);
                             }
                         }
@@ -3845,6 +3889,10 @@ impl Lower {
                 // For index patterns, use the base object name
                 self.pattern_to_name(object)
             }
+            PatternKind::Field { object, .. } => {
+                // For field patterns, use the base object name
+                self.pattern_to_name(object)
+            }
         }
     }
 
@@ -3870,6 +3918,16 @@ impl Lower {
                     HirExprKind::Index {
                         object: Box::new(object_expr),
                         index: Box::new(index_expr),
+                    },
+                    pattern.span,
+                )
+            }
+            PatternKind::Field { object, field } => {
+                let object_expr = self.pattern_to_expr(object);
+                HirExpr::new(
+                    HirExprKind::Field {
+                        object: Box::new(object_expr),
+                        field: field.clone(),
                     },
                     pattern.span,
                 )
