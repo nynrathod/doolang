@@ -651,8 +651,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             if matches!(method.as_str(), "push" | "pop" | "clear" | "reverse" | "sort") {
                 if let HirExprKind::Field { object, field } = &receiver.kind {
                     // The method result (in dest) needs to be written back to object.field
-                    // We need to rebuild object operand since build_expr may have consumed it
-                    let obj_operand = builder.build_expr(object);
+                    // CRITICAL: Use the original object reference directly, NOT build_expr(object)!
+                    // build_expr may emit Clone instructions which would create a copy.
+                    // FieldSet must target the ORIGINAL struct to update its field correctly.
+                    let obj_operand = match &object.kind {
+                        HirExprKind::Local { name } => MirOperand::Local(name.clone()),
+                        _ => builder.build_expr(object),
+                    };
                     builder.emit(
                         MirInstrKind::FieldSet {
                             object: obj_operand,
