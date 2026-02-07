@@ -638,6 +638,26 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 );
             }
 
+            // For mutating methods called on field receivers (e.g., self.Tasks.push(item)),
+            // we need to write back the result to the original field since push/pop/etc
+            // may reallocate the array and return a new pointer.
+            // This is the SINGLE SOURCE OF TRUTH for field write-back on mutating operations.
+            if matches!(method.as_str(), "push" | "pop" | "clear" | "reverse" | "sort") {
+                if let HirExprKind::Field { object, field } = &receiver.kind {
+                    // The method result (in dest) needs to be written back to object.field
+                    // We need to rebuild object operand since build_expr may have consumed it
+                    let obj_operand = builder.build_expr(object);
+                    builder.emit(
+                        MirInstrKind::FieldSet {
+                            object: obj_operand,
+                            field: field.clone(),
+                            value: MirOperand::Temp(dest.clone()),
+                        },
+                        span,
+                    );
+                }
+            }
+
             MirOperand::Temp(dest)
         }
 

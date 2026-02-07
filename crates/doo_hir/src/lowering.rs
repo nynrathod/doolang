@@ -1886,6 +1886,18 @@ impl Lower {
                 let op_kind = hir_binop_to_kind(*op);
                 out.type_id = Some(infer_binop_result_type(op_kind, lhs_type, rhs_type));
             }
+            HirExprKind::Field { object, field } => {
+                // Infer field access type from struct type
+                if let Some(obj_type) = object.type_id {
+                    if let Some(info) = registry.get(obj_type) {
+                        if let TypeKind::Struct { fields, .. } = &info.kind {
+                            if let Some((_, field_type, _)) = fields.iter().find(|(n, _, _)| n == field) {
+                                out.type_id = Some(*field_type);
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
 

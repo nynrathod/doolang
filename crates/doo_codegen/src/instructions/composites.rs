@@ -287,6 +287,24 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                 // Enum field - load as enum struct type { i32, ptr }
                                                 ctx.get_llvm_type(t)
                                             }
+                                            // CRITICAL: Arrays and Maps are stored as pointers
+                                            // This is essential for field access like self.Tasks.push()
+                                            Some(t)
+                                                if matches!(
+                                                    ctx.get_type_kind(t),
+                                                    Some(TypeKind::Array { .. })
+                                                ) =>
+                                            {
+                                                ctx.ptr_type().into()
+                                            }
+                                            Some(t)
+                                                if matches!(
+                                                    ctx.get_type_kind(t),
+                                                    Some(TypeKind::Map { .. })
+                                                ) =>
+                                            {
+                                                ctx.ptr_type().into()
+                                            }
                                             _ => ctx.i64_type().into(), // Int and default
                                         };
 

@@ -32,7 +32,10 @@ impl ParserExpr for Parser {
         if let Some(op) = UnaryOp::from_token(self.current().kind) {
             let start = self.current_span();
             self.advance();
-            let expr = self.parse_unary()?;
+            // Parse the primary expression first
+            let mut expr = self.parse_primary()?;
+            // Apply postfix to get correct precedence: !t.IsDone() -> !(t.IsDone())
+            expr = self.parse_postfix(expr)?;
             let span = start.merge(&expr.span);
             return Ok(Expr::new(
                 ExprKind::Unary {

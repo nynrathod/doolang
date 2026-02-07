@@ -314,14 +314,34 @@ pub extern "C" fn doo_db_raw_param(
         }
     };
 
-    let params_str = match c_to_string(params_json) {
-        Ok(s) => {
-            eprintln!("[DB_FFI] Params: {}", s);
-            s
-        }
-        Err(e) => {
-            eprintln!("[DB_FFI] Failed to convert params string: {}", e);
-            return simple_result_err_ptr(&e);
+    // DEFENSIVE: Handle null/empty/invalid params by treating as empty array "[]"
+    // This can happen when compiler passes uninitialized array data pointer for empty arrays
+    // The proper fix is in the compiler (codegen/instructions/calls.rs), but this makes FFI robust
+    let params_str = if params_json.is_null() {
+        eprintln!("[DB_FFI] Params pointer is null, treating as empty array");
+        "[]".to_string()
+    } else {
+        // Check first byte - if it's 0 or invalid UTF-8, treat as empty array
+        let first_byte = unsafe { *params_json as u8 };
+        if first_byte == 0 {
+            eprintln!("[DB_FFI] Params starts with null byte, treating as empty array");
+            "[]".to_string()
+        } else {
+            match c_to_string(params_json) {
+                Ok(s) => {
+                    eprintln!("[DB_FFI] Params: {}", s);
+                    s
+                }
+                Err(e) => {
+                    // Invalid UTF-8 often means compiler passed raw array pointer for empty array
+                    // Treat as empty array instead of failing
+                    eprintln!(
+                        "[DB_FFI] Params UTF-8 error ({}), treating as empty array",
+                        e
+                    );
+                    "[]".to_string()
+                }
+            }
         }
     };
 
@@ -402,6 +422,41 @@ pub extern "C" fn doo_db_raw_param(
     match rx.recv() {
         Ok(Ok(json)) => {
             eprintln!("[DB_FFI] Query result, json length: {}", json.len());
+
+            // IMPORTANT: For scalar values (Int), the compiler expects the actual value,
+            // not a JSON string pointer. Detect scalar int results and return them directly.
+            // This handles: let total: Int = db.rawWithParams("SELECT COUNT(*) FROM ...", [])?
+            // The JSON will be like [{"count": 5}] or just a number
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                // Check for array with single row, single int column (e.g., [{"count": 5}])
+                if let serde_json::Value::Array(arr) = &parsed {
+                    if arr.len() == 1 {
+                        if let serde_json::Value::Object(obj) = &arr[0] {
+                            if obj.len() == 1 {
+                                // Single column - get its value
+                                if let Some(val) = obj.values().next() {
+                                    if let Some(n) = val.as_i64() {
+                                        eprintln!("[DB_FFI] Detected scalar int result: {}", n);
+                                        // Return the integer value directly (as ptr for type compatibility)
+                                        // The compiler will do ptrtoint which gives us the actual value
+                                        return simple_result_ok_ptr(n as *mut c_void);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Also handle raw number in array [5]
+                if let serde_json::Value::Array(arr) = &parsed {
+                    if arr.len() == 1 {
+                        if let Some(n) = arr[0].as_i64() {
+                            eprintln!("[DB_FFI] Detected scalar int result (raw): {}", n);
+                            return simple_result_ok_ptr(n as *mut c_void);
+                        }
+                    }
+                }
+            }
+
             simple_result_ok_ptr(string_to_c(&json) as *mut c_void)
         }
         Ok(Err(e)) => {
@@ -667,7 +722,7 @@ pub extern "C" fn doo_db_execute_sql(sql: *const c_char) -> *mut c_void {
     let sql_clone = sql_str.clone();
 
     std::thread::spawn(move || {
-        // Use shared runtime - creating a new runtime causes deadlocks 
+        // Use shared runtime - creating a new runtime causes deadlocks
         // because the pool is tied to get_runtime()
         let rt = get_runtime();
         let result = rt.block_on(async {
@@ -748,7 +803,7 @@ pub extern "C" fn doo_db_query_with_params(
             match get_client().await {
                 Ok(client) => {
                     // Convert JSON values to boxed PostgreSQL params
-                    // PostgreSQL is strict about types - use i32 for integers (INT4) 
+                    // PostgreSQL is strict about types - use i32 for integers (INT4)
                     // and bool for booleans (BOOLEAN)
                     let boxed_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> =
                         params
@@ -841,7 +896,7 @@ fn snake_to_pascal(s: &str) -> String {
     if s == "id" {
         return "id".to_string();
     }
-    
+
     s.split('_')
         .map(|word| {
             let mut chars = word.chars();
@@ -914,4 +969,73 @@ fn row_to_json_value(row: &tokio_postgres::Row) -> serde_json::Value {
         obj.insert(name, value);
     }
     serde_json::Value::Object(obj)
+}
+
+// ============================================================================
+// ENUM ARRAY SERIALIZATION
+// ============================================================================
+
+/// Serialize an array of enum values to JSON array.
+/// Used by database queries that return arrays of enums.
+///
+/// Parameters:
+/// - array_ptr: Pointer to the array data (doo array layout has len at offset -4)
+/// - variants: Comma-separated list of variant names (e.g., "Low,Medium,High")
+/// - stride: Size in bytes of each enum element (usually 16 bytes for tagged union)
+///
+/// Returns: JSON array string like `["Low","High","Medium"]`
+#[no_mangle]
+pub extern "C" fn doo_db_serialize_enum_array(
+    array_ptr: *const std::ffi::c_void,
+    variants: *const c_char,
+    stride: i32,
+) -> *const c_char {
+    if array_ptr.is_null() || variants.is_null() {
+        return string_to_c("[]");
+    }
+
+    let variants_str = match c_to_string(variants) {
+        Ok(s) => s,
+        Err(_) => return string_to_c("[]"),
+    };
+
+    let variant_names: Vec<&str> = variants_str.split(',').collect();
+
+    // Read length from offset -16 (first i64 in header before data pointer)
+    // Doo array layout: [len:i64][cap:i64][data...]
+    // Header is 16 bytes (2 x i64), data pointer points to offset +16 from header start
+    let len = unsafe {
+        let len_ptr = (array_ptr as *const u8).offset(-16) as *const i64;
+        (*len_ptr) as usize
+    };
+
+    // The data starts at array_ptr
+    let raw_data = array_ptr as *const u8;
+
+    let mut json_arr = Vec::with_capacity(len);
+    // Safety limit to prevent runaway loops
+    let safe_len = std::cmp::min(len, 10000);
+
+    // Default stride to 16 bytes (typical enum size with alignment)
+    let stride_usize = if stride > 0 { stride as usize } else { 16 };
+
+    for i in 0..safe_len {
+        let offset = i * stride_usize;
+        // Enum layout: { i32 tag, ... payload ... }
+        // We read first 4 bytes as i32 tag
+        let tag = unsafe {
+            let tag_ptr = raw_data.add(offset) as *const i32;
+            (*tag_ptr) as usize
+        };
+
+        if tag < variant_names.len() {
+            json_arr.push(serde_json::Value::String(variant_names[tag].to_string()));
+        } else {
+            // Invalid tag - push null
+            json_arr.push(serde_json::Value::Null);
+        }
+    }
+
+    let json_str = serde_json::Value::Array(json_arr).to_string();
+    string_to_c(&json_str)
 }

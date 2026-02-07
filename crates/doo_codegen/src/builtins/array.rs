@@ -470,7 +470,9 @@ impl ArrayBuiltins {
             }
         }
 
-        Some(ctx.context.i8_type().const_zero().into())
+        // Return the new array pointer so that FieldSet can use it for storing back
+        // to struct fields (e.g., self.Tasks.push(item) needs to update self.Tasks)
+        Some(new_data.into())
     }
 
     // =========================================================================

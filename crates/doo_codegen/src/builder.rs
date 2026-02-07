@@ -48,7 +48,7 @@ fn get_operand_name(operand: &MirOperand) -> Option<&str> {
 }
 
 /// Convert a return value to the expected function return type.
-/// Handles cases where JSON.parse returns a pointer but the function expects Int/Float/Bool.
+/// Handles type mismatches between computed value and declared return type.
 fn convert_return_value<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     val: BasicValueEnum<'ctx>,
@@ -61,55 +61,124 @@ fn convert_return_value<'ctx>(
         None => return val, // No conversion needed
     };
 
-    // Get the expected type kind
-    let expected_kind = match ctx.get_type_kind(expected_type) {
-        Some(k) => k,
-        None => return val,
-    };
+    // Get the expected LLVM type
+    let expected_llvm_type = ctx.get_llvm_type(expected_type);
 
-    // If value is already the right type, return as-is
-    // Only convert when we have a pointer but expect a primitive
-    if !val.is_pointer_value() {
+    // Get the expected type kind for semantic decisions
+    let expected_kind = ctx.get_type_kind(expected_type);
+
+    // Check if types already match
+    if val.get_type() == expected_llvm_type {
         return val;
     }
 
-    let ptr = val.into_pointer_value();
-
-    match expected_kind {
-        TypeKind::Int => {
-            // Load i64 from pointer
-            if let Ok(loaded) = ctx
-                .builder
-                .build_load(ctx.context.i64_type(), ptr, "ret_int")
-            {
-                return loaded;
-            }
-        }
-        TypeKind::Float => {
-            // Load f64 from pointer
-            if let Ok(loaded) = ctx
-                .builder
-                .build_load(ctx.context.f64_type(), ptr, "ret_float")
-            {
-                return loaded;
-            }
-        }
-        TypeKind::Bool => {
-            // Load i1 from pointer
-            if let Ok(loaded) = ctx
-                .builder
-                .build_load(ctx.context.bool_type(), ptr, "ret_bool")
-            {
-                return loaded;
-            }
-        }
-        _ => {
-            // For other types (Str, Array, Map, etc.), pointer is the correct return type
+    // Handle i64/i32/i1 -> ptr conversion (when function expects pointer type)
+    if val.is_int_value() && expected_llvm_type.is_pointer_type() {
+        let int_val = val.into_int_value();
+        // Convert int to pointer (inttoptr)
+        if let Ok(ptr) = ctx.builder.build_int_to_ptr(
+            int_val,
+            expected_llvm_type.into_pointer_type(),
+            "int_to_ptr",
+        ) {
+            return ptr.into();
         }
     }
 
-    // If conversion failed, return original value
-    BasicValueEnum::PointerValue(ptr)
+    // Handle pointer -> primitive conversion (e.g., from JSON.parse)
+    if val.is_pointer_value() {
+        let ptr = val.into_pointer_value();
+
+        if let Some(kind) = expected_kind {
+            match kind {
+                TypeKind::Int => {
+                    // Load i64 from pointer
+                    if let Ok(loaded) =
+                        ctx.builder
+                            .build_load(ctx.context.i64_type(), ptr, "ret_int")
+                    {
+                        return loaded;
+                    }
+                }
+                TypeKind::Float => {
+                    // Load f64 from pointer
+                    if let Ok(loaded) =
+                        ctx.builder
+                            .build_load(ctx.context.f64_type(), ptr, "ret_float")
+                    {
+                        return loaded;
+                    }
+                }
+                TypeKind::Bool => {
+                    // Load i1 from pointer
+                    if let Ok(loaded) =
+                        ctx.builder
+                            .build_load(ctx.context.bool_type(), ptr, "ret_bool")
+                    {
+                        return loaded;
+                    }
+                }
+                _ => {
+                    // For other types (Str, Array, Map, etc.), pointer is correct
+                    return BasicValueEnum::PointerValue(ptr);
+                }
+            }
+        }
+
+        // If conversion failed, return original pointer
+        return BasicValueEnum::PointerValue(ptr);
+    }
+
+    // Handle bool (i1) -> larger int conversion
+    if val.is_int_value() && expected_llvm_type.is_int_type() {
+        let int_val = val.into_int_value();
+        let expected_int = expected_llvm_type.into_int_type();
+        let val_bits = int_val.get_type().get_bit_width();
+        let expected_bits = expected_int.get_bit_width();
+
+        if val_bits < expected_bits {
+            // Zero extend (e.g., i1 -> i64)
+            if let Ok(zext) = ctx
+                .builder
+                .build_int_z_extend(int_val, expected_int, "zext_ret")
+            {
+                return zext.into();
+            }
+        } else if val_bits > expected_bits {
+            // Truncate (e.g., i64 -> i1)
+            if let Ok(trunc) = ctx
+                .builder
+                .build_int_truncate(int_val, expected_int, "trunc_ret")
+            {
+                return trunc.into();
+            }
+        }
+    }
+
+    // Return original value if no conversion applied
+    val
+}
+
+/// Create a default return value for the given type.
+/// This is used when a return statement is missing or operand_to_value fails.
+/// Returns a type-appropriate default: 0 for Int/Float, false for Bool, null for pointers.
+fn create_default_return_value<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    type_id: doo_core::types::TypeId,
+) -> BasicValueEnum<'ctx> {
+    // Get LLVM type for the expected return type
+    let llvm_type = ctx.get_llvm_type(type_id);
+
+    // Create appropriate default value based on LLVM type
+    match llvm_type {
+        BasicTypeEnum::IntType(t) => t.const_zero().into(),
+        BasicTypeEnum::FloatType(t) => t.const_zero().into(),
+        BasicTypeEnum::PointerType(t) => t.const_null().into(),
+        BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
+        BasicTypeEnum::StructType(t) => t.const_zero().into(),
+        BasicTypeEnum::VectorType(t) => t.const_zero().into(),
+        BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
+    }
 }
 
 /// Convert an i64 value to the target Doo type.
@@ -745,7 +814,13 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     ctx.builder.build_unreachable().ok();
                 } else if values.is_empty() {
                     // Non-main function with no return values
-                    ctx.builder.build_return(None).ok();
+                    // CRITICAL: If function has a return type, return a default value, not void
+                    if let Some(ret_type) = ctx.current_function_return_type {
+                        let default_val = create_default_return_value(ctx, ret_type);
+                        ctx.builder.build_return(Some(&default_val)).ok();
+                    } else {
+                        ctx.builder.build_return(None).ok();
+                    }
                 } else if values.len() == 1 {
                     if let Some(val) = operand_to_value(ctx, &values[0]) {
                         if debug {
@@ -763,7 +838,13 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         if debug {
                             eprintln!("[CODEGEN] WARNING: Return: operand_to_value returned None for {:?}", &values[0]);
                         }
-                        ctx.builder.build_return(None).ok();
+                        // CRITICAL: If function has a return type, return a default value, not void
+                        if let Some(ret_type) = ctx.current_function_return_type {
+                            let default_val = create_default_return_value(ctx, ret_type);
+                            ctx.builder.build_return(Some(&default_val)).ok();
+                        } else {
+                            ctx.builder.build_return(None).ok();
+                        }
                     }
                 } else {
                     // Multiple return values - return as tuple

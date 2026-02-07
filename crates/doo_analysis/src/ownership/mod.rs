@@ -568,19 +568,21 @@ impl OwnershipAnalyzer {
                 }
             }
             HirExprKind::MethodCall { receiver, method, args } => {
-                // For mutating methods on locals, use Borrow instead of Clone
-                // This ensures mutations affect the original, not a copy
+                // For method calls on locals, use Borrow instead of Clone
+                // This ensures mutations from methods like Add, push, etc. affect the original
+                // Note: We can't statically determine if a user-defined method mutates self,
+                // so we conservatively use mutable borrow for ALL method calls on locals
+                // This is safe because:
+                // - Mutating methods: changes persist to the original (correct behavior)
+                // - Non-mutating methods: just reads the value (still correct, no clone overhead)
                 if let HirExprKind::Local { name } = &receiver.kind {
-                    if self.is_mutating_method(method) {
-                        // Mutating method: use mutable borrow so changes affect original
-                        self.results.record(name, receiver.span, Decision::Borrow { mutable: true });
-                    } else {
-                        // Non-mutating method: normal ownership decision
-                        self.analyze_expr(receiver);
-                    }
+                    // All method calls on locals use mutable borrow to allow mutation
+                    self.results.record(name, receiver.span, Decision::Borrow { mutable: true });
                 } else {
+                    // For non-local receivers (fields, temporaries), analyze normally
                     self.analyze_expr(receiver);
                 }
+                // Analyze arguments normally
                 for arg in args {
                     self.analyze_expr(arg);
                 }
