@@ -356,7 +356,7 @@ pub fn alloc_memory<'ctx>(
         .build_call(alloc_fn, &[size.into()], name)
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_pointer_value()
         .into()
 }
@@ -525,7 +525,7 @@ pub fn realloc_array_capacity<'ctx>(
         )
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_pointer_value();
 
     // Update capacity in new header

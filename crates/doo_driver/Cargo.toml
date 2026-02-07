@@ -15,7 +15,7 @@ doo_codegen = { path = "../doo_codegen" }
 doo_diagnostics = { path = "../doo_diagnostics" }
 
 # LLVM bindings (must match doo_codegen)
-inkwell = { version = "0.6.0", features = ["llvm18-1"] }
+inkwell = { version = "0.8.0", features = ["llvm18-1"] }
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }

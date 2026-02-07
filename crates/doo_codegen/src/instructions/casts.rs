@@ -59,7 +59,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                                 .build_call(cast_fn, &[source_val.into()], "cast_str_int")
                                 .ok()?
                                 .try_as_basic_value()
-                                .left()?
+                                .basic()?
                                 .into(),
                         )
                     } else if target_type_id == builtin::FLOAT {
@@ -85,7 +85,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                                 .build_call(cast_fn, &[source_val.into()], "cast_str_float")
                                 .ok()?
                                 .try_as_basic_value()
-                                .left()?
+                                .basic()?
                                 .into(),
                         )
                     } else {
@@ -332,7 +332,7 @@ fn emit_string_from_value<'ctx>(
         .build_call(snprintf, &call_args, "len")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_int_value();
 
     let len_i64 = ctx
@@ -350,7 +350,7 @@ fn emit_string_from_value<'ctx>(
         .build_call(malloc, &[size.into()], "buf")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_pointer_value();
 
     // Actual format

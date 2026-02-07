@@ -432,7 +432,7 @@ impl MapBuiltins {
             .build_call(realloc_fn, &[header_ptr.into(), total.into()], "realloc")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
         // Store length as i64 (header expects i64)
         let new_len_i64_store = ctx
@@ -513,3 +513,4 @@ use crate::layout::{
     set_map_length_from_data,
     load_len_i32, data_ptr_from_header, header_ptr_from_data, store_len, store_len_at_header
 };
+

@@ -780,7 +780,7 @@ impl ArrayBuiltins {
             .build_call(strlen, &[sep_ptr.into()], "sep_len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         // total = elem_total + (len-1)*sep_len + 1
@@ -847,7 +847,7 @@ impl ArrayBuiltins {
                 .build_call(strlen, &[elem.into()], "elen")
                 .ok()?
                 .try_as_basic_value()
-                .left()?
+                .basic()?
                 .into_int_value();
             let total2 = ctx.builder.build_int_add(total, elen, "total2").ok()?;
             ctx.builder.build_store(total_alloca, total2).ok()?;
@@ -884,7 +884,7 @@ impl ArrayBuiltins {
             .build_call(malloc, &[total.into()], "join_out")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Calculate buffer end for bounds checking with snprintf
@@ -973,7 +973,7 @@ impl ArrayBuiltins {
                 .build_call(strlen, &[elem.into()], "elen")
                 .ok()?
                 .try_as_basic_value()
-                .left()?
+                .basic()?
                 .into_int_value();
             ctx.builder
                 .build_call(memcpy, &[cursor.into(), elem.into(), elen.into()], "")
@@ -1069,7 +1069,7 @@ impl ArrayBuiltins {
                 .build_call(snprintf, &snprintf_args, "snprintf")
                 .ok()?
                 .try_as_basic_value()
-                .left()?
+                .basic()?
                 .into_int_value();
             let written64 = ctx
                 .builder
@@ -1205,7 +1205,7 @@ impl ArrayBuiltins {
             .build_call(doo_alloc, &[alloc_size.into()], "map_result")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Store header: length and capacity (both i64)
@@ -1329,7 +1329,7 @@ impl ArrayBuiltins {
             .build_call(doo_alloc, &[alloc_size.into()], "filter_result")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // We'll store the initial capacity, length will be set at the end
@@ -1665,5 +1665,6 @@ fn call_closure<'ctx>(
         .builder
         .build_indirect_call(fn_type, fn_ptr_typed, &call_args, "closure_call")
         .ok()?;
-    result.try_as_basic_value().left()
+    result.try_as_basic_value().basic()
 }
+

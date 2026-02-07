@@ -210,7 +210,7 @@ fn emit_binop<'ctx>(
             .build_call(strcmp, &[lhs_ptr.into(), rhs_ptr.into()], "strcmp_result")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         // strcmp returns 0 if equal
@@ -482,14 +482,14 @@ fn emit_string_concat<'ctx>(
         .build_call(strlen, &[str1_ptr.into()], "len1")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_int_value();
     let len2 = ctx
         .builder
         .build_call(strlen, &[str2_ptr.into()], "len2")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_int_value();
 
     // Allocate len1 + len2 + 1 bytes
@@ -508,7 +508,7 @@ fn emit_string_concat<'ctx>(
         .build_call(malloc, &[size.into()], "concat")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_pointer_value();
 
     // Copy first string
@@ -657,7 +657,7 @@ fn value_to_string<'ctx>(
         .build_call(snprintf, &call_args, "len")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_int_value();
 
     let len_i64 = ctx
@@ -675,7 +675,7 @@ fn value_to_string<'ctx>(
         .build_call(malloc, &[size.into()], "str_buf")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_pointer_value();
 
     // Format the value into the buffer
@@ -686,3 +686,4 @@ fn value_to_string<'ctx>(
 
     Some(buf.into())
 }
+

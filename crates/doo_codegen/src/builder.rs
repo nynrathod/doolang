@@ -1005,7 +1005,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             .builder
                             .build_call(malloc_fn, &[size.into()], "tuple_alloc")
                             .ok()
-                            .and_then(|call| call.try_as_basic_value().left())
+                            .and_then(|call| call.try_as_basic_value().basic())
                             .map(|v| v.into_pointer_value());
 
                         if let Some(tuple_ptr) = tuple_ptr {
@@ -1208,3 +1208,4 @@ impl<'ctx> CodegenBuilder<'ctx> {
         }
     }
 }
+

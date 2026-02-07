@@ -585,7 +585,7 @@ dependencies = [
  "ctrlc",
  "dialoguer",
  "doo_driver",
- "inkwell 0.8.0",
+ "inkwell",
  "llvm-sys",
  "regex",
  "serde",
@@ -611,7 +611,7 @@ version = "0.1.0"
 dependencies = [
  "doo_core",
  "doo_mir",
- "inkwell 0.6.0",
+ "inkwell",
  "pretty_assertions",
  "rustc-hash 1.1.0",
  "serde",
@@ -656,7 +656,7 @@ dependencies = [
  "doo_frontend",
  "doo_hir",
  "doo_mir",
- "inkwell 0.6.0",
+ "inkwell",
  "serde",
  "serde_json",
  "tempfile",
@@ -802,12 +802,6 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
-
-[[package]]
-name = "either"
-version = "1.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "elliptic-curve"
@@ -1256,40 +1250,15 @@ dependencies = [
 
 [[package]]
 name = "inkwell"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e67349bd7578d4afebbe15eaa642a80b884e8623db74b1716611b131feb1deef"
-dependencies = [
- "either",
- "inkwell_internals 0.11.0",
- "libc",
- "llvm-sys",
- "once_cell",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "inkwell"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1def4112dfb2ce2993db7027f7acdb43c1f4ee1c70a082a2eef306ed5d0df365"
 dependencies = [
- "inkwell_internals 0.13.0",
+ "inkwell_internals",
  "libc",
  "llvm-sys",
  "once_cell",
  "thiserror 2.0.17",
-]
-
-[[package]]
-name = "inkwell_internals"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f365c8de536236cfdebd0ba2130de22acefed18b1fb99c32783b3840aec5fb46"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]

@@ -151,7 +151,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 let call_site = ctx.builder.build_call(func_val, &arg_vals, "call").ok()?;
 
                 if let Some(dest_name) = dest {
-                    if let Some(ret_val) = call_site.try_as_basic_value().left() {
+                    if let Some(ret_val) = call_site.try_as_basic_value().basic() {
                         ctx.set_temp(dest_name, ret_val);
                         return Some(ret_val);
                     }
@@ -395,7 +395,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                             ctx.builder.build_call(func_val, &all_args, "mcall").ok()?;
 
                         if let Some(dest_name) = dest {
-                            if let Some(ret_val) = call_site.try_as_basic_value().left() {
+                            if let Some(ret_val) = call_site.try_as_basic_value().basic() {
                                 ctx.set_temp(dest_name, ret_val);
                                 // CRITICAL: Set variable type from return_type for proper type tracking
                                 // This enables field access on method return values (e.g., dir.list()[0].Name)
@@ -2696,7 +2696,7 @@ fn try_convert_enum_array_to_json_string<'ctx>(
                 )
                 .ok()?
                 .try_as_basic_value()
-                .left()?;
+                .basic()?;
             
             return Some(result.into_pointer_value());
         }
@@ -2778,7 +2778,7 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
             .build_call(strlen, &[buffer.into()], "cur_len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
         let write_pos = unsafe {
             ctx.builder.build_gep(i8_type, buffer, &[current_len], "write_pos")
@@ -2794,7 +2794,7 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
                 .build_call(strlen, &[buffer.into()], "cur_len2")
                 .ok()?
                 .try_as_basic_value()
-                .left()?
+                .basic()?
                 .into_int_value();
             let write_pos = unsafe {
                 ctx.builder.build_gep(i8_type, buffer, &[current_len], "write_pos2")
@@ -2820,7 +2820,7 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
             .build_call(strlen, &[buffer.into()], "cur_len3")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
         let write_pos = unsafe {
             ctx.builder.build_gep(i8_type, buffer, &[current_len], "write_pos3")
@@ -2864,7 +2864,7 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
         .build_call(strlen, &[buffer.into()], "final_len")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_int_value();
     let write_pos = unsafe {
         ctx.builder.build_gep(i8_type, buffer, &[current_len], "final_pos")
@@ -3032,14 +3032,14 @@ fn emit_ffi_call<'ctx>(
 
     // Handle return value
     if let Some(dest_name) = dest {
-        if let Some(ret_val) = call_site.try_as_basic_value().left() {
+        if let Some(ret_val) = call_site.try_as_basic_value().basic() {
             ctx.set_temp(dest_name, ret_val);
             return Some(ret_val);
         }
     }
 
     // For void functions, return None
-    call_site.try_as_basic_value().left()
+    call_site.try_as_basic_value().basic()
 }
 
 /// Extract route context from FFI call arguments.
@@ -3259,26 +3259,26 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             ctx.builder
                 .build_call(user_func, &[], "user_call")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
         } else if user_param_count == 1 {
             // FFI function with 1 param (e.g., request)
             ctx.builder
                 .build_call(user_func, &[request_ptr.into()], "user_call")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
         } else if user_param_count == 2 && (is_middleware || is_ffi_middleware) {
             // FFI middleware with 2 params (request, next)
             let next_fn_ptr = wrapper_fn.get_nth_param(1).unwrap().into_pointer_value();
             ctx.builder
                 .build_call(user_func, &[request_ptr.into(), next_fn_ptr.into()], "user_call")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
         } else {
             // Fallback: try with request only
             ctx.builder
                 .build_call(user_func, &[request_ptr.into()], "user_call")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
         }
     } else if is_middleware {
         // Middleware function: fn(Request, Next) -> Response
@@ -3289,13 +3289,13 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
         ctx.builder
             .build_call(user_func, &[request_ptr.into(), next_fn_ptr.into()], "user_call")
             .ok()
-            .and_then(|cs| cs.try_as_basic_value().left())
+            .and_then(|cs| cs.try_as_basic_value().basic())
     } else if user_param_count == 0 {
         // Simple handler: fn() -> Str - no validation needed
         ctx.builder
             .build_call(user_func, &[], "user_call")
             .ok()
-            .and_then(|cs| cs.try_as_basic_value().left())
+            .and_then(|cs| cs.try_as_basic_value().basic())
     } else {
         // Handler with struct parameter: validate request body first
         // Get or declare doohttp_populate_struct_from_request
@@ -3325,7 +3325,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 "validate_result",
             )
             .ok()
-            .and_then(|cs| cs.try_as_basic_value().left())
+            .and_then(|cs| cs.try_as_basic_value().basic())
             .map(|v| v.into_int_value())
             .unwrap_or_else(|| i32_type.const_int(0, false));
         
@@ -3366,14 +3366,14 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             let error_status = ctx.builder
                 .build_call(get_status_fn, &[], "error_status")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
                 .map(|v| v.into_int_value())
                 .unwrap_or_else(|| i32_type.const_int(400, false));
             
             let error_json = ctx.builder
                 .build_call(get_json_fn, &[], "error_json")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
                 .map(|v| v.into_pointer_value())
                 .unwrap_or_else(|| ptr_type.const_null());
             
@@ -3386,7 +3386,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             let error_response_ptr = ctx.builder
                 .build_call(malloc_fn, &[error_response_size.into()], "error_response")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
                 .map(|v| v.into_pointer_value())
                 .unwrap_or_else(|| ptr_type.const_null());
             
@@ -3409,7 +3409,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             let error_result_ptr = ctx.builder
                 .build_call(malloc_fn, &[result_size.into()], "error_result")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
                 .map(|v| v.into_pointer_value())
                 .unwrap_or_else(|| ptr_type.const_null());
             
@@ -3451,7 +3451,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             ctx.builder
                 .build_call(user_func, &[request_ptr.into()], "user_call")
                 .ok()
-                .and_then(|cs| cs.try_as_basic_value().left())
+                .and_then(|cs| cs.try_as_basic_value().basic())
         } else {
             // User function expects parsed struct(s) - handle single and multi-param cases
             // DooRequest layout: { *method, *path, *body, *headers, *params, *query, *user_id }
@@ -3528,7 +3528,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     let field_value = ctx.builder
                         .build_call(json_get_field_fn, &[params_json.into(), field_name_str.into()], "field_json")
                         .ok()
-                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .and_then(|cs| cs.try_as_basic_value().basic())
                         .map(|v| v.into_pointer_value())
                         .unwrap_or_else(|| ptr_type.const_null());
                     
@@ -3559,7 +3559,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 ctx.builder
                     .build_call(user_func, &call_args, "user_call")
                     .ok()
-                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .and_then(|cs| cs.try_as_basic_value().basic())
             } else {
                 // Fallback to passing request_ptr if parsing fails
                 if debug {
@@ -3608,7 +3608,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
         let doo_result_ptr = ctx.builder
             .build_call(malloc_fn, &[result_size.into()], "doo_result")
             .ok()
-            .and_then(|cs| cs.try_as_basic_value().left())
+            .and_then(|cs| cs.try_as_basic_value().basic())
             .map(|v| v.into_pointer_value())
             .unwrap_or_else(|| ptr_type.const_null());
         
@@ -3747,7 +3747,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                             "http_status"
                         )
                         .ok()
-                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .and_then(|cs| cs.try_as_basic_value().basic())
                         .map(|v| v.into_int_value())
                         .unwrap_or_else(|| i32_type.const_int(500, false));
                     
@@ -3765,7 +3765,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     let error_json_ptr = ctx.builder
                         .build_call(build_error_fn, &[http_status.into(), variant_name_ptr.into()], "error_json")
                         .ok()
-                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .and_then(|cs| cs.try_as_basic_value().basic())
                         .map(|v| v.into_pointer_value())
                         .unwrap_or_else(|| ptr_type.const_null());
                     
@@ -3778,7 +3778,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     let error_response_ptr = ctx.builder
                         .build_call(malloc_fn, &[error_response_size.into()], "error_response")
                         .ok()
-                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .and_then(|cs| cs.try_as_basic_value().basic())
                         .map(|v| v.into_pointer_value())
                         .unwrap_or_else(|| ptr_type.const_null());
                     
@@ -3853,7 +3853,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         ctx.builder
                             .build_call(serialize_fn, &[response_ptr.into(), handler_name_str.into()], "serialized_fallback")
                             .ok()
-                            .and_then(|cs| cs.try_as_basic_value().left())
+                            .and_then(|cs| cs.try_as_basic_value().basic())
                             .map(|v| v.into_pointer_value())
                             .unwrap_or_else(|| ptr_type.const_null())
                     };
@@ -3913,7 +3913,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     ctx.builder
                         .build_call(serialize_fn, &[response_ptr.into(), handler_name_str.into()], "serialized_direct")
                         .ok()
-                        .and_then(|cs| cs.try_as_basic_value().left())
+                        .and_then(|cs| cs.try_as_basic_value().basic())
                         .map(|v| v.into_pointer_value())
                         .unwrap_or_else(|| ptr_type.const_null())
                 };
@@ -3970,7 +3970,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
         let doo_result_ptr = ctx.builder
             .build_call(malloc_fn, &[result_size.into()], "doo_result")
             .ok()
-            .and_then(|cs| cs.try_as_basic_value().left())
+            .and_then(|cs| cs.try_as_basic_value().basic())
             .map(|v| v.into_pointer_value())
             .unwrap_or_else(|| ptr_type.const_null());
         
@@ -4027,7 +4027,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 let json_ptr = ctx.builder
                     .build_call(serialize_fn, &[value.into(), handler_name_str.into()], "serialized_json")
                     .ok()
-                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .and_then(|cs| cs.try_as_basic_value().basic())
                     .map(|v| v.into_pointer_value())
                     .unwrap_or_else(|| ptr_type.const_null());
                 
@@ -4057,7 +4057,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 let error_json_str = ctx.builder
                     .build_call(format_error_fn, &[value.into()], "formatted_error_json")
                     .ok()
-                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .and_then(|cs| cs.try_as_basic_value().basic())
                     .map(|v| v.into_pointer_value())
                     .unwrap_or_else(|| ctx.const_string("{\"error\": \"Internal server error\"}"));
                 
@@ -4070,7 +4070,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 let error_response_ptr = ctx.builder
                     .build_call(malloc_fn, &[error_response_size.into()], "error_response")
                     .ok()
-                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .and_then(|cs| cs.try_as_basic_value().basic())
                     .map(|v| v.into_pointer_value())
                     .unwrap_or_else(|| ptr_type.const_null());
                 
@@ -4155,7 +4155,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 let json_ptr = ctx.builder
                     .build_call(serialize_fn, &[struct_ptr.into(), handler_name_str.into()], "serialized_json")
                     .ok()
-                    .and_then(|cs| cs.try_as_basic_value().left())
+                    .and_then(|cs| cs.try_as_basic_value().basic())
                     .map(|v| v.into_pointer_value())
                     .unwrap_or_else(|| ptr_type.const_null());
                 
@@ -4178,7 +4178,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
     let result_ptr = ctx.builder
         .build_call(malloc_fn, &[result_size.into()], "result_alloc")
         .ok()
-        .and_then(|cs| cs.try_as_basic_value().left())
+        .and_then(|cs| cs.try_as_basic_value().basic())
         .map(|v| v.into_pointer_value())
         .unwrap_or_else(|| ptr_type.const_null());
     

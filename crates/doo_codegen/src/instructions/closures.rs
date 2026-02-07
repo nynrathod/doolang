@@ -95,7 +95,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                     .build_call(doo_alloc, &[closure_size.into()], "closure_alloc")
                     .ok()?
                     .try_as_basic_value()
-                    .left()?
+                    .basic()?
                     .into_pointer_value();
                 let closure_ptr = ctx
                     .builder
@@ -116,7 +116,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                         .build_call(doo_alloc, &[env_size.into()], "closure_env_alloc")
                         .ok()?
                         .try_as_basic_value()
-                        .left()?
+                        .basic()?
                         .into_pointer_value();
 
                     let env_i64_ptr = ctx
@@ -261,7 +261,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                     .builder
                     .build_indirect_call(fn_type, fn_ptr_typed, &call_args, "closure_call")
                     .ok()?;
-                let result = call_site.try_as_basic_value().left()?;
+                let result = call_site.try_as_basic_value().basic()?;
 
                 if let Some(dest_name) = dest {
                     ctx.set_temp(dest_name, result);

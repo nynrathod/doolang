@@ -139,7 +139,7 @@ fn emit_str_eq<'ctx>(
         .build_call(strcmp, &[lhs.into(), rhs.into()], "strcmp_result")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_int_value();
 
     ctx.builder

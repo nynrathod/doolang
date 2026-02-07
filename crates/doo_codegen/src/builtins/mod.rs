@@ -106,7 +106,7 @@ fn emit_int_method<'ctx>(
                 .build_call(malloc, &[size.into()], "char_str")
                 .ok()?
                 .try_as_basic_value()
-                .left()?
+                .basic()?
                 .into_pointer_value();
             
             // Truncate to i8 and store
@@ -137,3 +137,4 @@ fn emit_int_method<'ctx>(
     
     result
 }
+

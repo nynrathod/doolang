@@ -318,7 +318,7 @@ fn clone_string<'ctx>(
         .build_call(strlen_fn, &[src_ptr.into()], "len")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_int_value();
 
     // size = len + 1 (for null terminator)
@@ -333,7 +333,7 @@ fn clone_string<'ctx>(
         .build_call(malloc_fn, &[size.into()], "dst")
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_pointer_value();
 
     // memcpy(dst, src, size)
@@ -415,7 +415,7 @@ fn clone_struct<'ctx>(
         )
         .ok()?
         .try_as_basic_value()
-        .left()?
+        .basic()?
         .into_pointer_value();
 
     // Copy each field
@@ -1541,3 +1541,4 @@ mod tests {
         assert_eq!(get_operand_name(&const_val), None);
     }
 }
+

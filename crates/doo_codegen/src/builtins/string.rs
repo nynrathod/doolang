@@ -58,7 +58,7 @@ impl StringBuiltins {
             .build_call(strlen, &[str_ptr.into()], "strlen")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
         // Return i64 directly since Doo Int is i64
         Some(len_i64.into())
@@ -85,7 +85,7 @@ impl StringBuiltins {
             .build_call(malloc, &[size.into()], "char_str")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Get character at index (byte-wise)
@@ -153,7 +153,7 @@ impl StringBuiltins {
             .build_call(malloc, &[size.into()], "substr")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Copy substring
@@ -209,14 +209,14 @@ impl StringBuiltins {
             .build_call(strlen, &[str_ptr.into()], "len1")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
         let len2 = ctx
             .builder
             .build_call(strlen, &[other_ptr.into()], "len2")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         // Allocate len1 + len2 + 1
@@ -235,7 +235,7 @@ impl StringBuiltins {
             .build_call(malloc, &[size.into()], "concat")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Copy first string
@@ -287,7 +287,7 @@ impl StringBuiltins {
             .build_call(strstr, &[str_ptr.into(), needle_ptr.into()], "found")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Calculate index: found_ptr - str_ptr, or -1 if not found
@@ -329,7 +329,7 @@ impl StringBuiltins {
             .build_call(strlen, &[str_ptr.into()], "len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
         let size = ctx
             .builder
@@ -341,7 +341,7 @@ impl StringBuiltins {
             .build_call(malloc, &[size.into()], "case_str")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Generate loop to convert each character
@@ -485,21 +485,21 @@ impl StringBuiltins {
             .build_call(strlen, &[str_ptr.into()], "hay_len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
         let old_len = ctx
             .builder
             .build_call(strlen, &[old_ptr.into()], "old_len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
         let new_len = ctx
             .builder
             .build_call(strlen, &[new_ptr.into()], "new_len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         let found_ptr = ctx
@@ -507,7 +507,7 @@ impl StringBuiltins {
             .build_call(strstr, &[str_ptr.into(), old_ptr.into()], "found")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
         let is_null = ctx.builder.build_is_null(found_ptr, "is_null").ok()?;
 
@@ -541,7 +541,7 @@ impl StringBuiltins {
             .build_call(malloc, &[size.into()], "out")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
         ctx.builder
             .build_call(memcpy, &[out_ptr.into(), str_ptr.into(), size.into()], "")
@@ -588,7 +588,7 @@ impl StringBuiltins {
             .build_call(malloc, &[total.into()], "out")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // copy prefix
@@ -683,7 +683,7 @@ impl StringBuiltins {
             .build_call(strlen, &[str_ptr.into()], "len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
@@ -826,7 +826,7 @@ impl StringBuiltins {
             .build_call(malloc, &[size.into()], "trim_out")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
         let src_ptr = unsafe {
             ctx.builder
@@ -897,7 +897,7 @@ impl StringBuiltins {
             .build_call(strlen, &[str_ptr.into()], "len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
         let size = ctx
             .builder
@@ -909,7 +909,7 @@ impl StringBuiltins {
             .build_call(malloc, &[size.into()], "rev_str")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Loop to copy in reverse
@@ -1003,7 +1003,7 @@ impl StringBuiltins {
             .build_call(strstr, &[str_ptr.into(), needle_ptr.into()], "found")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         let is_null = ctx.builder.build_is_null(found, "is_null").ok()?;
@@ -1034,7 +1034,7 @@ impl StringBuiltins {
             .build_call(strlen, &[prefix_ptr.into()], "plen")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         let cmp = ctx
@@ -1046,7 +1046,7 @@ impl StringBuiltins {
             )
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         let is_eq = ctx
@@ -1083,7 +1083,7 @@ impl StringBuiltins {
             .build_call(strlen, &[str_ptr.into()], "slen")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         let suffix_len = ctx
@@ -1091,7 +1091,7 @@ impl StringBuiltins {
             .build_call(strlen, &[suffix_ptr.into()], "suflen")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         let offset = ctx
@@ -1114,7 +1114,7 @@ impl StringBuiltins {
             )
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         let is_eq = ctx
@@ -1152,7 +1152,7 @@ impl StringBuiltins {
             .build_call(strlen, &[str_ptr.into()], "len")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         let n_i64 = ctx
@@ -1174,7 +1174,7 @@ impl StringBuiltins {
             .build_call(malloc, &[size.into()], "repeat")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Loop to copy n times
@@ -1276,7 +1276,7 @@ impl StringBuiltins {
             .build_call(strlen, &[needle_ptr.into()], "nlen")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_int_value();
 
         // Loop to count occurrences
@@ -1314,7 +1314,7 @@ impl StringBuiltins {
             .build_call(strstr, &[curr_ptr.into(), needle_ptr.into()], "found")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
         let is_null = ctx.builder.build_is_null(found, "is_null").ok()?;
         ctx.builder
@@ -1427,3 +1427,4 @@ fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::F
             ctx.module.add_function(ffi_names::MEMCPY, fn_type, None)
         })
 }
+

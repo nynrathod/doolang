@@ -234,7 +234,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     )
                     .ok()?
                     .try_as_basic_value()
-                    .left()?
+                    .basic()?
                     .into_pointer_value();
 
                 // Get field type IDs for proper boxing
@@ -514,3 +514,4 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
         }
     }
 }
+

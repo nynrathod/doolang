@@ -26,7 +26,7 @@ impl JsonBuiltins {
             .build_call(new_fn, &[], "json_writer")
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // 3. Emit recursive write
@@ -38,7 +38,7 @@ impl JsonBuiltins {
             .build_call(finish_fn, &[writer_ptr.into()], "json_str")
             .ok()?
             .try_as_basic_value()
-            .left()?;
+            .basic()?;
 
         // Note: doo_json_writer_finish already frees the writer via Box::from_raw
         // Do NOT call free here - that would be a double-free!
@@ -193,7 +193,7 @@ impl JsonBuiltins {
         });
 
         let call = ctx.builder.build_call(func, &[val.into()], "parsed").ok()?;
-        call.try_as_basic_value().left()
+        call.try_as_basic_value().basic()
     }
 
     /// Emit code to parse JSON into a struct
@@ -247,7 +247,7 @@ impl JsonBuiltins {
             )
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // For each field, extract JSON and recursively parse
@@ -265,7 +265,7 @@ impl JsonBuiltins {
                 )
                 .ok()?
                 .try_as_basic_value()
-                .left()?;
+                .basic()?;
 
             // Recursively parse the field value
             let field_val = Self::emit_parse(ctx, field_json, Some(*fty))?;
@@ -340,7 +340,7 @@ impl JsonBuiltins {
             .build_call(get_variant_name_fn, &[json_str.into()], "variant_name")
             .ok()?
             .try_as_basic_value()
-            .left()?;
+            .basic()?;
 
         // CRITICAL: Use HEAP allocation (malloc) NOT stack allocation (alloca)
         // Stack allocations become invalid when the pointer escapes the function.
@@ -366,7 +366,7 @@ impl JsonBuiltins {
             )
             .ok()?
             .try_as_basic_value()
-            .left()?
+            .basic()?
             .into_pointer_value();
 
         // Build comparison chain for each variant
@@ -395,7 +395,7 @@ impl JsonBuiltins {
                 )
                 .ok()?
                 .try_as_basic_value()
-                .left()?
+                .basic()?
                 .into_int_value();
             let is_match = ctx
                 .builder
@@ -435,7 +435,7 @@ impl JsonBuiltins {
                     .build_call(get_variant_payload_fn, &[json_str.into()], "payload_json")
                     .ok()?
                     .try_as_basic_value()
-                    .left()?;
+                    .basic()?;
 
                 let payload_val = Self::emit_parse(ctx, payload_json, Some(*pty))?;
 
@@ -467,7 +467,7 @@ impl JsonBuiltins {
                         )
                         .ok()?
                         .try_as_basic_value()
-                        .left()?
+                        .basic()?
                         .into_pointer_value();
                     ctx.builder
                         .build_store(payload_heap_ptr, payload_val)
@@ -1551,3 +1551,4 @@ impl JsonBuiltins {
         ctx.module.add_function("strcmp", ft, None)
     }
 }
+

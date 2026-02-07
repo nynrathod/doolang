@@ -228,7 +228,7 @@ fn emit_enum_create<'ctx>(
                     )
                     .ok()?
                     .try_as_basic_value()
-                    .left()?
+                    .basic()?
                     .into_pointer_value();
                 ctx.builder.build_store(heap_ptr, payload_val).ok()?;
                 heap_ptr

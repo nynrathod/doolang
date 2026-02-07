@@ -439,7 +439,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .build_call(doo_realloc, &[header_ptr.into(), total.into()], "realloc")
                     .ok()?
                     .try_as_basic_value()
-                    .left()?
+                    .basic()?
                     .into_pointer_value();
                 // Store length as i64 (header expects i64)
                 let new_len_i64_for_store = ctx
@@ -582,3 +582,4 @@ mod tests {
         assert!(!handler.handles(&instr));
     }
 }
+

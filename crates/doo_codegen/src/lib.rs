@@ -28,4 +28,7 @@ pub mod utils;
 
 pub use builder::CodegenBuilder;
 pub use context::{CodegenContext, CrossModuleResolver, ExternalFunction, LinkError, ModuleLinker};
-pub use optimize::{optimize_module, OptLevel};
+pub use optimize::{
+    optimize_module, optimize_module_default, optimize_module_none, optimize_module_size,
+    optimize_module_with_config, OptLevel, OptimizationConfig,
+};

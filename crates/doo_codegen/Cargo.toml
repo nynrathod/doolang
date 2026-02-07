@@ -10,7 +10,7 @@ doo_core = { path = "../doo_core" }
 doo_mir = { path = "../doo_mir" }
 
 # LLVM bindings
-inkwell = { version = "0.6.0", features = ["llvm18-1"] }
+inkwell = { version = "0.8.0", features = ["llvm18-1"] }
 
 # Data structures
 rustc-hash = "1.1"
