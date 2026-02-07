@@ -1,6 +1,7 @@
 use crate::context::CodegenContext;
 use crate::layout;
 use doo_core::constants::ffi_names;
+use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId, TypeKind};
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
@@ -59,15 +60,14 @@ impl JsonBuiltins {
         if let Some(ty) = target_type {
             let kind = ctx.get_type_kind(ty);
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!(
-                    "[CODEGEN] emit_parse: target_type={:?}, kind={:?}",
+                doo_debug!("CODEGEN", "emit_parse: target_type={:?}, kind={:?}",
                     ty, kind
                 );
             }
             match kind {
                 Some(TypeKind::Struct { name, fields }) => {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[CODEGEN] emit_parse -> emit_parse_struct for '{}'", name);
+                        doo_debug!("CODEGEN", "emit_parse -> emit_parse_struct for '{}'", name);
                     }
                     // Extract just name and type for parsing (visibility not needed)
                     let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -75,7 +75,7 @@ impl JsonBuiltins {
                 }
                 Some(TypeKind::Enum { name, variants }) => {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[CODEGEN] emit_parse -> emit_parse_enum for '{}'", name);
+                        doo_debug!("CODEGEN", "emit_parse -> emit_parse_enum for '{}'", name);
                     }
                     return Self::emit_parse_enum(ctx, val, ty, &name, &variants);
                 }
@@ -180,8 +180,7 @@ impl JsonBuiltins {
         };
 
         if std::env::var("DOO_DEBUG").is_ok() {
-            eprintln!(
-                "[CODEGEN] JSON.parse: target_type={:?}, fn_name={}, ret_type={:?}",
+            doo_debug!("CODEGEN", "JSON.parse: target_type={:?}, fn_name={}, ret_type={:?}",
                 target_type, fn_name, ret_type
             );
         }
@@ -283,8 +282,7 @@ impl JsonBuiltins {
             // Check if this is an enum type (returns struct type, not pointer)
             let kind = ctx.get_type_kind(*fty);
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!(
-                    "[CODEGEN] emit_parse_struct field '{}': type_id={:?}, kind={:?}",
+                doo_debug!("CODEGEN", "emit_parse_struct field '{}': type_id={:?}, kind={:?}",
                     fname, fty, kind
                 );
             }
@@ -1551,4 +1549,3 @@ impl JsonBuiltins {
         ctx.module.add_function("strcmp", ft, None)
     }
 }
-

@@ -2,6 +2,7 @@
 //! High-performance routing with matchit, middleware chains, and handler metadata.
 
 use crate::types::*;
+use doo_ffi_core::ffi_debug;
 use matchit::Router as MatchitRouter;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -80,14 +81,14 @@ impl RouteRegistry {
         match router.insert(path, entry) {
             Ok(_) => {
                 self.route_count += 1;
-                eprintln!(
-                    "[ROUTER] Registered: {} {} (total: {})",
+                ffi_debug!(
+                    "ROUTER", "Registered: {} {} (total: {})",
                     method_upper, path, self.route_count
                 );
             }
             Err(e) => {
-                eprintln!(
-                    "[ROUTER] Failed to register {} {}: {:?}",
+                ffi_debug!(
+                    "ROUTER", "Failed to register {} {}: {:?}",
                     method_upper, path, e
                 );
             }
@@ -158,14 +159,14 @@ impl RouteRegistry {
         match router.insert(path, entry) {
             Ok(_) => {
                 self.route_count += 1;
-                eprintln!(
-                    "[ROUTER] Registered (w/ middleware): {} {} (total: {})",
+                ffi_debug!(
+                    "ROUTER", "Registered (w/ middleware): {} {} (total: {})",
                     method_upper, path, self.route_count
                 );
             }
             Err(e) => {
-                eprintln!(
-                    "[ROUTER] Failed to register {} {}: {:?}",
+                ffi_debug!(
+                    "ROUTER", "Failed to register {} {}: {:?}",
                     method_upper, path, e
                 );
             }
@@ -208,8 +209,8 @@ impl RouteRegistry {
         let method_upper = method.to_uppercase();
 
         // Debug: list all routers and their state
-        eprintln!(
-            "[ROUTER DEBUG] Looking for {} in routers. Available methods: {:?}",
+        ffi_debug!(
+            "ROUTER", "Looking for {} in routers. Available methods: {:?}",
             method_upper,
             self.routers.keys().collect::<Vec<_>>()
         );
@@ -217,13 +218,13 @@ impl RouteRegistry {
         let router = match self.routers.get(&method_upper) {
             Some(r) => r,
             None => {
-                eprintln!("[ROUTER] No router for method: {}", method_upper);
+                ffi_debug!("ROUTER", "No router for method: {}", method_upper);
                 return None;
             }
         };
 
-        eprintln!(
-            "[ROUTER DEBUG] Found router for {}, attempting match on '{}'",
+        ffi_debug!(
+            "ROUTER", "Found router for {}, attempting match on '{}'",
             method_upper, path
         );
 
@@ -234,14 +235,14 @@ impl RouteRegistry {
                     .iter()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect();
-                eprintln!(
-                    "[ROUTER] Matched: {} {} -> params: {:?}",
+                ffi_debug!(
+                    "ROUTER", "Matched: {} {} -> params: {:?}",
                     method_upper, path, params
                 );
                 Some((matched.value, params))
             }
             Err(e) => {
-                eprintln!("[ROUTER] No match for {} {}: {:?}", method_upper, path, e);
+                ffi_debug!("ROUTER", "No match for {} {}: {:?}", method_upper, path, e);
                 None
             }
         }

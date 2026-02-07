@@ -41,6 +41,9 @@ default-run = "doo"
 # New compiler driver (Phase 10)
 doo_driver = { path = "crates/doo_driver" }
 
+# Core types and debug infrastructure
+doo_core = { path = "crates/doo_core" }
+
 # Legacy dependencies (will be phased out)
 inkwell = { version = "0.8.0", features = ["llvm18-1"] }
 llvm-sys = "=181.2.0"

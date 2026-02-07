@@ -9,6 +9,7 @@
 //! - Struct fields follow the struct's visibility by default
 //! - Enum variants are always accessible if the enum is accessible
 
+use doo_core::doo_debug;
 use doo_core::Span;
 use std::collections::HashMap;
 
@@ -291,8 +292,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                     ..
                 } => {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!(
-                            "[VISIBILITY] Processing Let: {} type_id={:?}",
+                        doo_debug!("VISIBILITY", "Processing Let: {} type_id={:?}",
                             name, type_id
                         );
                     }
@@ -304,8 +304,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                             } = &info.kind
                             {
                                 if std::env::var("DOO_DEBUG").is_ok() {
-                                    eprintln!(
-                                        "[VISIBILITY] Let {} has struct type {} from type_id",
+                                    doo_debug!("VISIBILITY", "Let {} has struct type {} from type_id",
                                         name, struct_name
                                     );
                                 }
@@ -317,14 +316,13 @@ impl<'a> FieldVisibilityChecker<'a> {
                         // Try to infer from value expression
                         if let Some(struct_name) = self.get_expr_struct_type(value) {
                             if std::env::var("DOO_DEBUG").is_ok() {
-                                eprintln!(
-                                    "[VISIBILITY] Let {} has struct type {} from expression",
+                                doo_debug!("VISIBILITY", "Let {} has struct type {} from expression",
                                     name, struct_name
                                 );
                             }
                             self.local_struct_types.insert(name.clone(), struct_name);
                         } else if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[VISIBILITY] Let {} could not determine struct type, value kind={:?}", name, std::mem::discriminant(&value.kind));
+                            doo_debug!("VISIBILITY", "Let {} could not determine struct type, value kind={:?}", name, std::mem::discriminant(&value.kind));
                         }
                     }
                 }
@@ -359,8 +357,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                     HirExprKind::Local { name, .. } => Some(name.as_str()),
                     _ => {
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!(
-                                "[VISIBILITY] Call func is not Global/Local, kind={:?}",
+                            doo_debug!("VISIBILITY", "Call func is not Global/Local, kind={:?}",
                                 std::mem::discriminant(&func.kind)
                             );
                         }
@@ -370,8 +367,7 @@ impl<'a> FieldVisibilityChecker<'a> {
 
                 if let Some(name) = func_name {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!(
-                            "[VISIBILITY] Call to func '{}', imported_structs={:?}",
+                        doo_debug!("VISIBILITY", "Call to func '{}', imported_structs={:?}",
                             name, self.imported_structs
                         );
                     }
@@ -398,8 +394,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                         for struct_name in self.imported_structs.iter() {
                             if struct_name.ends_with(after_create) {
                                 if std::env::var("DOO_DEBUG").is_ok() {
-                                    eprintln!(
-                                        "[VISIBILITY] Matched Create{} to struct {} (ends_with)",
+                                    doo_debug!("VISIBILITY", "Matched Create{} to struct {} (ends_with)",
                                         after_create, struct_name
                                     );
                                 }
@@ -417,14 +412,14 @@ impl<'a> FieldVisibilityChecker<'a> {
             // Clone/Move pass through the inner type
             HirExprKind::Clone(inner) | HirExprKind::Move(inner) => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[VISIBILITY] Looking through Clone/Move wrapper");
+                    doo_debug!("VISIBILITY", "Looking through Clone/Move wrapper");
                 }
                 self.get_expr_struct_type(inner)
             }
             // Try expression - unwrap the inner Result type
             HirExprKind::Try(inner) => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[VISIBILITY] Looking through Try wrapper");
+                    doo_debug!("VISIBILITY", "Looking through Try wrapper");
                 }
                 // First, try to get struct type from the Try expression's type_id (the unwrapped ok type)
                 if let Some(type_id) = expr.type_id {
@@ -454,7 +449,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                 receiver, method, ..
             } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[VISIBILITY] Inferring struct type from MethodCall .{}, receiver_kind={:?}", 
+                    doo_debug!("VISIBILITY", "Inferring struct type from MethodCall .{}, receiver_kind={:?}", 
                         method, std::mem::discriminant(&receiver.kind));
                 }
                 // First check the expression's type_id directly
@@ -478,7 +473,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                 // Uses centralized list from doo_core::constants::ffi_names
                 if let HirExprKind::Global { name: recv_name } = &receiver.kind {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[VISIBILITY] MethodCall receiver is Global({}), imported_structs contains={}", 
+                        doo_debug!("VISIBILITY", "MethodCall receiver is Global({}), imported_structs contains={}", 
                             recv_name, self.imported_structs.contains(recv_name));
                     }
                     // Check if receiver name is an imported struct
@@ -486,8 +481,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                         // Check against centralized self-returning method patterns
                         if is_self_returning_method(method) {
                             if std::env::var("DOO_DEBUG").is_ok() {
-                                eprintln!(
-                                    "[VISIBILITY] MethodCall {}.{}() returns {}",
+                                doo_debug!("VISIBILITY", "MethodCall {}.{}() returns {}",
                                     recv_name, method, recv_name
                                 );
                             }
@@ -499,8 +493,7 @@ impl<'a> FieldVisibilityChecker<'a> {
             }
             _ => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[VISIBILITY] Unknown expr kind for struct type inference: {:?}",
+                    doo_debug!("VISIBILITY", "Unknown expr kind for struct type inference: {:?}",
                         std::mem::discriminant(&expr.kind)
                     );
                 }
@@ -535,8 +528,7 @@ impl<'a> FieldVisibilityChecker<'a> {
 
                 // Debug output
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[VISIBILITY] Checking field access: .{} on type_id={:?}, object_kind={:?}",
+                    doo_debug!("VISIBILITY", "Checking field access: .{} on type_id={:?}, object_kind={:?}",
                         field,
                         object.type_id,
                         std::mem::discriminant(&object.kind)
@@ -563,7 +555,7 @@ impl<'a> FieldVisibilityChecker<'a> {
 
                     if let Some(struct_name) = struct_name {
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[VISIBILITY] Field '{}' is private (camelCase), struct='{}', imported={}", 
+                            doo_debug!("VISIBILITY", "Field '{}' is private (camelCase), struct='{}', imported={}", 
                                 field, struct_name, self.imported_structs.contains(&struct_name));
                         }
 
@@ -576,7 +568,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                                         for (fname, _ftype, is_public) in fields {
                                             if fname == field && !is_public {
                                                 if std::env::var("DOO_DEBUG").is_ok() {
-                                                    eprintln!("[VISIBILITY] ERROR: Private field '{}' accessed on imported struct '{}'", field, struct_name);
+                                                    doo_debug!("VISIBILITY", "ERROR: Private field '{}' accessed on imported struct '{}'", field, struct_name);
                                                 }
                                                 self.errors.push(FieldVisibilityError {
                                                     field_name: field.clone(),
@@ -591,8 +583,7 @@ impl<'a> FieldVisibilityChecker<'a> {
                             }
                         }
                     } else if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!(
-                            "[VISIBILITY] Could not determine struct type for field '{}' access",
+                        doo_debug!("VISIBILITY", "Could not determine struct type for field '{}' access",
                             field
                         );
                     }

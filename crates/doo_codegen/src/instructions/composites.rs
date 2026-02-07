@@ -5,6 +5,7 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::utils::operand_to_value;
+use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeKind};
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
@@ -272,7 +273,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         .builder
                         .get_insert_block()
                         .map(|b| b.get_name().to_string_lossy().to_string());
-                    eprintln!("[CODEGEN] FieldGet {} in block {:?}", dest, blk);
+                    doo_debug!("CODEGEN", "FieldGet {} in block {:?}", dest, blk);
                 }
                 if let Some(obj_ptr) = operand_to_value(ctx, object) {
                     if obj_ptr.is_pointer_value() {
@@ -312,11 +313,11 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                         if debug {
                             if struct_name.is_none() {
-                                eprintln!("[CODEGEN] WARNING: FieldGet {} has no struct type for {:?} (var_name={:?})", 
+                                doo_debug!("CODEGEN", "WARNING: FieldGet {} has no struct type for {:?} (var_name={:?})", 
                                     dest, object, var_name);
                             } else {
-                                eprintln!(
-                                    "[CODEGEN] FieldGet {} using struct_name={:?} for field={}",
+                                doo_debug!(
+                                    "CODEGEN", "FieldGet {} using struct_name={:?} for field={}",
                                     dest, struct_name, field
                                 );
                             }
@@ -330,8 +331,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     field.parse::<u32>().unwrap_or(0)
                                 });
                             if debug {
-                                eprintln!(
-                                    "[CODEGEN] FieldGet {} field_index={} for {}.{}",
+                                doo_debug!("CODEGEN", "FieldGet {} field_index={} for {}.{}",
                                     dest, field_index, struct_name, field
                                 );
                             }
@@ -427,7 +427,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                         // This enables chained field access like user.address.street
                                         if let Some(nested_name) = nested_struct_name {
                                             if debug {
-                                                eprintln!("[CODEGEN] FieldGet {} setting nested struct type to {}", dest, nested_name);
+                                                doo_debug!("CODEGEN", "FieldGet {} setting nested struct type to {}", dest, nested_name);
                                             }
                                             ctx.set_temp_struct_type(dest, &nested_name);
                                         }
@@ -514,4 +514,3 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
         }
     }
 }
-

@@ -2,6 +2,7 @@ use super::{ContainerKind, Decision, MirBuilder, LocalDef};
 use crate::{BinaryOp, MirConst, MirInstrKind, MirOperand, MirTerminator};
 use doo_core::{
     constants::ffi_names,
+    doo_debug,
     types::{builtin, TypeId as CoreTypeId, TypeKind},
 };
 use doo_hir::{HirBinOp, HirExpr, HirExprKind, HirMatchPattern};
@@ -90,7 +91,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
     // DEBUG: Track what kind of expressions are being processed
     let is_add_func = builder.current_func.as_ref().map(|f| f.name.contains("add")).unwrap_or(false);
     if is_add_func {
-        eprintln!("[DEBUG build_expr] Processing {:?} in add function", expr.kind);
+        doo_debug!("MIR", "build_expr: Processing {:?} in add function", expr.kind);
     }
 
     match &expr.kind {
@@ -1341,7 +1342,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         let resolved_name = builder.resolve_function_name(name);
                         let found = builder.function_result_types.contains_key(&resolved_name);
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[MIR] Try: Call '{}' resolved to '{}', is_result={}", name, resolved_name, found);
+                            doo_debug!("MIR", "Try: Call '{}' resolved to '{}', is_result={}", name, resolved_name, found);
                         }
                         found
                     } else {
@@ -1400,26 +1401,26 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         let mangled_name = format!("_method_{}_{}", type_name, method);
                         let found = builder.function_result_types.contains_key(&mangled_name);
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[MIR] Try: MethodCall '{}.{}' -> '{}', is_result={}", type_name, method, mangled_name, found);
+                            doo_debug!("MIR", "Try: MethodCall '{}.{}' -> '{}', is_result={}", type_name, method, mangled_name, found);
                         }
                         found
                     } else {
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[MIR] Try: MethodCall method='{}' - no receiver type found", method);
+                            doo_debug!("MIR", "Try: MethodCall method='{}' - no receiver type found", method);
                         }
                         false
                     }
                 }
                 _ => {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[MIR] Try: Unknown inner expr kind {:?}", std::mem::discriminant(&inner.kind));
+                        doo_debug!("MIR", "Try: Unknown inner expr kind {:?}", std::mem::discriminant(&inner.kind));
                     }
                     false
                 },
             };
             
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!("[MIR] Try: is_result_type={}", is_result_type);
+                doo_debug!("MIR", "Try: is_result_type={}", is_result_type);
             }
             
             // If not a Result type, just return the value directly

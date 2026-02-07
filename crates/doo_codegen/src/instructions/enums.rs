@@ -18,6 +18,7 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
+use doo_core::doo_debug;
 use doo_core::types::TypeId;
 use doo_mir::{MirConst, MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
@@ -277,8 +278,7 @@ fn emit_enum_tag<'ctx>(
     let enum_type = get_enum_type(ctx);
 
     if std::env::var("DOO_DEBUG").is_ok() {
-        eprintln!(
-            "[CODEGEN] emit_enum_tag: dest={}, enum_val={:?}",
+        doo_debug!("CODEGEN", "emit_enum_tag: dest={}, enum_val={:?}",
             dest, enum_val
         );
     }

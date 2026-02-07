@@ -18,6 +18,7 @@
 //! - `default<Os>` - Size optimization (smaller binary)
 //! - `default<Oz>` - Min size optimization (smallest binary)
 
+use doo_core::doo_debug;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
@@ -201,7 +202,10 @@ pub fn optimize_module<'ctx>(module: &Module<'ctx>, level: OptLevel) {
 pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &OptimizationConfig) {
     // Initialize native target (required for optimization)
     if Target::initialize_native(&InitializationConfig::default()).is_err() {
-        eprintln!("Warning: Failed to initialize native target for optimization");
+        doo_debug!(
+            "WARN",
+            "Failed to initialize native target for optimization"
+        );
         return;
     }
 
@@ -210,7 +214,7 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
     let target = match Target::from_triple(&target_triple) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Warning: Failed to get target: {}", e);
+            doo_debug!("WARN", "Failed to get target: {}", e);
             return;
         }
     };
@@ -226,7 +230,7 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
     ) {
         Some(tm) => tm,
         None => {
-            eprintln!("Warning: Failed to create target machine");
+            doo_debug!("WARN", "Failed to create target machine");
             return;
         }
     };
@@ -236,8 +240,9 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
 
     // Verify module before optimization (catch errors early)
     if let Err(e) = module.verify() {
-        eprintln!(
-            "Warning: Module verification failed before optimization: {}",
+        doo_debug!(
+            "WARN",
+            "Module verification failed before optimization: {}",
             e
         );
         // Continue anyway - optimization might still work
@@ -259,7 +264,7 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
     let passes = config.level.to_pass_pipeline();
 
     if let Err(e) = module.run_passes(passes, &target_machine, pass_options) {
-        eprintln!("Warning: Optimization pass failed: {}", e);
+        doo_debug!("WARN", "Optimization pass failed: {}", e);
     }
 }
 

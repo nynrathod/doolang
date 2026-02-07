@@ -7,6 +7,7 @@ use crate::builtins::{ArrayBuiltins, JsonBuiltins, MapBuiltins, StringBuiltins};
 use crate::context::CodegenContext;
 use crate::layout::load_len_i32;
 use doo_core::constants::ffi_names;
+use doo_core::doo_debug;
 use doo_core::types::builtin;
 use doo_core::types::TypeKind;
 use doo_mir::{MirConst, MirInstr, MirInstrKind, MirOperand};
@@ -169,8 +170,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 return_type,
             } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] MethodCall: {:?}.{} -> {:?}, return_type={:?}",
+                    doo_debug!("CODEGEN", "MethodCall: {:?}.{} -> {:?}, return_type={:?}",
                         receiver, method, dest, return_type
                     );
                 }
@@ -180,7 +180,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     MirOperand::Local(name) | MirOperand::Global(name) if name == ffi_names::MODULE_JSON);
                 
                 if std::env::var("DOO_DEBUG").is_ok() && method == "parse" {
-                    eprintln!("[CODEGEN] JSON.parse check: is_json_module={}, receiver={:?}", is_json_module, receiver);
+                    doo_debug!("CODEGEN", "JSON.parse check: is_json_module={}, receiver={:?}", is_json_module, receiver);
                 }
                     
                 if is_json_module {
@@ -215,8 +215,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                 let recv_val = operand_to_value(ctx, receiver);
                 if recv_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] MethodCall: failed to get receiver value for {:?}",
+                    doo_debug!("CODEGEN", "MethodCall: failed to get receiver value for {:?}",
                         receiver
                     );
                     return None;
@@ -234,7 +233,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 };
 
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] MethodCall: recv_val type: is_pointer={}, is_int={}, recv_val={:?}", 
+                    doo_debug!("CODEGEN", "MethodCall: recv_val type: is_pointer={}, is_int={}, recv_val={:?}", 
                         recv_val.is_pointer_value(), recv_val.is_int_value(), recv_val);
                 }
 
@@ -243,8 +242,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     let recv_ptr = recv_val.into_pointer_value();
                     if let Some(kind) = ctx.get_type_kind(*receiver_type) {
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!(
-                                "[CODEGEN] MethodCall: receiver type {:?} -> kind {:?}",
+                            doo_debug!("CODEGEN", "MethodCall: receiver type {:?} -> kind {:?}",
                                 receiver_type, kind
                             );
                         }
@@ -309,7 +307,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     } else {
                         // Fallback for unknown type
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[CODEGEN] MethodCall: fallback to array dispatch for {} (receiver_type: {:?})", method, receiver_type);
+                            doo_debug!("CODEGEN", "MethodCall: fallback to array dispatch for {} (receiver_type: {:?})", method, receiver_type);
                         }
                         if matches!(
                             method.as_str(),
@@ -325,8 +323,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 &arg_vals,
                             );
                             if std::env::var("DOO_DEBUG").is_ok() {
-                                eprintln!(
-                                    "[CODEGEN] MethodCall: array dispatch result: {:?}",
+                                doo_debug!("CODEGEN", "MethodCall: array dispatch result: {:?}",
                                     result.is_some()
                                 );
                             }
@@ -450,7 +447,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     if let Some(v) = operand_to_value(ctx, val) {
                         if debug {
                             let blk = ctx.builder.get_insert_block().map(|b| b.get_name().to_string_lossy().to_string());
-                            eprintln!("[CODEGEN] Print value {}: {:?} type={:?} llvm_type={:?} in block {:?}", i, val, ty, v.get_type(), blk);
+                            doo_debug!("CODEGEN", "Print value {}: {:?} type={:?} llvm_type={:?} in block {:?}", i, val, ty, v.get_type(), blk);
                         }
                         if let Some(kind) = ctx.get_type_kind(ty) {
                             match kind {
@@ -542,7 +539,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 .ok();
                         }
                     } else if debug {
-                        eprintln!("[CODEGEN] WARNING: Print value {} operand_to_value returned None for {:?}", i, val);
+                        doo_debug!("CODEGEN", "WARNING: Print value {} operand_to_value returned None for {:?}", i, val);
                     }
                 }
 
@@ -820,7 +817,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(*err_type) {
                         ctx.set_temp_struct_type(error_name, &name);
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[CODEGEN] Registered error {} as struct type {}", error_name, name);
+                            doo_debug!("CODEGEN", "Registered error {} as struct type {}", error_name, name);
                         }
                     }
                 }
@@ -1295,14 +1292,14 @@ fn emit_print_value<'ctx>(
                     .build_call(printf, &[fmt.into(), i64v.into()], "print_i");
                 if std::env::var("DOO_DEBUG").is_ok() {
                     let blk = ctx.builder.get_insert_block().map(|b| b.get_name().to_string_lossy().to_string());
-                    eprintln!("[CODEGEN] emit_print_value INT in block {:?}, call result: {:?}", blk, result.is_ok());
+                    doo_debug!("CODEGEN", "emit_print_value INT in block {:?}, call result: {:?}", blk, result.is_ok());
                 }
                 result.ok();
             } else if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!("[CODEGEN] emit_print_value INT: i64 extend failed");
+                doo_debug!("CODEGEN", "emit_print_value INT: i64 extend failed");
             }
         } else if std::env::var("DOO_DEBUG").is_ok() {
-            eprintln!("[CODEGEN] emit_print_value INT: val is not int, is {:?}", val.get_type());
+            doo_debug!("CODEGEN", "emit_print_value INT: val is not int, is {:?}", val.get_type());
         }
         return;
     }
@@ -2644,7 +2641,7 @@ fn try_convert_enum_array_to_json_string<'ctx>(
     if !has_element_temps {
         // This is an empty array - return "[]" directly
         if std::env::var("DOO_DEBUG").is_ok() {
-            eprintln!("[CODEGEN] try_convert_enum_array_to_json_string: empty array {} -> \"[]\"", var_name);
+            doo_debug!("CODEGEN", "try_convert_enum_array_to_json_string: empty array {} -> \"[]\"", var_name);
         }
         return Some(ctx.const_string("[]"));
     }
@@ -2660,7 +2657,7 @@ fn try_convert_enum_array_to_json_string<'ctx>(
                 .collect();
             
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!("[CODEGEN] Converting homogeneous enum array {} with variants: {:?}", name, variant_names);
+                doo_debug!("CODEGEN", "Converting homogeneous enum array {} with variants: {:?}", name, variant_names);
             }
             
             // Get the array pointer
@@ -2740,7 +2737,7 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
     }
     
     if std::env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[CODEGEN] Converting mixed enum array with {} elements", enum_infos.len());
+        doo_debug!("CODEGEN", "Converting mixed enum array with {} elements", enum_infos.len());
     }
     
     // Generate code to build JSON array string at runtime
@@ -2883,8 +2880,7 @@ fn emit_ffi_call<'ctx>(
     args: &[MirOperand],
 ) -> Option<BasicValueEnum<'ctx>> {
     if std::env::var("DOO_DEBUG").is_ok() {
-        eprintln!(
-            "[CODEGEN] FfiCall: {} with {} args -> {:?}",
+        doo_debug!("CODEGEN", "FfiCall: {} with {} args -> {:?}",
             symbol,
             args.len(),
             dest
@@ -2924,7 +2920,7 @@ fn emit_ffi_call<'ctx>(
                     // Skip built-in middlewares - they register themselves in the runtime
                     if BUILTIN_MIDDLEWARES.contains(&mw_name) {
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!("[CODEGEN] Skipping built-in middleware registration: {}", mw_name);
+                            doo_debug!("CODEGEN", "Skipping built-in middleware registration: {}", mw_name);
                         }
                         continue;
                     }
@@ -2948,7 +2944,7 @@ fn emit_ffi_call<'ctx>(
                     );
                     
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[CODEGEN] Registered user middleware: {} -> {}", mw_name, wrapper.get_name().to_string_lossy());
+                        doo_debug!("CODEGEN", "Registered user middleware: {} -> {}", mw_name, wrapper.get_name().to_string_lossy());
                     }
                 }
             }
@@ -2991,7 +2987,7 @@ fn emit_ffi_call<'ctx>(
                 let has_elem_temps = ctx.array_element_temps.contains_key(name.as_str());
                 
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] doo_db_raw_param arg[2]: temp={}, has_elem_type={}, has_elem_temps={}", 
+                    doo_debug!("CODEGEN", "doo_db_raw_param arg[2]: temp={}, has_elem_type={}, has_elem_temps={}", 
                         name, has_elem_type, has_elem_temps);
                 }
                 
@@ -2999,14 +2995,14 @@ fn emit_ffi_call<'ctx>(
                 // it's an empty array - pass "[]" directly
                 if has_elem_type && !has_elem_temps {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[CODEGEN] Converting empty array {} to JSON \"[]\"", name);
+                        doo_debug!("CODEGEN", "Converting empty array {} to JSON \"[]\"", name);
                     }
                     let empty_json = ctx.const_string("[]");
                     arg_vals.push(empty_json.into());
                     continue;
                 }
             } else if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!("[CODEGEN] doo_db_raw_param arg[2] is not a Temp: {:?}", a);
+                doo_debug!("CODEGEN", "doo_db_raw_param arg[2] is not a Temp: {:?}", a);
             }
             
             // Try single enum conversion first
@@ -3129,7 +3125,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
     
     let debug = std::env::var("DOO_DEBUG").is_ok();
     if debug {
-        eprintln!("[CODEGEN] Generating FFI wrapper for {} (used by {})", user_func_name, ffi_symbol);
+        doo_debug!("CODEGEN", "Generating FFI wrapper for {} (used by {})", user_func_name, ffi_symbol);
     }
     
     // Check if this is an FFI function that needs to be called via its external symbol
@@ -3151,7 +3147,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             Some(f) => f,
             None => {
                 // Function not found - create a dummy wrapper that returns null
-                eprintln!("[CODEGEN] Warning: Function {} not found for wrapper generation", user_func_name);
+                doo_debug!("CODEGEN", "Warning: Function {} not found for wrapper generation", user_func_name);
                 return create_dummy_wrapper(ctx, &wrapper_name);
             }
         }
@@ -3209,7 +3205,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
         && user_param_count == 2;
     
     if debug {
-        eprintln!("[CODEGEN] User function {} has {} params, returns {:?}, return_type_name={:?}, returns_struct={}, is_middleware={}, is_ffi={}", 
+        doo_debug!("CODEGEN", "User function {} has {} params, returns {:?}, return_type_name={:?}, returns_struct={}, is_middleware={}, is_ffi={}", 
             user_func_name, user_param_count, user_return_type, return_type_name, returns_struct, is_middleware, ffi_symbol_info.is_some());
     }
     
@@ -3487,7 +3483,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             let has_jwt_middleware = route_context.has_jwt_middleware();
             
             if debug {
-                eprintln!("[CODEGEN] Handler {} with {} params, path_params={:?}, jwt={}", 
+                doo_debug!("CODEGEN", "Handler {} with {} params, path_params={:?}, jwt={}", 
                     user_func_name, param_count, path_param_names, has_jwt_middleware);
             }
             
@@ -3511,14 +3507,14 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 let source_ptr = if has_jwt_middleware && param_count == 1 && is_int_param {
                     // JWT handler with single Int param - get from user_id field
                     if debug {
-                        eprintln!("[CODEGEN] Param {} from user_id (JWT)", idx);
+                        doo_debug!("CODEGEN", "Param {} from user_id (JWT)", idx);
                     }
                     load_request_field(ctx, 6, "user_id")
                 } else if idx < path_param_names.len() {
                     // This param corresponds to a path parameter - need to extract the specific field
                     let path_param_name = path_param_names.get(idx).cloned().unwrap_or_default();
                     if debug {
-                        eprintln!("[CODEGEN] Param {} from params (path param: {})", idx, path_param_name);
+                        doo_debug!("CODEGEN", "Param {} from params (path param: {})", idx, path_param_name);
                     }
                     let params_json = load_request_field(ctx, 4, "params");
                     
@@ -3536,7 +3532,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 } else {
                     // Default: use body
                     if debug {
-                        eprintln!("[CODEGEN] Param {} from body", idx);
+                        doo_debug!("CODEGEN", "Param {} from body", idx);
                     }
                     load_request_field(ctx, 2, "body_json")
                 };
@@ -3548,7 +3544,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 } else {
                     // Fallback: pass null pointer for this param
                     if debug {
-                        eprintln!("[CODEGEN] Warning: Failed to parse param {} for {}", idx, user_func_name);
+                        doo_debug!("CODEGEN", "Warning: Failed to parse param {} for {}", idx, user_func_name);
                     }
                     call_args.push(ptr_type.const_null().into());
                 }
@@ -3563,7 +3559,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             } else {
                 // Fallback to passing request_ptr if parsing fails
                 if debug {
-                    eprintln!("[CODEGEN] Warning: Param count mismatch for {}, expected {} got {}", 
+                    doo_debug!("CODEGEN", "Warning: Param count mismatch for {}, expected {} got {}", 
                         user_func_name, param_count, call_args.len());
                 }
                 None
@@ -3599,7 +3595,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
         });
         
         if debug {
-            eprintln!("[CODEGEN] Middleware {} user_returns_result_struct={} error_type={:?}", 
+            doo_debug!("CODEGEN", "Middleware {} user_returns_result_struct={} error_type={:?}", 
                 user_func_name, user_returns_result_struct, error_type_name);
         }
         
@@ -3614,7 +3610,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
         
         if let Some(val) = user_result {
             if debug {
-                eprintln!("[CODEGEN] Middleware {} val.is_struct_value()={}, user_returns_result_struct={}", 
+                doo_debug!("CODEGEN", "Middleware {} val.is_struct_value()={}, user_returns_result_struct={}", 
                     user_func_name, val.is_struct_value(), user_returns_result_struct);
             }
             
@@ -3810,7 +3806,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 } else {
                     // Fallback: treat as pointer
                     if debug {
-                        eprintln!("[CODEGEN] Warning: Failed to extract struct value for {}", user_func_name);
+                        doo_debug!("CODEGEN", "Warning: Failed to extract struct value for {}", user_func_name);
                     }
                     let response_ptr = if val.is_pointer_value() {
                         val.into_pointer_value()
@@ -4378,7 +4374,7 @@ fn emit_handler_metadata_registration<'ctx>(
     let metadata_json = build_handler_metadata_json(ctx, handler_name);
     
     if debug {
-        eprintln!("[CODEGEN] Registering handler metadata for {}: {}", handler_name, metadata_json);
+        doo_debug!("CODEGEN", "Registering handler metadata for {}: {}", handler_name, metadata_json);
     }
     
     // Get or declare doo_http_register_handler_with_metadata
@@ -4425,7 +4421,7 @@ fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
     };
     
     if debug {
-        eprintln!("[CODEGEN] Registering struct metadata for {}: {}", symbol, struct_name);
+        doo_debug!("CODEGEN", "Registering struct metadata for {}: {}", symbol, struct_name);
     }
     
     // Look up the struct in the type registry
@@ -4487,7 +4483,7 @@ fn emit_enum_metadata_if_needed<'ctx>(
         let debug = std::env::var("DOO_DEBUG").is_ok();
         
         if debug {
-            eprintln!("[CODEGEN] Registering enum metadata: {}", name);
+            doo_debug!("CODEGEN", "Registering enum metadata: {}", name);
         }
         
         // Build variants JSON array

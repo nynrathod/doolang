@@ -584,6 +584,7 @@ dependencies = [
  "console",
  "ctrlc",
  "dialoguer",
+ "doo_core",
  "doo_driver",
  "inkwell",
  "llvm-sys",

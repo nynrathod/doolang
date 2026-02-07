@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 
+use doo_core::doo_debug;
 use doo_core::types::TypeId;
 
 // ============================================================================
@@ -120,16 +121,19 @@ impl MirProgram {
         for func in &self.functions {
             if let Err(e) = func.validate() {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[DEBUG] Validation failed in function '{}': {}",
+                    doo_debug!(
+                        "MIR",
+                        "Validation failed in function '{}': {}",
                         func.name, e
                     );
-                    eprintln!(
-                        "[DEBUG]   params: {:?}",
+                    doo_debug!(
+                        "MIR",
+                        "  params: {:?}",
                         func.params.iter().map(|p| &p.name).collect::<Vec<_>>()
                     );
-                    eprintln!(
-                        "[DEBUG]   locals: {:?}",
+                    doo_debug!(
+                        "MIR",
+                        "  locals: {:?}",
                         func.locals.iter().map(|l| &l.name).collect::<Vec<_>>()
                     );
                 }

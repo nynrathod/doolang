@@ -14,6 +14,7 @@
 //! let doubled = nums.map((x) => x * 2);  // x: Int inferred, return Int inferred
 //! ```
 
+use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use doo_hir::{HirBinOp, HirExpr, HirExprKind, HirStmt, HirStmtKind, HirUnaryOp};
 use std::collections::HashMap;
@@ -323,7 +324,7 @@ impl TypeInference {
                                         // For now, we'll still return the type but the codegen/semantic 
                                         // analysis should catch this. We could add an error here later.
                                         if std::env::var("DOO_DEBUG").is_ok() {
-                                            eprintln!("[VISIBILITY] Warning: Accessing private field '{}' on struct '{}'", field, struct_name);
+                                            doo_debug!("VISIBILITY", "Warning: Accessing private field '{}' on struct '{}'", field, struct_name);
                                         }
                                     }
                                     return *ftype;

@@ -10,6 +10,7 @@ use crate::layout::{
 };
 use crate::utils::{default_for_type, emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
+use doo_core::doo_debug;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 use inkwell::{AddressSpace, IntPredicate};
@@ -299,24 +300,24 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
             } => {
                 let debug = std::env::var("DOO_DEBUG").is_ok();
                 if debug {
-                    eprintln!("[CODEGEN] MapSet: map={:?}, key={:?}, value={:?}", map, key, value);
+                    doo_debug!("CODEGEN", "MapSet: map={:?}, key={:?}, value={:?}", map, key, value);
                 }
                 
                 let mapv = operand_to_value(ctx, map)?;
                 if debug {
-                    eprintln!("[CODEGEN] MapSet: mapv ok");
+                    doo_debug!("CODEGEN", "MapSet: mapv ok");
                 }
                 let keyv = operand_to_value(ctx, key)?;
                 if debug {
-                    eprintln!("[CODEGEN] MapSet: keyv ok");
+                    doo_debug!("CODEGEN", "MapSet: keyv ok");
                 }
                 let valv = operand_to_value(ctx, value)?;
                 if debug {
-                    eprintln!("[CODEGEN] MapSet: valv ok");
+                    doo_debug!("CODEGEN", "MapSet: valv ok");
                 }
                 if !mapv.is_pointer_value() {
                     if debug {
-                        eprintln!("[CODEGEN] MapSet: ERROR - mapv is not pointer!");
+                        doo_debug!("CODEGEN", "MapSet: ERROR - mapv is not pointer!");
                     }
                     return None;
                 }
@@ -333,12 +334,12 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .build_pointer_cast(old_data, pair_ptr_ty, "map_data_cast")
                     .ok()?;
                 if debug {
-                    eprintln!("[CODEGEN] MapSet: old_base ok");
+                    doo_debug!("CODEGEN", "MapSet: old_base ok");
                 }
 
                 let len_i32 = load_len_i32(ctx, old_data)?;
                 if debug {
-                    eprintln!("[CODEGEN] MapSet: len_i32 ok");
+                    doo_debug!("CODEGEN", "MapSet: len_i32 ok");
                 }
                 let len_i64 = ctx
                     .builder
@@ -582,4 +583,3 @@ mod tests {
         assert!(!handler.handles(&instr));
     }
 }
-

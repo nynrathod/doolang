@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::c_char;
 
+use doo_ffi_core::ffi_debug;
+
 pub use error::*;
 pub use helpers::*;
 pub use middleware::*;
@@ -52,11 +54,11 @@ fn get_db_lib() -> Option<&'static Library> {
 
             for name in &names {
                 if let Ok(lib) = unsafe { Library::new(name) } {
-                    eprintln!("[HTTP] Successfully loaded database library: {}", name);
+                    ffi_debug!("HTTP", "Successfully loaded database library: {}", name);
                     return Some(lib);
                 }
             }
-            eprintln!("[HTTP] Warning: Could not load doo_db library (tried: {:?})", names);
+            ffi_debug!("HTTP", "Warning: Could not load doo_db library (tried: {:?})", names);
             None
         })
         .as_ref()
@@ -1169,26 +1171,26 @@ struct AuthUser {
 /// Signup handler - registers a new user
 /// Generic: works with any struct that has email and password fields, plus any additional fields
 extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
-    eprintln!("[AUTH] auth_signup_handler called");
+    ffi_debug!("AUTH", "auth_signup_handler called");
 
     if req.is_null() {
-        eprintln!("[AUTH] Error: Invalid request (null)");
+        ffi_debug!("AUTH", "Error: Invalid request (null)");
         return make_err_http(400, "Invalid request");
     }
 
     let body = unsafe { c_to_string((*req).body) };
-    eprintln!("[AUTH] Request body: {}", body);
+    ffi_debug!("AUTH", "Request body: {}", body);
 
     // Parse full JSON body - supports any fields the user defines
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
     let json = match parsed {
         Ok(serde_json::Value::Object(obj)) => obj,
         Ok(_) => {
-            eprintln!("[AUTH] Error: Request body is not a JSON object");
+            ffi_debug!("AUTH", "Error: Request body is not a JSON object");
             return make_err_http(400, "Request body must be a JSON object");
         }
         Err(e) => {
-            eprintln!("[AUTH] Error: Invalid JSON body: {}", e);
+            ffi_debug!("AUTH", "Error: Invalid JSON body: {}", e);
             return make_err_http(400, "Invalid JSON body");
         }
     };
@@ -1203,14 +1205,14 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     let email = match email {
         Some(e) => e,
         None => {
-            eprintln!("[AUTH] Error: Missing 'email' field");
+            ffi_debug!("AUTH", "Error: Missing 'email' field");
             return make_err_http(400, "Missing 'email' field");
         }
     };
 
     // Validate email format
     if !is_valid_email(&email) {
-        eprintln!("[AUTH] Error: Invalid email format: {}", email);
+        ffi_debug!("AUTH", "Error: Invalid email format: {}", email);
         return make_err_http(
             400,
             "Invalid email format. Email must be in format: name@domain.tld",
@@ -1226,7 +1228,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     let password = match password {
         Some(p) => p,
         None => {
-            eprintln!("[AUTH] Error: Missing 'password' field");
+            ffi_debug!("AUTH", "Error: Missing 'password' field");
             return make_err_http(400, "Missing 'password' field");
         }
     };
@@ -1248,7 +1250,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     // Try database-backed auth first
     if is_auth_db_backed() {
         if let Some(table_name) = get_auth_table_name() {
-            eprintln!("[AUTH] Using database-backed auth, table: {}", table_name);
+            ffi_debug!("AUTH", "Using database-backed auth, table: {}", table_name);
 
             // Check if user already exists
             let check_sql = format!("SELECT id FROM {} WHERE email = $1", table_name);
@@ -1257,12 +1259,12 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                     let rows: Vec<serde_json::Value> =
                         serde_json::from_str(&json).unwrap_or_default();
                     if !rows.is_empty() {
-                        eprintln!("[AUTH] Error: User already exists in DB: {}", email);
+                        ffi_debug!("AUTH", "Error: User already exists in DB: {}", email);
                         return make_err_http(409, "User already exists");
                     }
                 }
                 Err(e) => {
-                    eprintln!("[AUTH] DB error checking existing user: {}", e);
+                    ffi_debug!("AUTH", "DB error checking existing user: {}", e);
                 }
             }
 
@@ -1292,12 +1294,12 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                 placeholders.join(", ")
             );
 
-            eprintln!("[AUTH] Inserting user with SQL: {}", insert_sql);
-            eprintln!("[AUTH] Values: {:?}", values);
+            ffi_debug!("AUTH", "Inserting user with SQL: {}", insert_sql);
+            ffi_debug!("AUTH", "Values: {:?}", values);
 
             match execute_db_insert(&insert_sql, &values) {
                 Ok(json) => {
-                    eprintln!("[AUTH] Insert result: {}", json);
+                    ffi_debug!("AUTH", "Insert result: {}", json);
                     let rows: Vec<serde_json::Value> =
                         serde_json::from_str(&json).unwrap_or_default();
                     if let Some(user_row) = rows.into_iter().next() {
@@ -1321,15 +1323,15 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                         }
 
                         let response = serde_json::json!({ "data": response_data }).to_string();
-                        eprintln!("[AUTH] Signup success (DB): {}", response);
+                        ffi_debug!("AUTH", "Signup success (DB): {}", response);
                         return make_ok_json(&response);
                     } else {
-                        eprintln!("[AUTH] DB insert returned no rows, falling back");
+                        ffi_debug!("AUTH", "DB insert returned no rows, falling back");
                         // Fall through to in-memory
                     }
                 }
                 Err(e) => {
-                    eprintln!("[AUTH] DB insert error: {}", e);
+                    ffi_debug!("AUTH", "DB insert error: {}", e);
                     // Check for unique constraint violation
                     if e.contains("duplicate key") || e.contains("unique constraint") {
                         return make_err_http(409, "User already exists");
@@ -1341,13 +1343,13 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     // Fallback to in-memory auth
-    eprintln!("[AUTH] Using in-memory auth fallback");
+    ffi_debug!("AUTH", "Using in-memory auth fallback");
 
     // Check if user already exists (in-memory check)
     {
         let users = get_auth_users().lock().unwrap();
         if users.contains_key(&email) {
-            eprintln!("[AUTH] Error: User already exists: {}", email);
+            ffi_debug!("AUTH", "Error: User already exists: {}", email);
             return make_err_http(409, "User already exists");
         }
     }
@@ -1367,8 +1369,8 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                 extra_fields: serde_json::Value::Object(extra_fields.clone()),
             },
         );
-        eprintln!(
-            "[AUTH] User stored in memory: {} (id={}), total users: {}",
+        ffi_debug!(
+            "AUTH", "User stored in memory: {} (id={}), total users: {}",
             email,
             user_id,
             users.len()
@@ -1377,7 +1379,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
 
     // Generate JWT token
     let token = generate_jwt_token(&email);
-    eprintln!("[AUTH] JWT token generated for: {}", email);
+    ffi_debug!("AUTH", "JWT token generated for: {}", email);
 
     // Build response with id, email and any extra fields (but not password)
     let mut response_data = serde_json::json!({
@@ -1391,7 +1393,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
     let response = serde_json::json!({ "data": response_data }).to_string();
-    eprintln!("[AUTH] Signup success response: {}", response);
+    ffi_debug!("AUTH", "Signup success response: {}", response);
     make_ok_json(&response)
 }
 
@@ -1403,7 +1405,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     let body = unsafe { c_to_string((*req).body) };
-    eprintln!("[AUTH] Login request body: {}", body);
+    ffi_debug!("AUTH", "Login request body: {}", body);
 
     // Parse full JSON body - supports any fields the user defines
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
@@ -1439,8 +1441,8 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     // Try database-backed auth first
     if is_auth_db_backed() {
         if let Some(table_name) = get_auth_table_name() {
-            eprintln!(
-                "[AUTH] Login: Using database-backed auth, table: {}",
+            ffi_debug!(
+                "AUTH", "Login: Using database-backed auth, table: {}",
                 table_name
             );
 
@@ -1465,8 +1467,8 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                         // Verify password
                         match bcrypt::verify(password, stored_hash) {
                             Ok(true) => {
-                                eprintln!(
-                                    "[AUTH] Login success (DB): Password verified for: {}",
+                                ffi_debug!(
+                                    "AUTH", "Login success (DB): Password verified for: {}",
                                     email
                                 );
 
@@ -1493,20 +1495,20 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                 return make_ok_json(&response);
                             }
                             _ => {
-                                eprintln!(
-                                    "[AUTH] Login failed (DB): Invalid password for: {}",
+                                ffi_debug!(
+                                    "AUTH", "Login failed (DB): Invalid password for: {}",
                                     email
                                 );
                                 return make_err_http(401, "Invalid email or password");
                             }
                         }
                     } else {
-                        eprintln!("[AUTH] Login failed (DB): User not found: {}", email);
+                        ffi_debug!("AUTH", "Login failed (DB): User not found: {}", email);
                         return make_err_http(401, "Invalid email or password");
                     }
                 }
                 Err(e) => {
-                    eprintln!("[AUTH] DB error during login: {}", e);
+                    ffi_debug!("AUTH", "DB error during login: {}", e);
                     return make_err_http(500, &format!("Database error: {}", e));
                 }
             }
@@ -1514,13 +1516,13 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     // Fallback to in-memory auth
-    eprintln!("[AUTH] Login: Using in-memory auth fallback");
+    ffi_debug!("AUTH", "Login: Using in-memory auth fallback");
 
     // Lookup user
     let user = {
         let users = get_auth_users().lock().unwrap();
-        eprintln!(
-            "[AUTH] Login lookup for: {} (total users in store: {})",
+        ffi_debug!(
+            "AUTH", "Login lookup for: {} (total users in store: {})",
             email,
             users.len()
         );
@@ -1530,7 +1532,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     let user = match user {
         Some(u) => u,
         None => {
-            eprintln!("[AUTH] Login failed: User not found: {}", email);
+            ffi_debug!("AUTH", "Login failed: User not found: {}", email);
             return make_err_http(401, "Invalid email or password");
         }
     };
@@ -1538,10 +1540,10 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     // Verify password
     match bcrypt::verify(password, &user.password_hash) {
         Ok(true) => {
-            eprintln!("[AUTH] Login success: Password verified for: {}", email);
+            ffi_debug!("AUTH", "Login success: Password verified for: {}", email);
         }
         _ => {
-            eprintln!("[AUTH] Login failed: Invalid password for: {}", email);
+            ffi_debug!("AUTH", "Login failed: Invalid password for: {}", email);
             return make_err_http(401, "Invalid email or password");
         }
     }
@@ -1611,8 +1613,8 @@ pub extern "C" fn doo_http_auth(
     let login_str = c_to_string(login_path);
     let struct_name = c_to_string(user_struct_name);
 
-    eprintln!(
-        "[HTTP] Auth configured: signup={}, login={}, struct={}",
+    ffi_debug!(
+        "HTTP", "Auth configured: signup={}, login={}, struct={}",
         signup_str, login_str, struct_name
     );
 
@@ -1621,17 +1623,17 @@ pub extern "C" fn doo_http_auth(
 
     // Try to create users table in database if connected
     if is_pool_initialized() {
-        eprintln!("[HTTP] Database connected, setting up DB-backed auth");
+        ffi_debug!("HTTP", "Database connected, setting up DB-backed auth");
 
         // Get struct metadata to generate CREATE TABLE
         if let Some(metadata) = get_struct_metadata(&struct_name) {
             let create_sql = generate_create_table_sql(table_name, &metadata);
-            eprintln!("[HTTP] CREATE TABLE SQL for users:\n{}", create_sql);
+            ffi_debug!("HTTP", "CREATE TABLE SQL for users:\n{}", create_sql);
 
             match execute_db_statement(&create_sql) {
                 Ok(_) => {
-                    eprintln!(
-                        "[HTTP] Users table '{}' created/verified successfully",
+                    ffi_debug!(
+                        "HTTP", "Users table '{}' created/verified successfully",
                         table_name
                     );
                     // Register auth as DB-backed
@@ -1639,18 +1641,18 @@ pub extern "C" fn doo_http_auth(
                     *auth_table = Some(table_name.to_string());
                 }
                 Err(e) => {
-                    eprintln!("[HTTP] Warning: Failed to create users table: {}", e);
+                    ffi_debug!("HTTP", "Warning: Failed to create users table: {}", e);
                     // Fall back to in-memory auth
                 }
             }
         } else {
-            eprintln!(
-                "[HTTP] Warning: No metadata found for struct '{}', using in-memory auth",
+            ffi_debug!(
+                "HTTP", "Warning: No metadata found for struct '{}', using in-memory auth",
                 struct_name
             );
         }
     } else {
-        eprintln!("[HTTP] No database connection, using in-memory auth");
+        ffi_debug!("HTTP", "No database connection, using in-memory auth");
     }
 
     // Register auth routes
@@ -1778,7 +1780,7 @@ extern "C" fn crud_list_handler(req: *const DooRequest) -> *mut DooResult {
                 return make_ok_json(&response);
             }
             Err(e) => {
-                eprintln!("[CRUD] DB list error: {}", e);
+                ffi_debug!("CRUD", "DB list error: {}", e);
                 return make_err_http(500, &format!("Query failed: {}", e));
             }
         }
@@ -1805,8 +1807,8 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
     let body = unsafe { c_to_string((*req).body) };
 
     // Debug: Print received body to help diagnose issues
-    eprintln!(
-        "[CRUD] POST {} - body length: {}, body: {:?}",
+    ffi_debug!(
+        "CRUD", "POST {} - body length: {}, body: {:?}",
         path,
         body.len(),
         &body[..body.len().min(200)]
@@ -1819,7 +1821,7 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
     let item: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[CRUD] JSON parse error: {:?}", e);
+            ffi_debug!("CRUD", "JSON parse error: {:?}", e);
             return make_err_http(400, "Invalid JSON body");
         }
     };
@@ -1861,8 +1863,8 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
                         columns.join(", "),
                         placeholders.join(", ")
                     );
-                    eprintln!("[CRUD] DB INSERT SQL: {}", sql);
-                    eprintln!("[CRUD] DB INSERT values: {:?}", values);
+                    ffi_debug!("CRUD", "DB INSERT SQL: {}", sql);
+                    ffi_debug!("CRUD", "DB INSERT values: {:?}", values);
 
                     // Execute with parameters
                     match execute_db_insert(&sql, &values) {
@@ -1876,7 +1878,7 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
                             return make_ok_json(&response);
                         }
                         Err(e) => {
-                            eprintln!("[CRUD] DB insert error: {}", e);
+                            ffi_debug!("CRUD", "DB insert error: {}", e);
                             return make_err_http(500, &format!("Insert failed: {}", e));
                         }
                     }
@@ -1948,7 +1950,7 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
                 }
             }
             Err(e) => {
-                eprintln!("[CRUD] DB get error: {}", e);
+                ffi_debug!("CRUD", "DB get error: {}", e);
                 return make_err_http(500, &format!("Query failed: {}", e));
             }
         }
@@ -2040,7 +2042,7 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
                         set_clauses.join(", "),
                         idx
                     );
-                    eprintln!("[CRUD] DB UPDATE SQL: {}", sql);
+                    ffi_debug!("CRUD", "DB UPDATE SQL: {}", sql);
 
                     match execute_db_insert(&sql, &values) {
                         Ok(json) => {
@@ -2056,7 +2058,7 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
                             }
                         }
                         Err(e) => {
-                            eprintln!("[CRUD] DB update error: {}", e);
+                            ffi_debug!("CRUD", "DB update error: {}", e);
                             return make_err_http(500, &format!("Update failed: {}", e));
                         }
                     }
@@ -2129,7 +2131,7 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
                 }
             }
             Err(e) => {
-                eprintln!("[CRUD] DB delete error: {}", e);
+                ffi_debug!("CRUD", "DB delete error: {}", e);
                 return make_err_http(500, &format!("Delete failed: {}", e));
             }
         }
@@ -2168,31 +2170,28 @@ pub extern "C" fn doo_http_crud(
     let base_str = c_to_string(base_path);
     let struct_name = c_to_string(resource_struct_name);
 
-    eprintln!(
-        "[HTTP] CRUD configured: base={}, struct={}",
+    ffi_debug!("HTTP", "CRUD configured: base={}, struct={}",
         base_str, struct_name
     );
 
     // Extract resource name (e.g., "posts" from "/api/posts")
     let resource_key = extract_crud_resource(&base_str);
-    eprintln!("[HTTP] CRUD resource key: {}", resource_key);
+    ffi_debug!("HTTP", "CRUD resource key: {}", resource_key);
 
     // Try to create table in database if connected
     if is_pool_initialized() {
-        eprintln!(
-            "[HTTP] Database connected, setting up DB-backed CRUD for {}",
+        ffi_debug!("HTTP", "Database connected, setting up DB-backed CRUD for {}",
             resource_key
         );
 
         // Get struct metadata to generate CREATE TABLE
         if let Some(metadata) = get_struct_metadata(&struct_name) {
             let create_sql = generate_create_table_sql(&resource_key, &metadata);
-            eprintln!("[HTTP] CREATE TABLE SQL:\n{}", create_sql);
+            ffi_debug!("HTTP", "CREATE TABLE SQL:\n{}", create_sql);
 
             match execute_db_statement(&create_sql) {
                 Ok(_) => {
-                    eprintln!(
-                        "[HTTP] Table '{}' created/verified successfully",
+                    ffi_debug!("HTTP", "Table '{}' created/verified successfully",
                         resource_key
                     );
                     // Register this resource as DB-backed
@@ -2200,21 +2199,19 @@ pub extern "C" fn doo_http_crud(
                     tables.insert(resource_key.clone(), struct_name.clone());
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[HTTP] Warning: Failed to create table '{}': {}",
+                    ffi_debug!("HTTP", "Warning: Failed to create table '{}': {}",
                         resource_key, e
                     );
                     // Fall back to in-memory store
                 }
             }
         } else {
-            eprintln!(
-                "[HTTP] Warning: No metadata found for struct '{}', using in-memory store",
+            ffi_debug!("HTTP", "Warning: No metadata found for struct '{}', using in-memory store",
                 struct_name
             );
         }
     } else {
-        eprintln!("[HTTP] No database connection, using in-memory CRUD store");
+        ffi_debug!("HTTP", "No database connection, using in-memory CRUD store");
     }
 
     // Initialize in-memory store as fallback
@@ -3700,19 +3697,19 @@ fn make_ok_void() -> *mut DooResult {
 }
 
 fn make_ok_json(json: &str) -> *mut DooResult {
-    eprintln!("[FFI] make_ok_json called with len={}", json.len());
+    ffi_debug!("FFI", "make_ok_json called with len={}", json.len());
     unsafe {
         let ptr = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
         if ptr.is_null() {
-            eprintln!("[FFI] make_ok_json: malloc failed!");
+            ffi_debug!("FFI", "make_ok_json: malloc failed!");
             return std::ptr::null_mut();
         }
         (*ptr).tag = 0;
         let value_ptr = string_to_c(json) as *mut c_void;
-        eprintln!("[FFI] make_ok_json: value_ptr={:?}", value_ptr);
+        ffi_debug!("FFI", "make_ok_json: value_ptr={:?}", value_ptr);
         (*ptr).value = value_ptr;
         (*ptr).owner = owner::FFI;
-        eprintln!("[FFI] make_ok_json: returning DooResult at {:?}", ptr);
+        ffi_debug!("FFI", "make_ok_json: returning DooResult at {:?}", ptr);
         ptr
     }
 }

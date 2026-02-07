@@ -10,6 +10,7 @@
 //! - `Rfc7807Error` - RFC 7807 error format
 
 pub mod casts;
+pub mod debug;
 pub mod errors;
 pub mod json;
 pub mod memory;

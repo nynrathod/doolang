@@ -16,22 +16,22 @@
 //! - `errors`: Centralized error codes
 //! - `infer`: Type inference utilities (single source of truth)
 
-pub mod types;
-pub mod span;
-pub mod symbol;
+pub mod constants;
+pub mod debug;
 pub mod errors;
+pub mod infer;
 pub mod intern;
 pub mod methods;
-pub mod constants;
-pub mod infer;
+pub mod span;
+pub mod symbol;
+pub mod types;
 
 // Re-exports for convenience
-pub use types::{
-    TypeRegistry, TypeId, TypeKind, builtin,
-    PrimitiveType, CollectionType, CompositeType,
-    StructDef, EnumDef, FunctionType, FieldDef, VariantDef, DecoratorDef,
-};
+pub use errors::{CompilerError, ErrorCode};
+pub use infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind};
 pub use span::{Span, Spanned};
-pub use symbol::{SymbolTable, SymbolInfo, SymbolKind};
-pub use errors::{ErrorCode, CompilerError};
-pub use infer::{BinOpKind, UnaryOpKind, infer_binop_result_type, infer_unaryop_result_type};
+pub use symbol::{SymbolInfo, SymbolKind, SymbolTable};
+pub use types::{
+    builtin, CollectionType, CompositeType, DecoratorDef, EnumDef, FieldDef, FunctionType,
+    PrimitiveType, StructDef, TypeId, TypeKind, TypeRegistry, VariantDef,
+};

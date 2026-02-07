@@ -11,6 +11,7 @@ use crate::context::CodegenContext;
 use crate::layout::{alloc_with_header, get_array_length_from_data, int_to_i64};
 use crate::utils::{emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
+use doo_core::doo_debug;
 use doo_core::types::TypeKind;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::types::BasicType;
@@ -175,8 +176,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 elem_type,
             } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] ArrayCreate: {} with {} elements",
+                    doo_debug!("CODEGEN", "ArrayCreate: {} with {} elements",
                         dest,
                         elements.len()
                     );
@@ -185,7 +185,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 let len_i32 = ctx.i32_type().const_int(elements.len() as u64, false);
                 let data_ptr = alloc_with_header(ctx, len_i32, elem_llvm_ty, "arr");
                 if data_ptr.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] ArrayCreate: alloc_with_header failed!");
+                    doo_debug!("CODEGEN", "ArrayCreate: alloc_with_header failed!");
                     return None;
                 }
                 let data_ptr = data_ptr?;

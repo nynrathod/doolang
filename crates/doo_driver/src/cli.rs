@@ -66,6 +66,10 @@ pub enum Commands {
         #[arg(long)]
         print_ast: bool,
 
+        /// Print HIR (debug)
+        #[arg(long)]
+        print_hir: bool,
+
         /// Print MIR (debug)
         #[arg(long)]
         print_mir: bool,

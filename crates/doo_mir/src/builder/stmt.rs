@@ -2,6 +2,7 @@
 
 use super::MirBuilder;
 use crate::{LocalDef, MirInstrKind, MirOperand, MirTerminator};
+use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind};
 use doo_hir::{HirExprKind, HirStmt, HirStmtKind};
 
@@ -482,8 +483,9 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
         HirStmtKind::While { condition, body } => {
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!(
-                    "[MIR] Building While loop with {} body statements",
+                doo_debug!(
+                    "MIR",
+                    "Building While loop with {} body statements",
                     body.len()
                 );
             }
@@ -492,8 +494,9 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             let exit_label = builder.new_block_label("while_exit");
 
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!(
-                    "[MIR] While labels: cond={}, body={}, exit={}",
+                doo_debug!(
+                    "MIR",
+                    "While labels: cond={}, body={}, exit={}",
                     cond_label, body_label, exit_label
                 );
             }

@@ -33,6 +33,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use doo_core::doo_debug;
 use doo_frontend::ast::{ImportDecl, ImportItem, Item, Program};
 use doo_frontend::Parser;
 
@@ -168,8 +169,9 @@ impl ModuleLoader {
         }
 
         if self.debug {
-            eprintln!(
-                "[LOADER] Loading module: {} from {}",
+            doo_debug!(
+                "LOADER",
+                "Loading module: {} from {}",
                 module_key,
                 module_file.display()
             );
@@ -259,7 +261,7 @@ pub fn resolve_imports(
     }
 
     if debug {
-        eprintln!("[LOADER] Resolving {} imports", imports.len());
+        doo_debug!("LOADER", "Resolving {} imports", imports.len());
     }
 
     // Build import requests: module_key -> set of (symbol_name, optional_alias)
@@ -344,7 +346,7 @@ pub fn resolve_imports(
             if module_path.exists() {
                 // Full path exists as a file (e.g., defs/types.doo)
                 if debug {
-                    eprintln!("[LOADER] Found local module: {}", module_path.display());
+                    doo_debug!("LOADER", "Found local module: {}", module_path.display());
                 }
                 local_import_requests.push((import, module_path, path_symbols));
             } else if import.path.len() >= 2 {
@@ -359,8 +361,9 @@ pub fn resolve_imports(
                 if alt_path.exists() {
                     let symbol = import.path.last().unwrap().clone();
                     if debug {
-                        eprintln!(
-                            "[LOADER] Found local module: {} (importing symbol: {})",
+                        doo_debug!(
+                            "LOADER",
+                            "Found local module: {} (importing symbol: {})",
                             alt_path.display(),
                             symbol
                         );
@@ -368,14 +371,16 @@ pub fn resolve_imports(
                     path_symbols.push(symbol);
                     local_import_requests.push((import, alt_path, path_symbols));
                 } else if debug {
-                    eprintln!(
-                        "[LOADER] Local module not found: {}",
+                    doo_debug!(
+                        "LOADER",
+                        "Local module not found: {}",
                         module_path.display()
                     );
                 }
             } else if debug {
-                eprintln!(
-                    "[LOADER] Local module not found: {}",
+                doo_debug!(
+                    "LOADER",
+                    "Local module not found: {}",
                     module_path.display()
                 );
             }
@@ -464,13 +469,14 @@ pub fn resolve_imports(
                     {
                         if debug {
                             if is_associated_with_imported_type {
-                                eprintln!(
-                                    "[LOADER]   Importing associated function: {}.{}",
+                                doo_debug!(
+                                    "LOADER",
+                                    "  Importing associated function: {}.{}",
                                     f.associated_type.as_deref().unwrap_or("?"),
                                     f.name
                                 );
                             } else {
-                                eprintln!("[LOADER]   Importing function: {}", f.name);
+                                doo_debug!("LOADER", "  Importing function: {}", f.name);
                             }
                         }
                         imported_names.insert(func_key);
@@ -481,7 +487,7 @@ pub fn resolve_imports(
                     let is_wanted = import_all || requested.contains_key(&s.name);
                     if is_wanted && !imported_names.contains(&s.name) {
                         if debug {
-                            eprintln!("[LOADER]   Importing struct: {}", s.name);
+                            doo_debug!("LOADER", "  Importing struct: {}", s.name);
                         }
                         imported_names.insert(s.name.clone());
                         result.items.push(item.clone());
@@ -491,7 +497,7 @@ pub fn resolve_imports(
                     let is_wanted = import_all || requested.contains_key(&e.name);
                     if is_wanted && !imported_names.contains(&e.name) {
                         if debug {
-                            eprintln!("[LOADER]   Importing enum: {}", e.name);
+                            doo_debug!("LOADER", "  Importing enum: {}", e.name);
                         }
                         imported_names.insert(e.name.clone());
                         result.items.push(item.clone());
@@ -513,15 +519,17 @@ pub fn resolve_imports(
         .iter()
         .map(|(_, path, symbols)| (path.clone(), symbols.clone()))
         .collect();
-    
+
     while let Some((module_path, path_symbols)) = pending_modules.pop() {
         // Skip if already visited
-        let canonical_path = module_path.canonicalize().unwrap_or_else(|_| module_path.clone());
+        let canonical_path = module_path
+            .canonicalize()
+            .unwrap_or_else(|_| module_path.clone());
         if visited_modules.contains(&canonical_path) {
             continue;
         }
         visited_modules.insert(canonical_path.clone());
-        
+
         // Read and parse the local module
         let source = match fs::read_to_string(&module_path) {
             Ok(s) => s,
@@ -550,20 +558,30 @@ pub fn resolve_imports(
 
         // Check for parser errors even on Ok result
         if !parser.errors().is_empty() {
-            eprintln!("[LOADER] Parser errors in {}:", module_path.display());
+            doo_debug!("LOADER", "Parser errors in {}:", module_path.display());
             for err in parser.errors() {
-                eprintln!("[LOADER]   {}", err);
+                doo_debug!("LOADER", "  {}", err);
             }
         }
 
         // DEBUG: Show parsed functions and their bodies
         if debug {
-            eprintln!("[LOADER DEBUG] Parsed module: {}", module_path.display());
+            doo_debug!("LOADER", "Parsed module: {}", module_path.display());
             for item in &module_program.items {
                 if let Item::Function(f) = item {
-                    eprintln!("[LOADER DEBUG]   Function {}, body has {} statements", f.name, f.body.len());
+                    doo_debug!(
+                        "LOADER",
+                        "  Function {}, body has {} statements",
+                        f.name,
+                        f.body.len()
+                    );
                     for (i, stmt) in f.body.iter().enumerate() {
-                        eprintln!("[LOADER DEBUG]     Stmt {}: {:?}", i, std::mem::discriminant(&stmt.kind));
+                        doo_debug!(
+                            "LOADER",
+                            "    Stmt {}: {:?}",
+                            i,
+                            std::mem::discriminant(&stmt.kind)
+                        );
                     }
                 }
             }
@@ -578,27 +596,31 @@ pub fn resolve_imports(
                 if nested_import.path.is_empty() {
                     continue;
                 }
-                
+
                 // Skip std library imports (they're handled separately)
                 if nested_import.path[0] == "std" {
                     // Queue std import handling - add to std_import_requests would need refactoring
                     // For now, std imports from nested modules inherit the parent's type definitions
                     continue;
                 }
-                
+
                 // Build nested module path - ALWAYS from project_root
                 let mut nested_module_path = project_root.to_path_buf();
                 let mut nested_path_symbols: Vec<String> = Vec::new();
-                
+
                 for segment in &nested_import.path {
                     nested_module_path.push(segment);
                 }
                 nested_module_path.set_extension("doo");
-                
+
                 if nested_module_path.exists() {
                     if debug {
-                        eprintln!("[LOADER] Queueing nested import: {} from {}", 
-                            nested_module_path.display(), module_path.display());
+                        doo_debug!(
+                            "LOADER",
+                            "Queueing nested import: {} from {}",
+                            nested_module_path.display(),
+                            module_path.display()
+                        );
                     }
                     pending_modules.push((nested_module_path, nested_path_symbols));
                 } else if nested_import.path.len() >= 2 {
@@ -608,12 +630,17 @@ pub fn resolve_imports(
                         alt_path.push(&nested_import.path[i]);
                     }
                     alt_path.set_extension("doo");
-                    
+
                     if alt_path.exists() {
                         let symbol = nested_import.path.last().unwrap().clone();
                         if debug {
-                            eprintln!("[LOADER] Queueing nested import: {} (symbol: {}) from {}", 
-                                alt_path.display(), symbol, module_path.display());
+                            doo_debug!(
+                                "LOADER",
+                                "Queueing nested import: {} (symbol: {}) from {}",
+                                alt_path.display(),
+                                symbol,
+                                module_path.display()
+                            );
                         }
                         nested_path_symbols.push(symbol);
                         pending_modules.push((alt_path, nested_path_symbols));
@@ -695,17 +722,17 @@ pub fn resolve_imports(
                     };
 
                     // Import public functions and associated methods
-                    if is_wanted && !imported_names.contains(&func_key)
-                    {
+                    if is_wanted && !imported_names.contains(&func_key) {
                         if debug {
                             if is_associated_with_imported_type {
-                                eprintln!(
-                                    "[LOADER]   Importing local associated function: {}.{}",
+                                doo_debug!(
+                                    "LOADER",
+                                    "  Importing local associated function: {}.{}",
                                     f.associated_type.as_deref().unwrap_or("?"),
                                     f.name
                                 );
                             } else {
-                                eprintln!("[LOADER]   Importing local function: {}", f.name);
+                                doo_debug!("LOADER", "  Importing local function: {}", f.name);
                             }
                         }
                         imported_names.insert(func_key);
@@ -723,7 +750,7 @@ pub fn resolve_imports(
 
                     if is_public && !imported_names.contains(&s.name) {
                         if debug {
-                            eprintln!("[LOADER]   Importing local struct: {}", s.name);
+                            doo_debug!("LOADER", "  Importing local struct: {}", s.name);
                         }
                         imported_names.insert(s.name.clone());
                         result.items.push(item.clone());
@@ -740,7 +767,7 @@ pub fn resolve_imports(
 
                     if is_public && !imported_names.contains(&e.name) {
                         if debug {
-                            eprintln!("[LOADER]   Importing local enum: {}", e.name);
+                            doo_debug!("LOADER", "  Importing local enum: {}", e.name);
                         }
                         imported_names.insert(e.name.clone());
                         result.items.push(item.clone());
@@ -754,7 +781,7 @@ pub fn resolve_imports(
     }
 
     if debug {
-        eprintln!("[LOADER] Total imported items: {}", result.items.len());
+        doo_debug!("LOADER", "Total imported items: {}", result.items.len());
     }
 
     Ok(result)

@@ -15,6 +15,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use doo_codegen::{optimize_module, CodegenBuilder, OptLevel};
+use doo_core::doo_debug;
 use doo_core::types::TypeRegistry;
 use doo_frontend::{Lexer, Parser};
 use doo_hir::Lower;
@@ -71,6 +72,8 @@ pub struct CompileOptions {
     pub dev_mode: bool,
     /// Print AST after parsing
     pub print_ast: bool,
+    /// Print HIR after lowering
+    pub print_hir: bool,
     /// Print MIR before codegen
     pub print_mir: bool,
     /// Keep generated LLVM IR (.ll) file
@@ -88,6 +91,7 @@ impl Default for CompileOptions {
             output_name: "output".to_string(),
             dev_mode: cfg!(debug_assertions),
             print_ast: false,
+            print_hir: false,
             print_mir: false,
             keep_ll: false,
             keep_obj: false,
@@ -149,19 +153,20 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     // Phase 2: Parse (Parser creates lexer internally)
     // Debug: Show source info
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] Source length: {} chars", source.len());
-        eprintln!(
-            "[DEBUG] First 100 chars: {:?}",
+    doo_debug!("DEBUG", "Source length: {} chars", source.len());
+    if doo_core::debug::is_enabled() {
+        doo_debug!(
+            "DEBUG",
+            "First 100 chars: {:?}",
             &source[..source.len().min(100)]
         );
 
         // Debug lexer output
         let mut debug_lexer = Lexer::new(&source, 0);
         let debug_tokens = debug_lexer.tokenize();
-        eprintln!("[DEBUG] Lexer produced {} tokens", debug_tokens.len());
+        doo_debug!("DEBUG", "Lexer produced {} tokens", debug_tokens.len());
         for (i, tok) in debug_tokens.iter().take(10).enumerate() {
-            eprintln!("[DEBUG]   Token {}: {:?} {:?}", i, tok.kind, tok.text);
+            doo_debug!("DEBUG", "  Token {}: {:?} {:?}", i, tok.kind, tok.text);
         }
     }
 
@@ -169,11 +174,11 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let program = match parser.parse_program() {
         Ok(p) => {
             // Debug: Check for parser errors even on success
-            if env::var("DOO_DEBUG").is_ok() {
+            if doo_core::debug::is_enabled() {
                 let errors = parser.errors();
-                eprintln!("[DEBUG] Parser errors: {}", errors.len());
+                doo_debug!("DEBUG", "Parser errors: {}", errors.len());
                 for (i, e) in errors.iter().take(5).enumerate() {
-                    eprintln!("[DEBUG]   Error {}: {}", i, e);
+                    doo_debug!("DEBUG", "  Error {}: {}", i, e);
                 }
             }
             p
@@ -200,23 +205,24 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let import_resolution = resolve_imports(&program, &mut loader, &project_root)?;
 
     // Debug: show what was resolved
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!(
-            "[DEBUG] Import resolution items: {}",
+    if doo_core::debug::is_enabled() {
+        doo_debug!(
+            "DEBUG",
+            "Import resolution items: {}",
             import_resolution.items.len()
         );
         for item in &import_resolution.items {
             match item {
                 doo_frontend::ast::Item::Struct(s) => {
-                    eprintln!("[DEBUG]   Imported Struct: {}", s.name)
+                    doo_debug!("DEBUG", "  Imported Struct: {}", s.name)
                 }
                 doo_frontend::ast::Item::Function(f) => {
-                    eprintln!("[DEBUG]   Imported Function: {}", f.name)
+                    doo_debug!("DEBUG", "  Imported Function: {}", f.name)
                 }
                 doo_frontend::ast::Item::Enum(e) => {
-                    eprintln!("[DEBUG]   Imported Enum: {}", e.name)
+                    doo_debug!("DEBUG", "  Imported Enum: {}", e.name)
                 }
-                _ => eprintln!("[DEBUG]   Imported other item"),
+                _ => doo_debug!("DEBUG", "  Imported other item"),
             }
         }
     }
@@ -246,25 +252,33 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Wrap in Arc for shared access
     let type_registry = Arc::new(type_registry);
 
+    // Print HIR if requested
+    if opts.print_hir {
+        eprintln!("=== HIR ===");
+        eprintln!("{:#?}", hir);
+    }
+
     // Debug: Show what functions were found in AST and HIR
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] AST items: {}", program.items.len());
+    if doo_core::debug::is_enabled() {
+        doo_debug!("DEBUG", "AST items: {}", program.items.len());
         for item in &program.items {
             match item {
-                doo_frontend::ast::Item::Function(f) => eprintln!("[DEBUG]   Function: {}", f.name),
-                doo_frontend::ast::Item::Struct(s) => eprintln!("[DEBUG]   Struct: {}", s.name),
-                doo_frontend::ast::Item::Enum(e) => eprintln!("[DEBUG]   Enum: {}", e.name),
-                doo_frontend::ast::Item::Import(i) => eprintln!("[DEBUG]   Import: {:?}", i.path),
-                doo_frontend::ast::Item::Statement(_) => eprintln!("[DEBUG]   Statement"),
+                doo_frontend::ast::Item::Function(f) => {
+                    doo_debug!("DEBUG", "  Function: {}", f.name)
+                }
+                doo_frontend::ast::Item::Struct(s) => doo_debug!("DEBUG", "  Struct: {}", s.name),
+                doo_frontend::ast::Item::Enum(e) => doo_debug!("DEBUG", "  Enum: {}", e.name),
+                doo_frontend::ast::Item::Import(i) => doo_debug!("DEBUG", "  Import: {:?}", i.path),
+                doo_frontend::ast::Item::Statement(_) => doo_debug!("DEBUG", "  Statement"),
             }
         }
-        eprintln!("[DEBUG] HIR items: {}", hir.items.len());
+        doo_debug!("DEBUG", "HIR items: {}", hir.items.len());
         for item in &hir.items {
             match item {
-                doo_hir::HirItem::Function(f) => eprintln!("[DEBUG]   HIR Function: {}", f.name),
-                doo_hir::HirItem::Struct(s) => eprintln!("[DEBUG]   HIR Struct: {}", s.name),
-                doo_hir::HirItem::Enum(e) => eprintln!("[DEBUG]   HIR Enum: {}", e.name),
-                doo_hir::HirItem::Import(_) => eprintln!("[DEBUG]   HIR Import"),
+                doo_hir::HirItem::Function(f) => doo_debug!("DEBUG", "  HIR Function: {}", f.name),
+                doo_hir::HirItem::Struct(s) => doo_debug!("DEBUG", "  HIR Struct: {}", s.name),
+                doo_hir::HirItem::Enum(e) => doo_debug!("DEBUG", "  HIR Enum: {}", e.name),
+                doo_hir::HirItem::Import(_) => doo_debug!("DEBUG", "  HIR Import"),
             }
         }
     }
@@ -343,9 +357,11 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     // 5.7: Field Visibility Checking
     // Ensures private fields (camelCase) are not accessed from outside their module
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] Imported struct names: {:?}", imported_struct_names);
-    }
+    doo_debug!(
+        "DEBUG",
+        "Imported struct names: {:?}",
+        imported_struct_names
+    );
     let visibility_errors = check_field_visibility(&hir, &type_registry, &imported_struct_names);
     for err in &visibility_errors {
         analysis_errors.push(err.clone());
@@ -363,9 +379,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         });
     }
 
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] Semantic analysis passed");
-    }
+    doo_debug!("DEBUG", "Semantic analysis passed");
 
     // Phase 6: Build MIR
     // Pass ownership analysis results to MIR builder so it can emit
@@ -383,23 +397,19 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // Debug: Show MIR functions
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] MIR functions: {}", mir_program.functions.len());
+    if doo_core::debug::is_enabled() {
+        doo_debug!("DEBUG", "MIR functions: {}", mir_program.functions.len());
         for f in &mir_program.functions {
-            eprintln!("[DEBUG]   MIR Function: {}", f.name);
+            doo_debug!("DEBUG", "  MIR Function: {}", f.name);
         }
     }
 
     // Validate MIR
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] Validating MIR...");
-    }
+    doo_debug!("DEBUG", "Validating MIR...");
     if let Err(e) = mir_program.validate() {
         return Err(format!("MIR validation failed: {}", e));
     }
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] MIR validation passed");
-    }
+    doo_debug!("DEBUG", "MIR validation passed");
 
     // Check for main function
     let has_main = mir_program.functions.iter().any(|f| f.name == "main");
@@ -420,26 +430,18 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // Phase 7: LLVM Codegen
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] Starting LLVM codegen...");
-    }
+    doo_debug!("DEBUG", "Starting LLVM codegen...");
     let context = Context::create();
     let codegen = CodegenBuilder::new(&context);
     let module = codegen.build(&mir_program, "main_module", type_registry.clone());
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] LLVM codegen complete");
-    }
+    doo_debug!("DEBUG", "LLVM codegen complete");
 
     // Phase 8: Verify module
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] Verifying LLVM module...");
-    }
+    doo_debug!("DEBUG", "Verifying LLVM module...");
     if let Err(e) = module.verify() {
         return Err(format!("LLVM module verification failed: {}", e));
     }
-    if env::var("DOO_DEBUG").is_ok() {
-        eprintln!("[DEBUG] LLVM module verified");
-    }
+    doo_debug!("DEBUG", "LLVM module verified");
 
     // Phase 9: Optimize
     optimize_module(&module, OptLevel::O2);

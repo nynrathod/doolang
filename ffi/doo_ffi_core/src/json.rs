@@ -8,6 +8,7 @@
 //! CRITICAL: Never use CString::into_raw() - it uses Rust allocator causing heap corruption.
 //! CRITICAL: Never return null_mut() for collection types - always return valid empty collection.
 
+use crate::ffi_debug;
 use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -93,45 +94,32 @@ fn json_value_type_name(v: &serde_json::Value) -> &'static str {
     }
 }
 
-/// Check if debug mode is enabled (cached)
-#[inline]
-fn is_debug() -> bool {
-    std::env::var("DOO_DEBUG_FFI").is_ok()
-}
-
-/// Debug print helper
-macro_rules! debug_println {
-    ($($arg:tt)*) => {
-        if is_debug() {
-            eprintln!($($arg)*);
-            // Force flush to ensure output before potential crash
-            use std::io::Write;
-            let _ = std::io::stderr().flush();
-        }
-    };
-}
-
 /// Allocate an empty array with proper header [len=0, cap=0][data...]
 /// Returns pointer to data section (header is at ptr-16)
 /// CRITICAL: Never returns null - crashes calling code
 #[inline]
 fn alloc_empty_array() -> *mut u8 {
-    debug_println!(
-        "[FFI] alloc_empty_array: allocating {} bytes",
+    ffi_debug!(
+        "FFI",
+        "alloc_empty_array: allocating {} bytes",
         MIN_ALLOCATION_SIZE
     );
     let ptr = doo_alloc(MIN_ALLOCATION_SIZE);
     if ptr.is_null() {
-        eprintln!("[FFI] CRITICAL: alloc_empty_array got null from doo_alloc!");
+        ffi_debug!(
+            "FFI",
+            "CRITICAL: alloc_empty_array got null from doo_alloc!"
+        );
         std::process::abort();
     }
-    debug_println!("[FFI] alloc_empty_array: got ptr={:p}", ptr);
+    ffi_debug!("FFI", "alloc_empty_array: got ptr={:p}", ptr);
     unsafe {
         *(ptr as *mut i64) = 0; // length
         *(ptr.add(8) as *mut i64) = 0; // capacity
         let data_ptr = ptr.add(16);
-        debug_println!(
-            "[FFI] alloc_empty_array: header={:p}, data={:p}, len=0, cap=0",
+        ffi_debug!(
+            "FFI",
+            "alloc_empty_array: header={:p}, data={:p}, len=0, cap=0",
             ptr,
             data_ptr
         );
@@ -483,13 +471,13 @@ fn json_value_to_doo_ptr(v: serde_json::Value) -> *mut std::ffi::c_void {
 /// Handles both JSON numbers (123) and JSON strings containing numbers ("123")
 #[no_mangle]
 pub extern "C" fn doo_json_parse_int(json_str: *const c_char) -> i64 {
-    eprintln!("[JSON] doo_json_parse_int called, json_str={:?}", json_str);
+    ffi_debug!("JSON", "doo_json_parse_int called, json_str={:?}", json_str);
     if json_str.is_null() {
-        eprintln!("[JSON] doo_json_parse_int: null input");
+        ffi_debug!("JSON", "doo_json_parse_int: null input");
         return 0;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    eprintln!("[JSON] doo_json_parse_int: input='{}'", s);
+    ffi_debug!("JSON", "doo_json_parse_int: input='{}'", s);
     let result = serde_json::from_str::<serde_json::Value>(&s)
         .ok()
         .and_then(|v| {
@@ -500,7 +488,7 @@ pub extern "C" fn doo_json_parse_int(json_str: *const c_char) -> i64 {
             })
         })
         .unwrap_or(0);
-    eprintln!("[JSON] doo_json_parse_int: result={}", result);
+    ffi_debug!("JSON", "doo_json_parse_int: result={}", result);
     result
 }
 
@@ -568,26 +556,27 @@ pub extern "C" fn doo_json_parse_str(json_str: *const c_char) -> *mut c_char {
 /// Sets parse error if any element has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 {
-    debug_println!("[FFI] doo_json_parse_array_int: ENTER");
+    ffi_debug!("FFI", "doo_json_parse_array_int: ENTER");
 
     if json_str.is_null() {
-        debug_println!("[FFI] doo_json_parse_array_int: null input -> empty array");
+        ffi_debug!("FFI", "doo_json_parse_array_int: null input -> empty array");
         let result = alloc_empty_array() as *mut i64;
-        debug_println!(
-            "[FFI] doo_json_parse_array_int: returning empty={:p}",
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_int: returning empty={:p}",
             result
         );
         return result;
     }
 
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    debug_println!("[FFI] doo_json_parse_array_int: input={:?}", s);
+    ffi_debug!("FFI", "doo_json_parse_array_int: input={:?}", s);
 
     // Parse JSON and validate ALL elements are integers
     let arr = match serde_json::from_str::<serde_json::Value>(&s) {
         Ok(serde_json::Value::Array(arr)) => arr,
         _ => {
-            debug_println!("[FFI] doo_json_parse_array_int: not an array -> empty");
+            ffi_debug!("FFI", "doo_json_parse_array_int: not an array -> empty");
             return alloc_empty_array() as *mut i64;
         }
     };
@@ -601,8 +590,9 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
                 // Type mismatch - set error and return empty array
                 let received = json_value_type_name(elem);
                 set_parse_error_rfc7807(&format!("[{}]", i), "Int", received);
-                debug_println!(
-                    "[FFI] doo_json_parse_array_int: type mismatch at [{}], expected Int, got {}",
+                ffi_debug!(
+                    "FFI",
+                    "doo_json_parse_array_int: type mismatch at [{}], expected Int, got {}",
                     i,
                     received
                 );
@@ -611,8 +601,9 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
         }
     }
 
-    debug_println!(
-        "[FFI] doo_json_parse_array_int: parsed {} elements: {:?}",
+    ffi_debug!(
+        "FFI",
+        "doo_json_parse_array_int: parsed {} elements: {:?}",
         elements.len(),
         elements
     );
@@ -620,8 +611,9 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
     let data_size = elements.len() * std::mem::size_of::<i64>();
     let total_size = 16 + data_size; // 16-byte header
     let alloc_size = total_size.max(MIN_ALLOCATION_SIZE);
-    debug_println!(
-        "[FFI] doo_json_parse_array_int: allocating {} bytes (data={}, total={}, min={})",
+    ffi_debug!(
+        "FFI",
+        "doo_json_parse_array_int: allocating {} bytes (data={}, total={}, min={})",
         alloc_size,
         data_size,
         total_size,
@@ -630,10 +622,13 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
 
     let ptr = doo_alloc(alloc_size);
     if ptr.is_null() {
-        debug_println!("[FFI] doo_json_parse_array_int: alloc failed -> empty array");
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_int: alloc failed -> empty array"
+        );
         return alloc_empty_array() as *mut i64;
     }
-    debug_println!("[FFI] doo_json_parse_array_int: got header_ptr={:p}", ptr);
+    ffi_debug!("FFI", "doo_json_parse_array_int: got header_ptr={:p}", ptr);
 
     unsafe {
         // Header: [len: i64][cap: i64]
@@ -641,8 +636,9 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
         *(ptr.add(8) as *mut i64) = elements.len() as i64; // Capacity at offset 8
 
         let data_ptr = ptr.add(16) as *mut i64; // Data at offset 16
-        debug_println!(
-            "[FFI] doo_json_parse_array_int: data_ptr={:p}, writing {} elements",
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_int: data_ptr={:p}, writing {} elements",
             data_ptr,
             elements.len()
         );
@@ -654,8 +650,9 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
         // Verify header is accessible
         let verify_len = *(data_ptr.offset(-2) as *const i64);
         let verify_cap = *(data_ptr.offset(-1) as *const i64);
-        debug_println!(
-            "[FFI] doo_json_parse_array_int: RETURN data_ptr={:p}, verified len={}, cap={}",
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_int: RETURN data_ptr={:p}, verified len={}, cap={}",
             data_ptr,
             verify_len,
             verify_cap
@@ -721,14 +718,17 @@ pub extern "C" fn doo_json_parse_array_float(json_str: *const c_char) -> *mut f6
 /// Sets parse error if any element has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 {
-    debug_println!("[FFI] doo_json_parse_array_bool: ENTER");
+    ffi_debug!("FFI", "doo_json_parse_array_bool: ENTER");
 
     if json_str.is_null() {
-        debug_println!("[FFI] doo_json_parse_array_bool: null input -> empty array");
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_bool: null input -> empty array"
+        );
         return alloc_empty_array() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    debug_println!("[FFI] doo_json_parse_array_bool: input={:?}", s);
+    ffi_debug!("FFI", "doo_json_parse_array_bool: input={:?}", s);
 
     // Parse JSON and validate ALL elements are booleans
     let arr = match serde_json::from_str::<serde_json::Value>(&s) {
@@ -745,8 +745,9 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
                 // Type mismatch - set error and return empty array
                 let received = json_value_type_name(elem);
                 set_parse_error_rfc7807(&format!("[{}]", i), "Bool", received);
-                debug_println!(
-                    "[FFI] doo_json_parse_array_bool: type mismatch at [{}], expected Bool, got {}",
+                ffi_debug!(
+                    "FFI",
+                    "doo_json_parse_array_bool: type mismatch at [{}], expected Bool, got {}",
                     i,
                     received
                 );
@@ -755,8 +756,9 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
         }
     }
 
-    debug_println!(
-        "[FFI] doo_json_parse_array_bool: parsed {} elements",
+    ffi_debug!(
+        "FFI",
+        "doo_json_parse_array_bool: parsed {} elements",
         elements.len()
     );
 
@@ -764,14 +766,18 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
     let data_size = elements.len() * std::mem::size_of::<u8>();
     let total_size = 16 + data_size; // 16-byte header
     let alloc_size = total_size.max(MIN_ALLOCATION_SIZE);
-    debug_println!(
-        "[FFI] doo_json_parse_array_bool: allocating {} bytes",
+    ffi_debug!(
+        "FFI",
+        "doo_json_parse_array_bool: allocating {} bytes",
         alloc_size
     );
 
     let ptr = doo_alloc(alloc_size);
     if ptr.is_null() {
-        debug_println!("[FFI] doo_json_parse_array_bool: alloc failed -> empty array");
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_bool: alloc failed -> empty array"
+        );
         return alloc_empty_array() as *mut u8;
     }
 
@@ -784,8 +790,9 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
         for (i, val) in elements.iter().enumerate() {
             *data_ptr.add(i) = *val;
         }
-        debug_println!(
-            "[FFI] doo_json_parse_array_bool: RETURN data_ptr={:p}, len={}",
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_bool: RETURN data_ptr={:p}, len={}",
             data_ptr,
             elements.len()
         );
@@ -799,14 +806,14 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
 /// Sets parse error if any element has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut c_char {
-    debug_println!("[FFI] doo_json_parse_array_str: ENTER");
+    ffi_debug!("FFI", "doo_json_parse_array_str: ENTER");
 
     if json_str.is_null() {
-        debug_println!("[FFI] doo_json_parse_array_str: null input -> empty array");
+        ffi_debug!("FFI", "doo_json_parse_array_str: null input -> empty array");
         return alloc_empty_array() as *mut *mut c_char;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    debug_println!("[FFI] doo_json_parse_array_str: input={:?}", s);
+    ffi_debug!("FFI", "doo_json_parse_array_str: input={:?}", s);
 
     // Parse JSON and validate ALL elements are strings
     let arr = match serde_json::from_str::<serde_json::Value>(&s) {
@@ -823,8 +830,9 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
                 // Type mismatch - set error and return empty array
                 let received = json_value_type_name(elem);
                 set_parse_error_rfc7807(&format!("[{}]", i), "Str", received);
-                debug_println!(
-                    "[FFI] doo_json_parse_array_str: type mismatch at [{}], expected Str, got {}",
+                ffi_debug!(
+                    "FFI",
+                    "doo_json_parse_array_str: type mismatch at [{}], expected Str, got {}",
                     i,
                     received
                 );
@@ -833,22 +841,27 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
         }
     }
 
-    debug_println!(
-        "[FFI] doo_json_parse_array_str: parsed {} elements",
+    ffi_debug!(
+        "FFI",
+        "doo_json_parse_array_str: parsed {} elements",
         elements.len()
     );
 
     let data_size = elements.len() * std::mem::size_of::<*mut c_char>();
     let total_size = 16 + data_size; // 16-byte header
     let alloc_size = total_size.max(MIN_ALLOCATION_SIZE);
-    debug_println!(
-        "[FFI] doo_json_parse_array_str: allocating {} bytes",
+    ffi_debug!(
+        "FFI",
+        "doo_json_parse_array_str: allocating {} bytes",
         alloc_size
     );
 
     let ptr = doo_alloc(alloc_size);
     if ptr.is_null() {
-        debug_println!("[FFI] doo_json_parse_array_str: alloc failed -> empty array");
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_str: alloc failed -> empty array"
+        );
         return alloc_empty_array() as *mut *mut c_char;
     }
 
@@ -862,8 +875,9 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
             // Use centralized string allocation - NOT CString::into_raw()!
             *data_ptr.add(i) = doo_alloc_string(val);
         }
-        debug_println!(
-            "[FFI] doo_json_parse_array_str: RETURN data_ptr={:p}, len={}",
+        ffi_debug!(
+            "FFI",
+            "doo_json_parse_array_str: RETURN data_ptr={:p}, len={}",
             data_ptr,
             elements.len()
         );
@@ -1689,15 +1703,25 @@ pub extern "C" fn doo_json_get_field(
     json_str: *const c_char,
     field_name: *const c_char,
 ) -> *mut c_char {
-    eprintln!("[JSON] doo_json_get_field called, json_str={:?}, field_name={:?}", json_str, field_name);
+    ffi_debug!(
+        "JSON",
+        "doo_json_get_field called, json_str={:?}, field_name={:?}",
+        json_str,
+        field_name
+    );
     if json_str.is_null() || field_name.is_null() {
-        eprintln!("[JSON] doo_json_get_field: null input");
+        ffi_debug!("JSON", "doo_json_get_field: null input");
         // Return empty JSON object instead of null to prevent crashes
         return doo_alloc_string("{}");
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     let field = unsafe { CStr::from_ptr(field_name).to_string_lossy() };
-    eprintln!("[JSON] doo_json_get_field: json='{}', field='{}'", s, field);
+    ffi_debug!(
+        "JSON",
+        "doo_json_get_field: json='{}', field='{}'",
+        s,
+        field
+    );
 
     let result = serde_json::from_str::<serde_json::Value>(&s)
         .ok()
@@ -1708,7 +1732,7 @@ pub extern "C" fn doo_json_get_field(
         .and_then(|field_val| serde_json::to_string(&field_val).ok())
         .map(|s| doo_alloc_string(&s))
         .unwrap_or_else(|| doo_alloc_string("null"));
-    eprintln!("[JSON] doo_json_get_field: returning {:?}", result);
+    ffi_debug!("JSON", "doo_json_get_field: returning {:?}", result);
     result
 }
 

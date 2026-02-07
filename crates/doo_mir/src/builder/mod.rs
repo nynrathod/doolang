@@ -7,6 +7,7 @@ pub mod pattern;
 pub mod stmt;
 
 use doo_analysis::{Decision, OwnershipResults};
+use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind, TypeRegistry};
 use doo_core::Span as CoreSpan;
 use doo_hir::{
@@ -192,8 +193,9 @@ impl<'a> MirBuilder<'a> {
                     self.function_result_types
                         .insert(f.name.clone(), (return_type, error_type));
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!(
-                            "[MIR] Registered Result function: {} (ok={:?}, err={:?})",
+                        doo_debug!(
+                            "MIR",
+                            "Registered Result function: {} (ok={:?}, err={:?})",
                             f.name, return_type, error_type
                         );
                     }
@@ -216,8 +218,9 @@ impl<'a> MirBuilder<'a> {
                 // Extract FFI info from @extern decorator (SINGLE SOURCE OF TRUTH)
                 if let Some(ffi_info) = self.extract_ffi_info(&f.decorators, &f.name) {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!(
-                            "[MIR] Registered FFI function: {} -> lib={} sym={}",
+                        doo_debug!(
+                            "MIR",
+                            "Registered FFI function: {} -> lib={} sym={}",
                             f.name, ffi_info.library, ffi_info.symbol
                         );
                     }
@@ -234,8 +237,9 @@ impl<'a> MirBuilder<'a> {
                             self.function_aliases
                                 .insert(simple_name.to_string(), f.name.clone());
                             if std::env::var("DOO_DEBUG").is_ok() {
-                                eprintln!(
-                                    "[MIR] Registered function alias: {} -> {}",
+                                doo_debug!(
+                                    "MIR",
+                                    "Registered function alias: {} -> {}",
                                     simple_name, f.name
                                 );
                             }

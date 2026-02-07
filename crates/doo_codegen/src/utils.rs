@@ -3,6 +3,7 @@
 //! Common helper functions used across instruction handlers.
 
 use crate::context::CodegenContext;
+use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId, TypeKind};
 use doo_mir::{MirConst, MirOperand};
 use inkwell::types::BasicTypeEnum;
@@ -206,8 +207,7 @@ fn emit_eq_by_llvm_type<'ctx>(
     // If types don't match, try to handle common mismatches gracefully
     // For example, one might be int and other might be pointer (shouldn't happen in well-typed code)
     // Return None to signal failure
-    eprintln!(
-        "[CODEGEN] emit_eq_by_llvm_type: mismatched types lhs={:?} rhs={:?}",
+    doo_debug!("CODEGEN", "emit_eq_by_llvm_type: mismatched types lhs={:?} rhs={:?}",
         lhs.get_type(),
         rhs.get_type()
     );

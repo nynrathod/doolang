@@ -10,6 +10,7 @@
 //! - Range expressions → Range construction
 
 use doo_core::{
+    doo_debug,
     infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
     Span,
@@ -388,13 +389,14 @@ impl Lower {
         f: &FunctionDecl,
         registry: &mut TypeRegistry,
     ) -> HirFunction {
-        eprintln!("[DEBUG lower_function_typed] Lowering function: {}", f.name);
-        eprintln!(
-            "[DEBUG lower_function_typed] Function body has {} statements",
+        doo_debug!("HIR", "lower_function_typed: Lowering function: {}", f.name);
+        doo_debug!(
+            "HIR",
+            "lower_function_typed: Function body has {} statements",
             f.body.len()
         );
         for (i, stmt) in f.body.iter().enumerate() {
-            eprintln!("[DEBUG lower_function_typed]   Stmt {}: {:?}", i, stmt.kind);
+            doo_debug!("HIR", "lower_function_typed:   Stmt {}: {:?}", i, stmt.kind);
         }
         // Clear variable types for new function scope
         self.var_types.clear();
@@ -673,8 +675,9 @@ impl Lower {
             }
 
             StmtKind::Assign { target, value } => {
-                eprintln!(
-                    "[DEBUG lower_stmt NON-TYPED] Assign statement, target pattern: {:?}",
+                doo_debug!(
+                    "HIR",
+                    "lower_stmt NON-TYPED: Assign statement, target pattern: {:?}",
                     target.kind
                 );
                 let target_expr = self.pattern_to_expr(target);
@@ -871,8 +874,9 @@ impl Lower {
     }
 
     fn lower_stmt_typed(&mut self, stmt: &Stmt, registry: &mut TypeRegistry) -> HirStmt {
-        eprintln!(
-            "[DEBUG lower_stmt_typed] Processing statement: {:?}",
+        doo_debug!(
+            "HIR",
+            "lower_stmt_typed: Processing statement: {:?}",
             std::mem::discriminant(&stmt.kind)
         );
         let kind = match &stmt.kind {
@@ -943,8 +947,9 @@ impl Lower {
             }
 
             StmtKind::Assign { target, value } => {
-                eprintln!(
-                    "[DEBUG lower_stmt] Assign statement, target pattern: {:?}",
+                doo_debug!(
+                    "HIR",
+                    "lower_stmt: Assign statement, target pattern: {:?}",
                     target.kind
                 );
                 let target_expr = self.pattern_to_expr(target);

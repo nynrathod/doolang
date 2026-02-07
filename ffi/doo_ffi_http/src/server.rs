@@ -5,6 +5,7 @@ use crate::error::*;
 use crate::helpers::*;
 use crate::router::get_routes;
 use crate::types::*;
+use doo_ffi_core::ffi_debug;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
@@ -147,8 +148,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // Match route
     let routes = get_routes();
     let registry = routes.lock().unwrap();
-    eprintln!(
-        "[SERVER DEBUG] Route registry has {} routes",
+    ffi_debug!(
+        "SERVER", "Route registry has {} routes",
         registry.count()
     );
 
@@ -196,13 +197,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     let response = {
         // Execute middleware chain, then handler
-        eprintln!(
-            "[SERVER DEBUG] About to execute handler for {} {}",
+        ffi_debug!(
+            "SERVER", "About to execute handler for {} {}",
             method, path
         );
         let result = execute_middleware_chain(doo_request, &middleware_chain, handler);
-        eprintln!(
-            "[SERVER DEBUG] Handler returned, result is_null={}",
+        ffi_debug!(
+            "SERVER", "Handler returned, result is_null={}",
             result.is_null()
         );
 
@@ -219,25 +220,25 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             // Process result
             unsafe {
                 if result.is_null() {
-                    eprintln!("[SERVER DEBUG] Handler returned null!");
+                    ffi_debug!("SERVER", "Handler returned null!");
                     let err = internal_error("Handler returned null", &path);
                     build_response(500, &err.to_json())
                 } else {
                     let res = &*result;
-                    eprintln!(
-                        "[SERVER DEBUG] Result tag={}, value_is_null={}",
+                    ffi_debug!(
+                        "SERVER", "Result tag={}, value_is_null={}",
                         res.tag,
                         res.value.is_null()
                     );
                     if res.tag == 0 {
                         // Success - value is the response body string
                         let body = if res.value.is_null() {
-                            eprintln!("[SERVER DEBUG] Success but value is null, using {{}}");
+                            ffi_debug!("SERVER", "Success but value is null, using {{}}");
                             "{}".to_string()
                         } else {
                             let body_str = c_to_string(res.value as *const i8);
-                            eprintln!(
-                                "[SERVER DEBUG] Success with body len={}: {}",
+                            ffi_debug!(
+                                "SERVER", "Success with body len={}: {}",
                                 body_str.len(),
                                 &body_str[..body_str.len().min(200)]
                             );

@@ -10,6 +10,7 @@
 //! - `external_functions`: Declared external functions from other modules
 //! - `ModuleLinker`: Utility to link multiple LLVM modules together
 
+use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -205,7 +206,7 @@ impl<'ctx> CodegenContext<'ctx> {
             .get(type_id)
             .map(|info| info.kind.clone());
         if std::env::var("DOO_DEBUG_TYPES").is_ok() {
-            eprintln!("[TYPES] get_type_kind({:?}) = {:?}", type_id, result);
+            doo_debug!("TYPES", "get_type_kind({:?}) = {:?}", type_id, result);
         }
         result
     }
@@ -583,8 +584,7 @@ impl<'ctx> CodegenContext<'ctx> {
             let value_type = value.get_type();
             let types_match = *alloca_ty == value_type;
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!(
-                    "[CODEGEN] set_local '{}': alloca_ty={:?}, value_ty={:?}, match={}",
+                doo_debug!("CODEGEN", "set_local '{}': alloca_ty={:?}, value_ty={:?}, match={}",
                     name, alloca_ty, value_type, types_match
                 );
             }
@@ -612,8 +612,7 @@ impl<'ctx> CodegenContext<'ctx> {
                         let _ = self.builder.build_store(ptr, converted);
                         self.temps.remove(&name);
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!(
-                                "[CODEGEN] set_local '{}': converted ptr->int via ptrtoint",
+                            doo_debug!("CODEGEN", "set_local '{}': converted ptr->int via ptrtoint",
                                 name
                             );
                         }
@@ -624,8 +623,7 @@ impl<'ctx> CodegenContext<'ctx> {
                 // No conversion possible - store as temp (shadows the local for this scope)
                 // get_value checks temps first, so this will be found before the alloca
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] set_local type mismatch for '{}': using temp instead",
+                    doo_debug!("CODEGEN", "set_local type mismatch for '{}': using temp instead",
                         name
                     );
                 }
@@ -770,7 +768,7 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Store a temporary value.
     pub fn set_temp(&mut self, name: &str, value: BasicValueEnum<'ctx>) {
         if std::env::var("DOO_DEBUG").is_ok() {
-            eprintln!("[CODEGEN] set_temp: {} = {:?}", name, value);
+            doo_debug!("CODEGEN", "set_temp: {} = {:?}", name, value);
         }
         self.temps.insert(name.to_string(), value);
     }
@@ -791,34 +789,31 @@ impl<'ctx> CodegenContext<'ctx> {
         // Check temps first
         if let Some(v) = self.temps.get(name) {
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!("[CODEGEN] get_value({}) found in temps", name);
+                doo_debug!("CODEGEN", "get_value({}) found in temps", name);
             }
             return Some(*v);
         }
         // Check locals - return loaded value
         if let Some((ptr, ty)) = self.locals.get(name) {
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!(
-                    "[CODEGEN] get_value({}) loading from local, ty={:?}",
+                doo_debug!("CODEGEN", "get_value({}) loading from local, ty={:?}",
                     name, ty
                 );
             }
             let result = self.builder.build_load(*ty, *ptr, name);
             if result.is_err() {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] ERROR: build_load failed for {}: {:?}",
+                    doo_debug!("CODEGEN", "ERROR: build_load failed for {}: {:?}",
                         name, result
                     );
                 }
             } else if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!("[CODEGEN] get_value({}) loaded successfully", name);
+                doo_debug!("CODEGEN", "get_value({}) loaded successfully", name);
             }
             return result.ok();
         }
         if std::env::var("DOO_DEBUG").is_ok() {
-            eprintln!(
-                "[CODEGEN] WARNING: Variable {} not found in temps or locals",
+            doo_debug!("CODEGEN", "WARNING: Variable {} not found in temps or locals",
                 name
             );
         }

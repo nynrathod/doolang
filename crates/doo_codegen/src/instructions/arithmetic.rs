@@ -5,6 +5,7 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
+use doo_core::doo_debug;
 use doo_mir::{BinaryOp, MirConst, MirInstr, MirInstrKind, MirOperand, UnaryOp};
 use inkwell::values::BasicValueEnum;
 use inkwell::FloatPredicate;
@@ -29,15 +30,13 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
         match &instr.kind {
             MirInstrKind::BinaryOp { dest, op, lhs, rhs } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] BinaryOp: {} = {:?} {:?} {:?}",
+                    doo_debug!("CODEGEN", "BinaryOp: {} = {:?} {:?} {:?}",
                         dest, lhs, op, rhs
                     );
                 }
                 let lhs_val = operand_to_value(ctx, lhs);
                 if lhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] BinaryOp: lhs operand_to_value failed for {:?}",
+                    doo_debug!("CODEGEN", "BinaryOp: lhs operand_to_value failed for {:?}",
                         lhs
                     );
                     return None;
@@ -46,8 +45,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
 
                 let rhs_val = operand_to_value(ctx, rhs);
                 if rhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] BinaryOp: rhs operand_to_value failed for {:?}",
+                    doo_debug!("CODEGEN", "BinaryOp: rhs operand_to_value failed for {:?}",
                         rhs
                     );
                     return None;
@@ -56,8 +54,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
 
                 let result = emit_binop(ctx, *op, lhs_val, rhs_val);
                 if result.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] BinaryOp: emit_binop failed for {:?} {:?} {:?}",
+                    doo_debug!("CODEGEN", "BinaryOp: emit_binop failed for {:?} {:?} {:?}",
                         lhs_val, op, rhs_val
                     );
                     return None;
@@ -186,8 +183,7 @@ fn emit_binop<'ctx>(
         // Debug: show which block we're emitting to
         if std::env::var("DOO_DEBUG").is_ok() {
             if let Some(bb) = ctx.builder.get_insert_block() {
-                eprintln!(
-                    "[CODEGEN] strcmp emitting to block: {:?}",
+                doo_debug!("CODEGEN", "strcmp emitting to block: {:?}",
                     bb.get_name().to_str()
                 );
             }
@@ -686,4 +682,3 @@ fn value_to_string<'ctx>(
 
     Some(buf.into())
 }
-

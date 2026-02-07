@@ -12,6 +12,7 @@
 //! IMPORTANT: Minimum allocation size ensures data pointer is always within
 //! valid memory, even for empty arrays/maps.
 
+use crate::ffi_debug;
 use std::ffi::c_void;
 use std::os::raw::c_char;
 
@@ -38,27 +39,18 @@ pub const MIN_ALLOCATION_SIZE: usize = 32;
 #[inline]
 pub extern "C" fn doo_alloc(size: usize) -> *mut u8 {
     if size == 0 {
-        if std::env::var("DOO_DEBUG_FFI").is_ok() {
-            eprintln!("[MEMORY] doo_alloc: size=0 -> returning null");
-        }
+        ffi_debug!("MEMORY", "doo_alloc: size=0 -> returning null");
         return std::ptr::null_mut();
     }
 
-    if std::env::var("DOO_DEBUG_FFI").is_ok() {
-        eprintln!("[MEMORY] doo_alloc: requesting {} bytes...", size);
-    }
+    ffi_debug!("MEMORY", "doo_alloc: requesting {} bytes...", size);
 
     let ptr = unsafe { libc::malloc(size) as *mut u8 };
 
-    if std::env::var("DOO_DEBUG_FFI").is_ok() {
-        if ptr.is_null() {
-            eprintln!("[MEMORY] doo_alloc: FAILED to allocate {} bytes!", size);
-        } else {
-            eprintln!("[MEMORY] doo_alloc: allocated {} bytes at {:p}", size, ptr);
-        }
-        // Force flush
-        use std::io::Write;
-        let _ = std::io::stderr().flush();
+    if ptr.is_null() {
+        ffi_debug!("MEMORY", "doo_alloc: FAILED to allocate {} bytes!", size);
+    } else {
+        ffi_debug!("MEMORY", "doo_alloc: allocated {} bytes at {:p}", size, ptr);
     }
 
     ptr

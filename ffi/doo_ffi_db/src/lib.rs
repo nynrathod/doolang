@@ -15,6 +15,7 @@ use std::os::raw::c_char;
 use std::sync::OnceLock;
 
 use doo_ffi_core::DooResult;
+use doo_ffi_core::ffi_debug;
 use tokio::runtime::Runtime;
 
 pub use json_utils::*;
@@ -121,8 +122,8 @@ fn simple_result_ok_ptr(value: *mut c_void) -> *mut SimpleResult {
         tag: 0, // Ok
         value: value as i64,
     });
-    eprintln!(
-        "[DB_FFI] simple_result_ok: tag={}, value=0x{:x}",
+    ffi_debug!(
+        "DB", "simple_result_ok: tag={}, value=0x{:x}",
         result.tag, result.value
     );
     Box::into_raw(result)
@@ -130,9 +131,9 @@ fn simple_result_ok_ptr(value: *mut c_void) -> *mut SimpleResult {
 
 /// Helper to create and return a heap-allocated SimpleResult for Err case
 fn simple_result_err_ptr(error_msg: &str) -> *mut SimpleResult {
-    eprintln!("[DB_FFI] simple_result_err called with: {}", error_msg);
+    ffi_debug!("DB", "simple_result_err called with: {}", error_msg);
     let ptr = string_to_c(error_msg);
-    eprintln!("[DB_FFI] string_to_c returned: {:?}", ptr);
+    ffi_debug!("DB", "string_to_c returned: {:?}", ptr);
     let result = Box::new(SimpleResult {
         tag: 1, // Err
         value: ptr as i64,
@@ -147,32 +148,32 @@ fn simple_result_err_ptr(error_msg: &str) -> *mut SimpleResult {
 /// - Err: tag=1, value=error message string pointer
 #[no_mangle]
 pub extern "C" fn doo_db_connect_postgres() -> *mut SimpleResult {
-    eprintln!("[DB_FFI] doo_db_connect_postgres called");
+    ffi_debug!("DB", "doo_db_connect_postgres called");
     let conn_str = match std::env::var("DATABASE_URL") {
         Ok(s) => {
-            eprintln!("[DB_FFI] DATABASE_URL found: {}", s);
+            ffi_debug!("DB", "DATABASE_URL found: {}", s);
             s
         }
         Err(_) => {
             // For development/testing, create a mock database connection
             // In production, this should fail or use a default URL
-            eprintln!("[DB_FFI] WARNING: DATABASE_URL not set, using mock connection");
+            ffi_debug!("DB", "WARNING: DATABASE_URL not set, using mock connection");
             let db = create_database_struct("mock", true);
             return simple_result_ok_ptr(db);
         }
     };
 
-    eprintln!("[DB_FFI] Creating tokio runtime...");
+    ffi_debug!("DB", "Creating tokio runtime...");
     let rt = get_runtime();
-    eprintln!("[DB_FFI] Calling init_pool...");
+    ffi_debug!("DB", "Calling init_pool...");
     match rt.block_on(init_pool(&conn_str)) {
         Ok(_) => {
-            eprintln!("[DB_FFI] Pool initialized successfully");
+            ffi_debug!("DB", "Pool initialized successfully");
             let db = create_database_struct("postgres", true);
             simple_result_ok_ptr(db)
         }
         Err(e) => {
-            eprintln!("[DB] Connection failed: {}", e);
+            ffi_debug!("DB", "Connection failed: {}", e);
             simple_result_err_ptr(&format!("Database connection failed: {}", e))
         }
     }
@@ -186,7 +187,7 @@ pub extern "C" fn doo_db_get_global() -> *mut SimpleResult {
         let db = create_database_struct("postgres", true);
         simple_result_ok_ptr(db)
     } else {
-        eprintln!("[DB] WARNING: No database connected, using mock");
+        ffi_debug!("DB", "WARNING: No database connected, using mock");
         let db = create_database_struct("mock", false);
         simple_result_ok_ptr(db)
     }
@@ -229,22 +230,22 @@ pub extern "C" fn doo_db_cleanup_and_exit() {
 /// Returns pointer to heap-allocated SimpleResult (avoids Windows sret ABI issue)
 #[no_mangle]
 pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut SimpleResult {
-    eprintln!("[DB_FFI] doo_db_raw called");
+    ffi_debug!("DB", "doo_db_raw called");
 
     let sql_str = match c_to_string(sql) {
         Ok(s) => {
-            eprintln!("[DB_FFI] SQL: {}", s);
+            ffi_debug!("DB", "SQL: {}", s);
             s
         }
         Err(e) => {
-            eprintln!("[DB_FFI] Failed to convert SQL string: {}", e);
+            ffi_debug!("DB", "Failed to convert SQL string: {}", e);
             return simple_result_err_ptr(&e);
         }
     };
 
     // Check if database pool is initialized
     if !is_pool_initialized() {
-        eprintln!("[DB_FFI] No database pool, returning empty result (demo mode)");
+        ffi_debug!("DB", "No database pool, returning empty result (demo mode)");
         return simple_result_ok_ptr(string_to_c("[]") as *mut c_void);
     }
 
@@ -260,7 +261,7 @@ pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut Sim
                 }
                 Err(e) => {
                     // Connection failed - return empty result in demo mode
-                    eprintln!("[DB_FFI] Connection failed ({}), returning empty result", e);
+                    ffi_debug!("DB", "Connection failed ({}), returning empty result", e);
                     Ok::<_, Box<dyn std::error::Error + Send + Sync>>("[]".to_string())
                 }
             }
@@ -270,17 +271,17 @@ pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut Sim
 
     match rx.recv() {
         Ok(Ok(json)) => {
-            eprintln!("[DB_FFI] Query result, json length: {}", json.len());
+            ffi_debug!("DB", "Query result, json length: {}", json.len());
             simple_result_ok_ptr(string_to_c(&json) as *mut c_void)
         }
         Ok(Err(e)) => {
             let err_msg = format!("Query failed: {}", format_db_error(e.as_ref()));
-            eprintln!("[DB_FFI] {}", err_msg);
+            ffi_debug!("DB", "{}", err_msg);
             simple_result_err_ptr(&err_msg)
         }
         Err(e) => {
             let err_msg = format!("Thread communication error: {}", e);
-            eprintln!("[DB_FFI] {}", err_msg);
+            ffi_debug!("DB", "{}", err_msg);
             simple_result_err_ptr(&err_msg)
         }
     }
@@ -295,21 +296,21 @@ pub extern "C" fn doo_db_raw_param(
     sql: *const c_char,
     params_json: *const c_char,
 ) -> *mut SimpleResult {
-    eprintln!("[DB_FFI] doo_db_raw_param called");
+    ffi_debug!("DB", "doo_db_raw_param called");
 
     // Check if database is connected; if not, return empty array (demo mode)
     if !is_pool_initialized() {
-        eprintln!("[DB_FFI] No database connected, returning empty result (demo mode)");
+        ffi_debug!("DB", "No database connected, returning empty result (demo mode)");
         return simple_result_ok_ptr(string_to_c("[]") as *mut c_void);
     }
 
     let sql_str = match c_to_string(sql) {
         Ok(s) => {
-            eprintln!("[DB_FFI] SQL: {}", s);
+            ffi_debug!("DB", "SQL: {}", s);
             s
         }
         Err(e) => {
-            eprintln!("[DB_FFI] Failed to convert SQL string: {}", e);
+            ffi_debug!("DB", "Failed to convert SQL string: {}", e);
             return simple_result_err_ptr(&e);
         }
     };
@@ -318,25 +319,25 @@ pub extern "C" fn doo_db_raw_param(
     // This can happen when compiler passes uninitialized array data pointer for empty arrays
     // The proper fix is in the compiler (codegen/instructions/calls.rs), but this makes FFI robust
     let params_str = if params_json.is_null() {
-        eprintln!("[DB_FFI] Params pointer is null, treating as empty array");
+        ffi_debug!("DB", "Params pointer is null, treating as empty array");
         "[]".to_string()
     } else {
         // Check first byte - if it's 0 or invalid UTF-8, treat as empty array
         let first_byte = unsafe { *params_json as u8 };
         if first_byte == 0 {
-            eprintln!("[DB_FFI] Params starts with null byte, treating as empty array");
+            ffi_debug!("DB", "Params starts with null byte, treating as empty array");
             "[]".to_string()
         } else {
             match c_to_string(params_json) {
                 Ok(s) => {
-                    eprintln!("[DB_FFI] Params: {}", s);
+                    ffi_debug!("DB", "Params: {}", s);
                     s
                 }
                 Err(e) => {
                     // Invalid UTF-8 often means compiler passed raw array pointer for empty array
                     // Treat as empty array instead of failing
-                    eprintln!(
-                        "[DB_FFI] Params UTF-8 error ({}), treating as empty array",
+                    ffi_debug!(
+                        "DB", "Params UTF-8 error ({}), treating as empty array",
                         e
                     );
                     "[]".to_string()
@@ -411,7 +412,7 @@ pub extern "C" fn doo_db_raw_param(
                 }
                 Err(e) => {
                     // Connection failed - return empty result in demo mode
-                    eprintln!("[DB_FFI] Connection failed ({}), returning empty result", e);
+                    ffi_debug!("DB", "Connection failed ({}), returning empty result", e);
                     Ok::<_, Box<dyn std::error::Error + Send + Sync>>("[]".to_string())
                 }
             }
@@ -421,7 +422,7 @@ pub extern "C" fn doo_db_raw_param(
 
     match rx.recv() {
         Ok(Ok(json)) => {
-            eprintln!("[DB_FFI] Query result, json length: {}", json.len());
+            ffi_debug!("DB", "Query result, json length: {}", json.len());
 
             // IMPORTANT: For scalar values (Int), the compiler expects the actual value,
             // not a JSON string pointer. Detect scalar int results and return them directly.
@@ -436,7 +437,7 @@ pub extern "C" fn doo_db_raw_param(
                                 // Single column - get its value
                                 if let Some(val) = obj.values().next() {
                                     if let Some(n) = val.as_i64() {
-                                        eprintln!("[DB_FFI] Detected scalar int result: {}", n);
+                                        ffi_debug!("DB", "Detected scalar int result: {}", n);
                                         // Return the integer value directly (as ptr for type compatibility)
                                         // The compiler will do ptrtoint which gives us the actual value
                                         return simple_result_ok_ptr(n as *mut c_void);
@@ -450,7 +451,7 @@ pub extern "C" fn doo_db_raw_param(
                 if let serde_json::Value::Array(arr) = &parsed {
                     if arr.len() == 1 {
                         if let Some(n) = arr[0].as_i64() {
-                            eprintln!("[DB_FFI] Detected scalar int result (raw): {}", n);
+                            ffi_debug!("DB", "Detected scalar int result (raw): {}", n);
                             return simple_result_ok_ptr(n as *mut c_void);
                         }
                     }
@@ -461,12 +462,12 @@ pub extern "C" fn doo_db_raw_param(
         }
         Ok(Err(e)) => {
             let err_msg = format!("Query failed: {}", format_db_error(e.as_ref()));
-            eprintln!("[DB_FFI] {}", err_msg);
+            ffi_debug!("DB", "{}", err_msg);
             simple_result_err_ptr(&err_msg)
         }
         Err(e) => {
             let err_msg = format!("Thread communication error: {}", e);
-            eprintln!("[DB_FFI] {}", err_msg);
+            ffi_debug!("DB", "{}", err_msg);
             simple_result_err_ptr(&err_msg)
         }
     }
@@ -714,7 +715,7 @@ pub extern "C" fn doo_db_execute_sql(sql: *const c_char) -> *mut c_void {
     };
 
     if !is_pool_initialized() {
-        eprintln!("[DB_FFI] doo_db_execute_sql: pool not initialized");
+        ffi_debug!("DB", "doo_db_execute_sql: pool not initialized");
         return std::ptr::null_mut();
     }
 
@@ -760,7 +761,7 @@ pub extern "C" fn doo_db_execute_sql(sql: *const c_char) -> *mut c_void {
     match rx.recv() {
         Ok(Ok(json)) => string_to_c(&json) as *mut c_void,
         Ok(Err(e)) => {
-            eprintln!("[DB_FFI] doo_db_execute_sql error: {}", e);
+            ffi_debug!("DB", "doo_db_execute_sql error: {}", e);
             std::ptr::null_mut()
         }
         Err(_) => std::ptr::null_mut(),
@@ -786,7 +787,7 @@ pub extern "C" fn doo_db_query_with_params(
     };
 
     if !is_pool_initialized() {
-        eprintln!("[DB_FFI] doo_db_query_with_params: pool not initialized");
+        ffi_debug!("DB", "doo_db_query_with_params: pool not initialized");
         return std::ptr::null_mut();
     }
 
@@ -881,7 +882,7 @@ pub extern "C" fn doo_db_query_with_params(
     match rx.recv() {
         Ok(Ok(json)) => string_to_c(&json) as *mut c_void,
         Ok(Err(e)) => {
-            eprintln!("[DB_FFI] doo_db_query_with_params error: {}", e);
+            ffi_debug!("DB", "doo_db_query_with_params error: {}", e);
             std::ptr::null_mut()
         }
         Err(_) => std::ptr::null_mut(),

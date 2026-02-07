@@ -14,6 +14,8 @@ pub mod enums;
 pub mod closures;
 pub mod casts;
 
+use doo_core::doo_debug;
+
 use inkwell::values::BasicValueEnum;
 use doo_mir::MirInstr;
 use crate::context::CodegenContext;
@@ -70,14 +72,14 @@ impl<'ctx> InstructionDispatcher<'ctx> {
         for handler in &self.handlers {
             if handler.handles(instr) {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN]     -> Handled by handler");
+                    doo_debug!("CODEGEN", "    -> Handled by handler");
                 }
                 return handler.emit(ctx, instr);
             }
         }
         // Unknown instruction - emit nothing
         if std::env::var("DOO_DEBUG").is_ok() {
-            eprintln!("[CODEGEN]     -> NO HANDLER for instruction");
+            doo_debug!("CODEGEN", "    -> NO HANDLER for instruction");
         }
         None
     }

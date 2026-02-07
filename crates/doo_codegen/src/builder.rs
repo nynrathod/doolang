@@ -5,6 +5,7 @@
 use crate::context::CodegenContext;
 use crate::instructions::InstructionDispatcher;
 use crate::utils::operand_to_value;
+use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeKind, TypeRegistry};
 use doo_mir::{MirBlock, MirConst, MirFunction, MirInstr, MirOperand, MirProgram, MirTerminator};
 use inkwell::basic_block::BasicBlock;
@@ -347,8 +348,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         // The TypeRef references struct types from imported modules
                         doo_core::types::TypeKind::TypeRef { name: ref_name } => {
                             if debug {
-                                eprintln!(
-                                    "[CODEGEN] Found TypeRef '{}', looking for struct def",
+                                doo_debug!("CODEGEN", "Found TypeRef '{}', looking for struct def",
                                     ref_name
                                 );
                             }
@@ -361,8 +361,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                                     {
                                         if name == ref_name {
                                             if debug {
-                                                eprintln!(
-                                                    "[CODEGEN] Found struct '{}' via scan",
+                                                doo_debug!("CODEGEN", "Found struct '{}' via scan",
                                                     name
                                                 );
                                             }
@@ -372,8 +371,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                                 }
                             }
                             if debug {
-                                eprintln!(
-                                    "[CODEGEN] WARNING: Could not find struct for TypeRef '{}'",
+                                doo_debug!("CODEGEN", "WARNING: Could not find struct for TypeRef '{}'",
                                     ref_name
                                 );
                             }
@@ -401,8 +399,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             ctx.register_struct_metadata(&name, field_names);
 
             if debug {
-                eprintln!(
-                    "[CODEGEN] Pre-declared struct type: {} with {} fields",
+                doo_debug!("CODEGEN", "Pre-declared struct type: {} with {} fields",
                     name,
                     fields.len()
                 );
@@ -414,8 +411,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
     fn declare_function(&self, ctx: &mut CodegenContext<'ctx>, func: &MirFunction) {
         let debug = std::env::var("DOO_DEBUG").is_ok();
         if debug {
-            eprintln!(
-                "[CODEGEN] Declaring function {} with return_type={:?} is_closure={}",
+            doo_debug!("CODEGEN", "Declaring function {} with return_type={:?} is_closure={}",
                 func.name, func.return_type, func.is_closure
             );
         }
@@ -558,13 +554,12 @@ impl<'ctx> CodegenBuilder<'ctx> {
         ctx.is_closure_function = func.is_closure;
 
         if std::env::var("DOO_DEBUG").is_ok() {
-            eprintln!(
-                "[CODEGEN] Function {} has {} MIR locals:",
+            doo_debug!("CODEGEN", "Function {} has {} MIR locals:",
                 func.name,
                 func.locals.len()
             );
             for local in &func.locals {
-                eprintln!("[CODEGEN]   Local: {} : {:?}", local.name, local.type_id);
+                doo_debug!("CODEGEN", "  Local: {} : {:?}", local.name, local.type_id);
             }
         }
 
@@ -651,8 +646,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     TypeKind::Struct { name, .. } => {
                         ctx.set_temp_struct_type(&param.name, &name);
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!(
-                                "[CODEGEN] Registered struct param {} as type {}",
+                            doo_debug!("CODEGEN", "Registered struct param {} as type {}",
                                 param.name, name
                             );
                         }
@@ -680,8 +674,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         if let Some(name) = struct_name {
                             ctx.set_temp_struct_type(&param.name, &name);
                             if std::env::var("DOO_DEBUG").is_ok() {
-                                eprintln!(
-                                    "[CODEGEN] Registered TypeRef param {} as struct type {}",
+                                doo_debug!("CODEGEN", "Registered TypeRef param {} as struct type {}",
                                     param.name, name
                                 );
                             }
@@ -689,8 +682,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     }
                     other => {
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!(
-                                "[CODEGEN] Param {} has non-struct type: {:?} (type_id={:?})",
+                            doo_debug!("CODEGEN", "Param {} has non-struct type: {:?} (type_id={:?})",
                                 param.name, other, param.type_id
                             );
                         }
@@ -698,8 +690,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 }
             } else {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!(
-                        "[CODEGEN] WARNING: Param {} has unknown type_id={:?}",
+                    doo_debug!("CODEGEN", "WARNING: Param {} has unknown type_id={:?}",
                         param.name, param.type_id
                     );
                 }
@@ -722,8 +713,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         TypeKind::Struct { name, .. } => {
                             ctx.set_temp_struct_type(&local.name, &name);
                             if std::env::var("DOO_DEBUG").is_ok() {
-                                eprintln!(
-                                    "[CODEGEN] Registered struct local {} as type {}",
+                                doo_debug!("CODEGEN", "Registered struct local {} as type {}",
                                     local.name, name
                                 );
                             }
@@ -748,8 +738,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             if let Some(name) = struct_name {
                                 ctx.set_temp_struct_type(&local.name, &name);
                                 if std::env::var("DOO_DEBUG").is_ok() {
-                                    eprintln!(
-                                        "[CODEGEN] Registered TypeRef local {} as struct type {}",
+                                    doo_debug!("CODEGEN", "Registered TypeRef local {} as struct type {}",
                                         local.name, name
                                     );
                                 }
@@ -769,7 +758,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 // Track assigned variable type for Clone/Drop
                 ctx.set_variable_type(name, *type_id);
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] Created alloca for variable: {}", name);
+                    doo_debug!("CODEGEN", "Created alloca for variable: {}", name);
                 }
             }
         }
@@ -780,8 +769,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             ctx.builder.position_at_end(bb);
 
             if std::env::var("DOO_DEBUG").is_ok() {
-                eprintln!(
-                    "[CODEGEN] Block {} has {} instructions",
+                doo_debug!("CODEGEN", "Block {} has {} instructions",
                     mir_block.label,
                     mir_block.instructions.len()
                 );
@@ -790,7 +778,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             // Generate instructions
             for instr in &mir_block.instructions {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN]   Instr: {:?}", instr);
+                    doo_debug!("CODEGEN", "  Instr: {:?}", instr);
                 }
                 // Use custom emit for Assign to store in alloca
                 if let doo_mir::MirInstrKind::Assign { dest, value } = &instr.kind {
@@ -830,8 +818,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             while let Some(bb) = maybe_bb {
                 if bb.get_terminator().is_none() {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!(
-                            "[CODEGEN] Block {:?} has no terminator, adding default return",
+                        doo_debug!("CODEGEN", "Block {:?} has no terminator, adding default return",
                             bb.get_name().to_str()
                         );
                     }
@@ -880,7 +867,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
         block_map: &HashMap<String, BasicBlock<'ctx>>,
     ) {
         if std::env::var("DOO_DEBUG").is_ok() {
-            eprintln!("[CODEGEN] Emitting terminator: {:?}", term);
+            doo_debug!("CODEGEN", "Emitting terminator: {:?}", term);
         }
 
         match term {
@@ -944,8 +931,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 } else if values.len() == 1 {
                     if let Some(val) = operand_to_value(ctx, &values[0]) {
                         if debug {
-                            eprintln!(
-                                "[CODEGEN] Return: got value {:?} for {:?}",
+                            doo_debug!("CODEGEN", "Return: got value {:?} for {:?}",
                                 val.get_type(),
                                 &values[0]
                             );
@@ -956,7 +942,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         ctx.builder.build_return(Some(&final_val)).ok();
                     } else {
                         if debug {
-                            eprintln!("[CODEGEN] WARNING: Return: operand_to_value returned None for {:?}", &values[0]);
+                            doo_debug!("CODEGEN", "WARNING: Return: operand_to_value returned None for {:?}", &values[0]);
                         }
                         // CRITICAL: If function has a return type, return a default value, not void
                         if let Some(ret_type) = ctx.current_function_return_type {
@@ -977,9 +963,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     if llvm_values.len() != values.len() {
                         // Some values couldn't be converted
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!(
-                                "[CODEGEN] WARNING: Could not convert all tuple return values"
-                            );
+                            doo_debug!("CODEGEN", "WARNING: Could not convert all tuple return values");
                         }
                         ctx.builder.build_return(None).ok();
                     } else {
@@ -1033,7 +1017,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 if let Some(target_bb) = block_map.get(target) {
                     ctx.builder.build_unconditional_branch(*target_bb).ok();
                 } else if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] ERROR: Goto target {} not found", target);
+                    doo_debug!("CODEGEN", "ERROR: Goto target {} not found", target);
                 }
             }
             MirTerminator::Branch {
@@ -1042,17 +1026,16 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 else_block,
             } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] Branch cond: {:?}", cond);
+                    doo_debug!("CODEGEN", "Branch cond: {:?}", cond);
                     if let Some(bb) = ctx.builder.get_insert_block() {
-                        eprintln!(
-                            "[CODEGEN] Branch emitting from block: {:?}",
+                        doo_debug!("CODEGEN", "Branch emitting from block: {:?}",
                             bb.get_name().to_str()
                         );
                     }
                 }
                 if let Some(cond_val) = operand_to_value(ctx, cond) {
                     if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!("[CODEGEN] Branch cond_val: {:?}", cond_val);
+                        doo_debug!("CODEGEN", "Branch cond_val: {:?}", cond_val);
                     }
                     let cond_bool = if cond_val.is_int_value() {
                         cond_val.into_int_value()
@@ -1065,8 +1048,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         (block_map.get(then_block), block_map.get(else_block))
                     {
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!(
-                                "[CODEGEN] Building conditional branch to {} / {}",
+                            doo_debug!("CODEGEN", "Building conditional branch to {} / {}",
                                 then_block, else_block
                             );
                         }
@@ -1074,23 +1056,21 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             .builder
                             .build_conditional_branch(cond_bool, *then_bb, *else_bb);
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            eprintln!(
-                                "[CODEGEN] build_conditional_branch result: {:?}",
+                            doo_debug!("CODEGEN", "build_conditional_branch result: {:?}",
                                 result.is_ok()
                             );
                             if let Err(e) = &result {
-                                eprintln!("[CODEGEN] build_conditional_branch error: {:?}", e);
+                                doo_debug!("CODEGEN", "build_conditional_branch error: {:?}", e);
                             }
                         }
                         result.ok();
                     } else if std::env::var("DOO_DEBUG").is_ok() {
-                        eprintln!(
-                            "[CODEGEN] ERROR: Branch targets not found: {} or {}",
+                        doo_debug!("CODEGEN", "ERROR: Branch targets not found: {} or {}",
                             then_block, else_block
                         );
                     }
                 } else if std::env::var("DOO_DEBUG").is_ok() {
-                    eprintln!("[CODEGEN] ERROR: Branch condition not found for {:?}", cond);
+                    doo_debug!("CODEGEN", "ERROR: Branch condition not found for {:?}", cond);
                 }
             }
             MirTerminator::Switch {
@@ -1208,4 +1188,3 @@ impl<'ctx> CodegenBuilder<'ctx> {
         }
     }
 }
-

@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
+use crate::doo_debug;
 
 // ============================================================================
 // Type IDs
@@ -280,7 +281,7 @@ impl TypeRegistry {
     pub fn define_struct(&mut self, name: &str, fields: Vec<(String, TypeId, bool)>) -> TypeId {
         let id = self.declare_named(name);
         if std::env::var("DOO_DEBUG_TYPES").is_ok() {
-            eprintln!("[TYPES] define_struct '{}' with id={:?}, fields={:?}", name, id, fields);
+            doo_debug!("TYPES", "define_struct '{}' with id={:?}, fields={:?}", name, id, fields);
         }
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Struct {
@@ -295,7 +296,7 @@ impl TypeRegistry {
     pub fn define_enum(&mut self, name: &str, variants: Vec<(String, Option<TypeId>)>) -> TypeId {
         let id = self.declare_named(name);
         if std::env::var("DOO_DEBUG_TYPES").is_ok() {
-            eprintln!("[TYPES] define_enum '{}' with id={:?}, variants={:?}", name, id, variants.iter().map(|(n, _)| n).collect::<Vec<_>>());
+            doo_debug!("TYPES", "define_enum '{}' with id={:?}, variants={:?}", name, id, variants.iter().map(|(n, _)| n).collect::<Vec<_>>());
         }
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Enum {
