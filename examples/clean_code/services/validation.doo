@@ -8,7 +8,7 @@ struct ValidationError {
     Message: Str,
 }
 
-fn validateEmail(email: Str) -> Bool ! ValidationError {
+fn ValidateEmail(email: Str) -> Bool ! ValidationError {
     if email.trim() == "" {
         Err ValidationError { Field: "Email", Message: "Cannot be empty" };
     }
@@ -18,7 +18,7 @@ fn validateEmail(email: Str) -> Bool ! ValidationError {
     Ok true;
 }
 
-fn validateAge(age: Int) -> Bool ! ValidationError {
+fn ValidateAge(age: Int) -> Bool ! ValidationError {
     if age < 0 {
         Err ValidationError { Field: "Age", Message: "Cannot be negative" };
     }
@@ -28,14 +28,14 @@ fn validateAge(age: Int) -> Bool ! ValidationError {
     Ok true;
 }
 
-fn validateName(name: Str) -> Bool ! ValidationError {
+fn ValidateName(name: Str) -> Bool ! ValidationError {
     if name.trim() == "" {
         Err ValidationError { Field: "Name", Message: "Cannot be empty" };
     }
     Ok true;
 }
 
-fn createUser(
+fn CreateUser(
     id: Int,
     name: Str,
     email: Str,
@@ -44,9 +44,9 @@ fn createUser(
     address: Address
 ) -> User ! ValidationError {
 
-    validateName(name)?;
-    validateEmail(email)?;
-    validateAge(age)?;
+    ValidateName(name)?;
+    ValidateEmail(email)?;
+    ValidateAge(age)?;
 
     Ok User {
         Id: id,
