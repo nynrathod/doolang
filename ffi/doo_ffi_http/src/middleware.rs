@@ -88,29 +88,34 @@ pub extern "C" fn jwt_middleware_handler(
 
 /// Decode base64url encoded string (used in JWT)
 fn base64_url_decode(input: &str) -> Result<String, String> {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
     // Add padding if needed
     let padded = match input.len() % 4 {
         2 => format!("{}==", input),
         3 => format!("{}=", input),
         _ => input.to_string(),
     };
-    
-    URL_SAFE_NO_PAD.decode(&padded)
+
+    URL_SAFE_NO_PAD
+        .decode(&padded)
         .or_else(|_| URL_SAFE_NO_PAD.decode(input))
         .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
         .map_err(|e| format!("Base64 decode error: {}", e))
 }
 
 /// Extract user ID from JWT payload JSON
-/// Looks up the user in the database by email (sub field) to get the numeric ID
+/// First tries to get user_id directly from claims, then falls back to database lookup
 fn extract_user_id_from_jwt_payload(payload_json: &str) -> Option<i64> {
     let payload: serde_json::Value = serde_json::from_str(payload_json).ok()?;
+
+    // First try to get user_id directly from JWT claims
+    if let Some(user_id) = payload.get("user_id").and_then(|v| v.as_i64()) {
+        return Some(user_id);
+    }
+
+    // Fall back to database lookup by email (for backwards compatibility)
     let email = payload.get("sub")?.as_str()?;
-    
-    // Query the database to get the user ID by email
-    // Use runtime loading to call into doo_db
     lookup_user_id_by_email(email)
 }
 
@@ -119,7 +124,7 @@ fn lookup_user_id_by_email(email: &str) -> Option<i64> {
     use libloading::{Library, Symbol};
     use std::ffi::CString;
     use std::os::raw::c_char;
-    
+
     // Try to load the database library
     #[cfg(target_os = "windows")]
     let lib_names = ["doo_ffi_db.dll", "libdoo_ffi_db.dll"];
@@ -127,33 +132,31 @@ fn lookup_user_id_by_email(email: &str) -> Option<i64> {
     let lib_names = ["libdoo_ffi_db.so", "doo_ffi_db.so"];
     #[cfg(target_os = "macos")]
     let lib_names = ["libdoo_ffi_db.dylib", "doo_ffi_db.dylib"];
-    
-    let lib = lib_names.iter()
+
+    let lib = lib_names
+        .iter()
         .find_map(|name| unsafe { Library::new(name).ok() })?;
-    
+
     // Call doo_db_query_one to find user by email
     type QueryFn = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut std::ffi::c_void;
     let query_fn: Symbol<QueryFn> = unsafe { lib.get(b"doo_db_query_with_params").ok()? };
-    
+
     let sql = CString::new("SELECT id FROM users WHERE email = $1 LIMIT 1").ok()?;
     let params_json = serde_json::json!([email]).to_string();
     let params = CString::new(params_json).ok()?;
-    
+
     let result_ptr = unsafe { query_fn(sql.as_ptr(), params.as_ptr()) };
     if result_ptr.is_null() {
         return None;
     }
-    
+
     // Parse the result - it's a JSON array with rows
     // Each row is an object with column values
     let result_str = c_to_string(result_ptr as *const c_char);
     let result: serde_json::Value = serde_json::from_str(&result_str).ok()?;
-    
+
     // Get the first row's id field
-    result.as_array()?
-        .first()?
-        .get("id")?
-        .as_i64()
+    result.as_array()?.first()?.get("id")?.as_i64()
 }
 
 /// CORS middleware handler

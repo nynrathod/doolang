@@ -1312,8 +1312,8 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                     if let Some(user_row) = rows.into_iter().next() {
                         let user_id = user_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
-                        // Generate JWT token
-                        let token = generate_jwt_token(&email);
+                        // Generate JWT token with user_id in claims
+                        let token = generate_jwt_token(&email, user_id);
 
                         // Build response with all fields from the database row (except password)
                         let mut response_data = serde_json::json!({
@@ -1384,8 +1384,8 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
         );
     }
 
-    // Generate JWT token
-    let token = generate_jwt_token(&email);
+    // Generate JWT token with user_id in claims
+    let token = generate_jwt_token(&email, user_id as i64);
     ffi_debug!("AUTH", "JWT token generated for: {}", email);
 
     // Build response with id, email and any extra fields (but not password)
@@ -1479,8 +1479,9 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                     email
                                 );
 
-                                // Generate JWT token
-                                let token = generate_jwt_token(&email);
+                                // Extract user_id and generate JWT token
+                                let user_id = user_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let token = generate_jwt_token(&email, user_id);
 
                                 // Build response with all fields from DB (except password)
                                 let mut response_data = serde_json::json!({
@@ -1555,8 +1556,8 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
-    // Generate JWT token
-    let token = generate_jwt_token(&email);
+    // Generate JWT token with user_id in claims
+    let token = generate_jwt_token(&email, user.id as i64);
 
     // Build response with id, email, token, and any extra fields stored during signup
     let mut response_data = serde_json::json!({
@@ -1575,8 +1576,8 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     make_ok_json(&response)
 }
 
-/// Generate a JWT token for the given subject
-fn generate_jwt_token(sub: &str) -> String {
+/// Generate a JWT token for the given subject and user ID
+fn generate_jwt_token(sub: &str, user_id: i64) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde::{Deserialize, Serialize};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1584,6 +1585,7 @@ fn generate_jwt_token(sub: &str) -> String {
     #[derive(Serialize, Deserialize)]
     struct Claims {
         sub: String,
+        user_id: i64,
         exp: usize,
         iat: usize,
     }
@@ -1596,6 +1598,7 @@ fn generate_jwt_token(sub: &str) -> String {
 
     let claims = Claims {
         sub: sub.to_string(),
+        user_id,
         exp: now + 86400, // 24 hours
         iat: now,
     };
