@@ -1,6 +1,6 @@
 import std::Http::Server;
 import std::Database;
-import std::Auth::jwt;
+import std::Auth::Jwt;
 
 struct User {
     id: Int @primary @auto,
@@ -56,7 +56,7 @@ fn main() {
 
     app.crud("/products", Product, db);
 
-    app.get("/profile", jwt(), GetProfile);
+    app.get("/profile", Jwt(), GetProfile);
     app.get("/public", GetPublicInfo);
 
     app.start();
