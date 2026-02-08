@@ -1,6 +1,6 @@
 //! # Doo FFI Core
 //!
-//! Single source of truth for ALL FFI types.
+//! Single source of truth for ALL FFI types and constants.
 //!
 //! ## Core Types
 //!
@@ -8,8 +8,14 @@
 //! - `DooString` - The ONE string type for FFI
 //! - `DooValue` - Generic value wrapper
 //! - `Rfc7807Error` - RFC 7807 error format
+//!
+//! ## Constants (SINGLE SOURCE OF TRUTH)
+//!
+//! All middleware names, FFI identifiers used across compiler and runtime
+//! are defined in the `constants` module.
 
 pub mod casts;
+pub mod constants;
 pub mod debug;
 pub mod errors;
 pub mod json;

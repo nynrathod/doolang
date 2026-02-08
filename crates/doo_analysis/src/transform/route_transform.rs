@@ -28,10 +28,9 @@
 //! app.getWithMiddleware("/api/profile", "AuthMiddleware,LogMiddleware", "getProfile");
 //! ```
 
+use doo_core::constants::{DOO_JWT_FUNC_NAME, MIDDLEWARE_JWT};
 use doo_core::Span;
-use doo_frontend::ast::{
-    Expr, ExprKind, Stmt, StmtKind, Item, Program, FunctionDecl, TypeExpr,
-};
+use doo_frontend::ast::{Expr, ExprKind, FunctionDecl, Item, Program, Stmt, StmtKind, TypeExpr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Global counter for generating unique closure function names.
@@ -43,7 +42,7 @@ static CLOSURE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// into individual route registrations with prefixes prepended.
 pub fn transform_route_groups(program: &mut Program) {
     let mut new_items = Vec::new();
-    
+
     for item in &mut program.items {
         match item {
             Item::Function(f) => {
@@ -65,7 +64,7 @@ pub fn transform_route_groups(program: &mut Program) {
             _ => {}
         }
     }
-    
+
     // Add any expanded items
     program.items.extend(new_items);
 }
@@ -77,7 +76,7 @@ fn transform_stmts(stmts: &mut Vec<Stmt>) {
         // Check if this statement contains a route group to expand
         if let Some(expanded) = try_expand_stmt_route_group(&stmts[i]) {
             let expanded_len = expanded.len();
-            stmts.splice(i..i+1, expanded);
+            stmts.splice(i..i + 1, expanded);
             i += expanded_len;
         } else {
             // Recursively transform nested statements
@@ -92,12 +91,20 @@ fn try_expand_stmt_route_group(stmt: &Stmt) -> Option<Vec<Stmt>> {
     match &stmt.kind {
         StmtKind::Expr(expr) => {
             if let Some(expanded) = try_expand_route_group(expr) {
-                return Some(expanded.into_iter().map(|e| {
-                    Stmt::new(StmtKind::Expr(e), stmt.span)
-                }).collect());
+                return Some(
+                    expanded
+                        .into_iter()
+                        .map(|e| Stmt::new(StmtKind::Expr(e), stmt.span))
+                        .collect(),
+                );
             }
         }
-        StmtKind::Let { value, mutable, pattern, type_ann } => {
+        StmtKind::Let {
+            value,
+            mutable,
+            pattern,
+            type_ann,
+        } => {
             if let Some(expanded) = try_expand_route_group(value) {
                 // For let with route group, this is unusual but handle it
                 if expanded.len() == 1 {
@@ -123,7 +130,12 @@ fn try_expand_stmt_route_group(stmt: &Stmt) -> Option<Vec<Stmt>> {
 /// Returns Some(vec![expanded_calls]) if this is a group() call,
 /// None otherwise.
 fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
-    if let ExprKind::MethodCall { object, method, args } = &expr.kind {
+    if let ExprKind::MethodCall {
+        object,
+        method,
+        args,
+    } = &expr.kind
+    {
         if method != "group" {
             return None;
         }
@@ -135,14 +147,14 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
 
         // Extract prefix (first argument)
         let prefix_expr = &args[0];
-        
+
         // Extract middleware (all args between prefix and block)
         let last_idx = args.len() - 1;
         let middleware_args = &args[1..last_idx];
-        
+
         // Extract the block (last argument)
         let block = &args[last_idx];
-        
+
         // Extract route definitions from the block
         let route_calls = match &block.kind {
             ExprKind::Block(stmts, result) => {
@@ -156,7 +168,10 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
             }
             ExprKind::RouteBlock { routes } => {
                 // Handle the new RouteBlock syntax: { get(...), post(...) }
-                routes.iter().filter_map(|r| extract_route_call(r)).collect()
+                routes
+                    .iter()
+                    .filter_map(|r| extract_route_call(r))
+                    .collect()
             }
             _ => {
                 if let Some(call) = extract_route_call(block) {
@@ -173,10 +188,10 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
             .map(|(http_method, path_expr, handler_expr)| {
                 // Create full path: prefix + path
                 let full_path = create_path_concat(prefix_expr, &path_expr, expr.span);
-                
+
                 // Convert path params :param -> {param}
                 let full_path = convert_path_params_in_expr(full_path);
-                
+
                 // Convert handler to string
                 let handler_str = convert_handler_to_string(handler_expr, expr.span);
 
@@ -243,16 +258,12 @@ fn extract_route_call(expr: &Expr) -> Option<(String, Expr, Expr)> {
             if !is_http_method(method_name) {
                 return None;
             }
-            
+
             if args.len() != 2 {
                 return None;
             }
 
-            return Some((
-                method_name.clone(),
-                args[0].clone(),
-                args[1].clone(),
-            ));
+            return Some((method_name.clone(), args[0].clone(), args[1].clone()));
         }
     }
     None
@@ -260,7 +271,10 @@ fn extract_route_call(expr: &Expr) -> Option<(String, Expr, Expr)> {
 
 /// Check if a string is a valid HTTP method name.
 fn is_http_method(name: &str) -> bool {
-    matches!(name, "get" | "post" | "put" | "delete" | "patch" | "options" | "head")
+    matches!(
+        name,
+        "get" | "post" | "put" | "delete" | "patch" | "options" | "head"
+    )
 }
 
 /// Check if a method name is a route registration method.
@@ -315,8 +329,9 @@ fn extract_identifier_name(expr: &Expr) -> String {
         ExprKind::StrLit(s) => s.clone(),
         ExprKind::Call { func, args } => {
             if let ExprKind::Ident(func_name) = &func.kind {
-                if func_name == "jwt" && args.is_empty() {
-                    return "jwt".to_string();
+                // Jwt() middleware function - returns middleware name constant
+                if func_name == DOO_JWT_FUNC_NAME && args.is_empty() {
+                    return MIDDLEWARE_JWT.to_string();
                 }
             }
             "unknown".to_string()
@@ -343,7 +358,7 @@ fn convert_path_params(path: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == ':' {
             result.push('{');
-            
+
             while let Some(&next_ch) = chars.peek() {
                 if next_ch.is_alphanumeric() || next_ch == '_' {
                     result.push(chars.next().unwrap());
@@ -351,7 +366,7 @@ fn convert_path_params(path: &str) -> String {
                     break;
                 }
             }
-            
+
             result.push('}');
         } else {
             result.push(ch);
@@ -406,7 +421,11 @@ fn extract_closures_from_stmt(stmt: &mut Stmt, generated: &mut Vec<FunctionDecl>
         StmtKind::Let { value, .. } => {
             extract_closures_from_expr(value, generated);
         }
-        StmtKind::If { condition, then_block, else_branch } => {
+        StmtKind::If {
+            condition,
+            then_block,
+            else_branch,
+        } => {
             extract_closures_from_expr(condition, generated);
             extract_closures_from_stmts(then_block, generated);
             if let Some(else_b) = else_branch {
@@ -441,10 +460,20 @@ fn extract_closures_from_stmt(stmt: &mut Stmt, generated: &mut Vec<FunctionDecl>
 /// Extract closures from an expression.
 fn extract_closures_from_expr(expr: &mut Expr, generated: &mut Vec<FunctionDecl>) {
     match &mut expr.kind {
-        ExprKind::MethodCall { object, method, args } => {
+        ExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
             // Check if this is a route registration with a closure
             if is_http_method(method) && args.len() == 2 {
-                if let ExprKind::Closure { params, body, return_type, error_type } = &args[1].kind {
+                if let ExprKind::Closure {
+                    params,
+                    body,
+                    return_type,
+                    error_type,
+                } = &args[1].kind
+                {
                     // Generate unique function name
                     let counter = CLOSURE_COUNTER.fetch_add(1, Ordering::SeqCst);
                     let path_hint = if let ExprKind::StrLit(path) = &args[0].kind {
@@ -482,7 +511,10 @@ fn extract_closures_from_expr(expr: &mut Expr, generated: &mut Vec<FunctionDecl>
                     let func_decl = FunctionDecl {
                         name: func_name.clone(),
                         is_public: false,
-                        params: params.iter().map(|(name, ty)| (name.clone(), ty.clone())).collect(),
+                        params: params
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), ty.clone()))
+                            .collect(),
                         return_type: return_type.clone(),
                         error_type: error_type.clone(),
                         body: body_stmts,
@@ -526,7 +558,11 @@ fn extract_closures_from_expr(expr: &mut Expr, generated: &mut Vec<FunctionDecl>
             extract_closures_from_expr(object, generated);
             extract_closures_from_expr(index, generated);
         }
-        ExprKind::IfExpr { condition, then_branch, else_branch } => {
+        ExprKind::IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             extract_closures_from_expr(condition, generated);
             extract_closures_from_expr(then_branch, generated);
             if let Some(e) = else_branch {
@@ -568,7 +604,11 @@ fn transform_stmt_recursive(stmt: &mut Stmt) {
         StmtKind::Let { value, .. } => {
             transform_expr_recursive(value);
         }
-        StmtKind::If { condition, then_block, else_branch } => {
+        StmtKind::If {
+            condition,
+            then_block,
+            else_branch,
+        } => {
             transform_expr_recursive(condition);
             transform_stmts(then_block);
             if let Some(else_b) = else_branch {
@@ -603,16 +643,18 @@ fn transform_stmt_recursive(stmt: &mut Stmt) {
 /// Recursively transform route methods in an expression.
 fn transform_expr_recursive(expr: &mut Expr) {
     match &mut expr.kind {
-        ExprKind::MethodCall { object, method, args } => {
+        ExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
             // Handle route registration methods
             if is_route_registration_method(method) {
                 // Convert path params
                 if !args.is_empty() {
                     if let ExprKind::StrLit(path) = &args[0].kind {
-                        args[0] = Expr::new(
-                            ExprKind::StrLit(convert_path_params(path)),
-                            args[0].span,
-                        );
+                        args[0] =
+                            Expr::new(ExprKind::StrLit(convert_path_params(path)), args[0].span);
                     }
                 }
 
@@ -634,7 +676,7 @@ fn transform_expr_recursive(expr: &mut Expr) {
                     *args = vec![
                         args[0].clone(),
                         Expr::new(ExprKind::StrLit(middleware_str), expr.span),
-                        handler,  // Keep as identifier, not string
+                        handler, // Keep as identifier, not string
                     ];
                 } else if method == "use" && args.len() > 1 {
                     // Middleware chaining: app.use(M1, M2, M3) -> nested calls
@@ -692,7 +734,11 @@ fn transform_expr_recursive(expr: &mut Expr) {
             transform_expr_recursive(object);
             transform_expr_recursive(index);
         }
-        ExprKind::IfExpr { condition, then_branch, else_branch } => {
+        ExprKind::IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             transform_expr_recursive(condition);
             transform_expr_recursive(then_branch);
             if let Some(e) = else_branch {
@@ -727,8 +773,14 @@ mod tests {
     #[test]
     fn test_convert_path_params() {
         assert_eq!(convert_path_params("/users/:id"), "/users/{id}");
-        assert_eq!(convert_path_params("/users/:userId/posts/:postId"), "/users/{userId}/posts/{postId}");
-        assert_eq!(convert_path_params("/api/items/:id/details"), "/api/items/{id}/details");
+        assert_eq!(
+            convert_path_params("/users/:userId/posts/:postId"),
+            "/users/{userId}/posts/{postId}"
+        );
+        assert_eq!(
+            convert_path_params("/api/items/:id/details"),
+            "/api/items/{id}/details"
+        );
         assert_eq!(convert_path_params("/no/params"), "/no/params");
     }
 

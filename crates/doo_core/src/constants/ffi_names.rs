@@ -317,3 +317,20 @@ pub fn is_self_returning_method(method: &str) -> bool {
         || SELF_RETURNING_ACCESSORS.contains(&method)
         || SELF_RETURNING_CONNECTORS.contains(&method)
 }
+
+// ============================================================================
+// Middleware Names - Re-exported from doo_ffi_core (SINGLE SOURCE OF TRUTH)
+// ============================================================================
+// All middleware constants are defined in doo_ffi_core::constants
+// and re-exported here for compiler crates to use.
+
+pub use doo_ffi_core::constants::{
+    is_auth_middleware, is_builtin_middleware, is_middleware_identifier_func,
+    BUILTIN_MIDDLEWARES, DOO_JWT_FUNC_NAME, MIDDLEWARE_CORS, MIDDLEWARE_JWT,
+    MIDDLEWARE_RATELIMIT,
+};
+
+/// Auth middleware name (legacy, kept for compatibility)
+pub const MIDDLEWARE_AUTH: &str = "auth";
+/// Rate limit middleware name (legacy alias)
+pub const MIDDLEWARE_RATE_LIMIT: &str = MIDDLEWARE_RATELIMIT;

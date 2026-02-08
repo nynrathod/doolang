@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::c_char;
 
+use doo_ffi_core::constants::{MIDDLEWARE_CORS, MIDDLEWARE_JWT, MIDDLEWARE_RATELIMIT};
 use doo_ffi_core::ffi_debug;
 
 pub use error::*;
@@ -314,20 +315,23 @@ fn register_route_with_middleware_fn(
     let mut middleware_fns = Vec::new();
     for mw_name in middleware_list {
         // Auto-register built-in middleware if referenced
-        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+        if mw_name == MIDDLEWARE_JWT && !registry.middleware_handlers.contains_key(MIDDLEWARE_JWT) {
             registry
                 .middleware_handlers
-                .insert("jwt".to_string(), jwt_middleware_handler);
+                .insert(MIDDLEWARE_JWT.to_string(), jwt_middleware_handler);
         }
-        if mw_name == "cors" && !registry.middleware_handlers.contains_key("cors") {
+        if mw_name == MIDDLEWARE_CORS && !registry.middleware_handlers.contains_key(MIDDLEWARE_CORS)
+        {
             registry
                 .middleware_handlers
-                .insert("cors".to_string(), cors_middleware_handler);
+                .insert(MIDDLEWARE_CORS.to_string(), cors_middleware_handler);
         }
-        if mw_name == "ratelimit" && !registry.middleware_handlers.contains_key("ratelimit") {
+        if mw_name == MIDDLEWARE_RATELIMIT
+            && !registry.middleware_handlers.contains_key(MIDDLEWARE_RATELIMIT)
+        {
             registry
                 .middleware_handlers
-                .insert("ratelimit".to_string(), ratelimit_middleware_handler);
+                .insert(MIDDLEWARE_RATELIMIT.to_string(), ratelimit_middleware_handler);
         }
 
         if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
@@ -368,20 +372,23 @@ fn register_route_with_middleware(
     let mut middleware_fns = Vec::new();
     for mw_name in middleware_list {
         // Auto-register built-in middleware if referenced
-        if mw_name == "jwt" && !registry.middleware_handlers.contains_key("jwt") {
+        if mw_name == MIDDLEWARE_JWT && !registry.middleware_handlers.contains_key(MIDDLEWARE_JWT) {
             registry
                 .middleware_handlers
-                .insert("jwt".to_string(), jwt_middleware_handler);
+                .insert(MIDDLEWARE_JWT.to_string(), jwt_middleware_handler);
         }
-        if mw_name == "cors" && !registry.middleware_handlers.contains_key("cors") {
+        if mw_name == MIDDLEWARE_CORS && !registry.middleware_handlers.contains_key(MIDDLEWARE_CORS)
+        {
             registry
                 .middleware_handlers
-                .insert("cors".to_string(), cors_middleware_handler);
+                .insert(MIDDLEWARE_CORS.to_string(), cors_middleware_handler);
         }
-        if mw_name == "ratelimit" && !registry.middleware_handlers.contains_key("ratelimit") {
+        if mw_name == MIDDLEWARE_RATELIMIT
+            && !registry.middleware_handlers.contains_key(MIDDLEWARE_RATELIMIT)
+        {
             registry
                 .middleware_handlers
-                .insert("ratelimit".to_string(), ratelimit_middleware_handler);
+                .insert(MIDDLEWARE_RATELIMIT.to_string(), ratelimit_middleware_handler);
         }
 
         if let Some(mw_fn) = registry.middleware_handlers.get(&mw_name).copied() {
@@ -2289,12 +2296,12 @@ pub extern "C" fn doo_http_register_middleware(
 pub extern "C" fn doo_http_jwt() -> *const c_char {
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
-    if !registry.middleware_handlers.contains_key("jwt") {
+    if !registry.middleware_handlers.contains_key(MIDDLEWARE_JWT) {
         registry
             .middleware_handlers
-            .insert("jwt".to_string(), jwt_middleware_handler);
+            .insert(MIDDLEWARE_JWT.to_string(), jwt_middleware_handler);
     }
-    string_to_c("jwt")
+    string_to_c(MIDDLEWARE_JWT)
 }
 
 #[no_mangle]
@@ -2304,10 +2311,10 @@ pub extern "C" fn doo_http_cors(server: *mut c_void) -> *mut c_void {
 
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
-    if !registry.middleware_handlers.contains_key("cors") {
+    if !registry.middleware_handlers.contains_key(MIDDLEWARE_CORS) {
         registry
             .middleware_handlers
-            .insert("cors".to_string(), cors_middleware_handler);
+            .insert(MIDDLEWARE_CORS.to_string(), cors_middleware_handler);
     }
     registry.add_middleware(cors_middleware_handler);
     server
@@ -2388,10 +2395,10 @@ pub extern "C" fn doo_http_cors_custom(server: *mut c_void, options: *mut c_void
 
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
-    if !registry.middleware_handlers.contains_key("cors") {
+    if !registry.middleware_handlers.contains_key(MIDDLEWARE_CORS) {
         registry
             .middleware_handlers
-            .insert("cors".to_string(), cors_middleware_handler);
+            .insert(MIDDLEWARE_CORS.to_string(), cors_middleware_handler);
     }
     registry.add_middleware(cors_middleware_handler);
     server
@@ -2407,10 +2414,10 @@ pub extern "C" fn doo_http_ratelimit(server: *mut c_void) -> *mut c_void {
 
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
-    if !registry.middleware_handlers.contains_key("ratelimit") {
+    if !registry.middleware_handlers.contains_key(MIDDLEWARE_RATELIMIT) {
         registry
             .middleware_handlers
-            .insert("ratelimit".to_string(), ratelimit_middleware_handler);
+            .insert(MIDDLEWARE_RATELIMIT.to_string(), ratelimit_middleware_handler);
     }
     registry.add_middleware(ratelimit_middleware_handler);
     server
@@ -2443,10 +2450,10 @@ pub extern "C" fn doo_http_ratelimit_custom(
 
     let routes = get_routes();
     let mut registry = routes.lock().unwrap();
-    if !registry.middleware_handlers.contains_key("ratelimit") {
+    if !registry.middleware_handlers.contains_key(MIDDLEWARE_RATELIMIT) {
         registry
             .middleware_handlers
-            .insert("ratelimit".to_string(), ratelimit_middleware_handler);
+            .insert(MIDDLEWARE_RATELIMIT.to_string(), ratelimit_middleware_handler);
     }
     registry.add_middleware(ratelimit_middleware_handler);
     server

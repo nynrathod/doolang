@@ -61,7 +61,7 @@ impl RouteContext {
     pub fn has_jwt_middleware(&self) -> bool {
         self.middleware_names
             .iter()
-            .any(|m| m.eq_ignore_ascii_case("jwt") || m.eq_ignore_ascii_case("auth"))
+            .any(|m| ffi_names::is_auth_middleware(m))
     }
 
     /// Determine the source field index in DooRequest for a given parameter.
@@ -3316,15 +3316,11 @@ fn emit_ffi_call<'ctx>(
     if symbol.ends_with("_with_middleware") && args.len() >= 4 {
         // arg[2] is the middleware names string (e.g., "AuthMiddleware,AdminMiddleware")
         if let MirOperand::Const(MirConst::Str(middleware_str)) = &args[2] {
-            // Built-in middlewares that have native handlers in libdoo_http
-            // These should NOT have wrappers generated - they use the runtime's built-in handlers
-            const BUILTIN_MIDDLEWARES: &[&str] = &["jwt", "cors", "auth", "rate_limit"];
-
             // Split by comma and register each middleware function
             for mw_name in middleware_str.split(',').map(|s| s.trim()) {
                 if !mw_name.is_empty() {
                     // Skip built-in middlewares - they register themselves in the runtime
-                    if BUILTIN_MIDDLEWARES.contains(&mw_name) {
+                    if ffi_names::is_builtin_middleware(mw_name) {
                         if std::env::var("DOO_DEBUG").is_ok() {
                             doo_debug!(
                                 "CODEGEN",
