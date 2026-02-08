@@ -124,7 +124,8 @@ impl MirProgram {
                     doo_debug!(
                         "MIR",
                         "Validation failed in function '{}': {}",
-                        func.name, e
+                        func.name,
+                        e
                     );
                     doo_debug!(
                         "MIR",
@@ -816,7 +817,14 @@ impl MirInstr {
                 ..
             } => std::iter::once(receiver).chain(args.iter()).collect(),
             MirInstrKind::FfiCall { args, .. } => args.iter().collect(),
-            // ...
+            MirInstrKind::ClosureCreate { captures, .. } => captures.iter().collect(),
+            MirInstrKind::ClosureCall { closure, args, .. } => {
+                std::iter::once(closure).chain(args.iter()).collect()
+            }
+            MirInstrKind::WrapOk { value, .. } => vec![value],
+            MirInstrKind::WrapErr { value, .. } => vec![value],
+            MirInstrKind::IsOk { value, .. } => vec![value],
+            MirInstrKind::UnwrapOk { value, .. } => vec![value],
             MirInstrKind::UnwrapErr { value, .. } => vec![value],
             MirInstrKind::Cast { value, .. } => vec![value],
             MirInstrKind::Print {

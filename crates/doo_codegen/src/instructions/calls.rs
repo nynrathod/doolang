@@ -535,16 +535,18 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     let is_last = i + 1 == values.len();
                     if let Some(v) = operand_to_value(ctx, val) {
                         if debug {
+                            let type_kind = ctx.get_type_kind(ty);
                             let blk = ctx
                                 .builder
                                 .get_insert_block()
                                 .map(|b| b.get_name().to_string_lossy().to_string());
                             doo_debug!(
                                 "CODEGEN",
-                                "Print value {}: {:?} type={:?} llvm_type={:?} in block {:?}",
+                                "Print value {}: {:?} type={:?} kind={:?} llvm_type={:?} in block {:?}",
                                 i,
                                 val,
                                 ty,
+                                type_kind,
                                 v.get_type(),
                                 blk
                             );

@@ -30,13 +30,20 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
         match &instr.kind {
             MirInstrKind::BinaryOp { dest, op, lhs, rhs } => {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    doo_debug!("CODEGEN", "BinaryOp: {} = {:?} {:?} {:?}",
-                        dest, lhs, op, rhs
+                    doo_debug!(
+                        "CODEGEN",
+                        "BinaryOp: {} = {:?} {:?} {:?}",
+                        dest,
+                        lhs,
+                        op,
+                        rhs
                     );
                 }
                 let lhs_val = operand_to_value(ctx, lhs);
                 if lhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    doo_debug!("CODEGEN", "BinaryOp: lhs operand_to_value failed for {:?}",
+                    doo_debug!(
+                        "CODEGEN",
+                        "BinaryOp: lhs operand_to_value failed for {:?}",
                         lhs
                     );
                     return None;
@@ -45,7 +52,9 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
 
                 let rhs_val = operand_to_value(ctx, rhs);
                 if rhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    doo_debug!("CODEGEN", "BinaryOp: rhs operand_to_value failed for {:?}",
+                    doo_debug!(
+                        "CODEGEN",
+                        "BinaryOp: rhs operand_to_value failed for {:?}",
                         rhs
                     );
                     return None;
@@ -54,8 +63,12 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
 
                 let result = emit_binop(ctx, *op, lhs_val, rhs_val);
                 if result.is_none() && std::env::var("DOO_DEBUG").is_ok() {
-                    doo_debug!("CODEGEN", "BinaryOp: emit_binop failed for {:?} {:?} {:?}",
-                        lhs_val, op, rhs_val
+                    doo_debug!(
+                        "CODEGEN",
+                        "BinaryOp: emit_binop failed for {:?} {:?} {:?}",
+                        lhs_val,
+                        op,
+                        rhs_val
                     );
                     return None;
                 }
@@ -183,7 +196,9 @@ fn emit_binop<'ctx>(
         // Debug: show which block we're emitting to
         if std::env::var("DOO_DEBUG").is_ok() {
             if let Some(bb) = ctx.builder.get_insert_block() {
-                doo_debug!("CODEGEN", "strcmp emitting to block: {:?}",
+                doo_debug!(
+                    "CODEGEN",
+                    "strcmp emitting to block: {:?}",
                     bb.get_name().to_str()
                 );
             }
@@ -233,10 +248,7 @@ fn emit_binop<'ctx>(
     }
 
     // Handle enum comparison (both struct values - compare tags at index 0)
-    if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-        && lhs.is_struct_value()
-        && rhs.is_struct_value()
-    {
+    if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && lhs.is_struct_value() && rhs.is_struct_value() {
         let lhs_tag = ctx
             .builder
             .build_extract_value(lhs.into_struct_value(), 0, "lhs_tag")
@@ -260,8 +272,26 @@ fn emit_binop<'ctx>(
     }
 
     if lhs.is_int_value() && rhs.is_int_value() {
-        let lhs_int = lhs.into_int_value();
-        let rhs_int = rhs.into_int_value();
+        let mut lhs_int = lhs.into_int_value();
+        let mut rhs_int = rhs.into_int_value();
+
+        // Normalize int widths: when comparing i64 vs i1 (e.g., Bool variable vs Bool literal),
+        // zero-extend the smaller operand to match the larger one.
+        let lhs_width = lhs_int.get_type().get_bit_width();
+        let rhs_width = rhs_int.get_type().get_bit_width();
+        if lhs_width != rhs_width {
+            if lhs_width > rhs_width {
+                rhs_int = ctx
+                    .builder
+                    .build_int_z_extend(rhs_int, lhs_int.get_type(), "zext")
+                    .ok()?;
+            } else {
+                lhs_int = ctx
+                    .builder
+                    .build_int_z_extend(lhs_int, rhs_int.get_type(), "zext")
+                    .ok()?;
+            }
+        }
 
         let result = match op {
             BinaryOp::Add => ctx

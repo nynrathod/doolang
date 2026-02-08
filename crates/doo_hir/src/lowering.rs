@@ -3941,8 +3941,10 @@ impl Lower {
                     }
                 }
 
-                // Infer body type if not set
-                if body.type_id.is_none() {
+                // Infer body type if not set or if it was initially inferred as ANY
+                // (which happens when closure param types weren't known during initial lowering,
+                // e.g., `(x) => x * x` where both operands are untyped params → Mul(ANY, ANY) = ANY)
+                if body.type_id.is_none() || body.type_id == Some(builtin::ANY) {
                     if let Some(ret) = return_type_hint {
                         body.type_id = Some(ret);
                     } else {

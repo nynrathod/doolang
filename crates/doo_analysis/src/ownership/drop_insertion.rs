@@ -269,8 +269,11 @@ impl<'a> DropInserter<'a> {
             HirExprKind::Borrow { expr: inner, .. } => {
                 self.scan_expr_for_uses(inner);
             }
-            HirExprKind::Closure { body, .. } => {
-                self.scan_expr_for_uses(body);
+            HirExprKind::Closure { .. } => {
+                // Do NOT recurse into closure bodies.
+                // Closures are built as separate MIR functions with their own scope.
+                // Traversing into them would treat closure params/locals as outer variables,
+                // causing invalid Drop insertions in the outer function.
             }
             HirExprKind::Spread(inner) => {
                 self.scan_expr_for_uses(inner);

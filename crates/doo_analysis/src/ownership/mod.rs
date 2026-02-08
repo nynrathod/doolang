@@ -451,8 +451,10 @@ impl OwnershipAnalyzer {
             HirExprKind::Borrow { expr: inner, .. } => {
                 self.count_uses_in_expr(inner);
             }
-            HirExprKind::Closure { body, .. } => {
-                self.count_uses_in_expr(body);
+            HirExprKind::Closure { .. } => {
+                // Do NOT recurse into closure bodies for usage counting.
+                // Closures are separate functions; their params/locals are not
+                // part of the outer function's scope.
             }
             HirExprKind::Spread(inner) => {
                 self.count_uses_in_expr(inner);
@@ -567,7 +569,11 @@ impl OwnershipAnalyzer {
                     self.analyze_expr(arg);
                 }
             }
-            HirExprKind::MethodCall { receiver, method, args } => {
+            HirExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
                 // For method calls on locals, use Borrow instead of Clone
                 // This ensures mutations from methods like Add, push, etc. affect the original
                 // Note: We can't statically determine if a user-defined method mutates self,
@@ -577,7 +583,8 @@ impl OwnershipAnalyzer {
                 // - Non-mutating methods: just reads the value (still correct, no clone overhead)
                 if let HirExprKind::Local { name } = &receiver.kind {
                     // All method calls on locals use mutable borrow to allow mutation
-                    self.results.record(name, receiver.span, Decision::Borrow { mutable: true });
+                    self.results
+                        .record(name, receiver.span, Decision::Borrow { mutable: true });
                 } else {
                     // For non-local receivers (fields, temporaries), analyze normally
                     self.analyze_expr(receiver);
@@ -667,8 +674,11 @@ impl OwnershipAnalyzer {
             HirExprKind::Borrow { expr: inner, .. } => {
                 self.analyze_expr(inner);
             }
-            HirExprKind::Closure { body, .. } => {
-                self.analyze_expr(body);
+            HirExprKind::Closure { .. } => {
+                // Do NOT recurse into closure bodies for ownership analysis.
+                // Closures are built as separate MIR functions with their own
+                // param/local scope. Analyzing them here would record ownership
+                // decisions for closure params as if they were outer-scope variables.
             }
             HirExprKind::Spread(inner) => {
                 self.analyze_expr(inner);
@@ -746,7 +756,10 @@ impl OwnershipAnalyzer {
         // Check against known mutating methods from doo_core::methods
         // Array mutating: push, pop, sort, reverse, clear
         // Map mutating: remove, clear
-        matches!(method, "push" | "pop" | "sort" | "reverse" | "clear" | "remove")
+        matches!(
+            method,
+            "push" | "pop" | "sort" | "reverse" | "clear" | "remove"
+        )
     }
 
     /// Check if a type is Copy (primitives).

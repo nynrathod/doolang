@@ -65,15 +65,21 @@ pub fn emit_eq<'ctx>(
     // First, try to use TypeKind from the registry for more accurate type info
     if let Some(kind) = ctx.get_type_kind(ty) {
         return match kind {
-            TypeKind::Int | TypeKind::Bool => ctx
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    lhs.into_int_value(),
-                    rhs.into_int_value(),
-                    "eq",
-                )
-                .ok(),
+            TypeKind::Int | TypeKind::Bool => {
+                let mut lhs_int = lhs.into_int_value();
+                let mut rhs_int = rhs.into_int_value();
+                // Normalize int widths (e.g., Bool variable i64 vs Bool literal i1)
+                let lw = lhs_int.get_type().get_bit_width();
+                let rw = rhs_int.get_type().get_bit_width();
+                if lw > rw {
+                    rhs_int = ctx.builder.build_int_z_extend(rhs_int, lhs_int.get_type(), "zext").ok()?;
+                } else if rw > lw {
+                    lhs_int = ctx.builder.build_int_z_extend(lhs_int, rhs_int.get_type(), "zext").ok()?;
+                }
+                ctx.builder
+                    .build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq")
+                    .ok()
+            }
             TypeKind::Float => ctx
                 .builder
                 .build_float_compare(
@@ -93,11 +99,20 @@ pub fn emit_eq<'ctx>(
 
     // Fallback: check builtin TypeId constants
     if ty == builtin::INT || ty == builtin::BOOL {
+        let mut lhs_int = lhs.into_int_value();
+        let mut rhs_int = rhs.into_int_value();
+        let lw = lhs_int.get_type().get_bit_width();
+        let rw = rhs_int.get_type().get_bit_width();
+        if lw > rw {
+            rhs_int = ctx.builder.build_int_z_extend(rhs_int, lhs_int.get_type(), "zext").ok()?;
+        } else if rw > lw {
+            lhs_int = ctx.builder.build_int_z_extend(lhs_int, rhs_int.get_type(), "zext").ok()?;
+        }
         ctx.builder
             .build_int_compare(
                 IntPredicate::EQ,
-                lhs.into_int_value(),
-                rhs.into_int_value(),
+                lhs_int,
+                rhs_int,
                 "eq",
             )
             .ok()
@@ -162,12 +177,22 @@ fn emit_eq_by_llvm_type<'ctx>(
 ) -> Option<IntValue<'ctx>> {
     // Check if both are int values
     if lhs.is_int_value() && rhs.is_int_value() {
+        let mut lhs_int = lhs.into_int_value();
+        let mut rhs_int = rhs.into_int_value();
+        // Normalize int widths (e.g., Bool i64 vs i1)
+        let lw = lhs_int.get_type().get_bit_width();
+        let rw = rhs_int.get_type().get_bit_width();
+        if lw > rw {
+            rhs_int = ctx.builder.build_int_z_extend(rhs_int, lhs_int.get_type(), "zext").ok()?;
+        } else if rw > lw {
+            lhs_int = ctx.builder.build_int_z_extend(lhs_int, rhs_int.get_type(), "zext").ok()?;
+        }
         return ctx
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
-                lhs.into_int_value(),
-                rhs.into_int_value(),
+                lhs_int,
+                rhs_int,
                 "eq",
             )
             .ok();

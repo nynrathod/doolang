@@ -381,6 +381,48 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        // If still ANY, use the HIR body's type_id as a fallback.
+        // The HIR lowering may have set the body type via apply_closure_signature,
+        // but the MIR operand-level inference lost it (e.g., BinOp on closure params
+        // where param types were set but the expr.type_id wasn't propagated).
+        if return_type == builtin::ANY {
+            if let Some(body_type) = body.type_id {
+                if body_type != builtin::ANY {
+                    return_type = body_type;
+                }
+            }
+        }
+
+        // If STILL ANY, infer from param types and the MIR instructions.
+        // For closures like (a, b) => a * b, if params are Float, result is Float.
+        if return_type == builtin::ANY {
+            if let Some(f) = &self.current_func {
+                // Check if any param is Float - arithmetic on Floats returns Float
+                let has_float_param = f.params.iter().any(|p| p.type_id == builtin::FLOAT);
+                if has_float_param {
+                    // Scan instructions for arithmetic ops that would produce Float results
+                    for block in &f.blocks {
+                        for instr in &block.instructions {
+                            if let crate::MirInstrKind::BinaryOp { op, .. } = &instr.kind {
+                                match op {
+                                    crate::BinaryOp::Add | crate::BinaryOp::Sub |
+                                    crate::BinaryOp::Mul | crate::BinaryOp::Div |
+                                    crate::BinaryOp::Mod => {
+                                        return_type = builtin::FLOAT;
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if return_type != builtin::ANY {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // Update function's return type with the actual type
         if let Some(f) = &mut self.current_func {
             f.return_type = Some(return_type);
