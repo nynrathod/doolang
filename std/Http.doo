@@ -108,21 +108,21 @@ fn Server.delete(self, path: Str, handler: Fn) -> !HttpError {}
 @extern("doo_http", "doo_http_patch_fn")
 fn Server.patch(self, path: Str, handler: Fn) -> !HttpError {}
 
-// Route registration with middleware (function pointers)
+// Route registration with middleware (middleware names as string, handler as function pointer)
 @extern("doo_http", "doo_http_get_with_middleware")
-fn Server.getWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
+fn Server.getWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
 
 @extern("doo_http", "doo_http_post_with_middleware")
-fn Server.postWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
+fn Server.postWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
 
 @extern("doo_http", "doo_http_put_with_middleware")
-fn Server.putWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
+fn Server.putWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
 
 @extern("doo_http", "doo_http_delete_with_middleware")
-fn Server.deleteWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
+fn Server.deleteWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
 
 @extern("doo_http", "doo_http_patch_with_middleware")
-fn Server.patchWithMiddleware(self, path: Str, middleware: Fn, handler: Fn) -> !HttpError {}
+fn Server.patchWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
 
 // Middleware registration (function pointer)
 @extern("doo_http", "doo_http_use")
