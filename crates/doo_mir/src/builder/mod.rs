@@ -960,17 +960,29 @@ impl<'a> MirBuilder<'a> {
                 if let Some(closure_tid) = closure_type {
                     if let Some(info) = self.type_registry.get(closure_tid) {
                         if let TypeKind::Function { returns, .. } = &info.kind {
-                            // Register array type with closure's return type as element
-                            // Since we can't mutate registry here, check if it already exists
-                            // or return the element type and let caller handle array wrapping
-                            return Some(*returns);
+                            // Look up the array type [U] by name
+                            // Array type names are formatted as "[ElementName]"
+                            if let Some(elem_info) = self.type_registry.get(*returns) {
+                                let array_name = format!("[{}]", elem_info.name);
+                                if let Some(array_tid) = self.type_registry.lookup(&array_name) {
+                                    return Some(array_tid);
+                                }
+                            }
+                            // If U is same as receiver element type, return receiver type
+                            if let Some(recv_info) = self.type_registry.get(receiver_type) {
+                                if let TypeKind::Array { element } = &recv_info.kind {
+                                    if *element == *returns {
+                                        return Some(receiver_type);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                // Fallback: get element type from receiver (same type mapping)
+                // Fallback: same array type as receiver (e.g., identity map)
                 if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Array { element } = &info.kind {
-                        return Some(*element);
+                    if let TypeKind::Array { .. } = &info.kind {
+                        return Some(receiver_type);
                     }
                 }
                 Some(builtin::ANY)

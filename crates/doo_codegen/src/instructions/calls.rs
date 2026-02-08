@@ -528,11 +528,28 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 let debug = std::env::var("DOO_DEBUG").is_ok();
 
                 for (i, val) in values.iter().enumerate() {
-                    let ty = value_types
+                    let mut ty = value_types
                         .get(i)
                         .copied()
                         .unwrap_or(doo_core::types::builtin::ANY);
                     let is_last = i + 1 == values.len();
+
+                    // Get operand name for array_element_types lookup
+                    let operand_name = match val {
+                        MirOperand::Temp(name) | MirOperand::Local(name) => Some(name.as_str()),
+                        _ => None,
+                    };
+
+                    // If MIR type is ANY, try to get actual type from variable tracking
+                    // This handles cases where MIR type inference failed but codegen tracked the type
+                    if ty == builtin::ANY {
+                        if let Some(name) = operand_name {
+                            if let Some(var_type) = ctx.get_variable_type(name) {
+                                ty = var_type;
+                            }
+                        }
+                    }
+
                     if let Some(v) = operand_to_value(ctx, val) {
                         if debug {
                             let type_kind = ctx.get_type_kind(ty);
@@ -551,6 +568,34 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 blk
                             );
                         }
+
+                        // Check array_element_types first for accurate element type
+                        // This handles results from map/filter/slice which track element types
+                        if let Some(name) = operand_name {
+                            if let Some(&elem_type) = ctx.array_element_types.get(name) {
+                                if v.is_pointer_value() {
+                                    emit_print_array(
+                                        ctx,
+                                        printf,
+                                        v.into_pointer_value(),
+                                        elem_type,
+                                    );
+                                    if !is_last && *separator {
+                                        let fmt = ctx.const_string("%s");
+                                        let space = ctx.const_string(" ");
+                                        ctx.builder
+                                            .build_call(
+                                                printf,
+                                                &[fmt.into(), space.into()],
+                                                "print_space",
+                                            )
+                                            .ok();
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+
                         if let Some(kind) = ctx.get_type_kind(ty) {
                             match kind {
                                 TypeKind::Str => {
@@ -1432,16 +1477,32 @@ fn emit_print_value<'ctx>(
             }
         } else if val.is_pointer_value() {
             // Pointer holding a bool (e.g., from ManualErrorExtract) — convert ptr→i64→i1
-            let i64_val = ctx.builder.build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64").ok();
+            let i64_val = ctx
+                .builder
+                .build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64")
+                .ok();
             if let Some(i64_val) = i64_val {
-                let is_true = ctx.builder.build_int_compare(IntPredicate::NE, i64_val, ctx.i64_type().const_zero(), "is_true").ok();
+                let is_true = ctx
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        i64_val,
+                        ctx.i64_type().const_zero(),
+                        "is_true",
+                    )
+                    .ok();
                 if let Some(is_true) = is_true {
                     let true_s = ctx.const_string(if newline { "true\n" } else { "true" });
                     let false_s = ctx.const_string(if newline { "false\n" } else { "false" });
-                    let out = ctx.builder.build_select(is_true, true_s, false_s, "bool_s").ok();
+                    let out = ctx
+                        .builder
+                        .build_select(is_true, true_s, false_s, "bool_s")
+                        .ok();
                     if let Some(out) = out {
                         let fmt = ctx.const_string("%s");
-                        ctx.builder.build_call(printf, &[fmt.into(), out.into()], "print_bool").ok();
+                        ctx.builder
+                            .build_call(printf, &[fmt.into(), out.into()], "print_bool")
+                            .ok();
                     }
                 }
             }
@@ -1458,18 +1519,30 @@ fn emit_print_value<'ctx>(
                 .ok();
         } else if val.is_pointer_value() {
             // Pointer holding a float (e.g., from ManualErrorExtract) — convert ptr→i64→f64
-            let i64_val = ctx.builder.build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64").ok();
+            let i64_val = ctx
+                .builder
+                .build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64")
+                .ok();
             if let Some(i64_val) = i64_val {
                 let tmp = ctx.builder.build_alloca(ctx.i64_type(), "f_tmp").ok();
                 if let Some(tmp) = tmp {
                     ctx.builder.build_store(tmp, i64_val).ok();
-                    let f_ptr = ctx.builder.build_pointer_cast(tmp, ctx.context.ptr_type(inkwell::AddressSpace::default()), "f_ptr").ok();
+                    let f_ptr = ctx
+                        .builder
+                        .build_pointer_cast(
+                            tmp,
+                            ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                            "f_ptr",
+                        )
+                        .ok();
                     if let Some(f_ptr) = f_ptr {
                         let f_val = ctx.builder.build_load(ctx.f64_type(), f_ptr, "f_val").ok();
                         if let Some(f_val) = f_val {
                             let fmt = if newline { "%f\n" } else { "%f" };
                             let fmt = ctx.const_string(fmt);
-                            ctx.builder.build_call(printf, &[fmt.into(), f_val.into()], "print_f").ok();
+                            ctx.builder
+                                .build_call(printf, &[fmt.into(), f_val.into()], "print_f")
+                                .ok();
                         }
                     }
                 }
@@ -1508,11 +1581,16 @@ fn emit_print_value<'ctx>(
             }
         } else if val.is_pointer_value() {
             // Pointer holding an int (e.g., from ManualErrorExtract) — convert ptr→i64
-            let i64v = ctx.builder.build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_int").ok();
+            let i64v = ctx
+                .builder
+                .build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_int")
+                .ok();
             if let Some(i64v) = i64v {
                 let fmt = if newline { "%lld\n" } else { "%lld" };
                 let fmt = ctx.const_string(fmt);
-                ctx.builder.build_call(printf, &[fmt.into(), i64v.into()], "print_i").ok();
+                ctx.builder
+                    .build_call(printf, &[fmt.into(), i64v.into()], "print_i")
+                    .ok();
             }
         } else if std::env::var("DOO_DEBUG").is_ok() {
             doo_debug!(

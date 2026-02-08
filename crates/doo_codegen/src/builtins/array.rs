@@ -32,6 +32,9 @@ impl ArrayBuiltins {
             _ => doo_core::types::builtin::ANY, // Fallback for unknown types
         };
 
+        // Track if this method returns an array (needs element type registration)
+        let returns_array = matches!(method, "map" | "filter" | "slice");
+
         let result = match method {
             // Basic methods
             "len" => Self::emit_len(ctx, receiver_ptr),
@@ -58,6 +61,12 @@ impl ArrayBuiltins {
 
         if let (Some(val), Some(dest_name)) = (result, dest) {
             ctx.set_temp(dest_name, val);
+            // Register element type for array-returning methods (map, filter, slice)
+            // This is CRITICAL for correct printing of result arrays
+            if returns_array {
+                ctx.array_element_types
+                    .insert(dest_name.to_string(), elem_type_id);
+            }
         }
 
         result
@@ -1281,6 +1290,7 @@ impl ArrayBuiltins {
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
 
         ctx.builder.position_at_end(end_bb);
+        // Return data pointer for consistency with alloc_with_header convention
         Some(result_data.into())
     }
 
@@ -1460,6 +1470,7 @@ impl ArrayBuiltins {
         // Store the final length at header offset 0 (i64)
         set_array_length(ctx, result_heap, final_len)?;
 
+        // Return data pointer for consistency with alloc_with_header convention
         Some(result_data.into())
     }
 
@@ -1667,4 +1678,3 @@ fn call_closure<'ctx>(
         .ok()?;
     result.try_as_basic_value().basic()
 }
-

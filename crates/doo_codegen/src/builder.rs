@@ -792,6 +792,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             if let Some(src_type) = ctx.get_variable_type(src_name) {
                                 ctx.set_variable_type(dest, src_type);
                             }
+                            // Propagate array element types from temp to local for map/filter/slice
+                            // Critical for correct printing of float/int arrays returned from lambdas
+                            if let Some(&elem_type) = ctx.array_element_types.get(src_name) {
+                                ctx.array_element_types.insert(dest.clone(), elem_type);
+                            }
                         }
                         // Use set_local which handles type mismatch detection for shadowed variables
                         ctx.set_local(dest.clone(), val);

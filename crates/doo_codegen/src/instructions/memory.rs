@@ -47,6 +47,15 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                     if let Some(name) = struct_name {
                         ctx.set_temp_struct_type(dest, &name);
                     }
+                    // Propagate variable type from source to dest
+                    if let Some(src_type) = ctx.get_variable_type(src_name) {
+                        ctx.set_variable_type(dest, src_type);
+                    }
+                    // Propagate array element types from temp to local for map/filter/slice results
+                    // Critical for correct printing of float/int arrays returned from lambda methods
+                    if let Some(&elem_type) = ctx.array_element_types.get(src_name) {
+                        ctx.array_element_types.insert(dest.clone(), elem_type);
+                    }
                 }
                 ctx.set_local(dest.clone(), val);
                 Some(val)
@@ -64,6 +73,15 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                     });
                     if let Some(name) = struct_name {
                         ctx.set_temp_struct_type(dest, &name);
+                    }
+                    // Propagate variable type from source to dest
+                    if let Some(src_type) = ctx.get_variable_type(src_name) {
+                        ctx.set_variable_type(dest, src_type);
+                    }
+                    // Propagate array element types from temp to local for map/filter/slice results
+                    // Critical for correct printing of float/int arrays returned from lambda methods
+                    if let Some(&elem_type) = ctx.array_element_types.get(src_name) {
+                        ctx.array_element_types.insert(dest.clone(), elem_type);
                     }
                 }
                 ctx.set_local(dest.clone(), val);
@@ -91,6 +109,11 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                     // the local gets the correct type for subsequent Clone operations
                     if let Some(src_type) = ctx.get_variable_type(src_name) {
                         ctx.set_variable_type(dest, src_type);
+                    }
+                    // Propagate array element types from temp to local for map/filter/slice results
+                    // Critical for correct printing of float/int arrays returned from lambda methods
+                    if let Some(&elem_type) = ctx.array_element_types.get(src_name) {
+                        ctx.array_element_types.insert(dest.clone(), elem_type);
                     }
                 }
                 ctx.set_local(dest.clone(), val);
@@ -1541,4 +1564,3 @@ mod tests {
         assert_eq!(get_operand_name(&const_val), None);
     }
 }
-
