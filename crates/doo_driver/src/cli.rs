@@ -19,6 +19,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub debug: bool,
 
+    /// Show compiler warnings (suppressed by default)
+    #[arg(long, short = 'W', global = true)]
+    pub warn: bool,
+
     /// Explain error codes in detail
     #[arg(long, global = true)]
     pub explain: Option<String>,

@@ -1,7 +1,7 @@
+use super::{ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
-use doo_core::{Span, CompilerError, ErrorCode};
-use super::{Parser, ParseResult};
+use doo_core::{CompilerError, ErrorCode};
 
 /// Trait for parsing type expressions and patterns.
 pub trait ParserTypes {
@@ -54,7 +54,14 @@ impl ParserTypes for Parser {
         }
 
         // Named type
-        let name = self.expect_ident()?;
+        let name = self.expect_ident().map_err(|_| {
+            CompilerError::new(
+                ErrorCode::InvalidTypeExpr,
+                format!("expected type expression, got `{}`", self.current().kind),
+                self.current_span(),
+            )
+            .with_suggestion("expected a type like Int, String, [T], {K: V}")
+        })?;
 
         // Check for optional: T?
         if self.check(TokenKind::Question) {
@@ -89,7 +96,10 @@ impl ParserTypes for Parser {
             }
             self.expect(TokenKind::RParen)?;
             let end = self.prev_span();
-            return Ok(Pattern::new(PatternKind::Tuple(patterns), start.merge(&end)));
+            return Ok(Pattern::new(
+                PatternKind::Tuple(patterns),
+                start.merge(&end),
+            ));
         }
 
         let name = self.expect_ident()?;

@@ -35,8 +35,15 @@ impl Parser {
             if op_prec < min_prec {
                 break;
             }
+            let op_span = self.current_span();
             self.advance();
-            let right = self.parse_expression_prec(op_prec + 1)?;
+            let right = self.parse_expression_prec(op_prec + 1).map_err(|_| {
+                CompilerError::new(
+                    ErrorCode::ExpectedExprAfterOp,
+                    format!("expected expression after `{}`", op),
+                    op_span,
+                )
+            })?;
             let span = left.span.merge(&right.span);
             left = Expr::new(
                 ExprKind::Binary {
@@ -72,6 +79,7 @@ impl Parser {
     }
 
     /// Process escape sequences in strings (centralized).
+    /// Invalid escape sequences like `\z` are preserved as-is (lexer may catch them).
     pub(super) fn process_escapes(s: &str) -> String {
         let mut result = String::new();
         let mut chars = s.chars().peekable();
@@ -88,7 +96,10 @@ impl Parser {
                         '"' => result.push('"'),
                         '\'' => result.push('\''),
                         '0' => result.push('\0'),
+                        '$' => result.push('$'),
                         _ => {
+                            // Unknown escape — preserve as-is
+                            // The lexer handles the error reporting for truly invalid escapes
                             result.push('\\');
                             result.push(next);
                         }
@@ -131,7 +142,10 @@ impl Parser {
 
     /// Check if identifier is an HTTP route method name.
     fn is_route_method_name(name: &str) -> bool {
-        matches!(name, "get" | "post" | "put" | "delete" | "patch" | "head" | "options")
+        matches!(
+            name,
+            "get" | "post" | "put" | "delete" | "patch" | "head" | "options"
+        )
     }
 
     /// Lookahead helper for object vs map vs block vs route block.

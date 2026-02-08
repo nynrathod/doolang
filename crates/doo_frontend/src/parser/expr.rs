@@ -5,10 +5,7 @@
 
 use super::stmt::ParserStmt;
 use super::types::ParserTypes;
-use super::{
-    helpers::{self, BraceType},
-    ParseResult, Parser,
-};
+use super::{helpers::BraceType, ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
 use doo_core::{CompilerError, ErrorCode, Span};
@@ -33,7 +30,13 @@ impl ParserExpr for Parser {
             let start = self.current_span();
             self.advance();
             // Parse the primary expression first
-            let mut expr = self.parse_primary()?;
+            let mut expr = self.parse_primary().map_err(|_| {
+                CompilerError::new(
+                    ErrorCode::ExpectedExprAfterOp,
+                    format!("expected expression after unary `{}`", op),
+                    start,
+                )
+            })?;
             // Apply postfix to get correct precedence: !t.IsDone() -> !(t.IsDone())
             expr = self.parse_postfix(expr)?;
             let span = start.merge(&expr.span);
@@ -53,6 +56,36 @@ impl ParserExpr for Parser {
         let start = self.current_span();
 
         match self.current().kind {
+            // Lexer error tokens — convert to specific CompilerError
+            TokenKind::Error => {
+                let text = self.current().text.clone();
+                let span = self.current_span();
+                self.advance();
+                let (code, msg) = if text.contains("Unterminated string") {
+                    (
+                        ErrorCode::UnterminatedString,
+                        "unterminated string literal".to_string(),
+                    )
+                } else if text.starts_with("Invalid escape sequence") {
+                    (ErrorCode::InvalidEscapeSequence, text)
+                } else if text.contains("String literal too long") {
+                    (ErrorCode::InvalidStringLiteral, text)
+                } else if text.contains("Invalid") || text.contains("Unexpected") {
+                    (
+                        ErrorCode::InvalidCharacter,
+                        format!("invalid character: {}", text),
+                    )
+                } else if text.contains("too large") || text.contains("too many") {
+                    (ErrorCode::InternalError, text)
+                } else {
+                    (
+                        ErrorCode::InvalidExpression,
+                        format!("lexer error: {}", text),
+                    )
+                };
+                Err(CompilerError::new(code, msg, span))
+            }
+
             TokenKind::Integer | TokenKind::Float => self.parse_number_literal(start),
 
             TokenKind::String => {
@@ -115,11 +148,28 @@ impl ParserExpr for Parser {
             TokenKind::Ok => parse_ok(self, start),
             TokenKind::Err => parse_err(self, start),
 
-            _ => Err(CompilerError::new(
-                ErrorCode::UnexpectedToken,
-                format!("Expected expression, got {}", self.current().kind),
-                start,
-            )),
+            _ => {
+                // Distinguish operator-like tokens from general invalid expressions
+                let (code, msg) = match self.current().kind {
+                    TokenKind::At
+                    | TokenKind::Hash
+                    | TokenKind::Tilde
+                    | TokenKind::Star
+                    | TokenKind::Percent => (
+                        ErrorCode::InvalidOperator,
+                        format!(
+                            "unexpected operator `{}` in expression position",
+                            self.current().kind
+                        ),
+                    ),
+                    _ => (
+                        ErrorCode::InvalidExpression,
+                        format!("expected expression, got `{}`", self.current().kind),
+                    ),
+                };
+                Err(CompilerError::new(code, msg, start)
+                    .with_suggestion("expected a value, variable, function call, or literal"))
+            }
         }
     }
 
@@ -148,8 +198,11 @@ impl ParserExpr for Parser {
                     if !self.check(TokenKind::Ident) || self.current().text != "panic" {
                         return Err(CompilerError::new(
                             ErrorCode::UnexpectedToken,
-                            "Expected `panic` after `??`",
+                            format!("Expected `panic` after `??`, got `{}`", self.current().text),
                             self.current().span,
+                        )
+                        .with_suggestion(
+                            "use: `result ?? panic(\"error message\")` to unwrap or crash",
                         ));
                     }
                     self.advance();
@@ -392,9 +445,22 @@ fn parse_match(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
             values.push(parser.parse_expression()?);
         }
     }
-    parser.expect(TokenKind::LBrace)?;
+    parser.expect(TokenKind::LBrace).map_err(|_| {
+        CompilerError::new(
+            ErrorCode::InvalidMatchSyntax,
+            "expected `{` to start match body",
+            parser.current_span(),
+        )
+        .with_suggestion("match value { pattern => expr }")
+    })?;
     let arms = parser.parse_list(TokenKind::RBrace, |p| parse_match_arm(p))?;
-    parser.expect(TokenKind::RBrace)?;
+    parser.expect(TokenKind::RBrace).map_err(|_| {
+        CompilerError::new(
+            ErrorCode::InvalidMatchSyntax,
+            "expected `}` to close match body",
+            parser.current_span(),
+        )
+    })?;
     Ok(Expr::new(
         ExprKind::Match { values, arms },
         start.merge(&parser.prev_span()),
@@ -403,14 +469,46 @@ fn parse_match(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
 
 fn parse_match_arm(parser: &mut Parser) -> ParseResult<MatchArm> {
     let start = parser.current_span();
-    let pattern = parse_match_pattern(parser)?;
+    let first_pattern = parse_match_pattern(parser)?;
+
+    // Support comma-separated tuple patterns: `1, "err", true =>`
+    let pattern = if parser.check(TokenKind::Comma)
+        && !parser.peek_is(TokenKind::FatArrow)
+        && !parser.peek_is(TokenKind::RBrace)
+    {
+        let mut patterns = vec![first_pattern];
+        while parser.check(TokenKind::Comma) {
+            // Peek ahead: if the next non-comma token is `=>` or `if`, stop
+            // This means the comma is an arm separator, not a tuple separator
+            if parser.peek_is(TokenKind::FatArrow) || parser.peek_is(TokenKind::RBrace) {
+                break;
+            }
+            parser.advance(); // consume ','
+            patterns.push(parse_match_pattern(parser)?);
+        }
+        if patterns.len() == 1 {
+            patterns.pop().unwrap()
+        } else {
+            MatchPattern::Tuple(patterns)
+        }
+    } else {
+        first_pattern
+    };
+
     let guard = if parser.check(TokenKind::If) {
         parser.advance();
         Some(parser.parse_expression()?)
     } else {
         None
     };
-    parser.expect(TokenKind::FatArrow)?;
+    parser.expect(TokenKind::FatArrow).map_err(|_| {
+        CompilerError::new(
+            ErrorCode::InvalidMatchSyntax,
+            "expected `=>` after match pattern",
+            parser.current_span(),
+        )
+        .with_suggestion("pattern => expression")
+    })?;
 
     // Parse body: can be an expression OR a statement (wrapped in implicit block)
     // Statement keywords that can appear as match arm bodies
@@ -479,8 +577,17 @@ fn parse_match_pattern(parser: &mut Parser) -> ParseResult<MatchPattern> {
         | TokenKind::String
         | TokenKind::True
         | TokenKind::False => {
-            let expr = parser.parse_primary()?;
-            Ok(MatchPattern::Literal(Box::new(expr)))
+            // Parse full expression to support conditions like `2 in arr`, `x > 0 && x < 10`
+            let expr = parser.parse_expression()?;
+            // If the result is a simple literal (no operators), wrap as Literal pattern
+            match &expr.kind {
+                ExprKind::IntLit(_)
+                | ExprKind::FloatLit(_)
+                | ExprKind::StrLit(_)
+                | ExprKind::BoolLit(_) => Ok(MatchPattern::Literal(Box::new(expr))),
+                // Otherwise it's a condition expression (e.g. `2 in arr`)
+                _ => Ok(MatchPattern::Condition(Box::new(expr))),
+            }
         }
         _ => {
             let expr = parser.parse_expression()?;
@@ -518,9 +625,13 @@ fn parse_closure(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     } else {
         return Err(CompilerError::new(
             ErrorCode::UnexpectedToken,
-            "Expected => or -> in closure",
+            format!(
+                "Expected `=>` or `->` in closure, got `{}`",
+                parser.current().kind
+            ),
             parser.current_span(),
-        ));
+        )
+        .with_suggestion("use `(x) => expr` or `(x) -> RetType => expr`"));
     }
 
     let body = if parser.check(TokenKind::LBrace) {
@@ -675,9 +786,12 @@ impl Parser {
         let mut pos = 0;
 
         while pos < chars.len() {
-            // Find next ${
-            let remaining: String = chars[pos..].iter().collect();
-            if let Some(dollar_idx) = remaining.find("${") {
+            // Find next ${ using char-based search (safe for Unicode/multi-byte chars)
+            let dollar_idx = chars[pos..]
+                .windows(2)
+                .position(|w| w[0] == '$' && w[1] == '{');
+
+            if let Some(dollar_idx) = dollar_idx {
                 // Add literal part before ${
                 if dollar_idx > 0 {
                     let literal: String = chars[pos..pos + dollar_idx].iter().collect();
@@ -702,10 +816,11 @@ impl Parser {
 
                 if brace_depth != 0 {
                     return Err(CompilerError::new(
-                        ErrorCode::UnexpectedToken,
-                        "Unclosed ${} in string interpolation",
+                        ErrorCode::UnclosedDelimiter,
+                        "Unclosed `${}` in string interpolation",
                         span,
-                    ));
+                    )
+                    .with_suggestion("add closing `}` to complete the interpolation"));
                 }
 
                 // Extract and parse the expression inside ${}

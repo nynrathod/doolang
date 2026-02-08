@@ -32,7 +32,7 @@ use inkwell::OptimizationLevel;
 ///
 /// Maps directly to LLVM optimization pipelines:
 /// - O0: No optimization (fastest compile)
-/// - O1: Basic optimization  
+/// - O1: Basic optimization
 /// - O2: Standard optimization
 /// - O3: Aggressive optimization (default for Doo)
 /// - Os: Size optimization

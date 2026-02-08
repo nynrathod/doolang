@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use doo_codegen::{optimize_module, CodegenBuilder, OptLevel};
 use doo_core::doo_debug;
+use doo_core::errors::codes::CompilerError;
 use doo_core::types::TypeRegistry;
+use doo_diagnostics::{DiagnosticEmitter, SourceMap};
 use doo_frontend::{Lexer, Parser};
 use doo_hir::Lower;
 use doo_mir::builder::MirBuilder;
@@ -28,27 +30,25 @@ use crate::loader::{merge_imports, resolve_imports, ModuleLoader};
 use doo_analysis::{
     // Field visibility checking
     check_field_visibility,
+    // Error conversions (analysis errors → CompilerError)
+    conversions::{
+        borrow_errors_to_compiler, error_flow_errors_to_compiler,
+        exhaustiveness_errors_to_compiler, ownership_errors_to_compiler, scope_errors_to_compiler,
+        type_errors_to_compiler,
+    },
     // AST transformations
     transform::{transform_inline_closures, transform_route_groups},
     // Borrow checking
     BorrowChecker,
-    BorrowError,
     DropInserter,
     // Error flow analysis
     ErrorFlowChecker,
-    ErrorFlowError,
-    ErrorFlowErrorKind,
     // Exhaustiveness checking
     ExhaustivenessChecker,
-    ExhaustivenessError,
-    ExhaustivenessErrorKind,
     // Ownership analysis
     OwnershipAnalyzer,
-    OwnershipError,
     // Type checking
     TypeChecker,
-    TypeError,
-    TypeErrorKind,
 };
 
 use inkwell::context::Context;
@@ -82,6 +82,8 @@ pub struct CompileOptions {
     pub keep_obj: bool,
     /// Only check for errors, don't generate code
     pub check_only: bool,
+    /// Show warnings (suppressed by default)
+    pub show_warnings: bool,
 }
 
 impl Default for CompileOptions {
@@ -96,6 +98,7 @@ impl Default for CompileOptions {
             keep_ll: false,
             keep_obj: false,
             check_only: false,
+            show_warnings: false,
         }
     }
 }
@@ -173,18 +176,40 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let mut parser = Parser::new(&source, 0);
     let program = match parser.parse_program() {
         Ok(p) => {
-            // Debug: Check for parser errors even on success
-            if doo_core::debug::is_enabled() {
-                let errors = parser.errors();
-                doo_debug!("DEBUG", "Parser errors: {}", errors.len());
-                for (i, e) in errors.iter().take(5).enumerate() {
-                    doo_debug!("DEBUG", "  Error {}: {}", i, e);
-                }
+            // Collect any non-fatal parser errors (recovered during parsing)
+            let parser_errors = parser.errors();
+            if !parser_errors.is_empty() {
+                let mut source_map = SourceMap::new();
+                let main_filename = input_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("main.doo");
+                source_map.add_file(main_filename, &source);
+
+                let mut emitter = DiagnosticEmitter::new(true);
+                let _ = emitter.emit_all(parser_errors, &source_map);
+
+                // Non-fatal parser errors are warnings — continue compilation
+                doo_debug!(
+                    "DEBUG",
+                    "Parser recovered from {} error(s)",
+                    parser_errors.len()
+                );
             }
             p
         }
         Err(e) => {
-            eprintln!("Parse error: {}", e);
+            // Fatal parse error — render with DiagnosticEmitter
+            let mut source_map = SourceMap::new();
+            let main_filename = input_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("main.doo");
+            source_map.add_file(main_filename, &source);
+
+            let mut emitter = DiagnosticEmitter::new(true);
+            let _ = emitter.emit(&e, &source_map);
+
             return Ok(CompileResult {
                 success: false,
                 error_count: 1,
@@ -203,6 +228,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Load and merge imported functions/structs/enums from std library and other modules
     let mut loader = ModuleLoader::new();
     let import_resolution = resolve_imports(&program, &mut loader, &project_root)?;
+
+    // Collect import errors (previously silently dropped)
+    let import_errors = import_resolution.errors.clone();
 
     // Debug: show what was resolved
     if doo_core::debug::is_enabled() {
@@ -284,8 +312,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // Phase 5: Semantic Analysis (type checking, name resolution, etc.)
-    // TODO: Integrate semantic passes when doo_analysis is fully ready
-    // For now, we proceed directly to MIR
 
     // ========================================================================
     // Phase 5: Semantic Analysis
@@ -294,16 +320,37 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // borrowing, types, error flow, and exhaustiveness automatically.
     // Users don't write `&` or `*` - the compiler does it all.
 
+    // Build SourceMap for diagnostic rendering
+    let mut source_map = SourceMap::new();
+    let main_filename = input_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("main.doo");
+    source_map.add_file(main_filename, &source);
+
     let mut hir = hir; // Make HIR mutable for drop insertion
-    let mut analysis_errors: Vec<String> = Vec::new();
+    let mut analysis_errors: Vec<CompilerError> = Vec::new();
+
+    // 5.0: Import errors (module not found, I/O errors)
+    if !import_errors.is_empty() {
+        analysis_errors.extend(import_errors);
+    }
 
     // 5.1: Type Checking
     // Validates type compatibility across the program
     let mut type_checker = TypeChecker::new(type_registry.clone());
     if let Err(errors) = type_checker.check(&hir) {
-        for err in &errors {
-            analysis_errors.push(format_type_error(err));
-        }
+        analysis_errors.extend(type_errors_to_compiler(errors));
+    }
+    // Collect scope errors (redeclarations, duplicate symbols)
+    let scope_errs = type_checker.take_scope_errors();
+    if !scope_errs.is_empty() {
+        analysis_errors.extend(scope_errors_to_compiler(scope_errs));
+    }
+    // Collect direct compiler errors (MissingReturn, UnreachableCode, etc.)
+    let direct_errs = type_checker.take_direct_errors();
+    if !direct_errs.is_empty() {
+        analysis_errors.extend(direct_errs);
     }
 
     // 5.2: Ownership Analysis
@@ -312,9 +359,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let ownership_results = match ownership_analyzer.analyze(&hir) {
         Ok(results) => Some(results),
         Err(errors) => {
-            for err in &errors {
-                analysis_errors.push(format_ownership_error(err));
-            }
+            analysis_errors.extend(ownership_errors_to_compiler(errors));
             None
         }
     };
@@ -323,9 +368,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Ensures safe memory access - the ONLY error users can see is concurrent mutable borrow
     let mut borrow_checker = BorrowChecker::new();
     if let Err(errors) = borrow_checker.check(&hir) {
-        for err in &errors {
-            analysis_errors.push(format_borrow_error(err));
-        }
+        analysis_errors.extend(borrow_errors_to_compiler(errors));
     }
 
     // 5.4: Drop Insertion
@@ -342,18 +385,14 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Ensures all Result types are properly handled
     let mut error_flow_checker = ErrorFlowChecker::new(&type_registry);
     if let Err(errors) = error_flow_checker.check(&hir) {
-        for err in &errors {
-            analysis_errors.push(format_error_flow_error(err));
-        }
+        analysis_errors.extend(error_flow_errors_to_compiler(errors));
     }
 
     // 5.6: Exhaustiveness Checking
     // Ensures all match expressions cover all possible patterns
     let mut exhaustiveness_checker = ExhaustivenessChecker::new(&type_registry);
     let exhaustiveness_errors = exhaustiveness_checker.check_program(&hir);
-    for err in &exhaustiveness_errors {
-        analysis_errors.push(format_exhaustiveness_error(err));
-    }
+    analysis_errors.extend(exhaustiveness_errors_to_compiler(exhaustiveness_errors));
 
     // 5.7: Field Visibility Checking
     // Ensures private fields (camelCase) are not accessed from outside their module
@@ -363,20 +402,54 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         imported_struct_names
     );
     let visibility_errors = check_field_visibility(&hir, &type_registry, &imported_struct_names);
-    for err in &visibility_errors {
-        analysis_errors.push(err.clone());
+    for err in visibility_errors {
+        let capitalized = {
+            let mut c = err.field_name.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().to_string() + c.as_str(),
+            }
+        };
+        analysis_errors.push(
+            CompilerError::new(
+                doo_core::errors::codes::ErrorCode::PrivateItemAccess,
+                format!("'{}' is private", err.field_name),
+                err.span,
+            )
+            .with_suggestion(format!("rename to '{}'", capitalized)),
+        );
     }
 
-    // Report any analysis errors
-    if !analysis_errors.is_empty() {
-        for err in &analysis_errors {
-            eprintln!("{}", err);
+    // Report any analysis errors via the diagnostic emitter
+    // Filter warnings unless --warn flag is passed
+    let show_warnings = opts.show_warnings;
+    let errors_only: Vec<CompilerError> = analysis_errors
+        .iter()
+        .filter(|e| {
+            e.severity == doo_core::errors::codes::ErrorSeverity::Error
+                || e.severity == doo_core::errors::codes::ErrorSeverity::Ice
+                || show_warnings
+        })
+        .cloned()
+        .collect();
+    let has_real_errors = errors_only.iter().any(|e| {
+        e.severity == doo_core::errors::codes::ErrorSeverity::Error
+            || e.severity == doo_core::errors::codes::ErrorSeverity::Ice
+    });
+
+    if !errors_only.is_empty() {
+        let mut emitter = DiagnosticEmitter::new(true);
+        let _ = emitter.emit_all(&errors_only, &source_map);
+        if has_real_errors {
+            return Ok(CompileResult {
+                success: false,
+                error_count: errors_only
+                    .iter()
+                    .filter(|e| e.severity == doo_core::errors::codes::ErrorSeverity::Error)
+                    .count(),
+                exe_path: None,
+            });
         }
-        return Ok(CompileResult {
-            success: false,
-            error_count: analysis_errors.len(),
-            exe_path: None,
-        });
     }
 
     doo_debug!("DEBUG", "Semantic analysis passed");
@@ -606,108 +679,6 @@ pub fn discover_main_doo_candidates(
     results.sort();
     results.dedup();
     results
-}
-
-// ============================================================================
-// Analysis Error Formatting
-// ============================================================================
-
-/// Format a type checking error for display.
-fn format_type_error(err: &TypeError) -> String {
-    let msg = match &err.kind {
-        TypeErrorKind::Mismatch { expected, found } => {
-            format!("type mismatch: expected {:?}, found {:?}", expected, found)
-        }
-        TypeErrorKind::Undefined(name) => {
-            format!("undefined variable: '{}'", name)
-        }
-        TypeErrorKind::InvalidOp(op) => {
-            format!("invalid operation: {}", op)
-        }
-        TypeErrorKind::ArgMismatch { expected, found } => {
-            format!(
-                "argument count mismatch: expected {}, found {}",
-                expected, found
-            )
-        }
-        TypeErrorKind::InvalidCondition { found } => {
-            format!("invalid condition type: expected Bool, found {:?}", found)
-        }
-        TypeErrorKind::InvalidCast { from, to } => {
-            format!("invalid cast: cannot cast {:?} to {:?}", from, to)
-        }
-        TypeErrorKind::ReturnTypeMismatch {
-            function,
-            expected,
-            found,
-        } => {
-            format!(
-                "return type mismatch in '{}': expected {:?}, found {:?}",
-                function, expected, found
-            )
-        }
-    };
-    format!("❌ Type Error at {:?}: {}", err.span, msg)
-}
-
-/// Format an ownership error for display.
-fn format_ownership_error(err: &OwnershipError) -> String {
-    format!("❌ Ownership Error at {:?}: {}", err.span, err.message)
-}
-
-/// Format a borrow checking error for display.
-fn format_borrow_error(err: &BorrowError) -> String {
-    format!("❌ Borrow Error at {:?}: {}", err.span, err.message())
-}
-
-/// Format an error flow error for display.
-fn format_error_flow_error(err: &ErrorFlowError) -> String {
-    let msg = match &err.kind {
-        ErrorFlowErrorKind::UnhandledResult { ok_type, err_type } => {
-            format!(
-                "unhandled Result: {:?} ! {:?} - use `?` or `let ok, err = ...`",
-                ok_type, err_type
-            )
-        }
-        ErrorFlowErrorKind::TryInNonResultFunction { func_name } => {
-            format!(
-                "`?` operator used in function '{}' which doesn't return a Result",
-                func_name
-            )
-        }
-        ErrorFlowErrorKind::ErrInNonResultFunction { func_name } => {
-            format!(
-                "`Err` used in function '{}' which doesn't have an error type",
-                func_name
-            )
-        }
-        ErrorFlowErrorKind::MissingOkPath { func_name } => {
-            format!(
-                "function '{}' returns Result but not all paths return Ok",
-                func_name
-            )
-        }
-        ErrorFlowErrorKind::PanicWithoutMessage => {
-            "panic (`??`) used without a message".to_string()
-        }
-    };
-    format!("❌ Error Flow Error at {:?}: {}", err.span, msg)
-}
-
-/// Format an exhaustiveness error for display.
-fn format_exhaustiveness_error(err: &ExhaustivenessError) -> String {
-    let msg = match &err.kind {
-        ExhaustivenessErrorKind::NonExhaustive { missing } => {
-            format!(
-                "non-exhaustive match: missing patterns {}",
-                missing.join(", ")
-            )
-        }
-        ExhaustivenessErrorKind::UnreachablePattern => {
-            "unreachable pattern: this pattern will never be matched".to_string()
-        }
-    };
-    format!("❌ Match Error at {:?}: {}", err.span, msg)
 }
 
 // ============================================================================
@@ -1191,210 +1162,125 @@ mod tests {
     }
 
     // ========================================================================
-    // Error Formatting Tests
+    // Error Conversion Tests (analysis errors → CompilerError)
     // ========================================================================
 
     #[test]
-    fn test_format_type_error_mismatch() {
+    fn test_type_error_to_compiler_error() {
+        use doo_analysis::conversions::type_errors_to_compiler;
+        use doo_analysis::{TypeError, TypeErrorKind};
+        use doo_core::errors::codes::ErrorCode;
         use doo_core::types::builtin;
-        let err = TypeError {
-            kind: TypeErrorKind::Mismatch {
-                expected: builtin::INT,
-                found: builtin::STR,
+
+        let errors = vec![
+            TypeError {
+                kind: TypeErrorKind::Mismatch {
+                    expected: builtin::INT,
+                    found: builtin::STR,
+                },
+                span: test_span(),
             },
-            span: test_span(),
-        };
-        let formatted = format_type_error(&err);
-        assert!(formatted.contains("type mismatch"));
-        assert!(formatted.contains("expected"));
-        assert!(formatted.contains("found"));
-    }
-
-    #[test]
-    fn test_format_type_error_undefined() {
-        let err = TypeError {
-            kind: TypeErrorKind::Undefined("my_var".to_string()),
-            span: test_span(),
-        };
-        let formatted = format_type_error(&err);
-        assert!(formatted.contains("undefined variable"));
-        assert!(formatted.contains("my_var"));
-    }
-
-    #[test]
-    fn test_format_type_error_arg_mismatch() {
-        let err = TypeError {
-            kind: TypeErrorKind::ArgMismatch {
-                expected: 2,
-                found: 3,
+            TypeError {
+                kind: TypeErrorKind::Undefined("my_var".to_string()),
+                span: test_span(),
             },
-            span: test_span(),
-        };
-        let formatted = format_type_error(&err);
-        assert!(formatted.contains("argument count mismatch"));
-        assert!(formatted.contains("expected 2"));
-        assert!(formatted.contains("found 3"));
-    }
-
-    #[test]
-    fn test_format_type_error_invalid_condition() {
-        use doo_core::types::builtin;
-        let err = TypeError {
-            kind: TypeErrorKind::InvalidCondition {
-                found: builtin::INT,
+            TypeError {
+                kind: TypeErrorKind::ArgMismatch {
+                    expected: 2,
+                    found: 3,
+                },
+                span: test_span(),
             },
-            span: test_span(),
-        };
-        let formatted = format_type_error(&err);
-        assert!(formatted.contains("invalid condition type"));
-        assert!(formatted.contains("expected Bool"));
+        ];
+        let compiler_errors = type_errors_to_compiler(errors);
+        assert_eq!(compiler_errors.len(), 3);
+        assert_eq!(compiler_errors[0].code, ErrorCode::TypeMismatch);
+        assert_eq!(compiler_errors[1].code, ErrorCode::UndefinedVariable);
+        assert_eq!(compiler_errors[2].code, ErrorCode::ArgCountMismatch);
     }
 
     #[test]
-    fn test_format_type_error_invalid_cast() {
-        use doo_core::types::builtin;
-        let err = TypeError {
-            kind: TypeErrorKind::InvalidCast {
-                from: builtin::STR,
-                to: builtin::BOOL,
+    fn test_borrow_error_to_compiler_error() {
+        use doo_analysis::conversions::borrow_errors_to_compiler;
+        use doo_analysis::BorrowError;
+        use doo_core::errors::codes::ErrorCode;
+
+        let errors = vec![
+            BorrowError::concurrent_mut("x".into(), Span::new(0, 0, 5), Span::new(0, 10, 15)),
+            BorrowError::borrow_while_mut("y".into(), Span::new(0, 0, 5), Span::new(0, 10, 15)),
+        ];
+        let compiler_errors = borrow_errors_to_compiler(errors);
+        assert_eq!(compiler_errors.len(), 2);
+        assert_eq!(compiler_errors[0].code, ErrorCode::ConcurrentMutableBorrow);
+        assert_eq!(compiler_errors[1].code, ErrorCode::ConcurrentMutableBorrow);
+        // Should have secondary label pointing to original borrow
+        assert_eq!(compiler_errors[0].labels.len(), 1);
+    }
+
+    #[test]
+    fn test_error_flow_to_compiler_error() {
+        use doo_analysis::conversions::error_flow_errors_to_compiler;
+        use doo_analysis::{ErrorFlowError, ErrorFlowErrorKind};
+        use doo_core::errors::codes::ErrorCode;
+
+        let errors = vec![
+            ErrorFlowError::new(ErrorFlowErrorKind::PanicWithoutMessage, test_span()),
+            ErrorFlowError::new(
+                ErrorFlowErrorKind::TryInNonResultFunction {
+                    func_name: "my_func".into(),
+                },
+                test_span(),
+            ),
+        ];
+        let compiler_errors = error_flow_errors_to_compiler(errors);
+        assert_eq!(compiler_errors.len(), 2);
+        assert_eq!(compiler_errors[0].code, ErrorCode::PanicWithoutMessage);
+        assert_eq!(compiler_errors[1].code, ErrorCode::TryInNonResultFunction);
+    }
+
+    #[test]
+    fn test_exhaustiveness_to_compiler_error() {
+        use doo_analysis::conversions::exhaustiveness_errors_to_compiler;
+        use doo_analysis::{ExhaustivenessError, ExhaustivenessErrorKind};
+        use doo_core::errors::codes::ErrorCode;
+
+        let errors = vec![
+            ExhaustivenessError {
+                kind: ExhaustivenessErrorKind::NonExhaustive {
+                    missing: vec!["true".into(), "false".into()],
+                },
+                span: test_span(),
             },
-            span: test_span(),
-        };
-        let formatted = format_type_error(&err);
-        assert!(formatted.contains("invalid cast"));
-        assert!(formatted.contains("cannot cast"));
-    }
-
-    #[test]
-    fn test_format_type_error_return_type_mismatch() {
-        use doo_core::types::builtin;
-        let err = TypeError {
-            kind: TypeErrorKind::ReturnTypeMismatch {
-                function: "my_func".to_string(),
-                expected: builtin::INT,
-                found: builtin::VOID,
+            ExhaustivenessError {
+                kind: ExhaustivenessErrorKind::UnreachablePattern,
+                span: test_span(),
             },
-            span: test_span(),
-        };
-        let formatted = format_type_error(&err);
-        assert!(formatted.contains("return type mismatch"));
-        assert!(formatted.contains("my_func"));
+        ];
+        let compiler_errors = exhaustiveness_errors_to_compiler(errors);
+        assert_eq!(compiler_errors.len(), 2);
+        assert_eq!(compiler_errors[0].code, ErrorCode::NonExhaustiveMatch);
+        assert_eq!(compiler_errors[1].code, ErrorCode::UnreachablePattern);
+        assert!(compiler_errors[0].message.contains("true"));
     }
 
     #[test]
-    fn test_format_ownership_error() {
-        let err = OwnershipError::new("variable moved", test_span());
-        let formatted = format_ownership_error(&err);
-        assert!(formatted.contains("Ownership Error"));
-        assert!(formatted.contains("variable moved"));
-    }
+    fn test_diagnostic_emitter_integration() {
+        use doo_core::errors::codes::{CompilerError, ErrorCode};
+        use doo_diagnostics::{DiagnosticEmitter, SourceMap};
 
-    #[test]
-    fn test_format_borrow_error_concurrent_mut() {
-        let err =
-            BorrowError::concurrent_mut("x".to_string(), Span::new(0, 0, 5), Span::new(0, 10, 15));
-        let formatted = format_borrow_error(&err);
-        assert!(formatted.contains("Borrow Error"));
-        assert!(formatted.contains("Cannot mutably borrow"));
-    }
+        let mut sm = SourceMap::new();
+        let fid = sm.add_file("test.doo", "let age: Int = \"twenty\"");
 
-    #[test]
-    fn test_format_borrow_error_borrow_while_mut() {
-        let err = BorrowError::borrow_while_mut(
-            "y".to_string(),
-            Span::new(0, 0, 5),
-            Span::new(0, 10, 15),
-        );
-        let formatted = format_borrow_error(&err);
-        assert!(formatted.contains("Cannot borrow"));
-        assert!(formatted.contains("already mutably borrowed"));
-    }
+        let err = CompilerError::new(
+            ErrorCode::TypeMismatch,
+            "Str, expected Int",
+            Span::new(fid, 15, 23),
+        )
+        .with_suggestion("use: 20");
 
-    #[test]
-    fn test_format_error_flow_unhandled_result() {
-        use doo_core::types::builtin;
-        let err = ErrorFlowError::new(
-            ErrorFlowErrorKind::UnhandledResult {
-                ok_type: builtin::INT,
-                err_type: builtin::ERROR,
-            },
-            test_span(),
-        );
-        let formatted = format_error_flow_error(&err);
-        assert!(formatted.contains("Error Flow Error"));
-        assert!(formatted.contains("unhandled Result"));
-    }
-
-    #[test]
-    fn test_format_error_flow_try_in_non_result() {
-        let err = ErrorFlowError::new(
-            ErrorFlowErrorKind::TryInNonResultFunction {
-                func_name: "my_func".to_string(),
-            },
-            test_span(),
-        );
-        let formatted = format_error_flow_error(&err);
-        assert!(formatted.contains("`?` operator"));
-        assert!(formatted.contains("my_func"));
-    }
-
-    #[test]
-    fn test_format_error_flow_err_in_non_result() {
-        let err = ErrorFlowError::new(
-            ErrorFlowErrorKind::ErrInNonResultFunction {
-                func_name: "do_something".to_string(),
-            },
-            test_span(),
-        );
-        let formatted = format_error_flow_error(&err);
-        assert!(formatted.contains("`Err` used in function"));
-        assert!(formatted.contains("do_something"));
-    }
-
-    #[test]
-    fn test_format_error_flow_missing_ok_path() {
-        let err = ErrorFlowError::new(
-            ErrorFlowErrorKind::MissingOkPath {
-                func_name: "parse_data".to_string(),
-            },
-            test_span(),
-        );
-        let formatted = format_error_flow_error(&err);
-        assert!(formatted.contains("returns Result"));
-        assert!(formatted.contains("not all paths return Ok"));
-    }
-
-    #[test]
-    fn test_format_error_flow_panic_without_message() {
-        let err = ErrorFlowError::new(ErrorFlowErrorKind::PanicWithoutMessage, test_span());
-        let formatted = format_error_flow_error(&err);
-        assert!(formatted.contains("panic"));
-        assert!(formatted.contains("without a message"));
-    }
-
-    #[test]
-    fn test_format_exhaustiveness_error_non_exhaustive() {
-        let err = ExhaustivenessError {
-            kind: ExhaustivenessErrorKind::NonExhaustive {
-                missing: vec!["true".to_string(), "false".to_string()],
-            },
-            span: test_span(),
-        };
-        let formatted = format_exhaustiveness_error(&err);
-        assert!(formatted.contains("Match Error"));
-        assert!(formatted.contains("non-exhaustive"));
-        assert!(formatted.contains("true"));
-        assert!(formatted.contains("false"));
-    }
-
-    #[test]
-    fn test_format_exhaustiveness_error_unreachable() {
-        let err = ExhaustivenessError {
-            kind: ExhaustivenessErrorKind::UnreachablePattern,
-            span: test_span(),
-        };
-        let formatted = format_exhaustiveness_error(&err);
-        assert!(formatted.contains("unreachable pattern"));
+        let mut emitter = DiagnosticEmitter::new(false);
+        emitter.emit(&err, &sm).unwrap();
+        // Should not panic — output goes to stderr
     }
 
     // ========================================================================

@@ -57,7 +57,7 @@ impl<'a> Lexer<'a> {
 
     fn build_keyword_map() -> FxHashMap<&'static str, TokenKind> {
         let mut map = FxHashMap::default();
-        
+
         // Declaration keywords
         map.insert("let", TokenKind::Let);
         map.insert("mut", TokenKind::Mut);
@@ -218,7 +218,11 @@ impl<'a> Lexer<'a> {
                 if !self.is_at_end() {
                     self.advance(); // Skip closing quote
                 }
-                return self.make_token_at(TokenKind::Error, "String literal too long", start_offset);
+                return self.make_token_at(
+                    TokenKind::Error,
+                    "String literal too long",
+                    start_offset,
+                );
             }
 
             // Check for interpolation ${...}
@@ -250,17 +254,91 @@ impl<'a> Lexer<'a> {
                 self.advance(); // Skip backslash
                 if !self.is_at_end() {
                     let escaped = match self.current() {
-                        'n' => '\n',
-                        'r' => '\r',
-                        't' => '\t',
-                        '\\' => '\\',
-                        '"' => '"',
-                        '0' => '\0',
-                        '$' => '$', // Allow escaping $ to prevent interpolation
-                        other => other,
+                        'n' => Some('\n'),
+                        'r' => Some('\r'),
+                        't' => Some('\t'),
+                        '\\' => Some('\\'),
+                        '"' => Some('"'),
+                        '0' => Some('\0'),
+                        '$' => Some('$'), // Allow escaping $ to prevent interpolation
+                        'u' => {
+                            // Unicode escape: \u{XXXX}
+                            self.advance(); // skip 'u'
+                            if !self.is_at_end() && self.current() == '{' {
+                                self.advance(); // skip '{'
+                                let mut hex = String::new();
+                                while !self.is_at_end() && self.current() != '}' && hex.len() < 6 {
+                                    hex.push(self.current());
+                                    self.advance();
+                                }
+                                if !self.is_at_end() && self.current() == '}' {
+                                    self.advance(); // skip '}'
+                                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                        if let Some(c) = char::from_u32(code) {
+                                            value.push(c);
+                                            continue; // already advanced past '}'
+                                        }
+                                    }
+                                }
+                                // Invalid unicode escape — skip to end of string
+                                while !self.is_at_end() && self.current() != '"' {
+                                    if self.current() == '\n' {
+                                        self.line += 1;
+                                        self.col = 1;
+                                    }
+                                    self.advance();
+                                }
+                                if !self.is_at_end() {
+                                    self.advance();
+                                }
+                                return self.make_token_at(
+                                    TokenKind::Error,
+                                    &format!("Invalid unicode escape: \\u{{{}}}", hex),
+                                    start_offset,
+                                );
+                            } else {
+                                // \u without { — invalid
+                                while !self.is_at_end() && self.current() != '"' {
+                                    if self.current() == '\n' {
+                                        self.line += 1;
+                                        self.col = 1;
+                                    }
+                                    self.advance();
+                                }
+                                if !self.is_at_end() {
+                                    self.advance();
+                                }
+                                return self.make_token_at(
+                                    TokenKind::Error,
+                                    "Invalid escape sequence: \\u (expected \\u{XXXX})",
+                                    start_offset,
+                                );
+                            }
+                        }
+                        _ => None,
                     };
-                    value.push(escaped);
-                    self.advance();
+                    if let Some(c) = escaped {
+                        value.push(c);
+                        self.advance();
+                    } else {
+                        // Invalid escape sequence — skip to end of string and return error
+                        let bad = self.current();
+                        while !self.is_at_end() && self.current() != '"' {
+                            if self.current() == '\n' {
+                                self.line += 1;
+                                self.col = 1;
+                            }
+                            self.advance();
+                        }
+                        if !self.is_at_end() {
+                            self.advance(); // Skip closing quote
+                        }
+                        return self.make_token_at(
+                            TokenKind::Error,
+                            &format!("Invalid escape sequence: \\{}", bad),
+                            start_offset,
+                        );
+                    }
                 }
             } else if self.current() == '\n' {
                 self.line += 1;
@@ -319,7 +397,7 @@ impl<'a> Lexer<'a> {
         if !self.is_at_end() && (self.current() == 'e' || self.current() == 'E') {
             let exp_pos = self.pos;
             self.advance();
-            
+
             if !self.is_at_end() && (self.current() == '+' || self.current() == '-') {
                 self.advance();
             }
@@ -336,7 +414,11 @@ impl<'a> Lexer<'a> {
         }
 
         let text: String = self.chars[start_pos..self.pos].iter().collect();
-        let kind = if is_float { TokenKind::Float } else { TokenKind::Integer };
+        let kind = if is_float {
+            TokenKind::Float
+        } else {
+            TokenKind::Integer
+        };
 
         self.make_token_at(kind, &text, start_offset)
     }
@@ -350,7 +432,9 @@ impl<'a> Lexer<'a> {
             length += 1;
             if length > MAX_IDENTIFIER_LENGTH {
                 // Skip rest and return error
-                while !self.is_at_end() && (self.current().is_alphanumeric() || self.current() == '_') {
+                while !self.is_at_end()
+                    && (self.current().is_alphanumeric() || self.current() == '_')
+                {
                     self.advance();
                 }
                 return self.make_token_at(TokenKind::Error, "Identifier too long", start_offset);
@@ -366,7 +450,11 @@ impl<'a> Lexer<'a> {
         }
 
         // Look up keyword
-        let kind = self.keywords.get(text.as_str()).copied().unwrap_or(TokenKind::Ident);
+        let kind = self
+            .keywords
+            .get(text.as_str())
+            .copied()
+            .unwrap_or(TokenKind::Ident);
 
         self.make_token_at(kind, &text, start_offset)
     }
@@ -483,7 +571,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn make_token(&self, kind: TokenKind, text: &str) -> Token {
-        let span = Span::new(self.file_id, self.byte_offset, self.byte_offset + text.len() as u32);
+        let span = Span::new(
+            self.file_id,
+            self.byte_offset,
+            self.byte_offset + text.len() as u32,
+        );
         Token::new(kind, text, span)
     }
 

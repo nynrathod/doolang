@@ -2,8 +2,8 @@
 //!
 //! Top-level declarations: functions, structs, enums, imports.
 
+use super::{Stmt, TypeExpr};
 use doo_core::Span;
-use super::{Stmt, TypeExpr, Pattern};
 
 /// Function declaration.
 #[derive(Debug, Clone)]
@@ -34,7 +34,11 @@ pub struct FunctionDecl {
 
 impl FunctionDecl {
     pub fn new(name: String, span: Span) -> Self {
-        let is_public = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+        let is_public = name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
         Self {
             name,
             is_public,
@@ -68,7 +72,11 @@ pub struct StructDecl {
 
 impl StructDecl {
     pub fn new(name: String, span: Span) -> Self {
-        let is_public = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+        let is_public = name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
         Self {
             name,
             is_public,
@@ -113,7 +121,11 @@ pub struct EnumDecl {
 
 impl EnumDecl {
     pub fn new(name: String, span: Span) -> Self {
-        let is_public = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+        let is_public = name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
         Self {
             name,
             is_public,

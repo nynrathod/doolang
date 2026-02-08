@@ -4,7 +4,8 @@ use super::types::ParserTypes;
 use super::{ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
-use doo_core::{CompilerError, ErrorCode, Span};
+use doo_core::{CompilerError, ErrorCode};
+use std::collections::HashSet;
 
 /// Trait for parsing top-level items.
 pub trait ParserItems {
@@ -73,18 +74,43 @@ impl ParserItems for Parser {
         let start = self.current_span();
         self.expect(TokenKind::At)?;
 
-        let name = self.expect_ident()?;
+        let name = self.expect_ident().map_err(|_| {
+            CompilerError::new(
+                ErrorCode::InvalidDecoratorSyntax,
+                "expected decorator name after `@`",
+                start,
+            )
+            .with_suggestion("usage: @decoratorName or @decoratorName(args)")
+        })?;
         let mut args = Vec::new();
 
         if self.check(TokenKind::LParen) {
             self.advance();
             while !self.check(TokenKind::RParen) && !self.is_at_end() {
-                args.push(self.parse_expression()?);
+                args.push(self.parse_expression().map_err(|_| {
+                    CompilerError::new(
+                        ErrorCode::InvalidDecoratorSyntax,
+                        format!("invalid argument in @{} decorator", name),
+                        self.current_span(),
+                    )
+                })?);
                 if !self.check(TokenKind::RParen) {
-                    self.expect(TokenKind::Comma)?;
+                    self.expect(TokenKind::Comma).map_err(|_| {
+                        CompilerError::new(
+                            ErrorCode::InvalidDecoratorSyntax,
+                            format!("expected `,` or `)` in @{} arguments", name),
+                            self.current_span(),
+                        )
+                    })?;
                 }
             }
-            self.expect(TokenKind::RParen)?;
+            self.expect(TokenKind::RParen).map_err(|_| {
+                CompilerError::new(
+                    ErrorCode::InvalidDecoratorSyntax,
+                    format!("missing `)` in @{} decorator", name),
+                    self.current_span(),
+                )
+            })?;
         }
 
         let end = self.prev_span();
@@ -157,6 +183,7 @@ impl ParserItems for Parser {
         };
 
         // Body - either block or expression function
+        self.fn_depth += 1;
         let (body, is_expr_fn) = if self.check(TokenKind::FatArrow) {
             self.advance();
             // Parse comma-separated expressions for tuple returns (same as parse_return)
@@ -168,9 +195,18 @@ impl ParserItems for Parser {
             }
             let stmt = Stmt::new(StmtKind::Return(values), self.prev_span());
             (vec![stmt], true)
-        } else {
+        } else if self.check(TokenKind::LBrace) {
             (self.parse_block()?, false)
+        } else {
+            self.fn_depth -= 1;
+            return Err(CompilerError::new(
+                ErrorCode::MissingFunctionBody,
+                format!("function '{}' is missing a body", name),
+                self.current_span(),
+            )
+            .with_suggestion("add a body with `{ ... }` or `=> expr`"));
         };
+        self.fn_depth -= 1;
 
         let end = self.prev_span();
         let is_public = name
@@ -211,9 +247,21 @@ impl ParserItems for Parser {
 
     fn parse_param_list(&mut self) -> ParseResult<Vec<(String, Option<TypeExpr>)>> {
         let mut params = Vec::new();
+        let mut seen_names: HashSet<String> = HashSet::new();
 
         while !self.check(TokenKind::RParen) && !self.is_at_end() {
+            let param_span = self.current_span();
             let name = self.expect_ident()?;
+
+            // Check for duplicate parameter names
+            if !seen_names.insert(name.clone()) {
+                return Err(CompilerError::new(
+                    ErrorCode::DuplicateParameter,
+                    format!("duplicate parameter '{}'", name),
+                    param_span,
+                )
+                .with_suggestion(format!("rename one of the '{}' parameters", name)));
+            }
 
             let type_ann = if self.check(TokenKind::Colon) {
                 self.advance();
@@ -240,8 +288,19 @@ impl ParserItems for Parser {
         self.expect(TokenKind::LBrace)?;
 
         let mut fields = Vec::new();
+        let mut seen_fields: HashSet<String> = HashSet::new();
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-            fields.push(self.parse_field_decl()?);
+            let field = self.parse_field_decl()?;
+            // Check for duplicate field names
+            if !seen_fields.insert(field.name.clone()) {
+                return Err(CompilerError::new(
+                    ErrorCode::DuplicateField,
+                    format!("duplicate field '{}' in struct '{}'", field.name, name),
+                    field.span,
+                )
+                .with_suggestion(format!("rename one of the '{}' fields", field.name)));
+            }
+            fields.push(field);
             // Optional comma separator
             if self.check(TokenKind::Comma) {
                 self.advance();
@@ -317,16 +376,38 @@ impl ParserItems for Parser {
 
         let name = self.expect_ident()?;
 
+        let mut seen_variants: HashSet<String> = HashSet::new();
+
         let variants = if self.check(TokenKind::Colon) {
             self.advance();
             let mut v = Vec::new();
-            // At least one variant required for inline syntax? Or empty allowed?
-            // Usually "enum Foo:" is rare but valid.
             if !self.check(TokenKind::Semi) && !self.is_at_end() {
-                v.push(self.parse_variant_decl()?);
-                while self.check(TokenKind::Comma) {
+                let variant = self.parse_variant_decl()?;
+                if !seen_variants.insert(variant.name.clone()) {
+                    return Err(CompilerError::new(
+                        ErrorCode::DuplicateVariant,
+                        format!("duplicate variant '{}' in enum '{}'", variant.name, name),
+                        variant.span,
+                    )
+                    .with_suggestion(format!("rename one of the '{}' variants", variant.name)));
+                }
+                v.push(variant);
+                // Accept both comma `,` and pipe `|` as variant separators for inline enums
+                while self.check(TokenKind::Comma) || self.check(TokenKind::Or) {
                     self.advance();
-                    v.push(self.parse_variant_decl()?);
+                    let variant = self.parse_variant_decl()?;
+                    if !seen_variants.insert(variant.name.clone()) {
+                        return Err(CompilerError::new(
+                            ErrorCode::DuplicateVariant,
+                            format!("duplicate variant '{}' in enum '{}'", variant.name, name),
+                            variant.span,
+                        )
+                        .with_suggestion(format!(
+                            "rename one of the '{}' variants",
+                            variant.name
+                        )));
+                    }
+                    v.push(variant);
                 }
             }
             // Optional semicolon at end of inline decl
@@ -338,7 +419,16 @@ impl ParserItems for Parser {
             self.expect(TokenKind::LBrace)?;
             let mut v = Vec::new();
             while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-                v.push(self.parse_variant_decl()?);
+                let variant = self.parse_variant_decl()?;
+                if !seen_variants.insert(variant.name.clone()) {
+                    return Err(CompilerError::new(
+                        ErrorCode::DuplicateVariant,
+                        format!("duplicate variant '{}' in enum '{}'", variant.name, name),
+                        variant.span,
+                    )
+                    .with_suggestion(format!("rename one of the '{}' variants", variant.name)));
+                }
+                v.push(variant);
                 // Allow optional commas in block too
                 if self.check(TokenKind::Comma) {
                     self.advance();
@@ -428,10 +518,9 @@ impl ParserItems for Parser {
         }
 
         // Check for module alias: `import std::io as io`
-        let mut alias = None;
         if self.check(TokenKind::As) {
             self.advance();
-            alias = Some(self.expect_ident()?);
+            let alias = Some(self.expect_ident()?);
             // Alias means we are done (treating it as module object)
             let end = self.prev_span();
             return Ok(ImportDecl {

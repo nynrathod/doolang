@@ -49,7 +49,7 @@ pub use resolve::{
     SymbolKindDef,
     SymbolTable,
 };
-pub use scope::{Scope, ScopeManager, Symbol, SymbolKind};
+pub use scope::{Scope, ScopeError, ScopeManager, Symbol, SymbolKind};
 pub use type_check::{TypeChecker, TypeError, TypeErrorKind};
 pub use visibility::{
     check_field_visibility, visibility_from_flag, FieldVisibilityChecker, FieldVisibilityError,

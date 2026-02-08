@@ -1,9 +1,10 @@
 use super::expr::ParserExpr;
+use super::items::ParserItems;
 use super::types::ParserTypes;
 use super::{ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
-use doo_core::{CompilerError, ErrorCode, Span};
+use doo_core::{CompilerError, ErrorCode};
 
 /// Trait for parsing statements.
 pub trait ParserStmt {
@@ -34,6 +35,19 @@ impl ParserStmt for Parser {
             TokenKind::Continue => self.parse_continue(),
             TokenKind::Print => self.parse_print(),
             TokenKind::LBrace => self.parse_block_stmt(),
+            // Local struct/enum declarations inside function bodies
+            TokenKind::Struct => {
+                let start = self.current_span();
+                let decl = self.parse_struct()?;
+                let end = self.prev_span();
+                Ok(Stmt::new(StmtKind::StructDecl(decl), start.merge(&end)))
+            }
+            TokenKind::Enum => {
+                let start = self.current_span();
+                let decl = self.parse_enum()?;
+                let end = self.prev_span();
+                Ok(Stmt::new(StmtKind::EnumDecl(decl), start.merge(&end)))
+            }
             _ => self.parse_expr_or_assign(),
         }
     }
@@ -66,10 +80,11 @@ impl ParserStmt for Parser {
 
                     if mutable {
                         return Err(CompilerError::new(
-                            ErrorCode::InvalidExpression,
+                            ErrorCode::InvalidAssignTarget,
                             "Manual error extraction cannot be mutable",
                             start,
-                        ));
+                        )
+                        .with_suggestion("remove `mut`: `let val ?? err = ...`"));
                     }
 
                     // Parse the error variable name (or _ to ignore)
@@ -82,10 +97,11 @@ impl ParserStmt for Parser {
                         name
                     } else {
                         return Err(CompilerError::new(
-                            ErrorCode::InvalidExpression,
+                            ErrorCode::ExpectedIdentifier,
                             "Expected identifier or '_' for error binding after '??'",
                             self.current_span(),
-                        ));
+                        )
+                        .with_suggestion("use: `let val ?? err = expr` or `let val ?? _ = expr`"));
                     };
 
                     self.expect(TokenKind::Eq)?;
@@ -150,10 +166,11 @@ impl ParserStmt for Parser {
         if self.check(TokenKind::QuestionQuestion) {
             if mutable {
                 return Err(CompilerError::new(
-                    ErrorCode::InvalidExpression,
+                    ErrorCode::InvalidAssignTarget,
                     "Manual error extraction cannot be mutable",
                     start,
-                ));
+                )
+                .with_suggestion("remove `mut`: `let val ?? err = ...`"));
             }
 
             self.advance(); // consume '??'
@@ -168,10 +185,11 @@ impl ParserStmt for Parser {
                 name
             } else {
                 return Err(CompilerError::new(
-                    ErrorCode::InvalidExpression,
+                    ErrorCode::ExpectedIdentifier,
                     "Expected identifier or '_' for error binding after '??'",
                     self.current_span(),
-                ));
+                )
+                .with_suggestion("use: `let val ?? err = expr` or `let val ?? _ = expr`"));
             };
 
             self.expect(TokenKind::Eq)?;
@@ -247,7 +265,9 @@ impl ParserStmt for Parser {
 
         // Check for infinite loop: `for { ... }` (no pattern, no iterable)
         if self.check(TokenKind::LBrace) {
+            self.loop_depth += 1;
             let body = self.parse_block()?;
+            self.loop_depth -= 1;
             let end = self.prev_span();
             return Ok(Stmt::new(
                 StmtKind::For {
@@ -259,7 +279,14 @@ impl ParserStmt for Parser {
             ));
         }
 
-        let first_pattern = self.parse_pattern()?;
+        let first_pattern = self.parse_pattern().map_err(|_| {
+            CompilerError::new(
+                ErrorCode::InvalidForSyntax,
+                "expected loop variable after `for`",
+                self.current_span(),
+            )
+            .with_suggestion("for item in collection { ... }")
+        })?;
 
         let pattern = if self.check(TokenKind::Comma) {
             let mut patterns = vec![first_pattern];
@@ -277,12 +304,29 @@ impl ParserStmt for Parser {
 
         let iterable = if self.check(TokenKind::In) {
             self.advance();
-            Some(self.parse_expression()?)
+            Some(self.parse_expression().map_err(|_| {
+                CompilerError::new(
+                    ErrorCode::InvalidForSyntax,
+                    "expected iterable expression after `in`",
+                    self.current_span(),
+                )
+                .with_suggestion("for item in collection { ... }")
+            })?)
         } else {
             None
         };
 
-        let body = self.parse_block()?;
+        self.loop_depth += 1;
+        let body = self.parse_block().map_err(|_e| {
+            self.loop_depth -= 1;
+            CompilerError::new(
+                ErrorCode::InvalidForSyntax,
+                "expected `{` to start for-loop body",
+                self.current_span(),
+            )
+            .with_suggestion("for item in collection { ... }")
+        })?;
+        self.loop_depth -= 1;
 
         let end = self.prev_span();
         Ok(Stmt::new(
@@ -298,6 +342,15 @@ impl ParserStmt for Parser {
     fn parse_return(&mut self) -> ParseResult<Stmt> {
         let start = self.current_span();
         self.expect(TokenKind::Return)?;
+
+        if self.fn_depth == 0 {
+            return Err(CompilerError::new(
+                ErrorCode::ReturnOutsideFunction,
+                "`return` can only be used inside a function",
+                start,
+            )
+            .with_suggestion("move this `return` inside a `fn` body"));
+        }
 
         let mut values = Vec::new();
         if !self.is_at_stmt_end() {
@@ -315,12 +368,28 @@ impl ParserStmt for Parser {
     fn parse_break(&mut self) -> ParseResult<Stmt> {
         let span = self.current_span();
         self.expect(TokenKind::Break)?;
+        if self.loop_depth == 0 {
+            return Err(CompilerError::new(
+                ErrorCode::BreakOutsideLoop,
+                "`break` can only be used inside a loop",
+                span,
+            )
+            .with_suggestion("move this `break` inside a `for` loop"));
+        }
         Ok(Stmt::new(StmtKind::Break, span))
     }
 
     fn parse_continue(&mut self) -> ParseResult<Stmt> {
         let span = self.current_span();
         self.expect(TokenKind::Continue)?;
+        if self.loop_depth == 0 {
+            return Err(CompilerError::new(
+                ErrorCode::ContinueOutsideLoop,
+                "`continue` can only be used inside a loop",
+                span,
+            )
+            .with_suggestion("move this `continue` inside a `for` loop"));
+        }
         Ok(Stmt::new(StmtKind::Continue, span))
     }
 
@@ -349,11 +418,27 @@ impl ParserStmt for Parser {
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
             match self.parse_statement() {
                 Ok(stmt) => {
-                    stmts.push(stmt);
-                    // Consume optional semicolon after statement
-                    if self.check(TokenKind::Semi) {
-                        self.advance();
+                    // Enforce mandatory semicolons (Rust-like rules)
+                    if stmt.kind.needs_semicolon() {
+                        if self.check(TokenKind::Semi) {
+                            self.advance();
+                        } else {
+                            self.errors.push(
+                                CompilerError::new(
+                                    ErrorCode::MissingSemicolon,
+                                    "expected `;` after statement",
+                                    self.prev_span(),
+                                )
+                                .with_suggestion("add `;` at the end of this statement"),
+                            );
+                        }
+                    } else {
+                        // Block-ending statements: consume optional semicolon
+                        if self.check(TokenKind::Semi) {
+                            self.advance();
+                        }
                     }
+                    stmts.push(stmt);
                 }
                 Err(e) => {
                     self.errors.push(e);
@@ -458,10 +543,11 @@ impl ParserStmt for Parser {
                 ))
             }
             _ => Err(CompilerError::new(
-                ErrorCode::InvalidExpression,
-                "Invalid pattern",
+                ErrorCode::InvalidPattern,
+                "Cannot use this expression as assignment target",
                 expr.span,
-            )),
+            )
+            .with_suggestion("assign to a variable, field, or index")),
         }
     }
 }

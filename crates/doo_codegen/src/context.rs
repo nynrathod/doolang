@@ -584,8 +584,13 @@ impl<'ctx> CodegenContext<'ctx> {
             let value_type = value.get_type();
             let types_match = *alloca_ty == value_type;
             if std::env::var("DOO_DEBUG").is_ok() {
-                doo_debug!("CODEGEN", "set_local '{}': alloca_ty={:?}, value_ty={:?}, match={}",
-                    name, alloca_ty, value_type, types_match
+                doo_debug!(
+                    "CODEGEN",
+                    "set_local '{}': alloca_ty={:?}, value_ty={:?}, match={}",
+                    name,
+                    alloca_ty,
+                    value_type,
+                    types_match
                 );
             }
             if types_match {
@@ -612,7 +617,9 @@ impl<'ctx> CodegenContext<'ctx> {
                         let _ = self.builder.build_store(ptr, converted);
                         self.temps.remove(&name);
                         if std::env::var("DOO_DEBUG").is_ok() {
-                            doo_debug!("CODEGEN", "set_local '{}': converted ptr->int via ptrtoint",
+                            doo_debug!(
+                                "CODEGEN",
+                                "set_local '{}': converted ptr->int via ptrtoint",
                                 name
                             );
                         }
@@ -623,7 +630,9 @@ impl<'ctx> CodegenContext<'ctx> {
                 // No conversion possible - store as temp (shadows the local for this scope)
                 // get_value checks temps first, so this will be found before the alloca
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    doo_debug!("CODEGEN", "set_local type mismatch for '{}': using temp instead",
+                    doo_debug!(
+                        "CODEGEN",
+                        "set_local type mismatch for '{}': using temp instead",
                         name
                     );
                 }
@@ -796,15 +805,21 @@ impl<'ctx> CodegenContext<'ctx> {
         // Check locals - return loaded value
         if let Some((ptr, ty)) = self.locals.get(name) {
             if std::env::var("DOO_DEBUG").is_ok() {
-                doo_debug!("CODEGEN", "get_value({}) loading from local, ty={:?}",
-                    name, ty
+                doo_debug!(
+                    "CODEGEN",
+                    "get_value({}) loading from local, ty={:?}",
+                    name,
+                    ty
                 );
             }
             let result = self.builder.build_load(*ty, *ptr, name);
             if result.is_err() {
                 if std::env::var("DOO_DEBUG").is_ok() {
-                    doo_debug!("CODEGEN", "ERROR: build_load failed for {}: {:?}",
-                        name, result
+                    doo_debug!(
+                        "CODEGEN",
+                        "ERROR: build_load failed for {}: {:?}",
+                        name,
+                        result
                     );
                 }
             } else if std::env::var("DOO_DEBUG").is_ok() {
@@ -813,7 +828,9 @@ impl<'ctx> CodegenContext<'ctx> {
             return result.ok();
         }
         if std::env::var("DOO_DEBUG").is_ok() {
-            doo_debug!("CODEGEN", "WARNING: Variable {} not found in temps or locals",
+            doo_debug!(
+                "CODEGEN",
+                "WARNING: Variable {} not found in temps or locals",
                 name
             );
         }
@@ -1035,6 +1052,27 @@ impl std::fmt::Display for LinkError {
 }
 
 impl std::error::Error for LinkError {}
+
+impl From<LinkError> for doo_core::errors::codes::CompilerError {
+    fn from(e: LinkError) -> Self {
+        use doo_core::errors::codes::ErrorCode;
+        let (code, msg) = match &e {
+            LinkError::LinkFailed(m) => (ErrorCode::LlvmError, format!("link failed: {}", m)),
+            LinkError::SymbolNotFound(s) => {
+                (ErrorCode::CodegenFailed, format!("symbol not found: {}", s))
+            }
+            LinkError::DuplicateSymbol(s) => (
+                ErrorCode::NameAlreadyDefined,
+                format!("duplicate symbol: {}", s),
+            ),
+            LinkError::ModuleNotFound(n) => (
+                ErrorCode::ModuleNotFound,
+                format!("module not found: {}", n),
+            ),
+        };
+        doo_core::errors::codes::CompilerError::new(code, msg, doo_core::Span::new(0, 0, 0))
+    }
+}
 
 /// Module linker for multi-file compilation.
 ///

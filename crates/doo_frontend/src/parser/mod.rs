@@ -3,20 +3,23 @@
 //! Recursive descent parser with Pratt parsing for expressions.
 //! Parses Doo tokens into an AST.
 
+pub mod expr;
+pub mod helpers;
 pub mod items;
 pub mod stmt;
-pub mod expr;
 pub mod types;
-pub mod helpers;
 
 use crate::ast::*;
-use crate::lexer::{Token, TokenKind, Lexer};
-use doo_core::{Span, CompilerError, ErrorCode};
+use crate::lexer::{Lexer, Token, TokenKind};
+use doo_core::{CompilerError, ErrorCode, Span};
 
+pub use expr::ParserExpr;
 pub use items::ParserItems;
 pub use stmt::ParserStmt;
-pub use expr::ParserExpr;
 pub use types::ParserTypes;
+
+/// Maximum expression recursion depth (stack overflow protection).
+const MAX_EXPR_DEPTH: u32 = 256;
 
 /// Result type for parser operations.
 pub type ParseResult<T> = Result<T, CompilerError>;
@@ -33,6 +36,12 @@ pub struct Parser {
     pub(super) errors: Vec<CompilerError>,
     /// EOF token for when we're past the end.
     pub(super) eof_token: Token,
+    /// Loop nesting depth (for break/continue validation).
+    pub(super) loop_depth: u32,
+    /// Function nesting depth (for return validation).
+    pub(super) fn_depth: u32,
+    /// Expression recursion depth (stack overflow protection).
+    pub(super) expr_depth: u32,
 }
 
 impl Parser {
@@ -40,24 +49,69 @@ impl Parser {
     pub fn new(source: &str, file_id: u32) -> Self {
         let mut lexer = Lexer::new(source, file_id);
         let tokens = lexer.tokenize();
-        
-        Self {
+
+        let mut parser = Self {
             tokens,
             pos: 0,
             file_id,
             errors: Vec::new(),
             eof_token: Token::new(TokenKind::Eof, "", Span::dummy()),
-        }
+            loop_depth: 0,
+            fn_depth: 0,
+            expr_depth: 0,
+        };
+
+        // Pre-scan: convert any lexer Error tokens to CompilerErrors
+        parser.collect_lexer_errors();
+        parser
     }
 
     /// Create a parser from pre-lexed tokens.
     pub fn from_tokens(tokens: Vec<Token>, file_id: u32) -> Self {
-        Self {
+        let mut parser = Self {
             tokens,
             pos: 0,
             file_id,
             errors: Vec::new(),
             eof_token: Token::new(TokenKind::Eof, "", Span::dummy()),
+            loop_depth: 0,
+            fn_depth: 0,
+            expr_depth: 0,
+        };
+        parser.collect_lexer_errors();
+        parser
+    }
+
+    /// Scan tokens for lexer Error markers and collect as CompilerErrors.
+    fn collect_lexer_errors(&mut self) {
+        for token in &self.tokens {
+            if token.kind == TokenKind::Error {
+                let (code, msg) = if token.text.contains("Unterminated string") {
+                    (
+                        ErrorCode::UnterminatedString,
+                        "unterminated string literal — missing closing `\"`".to_string(),
+                    )
+                } else if token.text.starts_with("Invalid escape sequence") {
+                    (ErrorCode::InvalidEscapeSequence, token.text.clone())
+                } else if token.text.contains("String literal too long") {
+                    (ErrorCode::InvalidStringLiteral, token.text.clone())
+                } else if token.text.contains("Unexpected character")
+                    || token.text.contains("Invalid character")
+                {
+                    (
+                        ErrorCode::InvalidCharacter,
+                        format!("invalid character in source: {}", token.text),
+                    )
+                } else if token.text.contains("too large") || token.text.contains("too many") {
+                    (ErrorCode::InternalError, token.text.clone())
+                } else {
+                    (
+                        ErrorCode::InvalidExpression,
+                        format!("lexer error: {}", token.text),
+                    )
+                };
+                self.errors.push(CompilerError::new(code, msg, token.span));
+            }
         }
     }
 
@@ -123,11 +177,71 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(CompilerError::new(
-                ErrorCode::UnexpectedToken,
-                format!("Expected {}, got {}", kind, self.current().kind),
-                self.current_span(),
-            ))
+            // Detect unexpected EOF
+            if self.is_at_end() {
+                let code = match kind {
+                    TokenKind::RParen => ErrorCode::MissingClosingParen,
+                    TokenKind::RBrace => ErrorCode::MissingClosingBrace,
+                    TokenKind::RBracket => ErrorCode::MissingClosingBracket,
+                    _ => ErrorCode::UnexpectedEof,
+                };
+                return Err(CompilerError::new(
+                    code,
+                    format!("unexpected end of file, expected `{}`", kind),
+                    self.current_span(),
+                ));
+            }
+
+            // Use specific error codes for closing delimiters
+            let (code, msg) = match kind {
+                TokenKind::RParen => (
+                    ErrorCode::MissingClosingParen,
+                    format!("Missing `)`, got `{}`", self.current().kind),
+                ),
+                TokenKind::RBrace => (
+                    ErrorCode::MissingClosingBrace,
+                    format!("Missing `}}`, got `{}`", self.current().kind),
+                ),
+                TokenKind::RBracket => (
+                    ErrorCode::MissingClosingBracket,
+                    format!("Missing `]`, got `{}`", self.current().kind),
+                ),
+                TokenKind::FatArrow => (
+                    ErrorCode::UnexpectedToken,
+                    format!("Expected `=>`, got `{}`", self.current().kind),
+                ),
+                TokenKind::Eq => (
+                    ErrorCode::UnexpectedToken,
+                    format!("Expected `=`, got `{}`", self.current().kind),
+                ),
+                TokenKind::Colon => (
+                    ErrorCode::ExpectedTypeAnnotation,
+                    format!(
+                        "Expected `:` for type annotation, got `{}`",
+                        self.current().kind
+                    ),
+                ),
+                TokenKind::LBrace => (
+                    ErrorCode::ExpectedBlock,
+                    format!(
+                        "Expected `{{` to start block, got `{}`",
+                        self.current().kind
+                    ),
+                ),
+                TokenKind::Semi => (
+                    ErrorCode::MissingSemicolon,
+                    format!("missing `;` — got `{}`", self.current().kind),
+                ),
+                TokenKind::Comma => (
+                    ErrorCode::UnexpectedToken,
+                    format!("Expected `,`, got `{}`", self.current().kind),
+                ),
+                _ => (
+                    ErrorCode::UnexpectedToken,
+                    format!("Expected `{}`, got `{}`", kind, self.current().kind),
+                ),
+            };
+            Err(CompilerError::new(code, msg, self.current_span()))
         }
     }
 
@@ -187,13 +301,32 @@ impl Parser {
         self.tokens.get(self.pos + 1).unwrap_or(&self.eof_token)
     }
 
+    /// Check if the next token (after current) is of the given kind.
+    pub(super) fn peek_is(&self, kind: TokenKind) -> bool {
+        self.peek_next().kind == kind
+    }
+
     /// Parse expression with precedence (internal helper).
     pub(super) fn parse_expression_prec(&mut self, min_prec: u8) -> ParseResult<Expr> {
+        // Stack overflow protection
+        self.expr_depth += 1;
+        if self.expr_depth > MAX_EXPR_DEPTH {
+            self.expr_depth -= 1;
+            return Err(CompilerError::new(
+                ErrorCode::InternalError,
+                "expression nesting too deep (max 256)",
+                self.current_span(),
+            )
+            .with_suggestion("simplify the expression or break it into smaller parts"));
+        }
+
         use expr::ParserExpr;
         let mut left = self.parse_unary()?;
         left = self.parse_postfix(left)?;
         left = self.parse_binary_op(left, min_prec)?;
         left = self.parse_range(left)?;
+
+        self.expr_depth -= 1;
         Ok(left)
     }
 }

@@ -11,6 +11,7 @@
 //! - `transform` - AST transformations (route groups, inline closures)
 
 pub mod borrow;
+pub mod conversions;
 pub mod ownership;
 pub mod semantic;
 pub mod transform;
@@ -21,10 +22,16 @@ pub use ownership::{
     Decision, DropInserter, OwnershipAnalyzer, OwnershipError, OwnershipResults, UseLocation,
 };
 pub use semantic::{
+    // Field visibility checking
+    check_field_visibility,
     CircularImportDetector,
     CircularImportError,
     // Cross-module resolution
     CrossModuleResolver,
+    // Decorator validation
+    DecoratorError,
+    DecoratorKind,
+    DecoratorValidator,
     // Error flow analysis
     ErrorFlowChecker,
     ErrorFlowError,
@@ -33,8 +40,6 @@ pub use semantic::{
     ExhaustivenessChecker,
     ExhaustivenessError,
     ExhaustivenessErrorKind,
-    // Field visibility checking
-    check_field_visibility,
     FieldVisibilityChecker,
     FieldVisibilityError,
     ImportGraph,
@@ -43,12 +48,19 @@ pub use semantic::{
     ImportStack,
     ImportedModule,
     NameResolver,
+    // Resolve errors
+    ResolveError,
     ResolvedSymbol,
+    // Scope management
+    ScopeError,
     ScopeManager,
     SymbolTable,
     // Type checking
     TypeChecker,
     TypeError,
     TypeErrorKind,
+    // Visibility
+    VisibilityChecker,
+    VisibilityError,
 };
 pub use types::{ClosureContext, InferenceError, TypeCompat, TypeInference};

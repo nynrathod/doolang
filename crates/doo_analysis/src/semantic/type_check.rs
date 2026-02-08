@@ -2,11 +2,13 @@
 //!
 //! Validates types and infers missing types.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::scope::{ScopeManager, Symbol, SymbolKind};
+use super::scope::{ScopeError, ScopeManager, Symbol, SymbolKind};
 use doo_core::{
     constants::ffi_names,
+    errors::codes::{CompilerError, ErrorCode, ErrorSeverity},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
     Span,
 };
@@ -28,6 +30,16 @@ pub enum TypeErrorKind {
     Mismatch { expected: TypeId, found: TypeId },
     /// Undefined variable.
     Undefined(String),
+    /// Undefined function call.
+    UndefinedFunction(String),
+    /// Undefined type name.
+    UndefinedType(String),
+    /// Undefined field access.
+    UndefinedField { type_name: String, field: String },
+    /// Undefined method call.
+    UndefinedMethod { type_name: String, method: String },
+    /// Undefined enum variant.
+    UndefinedVariant { enum_name: String, variant: String },
     /// Invalid operation for type.
     InvalidOp(String),
     /// Function argument mismatch.
@@ -42,6 +54,43 @@ pub enum TypeErrorKind {
         expected: TypeId,
         found: TypeId,
     },
+    /// Unknown type reference.
+    UnknownType(String),
+    /// Type cannot be inferred.
+    CannotInfer(String),
+    /// Incompatible types used together.
+    Incompatible {
+        left: TypeId,
+        right: TypeId,
+        operation: String,
+    },
+    /// Cannot convert between types.
+    CannotConvert { from: TypeId, to: TypeId },
+    /// Tuple length mismatch.
+    TupleLengthMismatch { expected: usize, found: usize },
+    /// Type parameter count wrong.
+    TypeParamCount { expected: usize, found: usize },
+    /// Array element has wrong type.
+    InvalidArrayElement {
+        expected: TypeId,
+        found: TypeId,
+        index: usize,
+    },
+    /// Map key type invalid.
+    InvalidMapKey { found: TypeId },
+    /// If/else branches have different types.
+    IfElseMismatch {
+        then_type: TypeId,
+        else_type: TypeId,
+    },
+    /// Nil used with non-optional type.
+    NilNonOptional { expected: TypeId },
+    /// Missing struct field in construction.
+    MissingStructField { struct_name: String, field: String },
+    /// Unknown struct field in construction.
+    UnknownStructField { struct_name: String, field: String },
+    /// Invalid function signature.
+    InvalidSignature(String),
 }
 
 /// The type checker.
@@ -52,10 +101,16 @@ pub struct TypeChecker {
     scopes: ScopeManager,
     /// Collected errors.
     errors: Vec<TypeError>,
+    /// Collected scope errors (redeclarations etc.).
+    scope_errors: Vec<ScopeError>,
+    /// Direct compiler errors (MissingReturn, UnreachableCode, etc.).
+    direct_errors: Vec<doo_core::errors::codes::CompilerError>,
     /// Current function return type (for validating return statements).
     current_return_type: Option<TypeId>,
     /// Current function name (for error messages).
     current_function: String,
+    /// Routes seen for DuplicateRoute detection: (method, path).
+    routes_seen: HashSet<(String, String)>,
 }
 
 impl TypeChecker {
@@ -65,9 +120,38 @@ impl TypeChecker {
             registry,
             scopes: ScopeManager::new(),
             errors: Vec::new(),
+            scope_errors: Vec::new(),
+            direct_errors: Vec::new(),
             current_return_type: None,
             current_function: String::new(),
+            routes_seen: HashSet::new(),
         }
+    }
+
+    /// Define a symbol and collect any scope errors (e.g., redeclaration).
+    /// Skips `_` (discard/wildcard variable) — never register it in scope.
+    fn define_symbol(&mut self, symbol: Symbol) {
+        if symbol.name == "_" {
+            return; // `_` is a discard variable, never define it
+        }
+        if let Err(e) = self.scopes.define(symbol) {
+            self.scope_errors.push(e);
+        }
+    }
+
+    /// Get collected scope errors.
+    pub fn scope_errors(&self) -> &[ScopeError] {
+        &self.scope_errors
+    }
+
+    /// Take the collected scope errors.
+    pub fn take_scope_errors(&mut self) -> Vec<ScopeError> {
+        std::mem::take(&mut self.scope_errors)
+    }
+
+    /// Take direct compiler errors (MissingReturn, UnreachableCode, etc.).
+    pub fn take_direct_errors(&mut self) -> Vec<doo_core::errors::codes::CompilerError> {
+        std::mem::take(&mut self.direct_errors)
     }
 
     /// Check an entire program.
@@ -82,14 +166,17 @@ impl TypeChecker {
                 let return_type = func.return_type.unwrap_or(builtin::VOID);
 
                 // Register function in global scope
-                let _ = self.scopes.define(Symbol {
-                    name: func.name.clone(),
-                    kind: SymbolKind::Function,
-                    type_id: Some(return_type),
-                    mutable: false,
-                    span: func.span,
-                    used: false,
-                });
+                // Skip if already defined (can happen with imported functions merged into program)
+                if self.scopes.lookup(&func.name).is_none() {
+                    self.define_symbol(Symbol {
+                        name: func.name.clone(),
+                        kind: SymbolKind::Function,
+                        type_id: Some(return_type),
+                        mutable: false,
+                        span: func.span,
+                        used: false,
+                    });
+                }
             }
         }
 
@@ -123,10 +210,10 @@ impl TypeChecker {
         self.scopes.enter_scope(super::scope::ScopeKind::Function);
 
         for param in &func.params {
-            let _ = self.scopes.define(Symbol {
+            self.define_symbol(Symbol {
                 name: param.name.clone(),
                 kind: SymbolKind::Parameter,
-                type_id: param.type_id.or(Some(builtin::ANY)), // Default to Any if unknown
+                type_id: param.type_id.or(Some(builtin::ANY)),
                 mutable: false,
                 span: param.span,
                 used: false,
@@ -134,8 +221,50 @@ impl TypeChecker {
         }
 
         // Check body statements
-        for stmt in &func.body {
+        let mut found_return = false;
+        let mut return_span = None;
+        for (i, stmt) in func.body.iter().enumerate() {
+            // UnreachableCode: after a return, subsequent statements are unreachable
+            if found_return {
+                self.direct_errors.push(
+                    doo_core::errors::codes::CompilerError::new(
+                        ErrorCode::UnreachableCode,
+                        "unreachable code after return statement",
+                        stmt.span,
+                    )
+                    .with_severity(ErrorSeverity::Warning)
+                    .with_suggestion("remove this code or move it before the return"),
+                );
+                break; // Only report the first unreachable statement
+            }
             self.check_stmt(stmt);
+
+            // Track if this statement is a return (includes Ok/Err which act as returns)
+            if Self::stmt_is_return(stmt) {
+                found_return = true;
+                return_span = Some(stmt.span);
+            }
+        }
+
+        // MissingReturn: function has a return type but body doesn't end with return
+        if let Some(ret_type) = func.return_type {
+            if ret_type != builtin::VOID && !found_return && func.name != "main" {
+                // Check if the last statement is a return (basic check)
+                let last_returns = func.body.last().map_or(false, |s| Self::stmt_is_return(s));
+                if !last_returns && !func.body.is_empty() {
+                    self.direct_errors.push(
+                        doo_core::errors::codes::CompilerError::new(
+                            ErrorCode::MissingReturn,
+                            format!(
+                                "function '{}' may not return a value on all paths",
+                                func.name
+                            ),
+                            func.span,
+                        )
+                        .with_suggestion("add a `return` statement"),
+                    );
+                }
+            }
         }
 
         self.scopes.exit_scope();
@@ -143,6 +272,68 @@ impl TypeChecker {
         // Restore previous function context
         self.current_return_type = prev_return_type;
         self.current_function = prev_function;
+    }
+
+    /// Check if a statement effectively returns a value.
+    /// Returns true for `return`, `Ok(...)`, `Err(...)`, `if/else` where all branches return,
+    /// and expression statements that implicitly return (match, block, etc.).
+    fn stmt_is_return(stmt: &HirStmt) -> bool {
+        match &stmt.kind {
+            HirStmtKind::Return(_) => true,
+            HirStmtKind::Expr(expr) => Self::expr_is_return(expr),
+            HirStmtKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                // If both branches end with a return/Ok/Err, the whole if is a return
+                let then_returns = then_block.last().map_or(false, |s| Self::stmt_is_return(s));
+                let else_returns = else_block.as_ref().map_or(false, |eb| {
+                    eb.last().map_or(false, |s| Self::stmt_is_return(s))
+                });
+                then_returns && else_returns
+            }
+            _ => false,
+        }
+    }
+
+    /// Resolve a TypeId to a human-readable type name.
+    fn type_name(&self, id: TypeId) -> String {
+        self.registry
+            .get(id)
+            .map(|t| t.kind.to_string())
+            .unwrap_or_else(|| format!("{}", id))
+    }
+
+    /// Check if an expression implicitly returns a value (can serve as the last expression).
+    fn expr_is_return(expr: &HirExpr) -> bool {
+        match &expr.kind {
+            HirExprKind::Ok(_) | HirExprKind::Err(_) => true,
+            // Match expression as last statement = implicit return (each arm produces a value)
+            HirExprKind::Match { .. } => true,
+            // Block expression — check if its last expression/stmt returns
+            HirExprKind::Block { stmts, expr } => {
+                if let Some(tail_expr) = expr {
+                    Self::expr_is_return(tail_expr)
+                } else {
+                    stmts.last().map_or(false, |s| Self::stmt_is_return(s))
+                }
+            }
+            // If expression with else → both branches produce a value
+            HirExprKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                let then_returns = Self::expr_is_return(then_expr);
+                let else_returns = else_expr
+                    .as_ref()
+                    .map_or(false, |e| Self::expr_is_return(e));
+                then_returns && else_returns
+            }
+            // Regular expressions are NOT implicit returns — they are just expression statements
+            _ => false,
+        }
     }
 
     /// Check a statement for type correctness.
@@ -199,11 +390,30 @@ impl TypeChecker {
                 // First check the value expression
                 let value_type = self.check_expr(value);
 
+                // Type mismatch check: annotated type vs. actual value type
+                if let Some(expected) = type_id {
+                    if value_type != *expected
+                        && value_type != builtin::ANY
+                        && *expected != builtin::ANY
+                        && value_type != builtin::VOID
+                    {
+                        self.direct_errors.push(CompilerError::new(
+                            ErrorCode::TypeMismatch,
+                            format!(
+                                "expected {}, found {}",
+                                self.type_name(*expected),
+                                self.type_name(value_type)
+                            ),
+                            value.span,
+                        ));
+                    }
+                }
+
                 // Determine the variable's type: explicit type_id, or inferred from value
                 let var_type = type_id.or(Some(value_type));
 
                 // Register the variable in the current scope
-                let _ = self.scopes.define(Symbol {
+                self.define_symbol(Symbol {
                     name: name.clone(),
                     kind: SymbolKind::Variable,
                     type_id: var_type,
@@ -241,7 +451,7 @@ impl TypeChecker {
                         .or_else(|| element_types.get(i).copied())
                         .unwrap_or(builtin::ANY);
 
-                    let _ = self.scopes.define(Symbol {
+                    self.define_symbol(Symbol {
                         name: name.clone(),
                         kind: SymbolKind::Variable,
                         type_id: Some(var_type),
@@ -253,8 +463,26 @@ impl TypeChecker {
             }
 
             HirStmtKind::Assign { target, value } => {
-                self.check_expr(target);
-                self.check_expr(value);
+                let target_type = self.check_expr(target);
+                let value_type = self.check_expr(value);
+
+                // Type mismatch check: target type vs value type
+                if target_type != value_type
+                    && target_type != builtin::ANY
+                    && value_type != builtin::ANY
+                    && target_type != builtin::VOID
+                    && value_type != builtin::VOID
+                {
+                    self.direct_errors.push(CompilerError::new(
+                        ErrorCode::TypeMismatch,
+                        format!(
+                            "expected {}, found {}",
+                            self.type_name(target_type),
+                            self.type_name(value_type)
+                        ),
+                        value.span,
+                    ));
+                }
             }
 
             HirStmtKind::Return(exprs) => {
@@ -271,10 +499,11 @@ impl TypeChecker {
 
         // Condition must be Bool (or Any for dynamic typing)
         if cond_type != builtin::BOOL && cond_type != builtin::ANY {
-            self.errors.push(TypeError {
-                kind: TypeErrorKind::InvalidCondition { found: cond_type },
-                span: condition.span,
-            });
+            self.direct_errors.push(CompilerError::new(
+                ErrorCode::InvalidConditionType,
+                format!("expected Bool, found {}", self.type_name(cond_type)),
+                condition.span,
+            ));
         }
     }
 
@@ -367,13 +596,40 @@ impl TypeChecker {
                 func_return_type.or(expr.type_id).unwrap_or(builtin::ANY)
             }
 
-            HirExprKind::MethodCall { receiver, args, .. } => {
+            HirExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
                 // Built-in modules are checked via is_builtin_module in Local case
                 // This call to check_expr will properly skip the undefined error for them
                 self.check_expr(receiver);
                 for arg in args {
                     self.check_expr(arg);
                 }
+
+                // Compile-time route validation: detect duplicate routes
+                let is_http_method = matches!(
+                    method.as_str(),
+                    "get" | "post" | "put" | "delete" | "patch" | "options" | "head"
+                );
+                if is_http_method && !args.is_empty() {
+                    // First arg is typically the route path (a string literal)
+                    if let HirExprKind::Const(doo_hir::ConstValue::Str(ref path)) = args[0].kind {
+                        let route_key = (method.to_uppercase(), path.to_string());
+                        if !self.routes_seen.insert(route_key) {
+                            self.direct_errors.push(
+                                doo_core::errors::codes::CompilerError::new(
+                                    ErrorCode::DuplicateRoute,
+                                    format!("duplicate route: {} {}", method.to_uppercase(), path),
+                                    expr.span,
+                                )
+                                .with_suggestion("each route path+method must be unique"),
+                            );
+                        }
+                    }
+                }
+
                 expr.type_id.unwrap_or(builtin::ANY)
             }
 
@@ -571,26 +827,31 @@ impl TypeChecker {
             } => {
                 // Look up the enum type to find the variant's payload type
                 if let Some(enum_type_id) = self.registry.lookup(enum_name) {
-                    if let Some(type_info) = self.registry.get(enum_type_id) {
+                    // Extract payload type from registry before calling define_symbol
+                    // to avoid borrow conflict (immutable borrow on registry vs mutable on self)
+                    let payload_type = if let Some(type_info) = self.registry.get(enum_type_id) {
                         if let TypeKind::Enum { variants, .. } = &type_info.kind {
-                            // Find the variant's payload type
-                            if let Some((_, Some(payload_type_id))) =
-                                variants.iter().find(|(v, _)| v == variant)
-                            {
-                                // Register each binding with the payload type
-                                // For now, if there's one binding, it gets the full payload type
-                                // If there are multiple bindings, we'd need tuple destructuring
-                                for binding in bindings {
-                                    let _ = self.scopes.define(Symbol {
-                                        name: binding.clone(),
-                                        kind: SymbolKind::Variable,
-                                        type_id: Some(*payload_type_id),
-                                        mutable: false,
-                                        span,
-                                        used: false,
-                                    });
-                                }
-                            }
+                            variants
+                                .iter()
+                                .find(|(v, _)| v == variant)
+                                .and_then(|(_, payload)| *payload)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(payload_type_id) = payload_type {
+                        for binding in bindings {
+                            self.define_symbol(Symbol {
+                                name: binding.clone(),
+                                kind: SymbolKind::Variable,
+                                type_id: Some(payload_type_id),
+                                mutable: false,
+                                span,
+                                used: false,
+                            });
                         }
                     }
                 }
@@ -646,14 +907,22 @@ impl TypeChecker {
                 // Str -> Int, Float, Str allowed; Str -> Bool rejected
                 to == builtin::INT || to == builtin::FLOAT || to == builtin::STR
             }
-            _ => false, // Unknown types: reject
+            _ => {
+                // Any type can be cast to Str (for string interpolation / print)
+                to == builtin::STR
+            }
         };
 
         if !valid {
-            self.errors.push(TypeError {
-                kind: TypeErrorKind::InvalidCast { from, to },
+            self.direct_errors.push(CompilerError::new(
+                ErrorCode::InvalidCast,
+                format!(
+                    "cannot cast {} to {}",
+                    self.type_name(from),
+                    self.type_name(to)
+                ),
                 span,
-            });
+            ));
         }
     }
 
@@ -689,14 +958,16 @@ impl TypeChecker {
 
         // Check type compatibility using registry
         if !self.registry.is_compatible(actual_type, expected_type) {
-            self.errors.push(TypeError {
-                kind: TypeErrorKind::ReturnTypeMismatch {
-                    function: self.current_function.clone(),
-                    expected: expected_type,
-                    found: actual_type,
-                },
+            self.direct_errors.push(CompilerError::new(
+                ErrorCode::ReturnTypeMismatch,
+                format!(
+                    "expected {}, found {} in '{}'",
+                    self.type_name(expected_type),
+                    self.type_name(actual_type),
+                    self.current_function
+                ),
                 span,
-            });
+            ));
         }
     }
 
@@ -744,13 +1015,16 @@ impl TypeChecker {
 
             if !self.registry.is_compatible(*actual, *expected) {
                 // Element type mismatch - report specific error
-                self.errors.push(TypeError {
-                    kind: TypeErrorKind::Mismatch {
-                        expected: *expected,
-                        found: *actual,
-                    },
+                self.direct_errors.push(CompilerError::new(
+                    ErrorCode::TypeMismatch,
+                    format!(
+                        "expected {}, found {} at tuple index {}",
+                        self.type_name(*expected),
+                        self.type_name(*actual),
+                        i
+                    ),
                     span,
-                });
+                ));
             }
         }
 

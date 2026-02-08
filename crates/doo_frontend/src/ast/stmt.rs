@@ -3,7 +3,7 @@
 //! Statements that perform actions but don't produce values directly.
 
 use doo_core::Span;
-use super::{Expr, Pattern, TypeExpr};
+use super::{Expr, Pattern, TypeExpr, StructDecl, EnumDecl};
 use crate::lexer::TokenKind;
 
 /// A statement.
@@ -102,6 +102,29 @@ pub enum StmtKind {
         ok_pattern: Pattern,
         error_var: String,
     },
+
+    // === Local Declarations (hoisted to top-level during lowering) ===
+    /// Local struct declaration inside a function body.
+    StructDecl(StructDecl),
+    /// Local enum declaration inside a function body.
+    EnumDecl(EnumDecl),
+}
+
+impl StmtKind {
+    /// Whether this statement kind requires a trailing semicolon (Rust-like rules).
+    /// Statements ending with `}` do NOT require `;`.
+    pub fn needs_semicolon(&self) -> bool {
+        match self {
+            // Block-ending statements: no semicolon needed
+            StmtKind::If { .. } | StmtKind::For { .. } | StmtKind::Block(_) => false,
+            // Struct/enum declarations already handle their own semicolons
+            StmtKind::StructDecl(_) | StmtKind::EnumDecl(_) => false,
+            // Expression statements: depends on whether expression ends with `}`
+            StmtKind::Expr(expr) => !expr.ends_with_brace(),
+            // Everything else needs `;`
+            _ => true,
+        }
+    }
 }
 
 /// Else branch (either block or else-if chain).

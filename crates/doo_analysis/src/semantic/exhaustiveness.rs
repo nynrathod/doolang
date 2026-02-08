@@ -507,6 +507,24 @@ impl<'a> ExhaustivenessChecker<'a> {
         let mut covered = CoveredPatterns::new();
         let mut has_wildcard = false;
 
+        // If the matched type is unknown/ANY, try to infer it from enum variant patterns
+        let effective_type = if matched_type == builtin::ANY {
+            // Look for enum variant patterns and extract the enum name
+            let enum_name = arms.iter().find_map(|arm| match &arm.pattern {
+                HirMatchPattern::EnumVariant { enum_name, .. }
+                | HirMatchPattern::EnumVariantPayload { enum_name, .. } => Some(enum_name.clone()),
+                _ => None,
+            });
+            if let Some(ref name) = enum_name {
+                // Look up the enum type in the registry
+                self.registry.lookup(name).unwrap_or(matched_type)
+            } else {
+                matched_type
+            }
+        } else {
+            matched_type
+        };
+
         for arm in arms {
             // If we already have a wildcard, subsequent patterns are unreachable
             if has_wildcard {
@@ -547,7 +565,7 @@ impl<'a> ExhaustivenessChecker<'a> {
         }
 
         // Check exhaustiveness
-        if let Err(missing) = covered.is_exhaustive(matched_type, self.registry) {
+        if let Err(missing) = covered.is_exhaustive(effective_type, self.registry) {
             self.errors.push(ExhaustivenessError {
                 kind: ExhaustivenessErrorKind::NonExhaustive { missing },
                 span,

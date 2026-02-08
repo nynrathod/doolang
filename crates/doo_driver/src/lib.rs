@@ -206,6 +206,7 @@ pub fn run_command_with_compiler(
         keep_ll,
         keep_obj: false,
         check_only: false,
+        show_warnings: std::env::var("DOO_SHOW_WARNINGS").is_ok(),
     };
 
     let compile_start = std::time::Instant::now();
@@ -364,6 +365,7 @@ pub fn check_command(path: PathBuf) -> i32 {
         keep_ll: false,
         keep_obj: false,
         check_only: true,
+        show_warnings: std::env::var("DOO_SHOW_WARNINGS").is_ok(),
     };
 
     match compile_project(opts) {
@@ -392,16 +394,15 @@ pub fn migrate_command(_path: PathBuf, dry_run: bool) -> i32 {
 }
 
 pub fn explain_error(code: &str) {
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  Error Code: {}", code);
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    match code {
-        "E0100" => println!("TYPE MISMATCH\nValue type doesn't match expected type."),
-        "E0200" => println!("USE AFTER MOVE\nRare in Doo - we auto-clone."),
-        "E0300" => println!("UNDEFINED NAME\nVariable/function not declared."),
-        _ => println!("Docs: https://doo-lang.dev/errors/{}", code),
+    use doo_core::errors::codes::ErrorCode;
+
+    if let Some(ec) = ErrorCode::from_code(code) {
+        let mut emitter = doo_diagnostics::DiagnosticEmitter::new(true);
+        let _ = emitter.explain_code(ec);
+    } else {
+        eprintln!("error: unknown error code `{}`", code);
+        eprintln!("  Use `doo --explain E0100` with a valid code");
     }
-    println!();
 }
 
 fn read_env_vars_from_file(env_path: &Path) -> Vec<(String, String)> {

@@ -35,6 +35,8 @@ pub struct Lower {
     /// Track JSON stringify sources: variable name -> type of the stringified value
     /// Used to infer JSON.parse return type when parsing a variable
     json_stringify_sources: FxHashMap<String, TypeId>,
+    /// Items hoisted from inside function bodies (local struct/enum declarations).
+    hoisted_items: Vec<HirItem>,
 }
 
 /// Lowering error.
@@ -61,6 +63,7 @@ impl Lower {
             var_types: FxHashMap::default(),
             unique_counter: 0,
             json_stringify_sources: FxHashMap::default(),
+            hoisted_items: Vec::new(),
         }
     }
 
@@ -264,11 +267,14 @@ impl Lower {
 
     /// Lower an entire program.
     pub fn lower_program(&mut self, program: &Program) -> HirProgram {
-        let items = program
+        let mut items: Vec<HirItem> = program
             .items
             .iter()
             .filter_map(|item| self.lower_item(item))
             .collect();
+
+        // Append any struct/enum declarations hoisted from inside function bodies
+        items.append(&mut self.hoisted_items);
 
         HirProgram {
             items,
@@ -293,11 +299,27 @@ impl Lower {
             }
         }
 
-        let items = program
+        let mut items: Vec<HirItem> = program
             .items
             .iter()
             .filter_map(|item| self.lower_item_typed(item, registry))
             .collect();
+
+        // Register hoisted items (local struct/enum) in type registry
+        for hoisted in &self.hoisted_items {
+            match hoisted {
+                HirItem::Struct(s) => {
+                    registry.declare_named(&s.name);
+                }
+                HirItem::Enum(e) => {
+                    registry.declare_named(&e.name);
+                }
+                _ => {}
+            }
+        }
+
+        // Append hoisted items from inside function bodies
+        items.append(&mut self.hoisted_items);
 
         HirProgram {
             items,
@@ -868,6 +890,18 @@ impl Lower {
                     expr: self.lower_expr(expr),
                 }
             }
+
+            // Local struct/enum declarations: hoist to top-level items, emit no-op in body
+            StmtKind::StructDecl(s) => {
+                let hir_struct = self.lower_struct(s);
+                self.hoisted_items.push(HirItem::Struct(hir_struct));
+                HirStmtKind::Expr(HirExpr::new(HirExprKind::Const(ConstValue::Nil), stmt.span))
+            }
+            StmtKind::EnumDecl(e) => {
+                let hir_enum = self.lower_enum(e);
+                self.hoisted_items.push(HirItem::Enum(hir_enum));
+                HirStmtKind::Expr(HirExpr::new(HirExprKind::Const(ConstValue::Nil), stmt.span))
+            }
         };
 
         HirStmt::new(kind, stmt.span)
@@ -916,14 +950,15 @@ impl Lower {
                     }
                 } else {
                     let name = self.pattern_to_name(pattern);
-                    let mut value_hir = self.lower_expr_typed(value, registry);
+                    let value_hir = self.lower_expr_typed(value, registry);
                     let annotated_type_id = type_ann
                         .as_ref()
                         .map(|t| self.resolve_type_expr(t, registry));
                     let inferred_type_id = annotated_type_id.or(value_hir.type_id);
-                    if annotated_type_id.is_some() {
-                        value_hir.type_id = inferred_type_id;
-                    }
+                    // NOTE: Do NOT overwrite value_hir.type_id with annotated type.
+                    // The value expression must keep its original type so the type checker
+                    // can compare it against the annotation and detect mismatches.
+                    // The Let statement's own type_id field carries the annotation.
                     // Track variable type for later lookups
                     if let Some(tid) = inferred_type_id {
                         self.var_types.insert(name.clone(), tid);
@@ -1140,6 +1175,18 @@ impl Lower {
                     error_name: error_var.clone(),
                     expr: self.lower_expr_typed(expr, registry),
                 }
+            }
+
+            // Local struct/enum declarations: hoist to top-level items, emit no-op in body
+            StmtKind::StructDecl(s) => {
+                let hir_struct = self.lower_struct_typed(s, registry);
+                self.hoisted_items.push(HirItem::Struct(hir_struct));
+                HirStmtKind::Expr(HirExpr::new(HirExprKind::Const(ConstValue::Nil), stmt.span))
+            }
+            StmtKind::EnumDecl(e) => {
+                let hir_enum = self.lower_enum_typed(e, registry);
+                self.hoisted_items.push(HirItem::Enum(hir_enum));
+                HirStmtKind::Expr(HirExpr::new(HirExprKind::Const(ConstValue::Nil), stmt.span))
             }
         };
 
@@ -1467,18 +1514,38 @@ impl Lower {
                 body: Box::new(self.lower_expr(body)),
             },
 
-            ExprKind::Match { values, arms } => HirExprKind::Match {
-                values: values.iter().map(|v| self.lower_expr(v)).collect(),
-                arms: arms
+            ExprKind::Match { values, arms } => {
+                let lowered_values: Vec<HirExpr> =
+                    values.iter().map(|v| self.lower_expr(v)).collect();
+                let lowered_arms: Vec<HirMatchArm> = arms
                     .iter()
-                    .map(|a| HirMatchArm {
-                        pattern: self.lower_match_pattern(&a.pattern),
-                        guard: a.guard.as_ref().map(|g| self.lower_expr(g)),
-                        body: self.lower_expr(&a.body),
-                        span: a.span,
+                    .map(|a| {
+                        let mut pattern = self.lower_match_pattern(&a.pattern);
+                        // Convert struct literal patterns to field-by-field comparisons
+                        if let HirMatchPattern::Condition(ref cond_expr) = pattern {
+                            if let HirExprKind::Struct { fields, .. } = &cond_expr.kind {
+                                if let Some(matched_val) = lowered_values.first() {
+                                    pattern = self.struct_pattern_to_condition(
+                                        matched_val,
+                                        fields,
+                                        cond_expr.span,
+                                    );
+                                }
+                            }
+                        }
+                        HirMatchArm {
+                            pattern,
+                            guard: a.guard.as_ref().map(|g| self.lower_expr(g)),
+                            body: self.lower_expr(&a.body),
+                            span: a.span,
+                        }
                     })
-                    .collect(),
-            },
+                    .collect();
+                HirExprKind::Match {
+                    values: lowered_values,
+                    arms: lowered_arms,
+                }
+            }
 
             ExprKind::Spread(inner) => HirExprKind::Spread(Box::new(self.lower_expr(inner))),
 
@@ -1782,21 +1849,40 @@ impl Lower {
                 }
             }
 
-            ExprKind::Match { values, arms } => HirExprKind::Match {
-                values: values
+            ExprKind::Match { values, arms } => {
+                let lowered_values: Vec<HirExpr> = values
                     .iter()
                     .map(|v| self.lower_expr_typed(v, registry))
-                    .collect(),
-                arms: arms
+                    .collect();
+                let lowered_arms: Vec<HirMatchArm> = arms
                     .iter()
-                    .map(|a| HirMatchArm {
-                        pattern: self.lower_match_pattern_typed(&a.pattern, registry),
-                        guard: a.guard.as_ref().map(|g| self.lower_expr_typed(g, registry)),
-                        body: self.lower_expr_typed(&a.body, registry),
-                        span: a.span,
+                    .map(|a| {
+                        let mut pattern = self.lower_match_pattern_typed(&a.pattern, registry);
+                        // Convert struct literal patterns to field-by-field comparisons
+                        if let HirMatchPattern::Condition(ref cond_expr) = pattern {
+                            if let HirExprKind::Struct { fields, .. } = &cond_expr.kind {
+                                if let Some(matched_val) = lowered_values.first() {
+                                    pattern = self.struct_pattern_to_condition(
+                                        matched_val,
+                                        fields,
+                                        cond_expr.span,
+                                    );
+                                }
+                            }
+                        }
+                        HirMatchArm {
+                            pattern,
+                            guard: a.guard.as_ref().map(|g| self.lower_expr_typed(g, registry)),
+                            body: self.lower_expr_typed(&a.body, registry),
+                            span: a.span,
+                        }
                     })
-                    .collect(),
-            },
+                    .collect();
+                HirExprKind::Match {
+                    values: lowered_values,
+                    arms: lowered_arms,
+                }
+            }
 
             ExprKind::Spread(inner) => {
                 HirExprKind::Spread(Box::new(self.lower_expr_typed(inner, registry)))
@@ -3007,8 +3093,9 @@ impl Lower {
         let internal_idx = format!("__{}idx{}", orig_key_var, uid);
 
         // Also make the iteration variables unique to avoid type conflicts
-        let key_var = format!("__{}_{}", orig_key_var, uid);
-        let value_var = orig_value_var.as_ref().map(|v| format!("__{}_{}", v, uid));
+        // Use k/v prefixes so key and value don't collide when both are _ (wildcard)
+        let key_var = format!("__k{}_{}", orig_key_var, uid);
+        let value_var = orig_value_var.as_ref().map(|v| format!("__v{}_{}", v, uid));
 
         // Lower the map expression FIRST to get its type for proper propagation in body
         let lowered_map_early = self.lower_expr_typed(map_expr, registry);
@@ -3285,8 +3372,9 @@ impl Lower {
         let internal_idx = format!("__{}idx{}", orig_key_var, uid);
 
         // Also make the iteration variables unique to avoid type conflicts
-        let key_var = format!("__{}_{}", orig_key_var, uid);
-        let value_var = orig_value_var.as_ref().map(|v| format!("__{}_{}", v, uid));
+        // Use k/v prefixes so key and value don't collide when both are _ (wildcard)
+        let key_var = format!("__k{}_{}", orig_key_var, uid);
+        let value_var = orig_value_var.as_ref().map(|v| format!("__v{}_{}", v, uid));
 
         // Get the map type from the already-lowered map expression
         let map_type = lowered_map.type_id;
@@ -4032,6 +4120,57 @@ impl Lower {
         }
     }
 
+    /// Convert a struct literal match pattern to a field-by-field comparison condition.
+    ///
+    /// Transforms `Point { x: 10, y: 20 }` into `matched.x == 10 && matched.y == 20`.
+    fn struct_pattern_to_condition(
+        &self,
+        matched_val: &HirExpr,
+        fields: &[(String, HirExpr)],
+        span: Span,
+    ) -> HirMatchPattern {
+        if fields.is_empty() {
+            // No fields to compare → always matches
+            return HirMatchPattern::Wildcard;
+        }
+
+        // Build comparisons: matched.field == value
+        let mut comparisons: Vec<HirExpr> = Vec::new();
+        for (field_name, field_val) in fields {
+            let field_access = HirExpr::new(
+                HirExprKind::Field {
+                    object: Box::new(matched_val.clone()),
+                    field: field_name.clone(),
+                },
+                span,
+            );
+            let eq_check = HirExpr::new(
+                HirExprKind::BinOp {
+                    op: HirBinOp::Eq,
+                    lhs: Box::new(field_access),
+                    rhs: Box::new(field_val.clone()),
+                },
+                span,
+            );
+            comparisons.push(eq_check);
+        }
+
+        // Chain comparisons with &&
+        let mut result = comparisons.remove(0);
+        for comp in comparisons {
+            result = HirExpr::new(
+                HirExprKind::BinOp {
+                    op: HirBinOp::And,
+                    lhs: Box::new(result),
+                    rhs: Box::new(comp),
+                },
+                span,
+            );
+        }
+
+        HirMatchPattern::Condition(Box::new(result))
+    }
+
     fn resolve_type_expr(&mut self, ty: &TypeExpr, registry: &mut TypeRegistry) -> TypeId {
         match &ty.kind {
             doo_frontend::ast::TypeExprKind::Named(name) => registry
@@ -4173,14 +4312,15 @@ impl Lower {
                 if expr_hir.type_id == Some(builtin::STR) {
                     expr_hir
                 } else {
-                    // Cast to String
+                    // Cast to String — use the expression's span for error reporting
+                    let span = expr_hir.span;
                     HirExpr::with_type(
                         HirExprKind::Cast {
                             value: Box::new(expr_hir),
                             to_type: builtin::STR,
                         },
                         builtin::STR,
-                        Span::dummy(),
+                        span,
                     )
                 }
             }

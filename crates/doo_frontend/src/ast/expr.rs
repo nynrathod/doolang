@@ -2,9 +2,9 @@
 //!
 //! All expressions that produce values.
 
-use doo_core::Span;
-use super::{Pattern, TypeExpr};
+use super::TypeExpr;
 use crate::lexer::TokenKind;
+use doo_core::Span;
 
 /// An expression that produces a value.
 #[derive(Debug, Clone)]
@@ -18,6 +18,18 @@ pub struct Expr {
 impl Expr {
     pub fn new(kind: ExprKind, span: Span) -> Self {
         Self { kind, span }
+    }
+
+    /// Whether this expression ends with `}` (block-like, no semicolon needed).
+    pub fn ends_with_brace(&self) -> bool {
+        matches!(
+            self.kind,
+            ExprKind::IfExpr { .. }
+                | ExprKind::Match { .. }
+                | ExprKind::Block(_, _)
+                | ExprKind::StructLit { .. }
+                | ExprKind::RouteBlock { .. }
+        )
     }
 }
 
@@ -63,29 +75,17 @@ pub enum ExprKind {
         right: Box<Expr>,
     },
     /// Unary operation: `!x`, `-y`
-    Unary {
-        op: UnaryOp,
-        expr: Box<Expr>,
-    },
+    Unary { op: UnaryOp, expr: Box<Expr> },
 
     // === Access ===
     /// Field access: `obj.field`
-    Field {
-        object: Box<Expr>,
-        field: String,
-    },
+    Field { object: Box<Expr>, field: String },
     /// Index access: `arr[0]`
-    Index {
-        object: Box<Expr>,
-        index: Box<Expr>,
-    },
+    Index { object: Box<Expr>, index: Box<Expr> },
 
     // === Calls ===
     /// Function call: `foo(a, b)`
-    Call {
-        func: Box<Expr>,
-        args: Vec<Expr>,
-    },
+    Call { func: Box<Expr>, args: Vec<Expr> },
     /// Method call: `obj.method(args)`
     MethodCall {
         object: Box<Expr>,
@@ -130,10 +130,7 @@ pub enum ExprKind {
     /// Try operator: `expr?`
     Try(Box<Expr>),
     /// Unwrap or panic: `expr! "message"`
-    UnwrapOrPanic {
-        expr: Box<Expr>,
-        message: Box<Expr>,
-    },
+    UnwrapOrPanic { expr: Box<Expr>, message: Box<Expr> },
 
     // === Struct/Enum Construction ===
     /// Struct literal: `User { name: "foo" }`
@@ -150,10 +147,7 @@ pub enum ExprKind {
 
     // === Cast ===
     /// Type cast: `x as Int`
-    Cast {
-        expr: Box<Expr>,
-        target: TypeExpr,
-    },
+    Cast { expr: Box<Expr>, target: TypeExpr },
 
     // === Closure ===
     /// Closure: `(x) => x + 1`
@@ -167,9 +161,7 @@ pub enum ExprKind {
     // === HTTP Route Block ===
     /// Route block: `{ get("/path", Handler), post("/path", Handler) }`
     /// Used in app.group() for inline route definitions
-    RouteBlock {
-        routes: Vec<Expr>,
-    },
+    RouteBlock { routes: Vec<Expr> },
 }
 
 /// Binary operators.
@@ -197,6 +189,30 @@ pub enum BinaryOp {
     BitOr,
     // Null coalescing
     NullCoalesce,
+}
+
+impl std::fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Add => write!(f, "+"),
+            Self::Sub => write!(f, "-"),
+            Self::Mul => write!(f, "*"),
+            Self::Div => write!(f, "/"),
+            Self::Mod => write!(f, "%"),
+            Self::Eq => write!(f, "=="),
+            Self::NotEq => write!(f, "!="),
+            Self::Lt => write!(f, "<"),
+            Self::Gt => write!(f, ">"),
+            Self::LtEq => write!(f, "<="),
+            Self::GtEq => write!(f, ">="),
+            Self::In => write!(f, "in"),
+            Self::And => write!(f, "&&"),
+            Self::Or => write!(f, "||"),
+            Self::BitAnd => write!(f, "&"),
+            Self::BitOr => write!(f, "|"),
+            Self::NullCoalesce => write!(f, "??"),
+        }
+    }
 }
 
 impl BinaryOp {
@@ -248,6 +264,15 @@ pub enum UnaryOp {
     Not,
 }
 
+impl std::fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Neg => write!(f, "-"),
+            Self::Not => write!(f, "!"),
+        }
+    }
+}
+
 impl UnaryOp {
     pub fn from_token(kind: TokenKind) -> Option<Self> {
         match kind {
@@ -281,10 +306,7 @@ pub enum MatchPattern {
     /// Wildcard: `_`
     Wildcard,
     /// Enum variant: `Status.Active`
-    EnumVariant {
-        enum_name: String,
-        variant: String,
-    },
+    EnumVariant { enum_name: String, variant: String },
     /// Enum variant with payload binding: `Result.Ok(value)`
     EnumVariantPayload {
         enum_name: String,

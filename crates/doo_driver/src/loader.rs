@@ -34,6 +34,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use doo_core::doo_debug;
+use doo_core::errors::codes::{CompilerError, ErrorCode};
+use doo_core::Span;
 use doo_frontend::ast::{ImportDecl, ImportItem, Item, Program};
 use doo_frontend::Parser;
 
@@ -215,7 +217,7 @@ pub struct ImportResolution {
     /// Items to prepend to the program (imported functions, structs, enums).
     pub items: Vec<Item>,
     /// Errors encountered during resolution.
-    pub errors: Vec<String>,
+    pub errors: Vec<CompilerError>,
 }
 
 /// Resolve all imports in a program.
@@ -264,8 +266,11 @@ pub fn resolve_imports(
         doo_debug!("LOADER", "Resolving {} imports", imports.len());
     }
 
-    // Build import requests: module_key -> set of (symbol_name, optional_alias)
-    let mut std_import_requests: HashMap<String, HashMap<String, Option<String>>> = HashMap::new();
+    // Build import requests: module_key -> set of (symbol_name, (optional_alias, span))
+    let mut std_import_requests: HashMap<
+        String,
+        HashMap<String, (Option<String>, doo_core::Span)>,
+    > = HashMap::new();
     // (import_decl, module_path, path_symbols) - path_symbols are symbols extracted
     // from the import path when the last segment is a symbol name, not a file.
     // e.g., `import Models::Task;` → module=Models.doo, path_symbols=["Task"]
@@ -295,32 +300,32 @@ pub fn resolve_imports(
             if let Some(sym) = path_symbol {
                 if import.wildcard {
                     // import std::Module::*
-                    symbols.insert("*".to_string(), None);
+                    symbols.insert("*".to_string(), (None, import.span));
                 } else {
                     // import std::Math::Abs or import std::Math::Abs as A
-                    symbols.insert(sym, import.alias.clone());
+                    symbols.insert(sym, (import.alias.clone(), import.span));
                 }
             } else if import.alias.is_some() {
                 // import std::Array as A - namespace alias, import all
-                symbols.insert("*".to_string(), import.alias.clone());
+                symbols.insert("*".to_string(), (import.alias.clone(), import.span));
             } else if import.wildcard {
                 // import std::Array::*
-                symbols.insert("*".to_string(), None);
+                symbols.insert("*".to_string(), (None, import.span));
             } else if import.items.is_empty() {
                 // import std::File - namespace import, import all
-                symbols.insert("*".to_string(), None);
+                symbols.insert("*".to_string(), (None, import.span));
             } else {
                 // import std::Math::{Min, Max, Sqrt as Sq}
                 for item in &import.items {
                     match item {
                         ImportItem::Symbol(name) => {
-                            symbols.insert(name.clone(), None);
+                            symbols.insert(name.clone(), (None, import.span));
                         }
                         ImportItem::Alias { name, alias } => {
-                            symbols.insert(name.clone(), Some(alias.clone()));
+                            symbols.insert(name.clone(), (Some(alias.clone()), import.span));
                         }
                         ImportItem::Wildcard => {
-                            symbols.insert("*".to_string(), None);
+                            symbols.insert("*".to_string(), (None, import.span));
                         }
                     }
                 }
@@ -397,12 +402,77 @@ pub fn resolve_imports(
         let module_program = match loader.load_module(module_key) {
             Ok(p) => p,
             Err(e) => {
-                result.errors.push(e);
+                let code = if e.contains("not found") {
+                    ErrorCode::ModuleNotFound
+                } else if e.contains("Invalid module key") {
+                    ErrorCode::InvalidImportPath
+                } else {
+                    ErrorCode::IoError
+                };
+                result.errors.push(CompilerError::new(
+                    code,
+                    format!("failed to load '{}': {}", module_key, e),
+                    doo_core::Span::new(0, 0, 0),
+                ));
                 continue;
             }
         };
 
         let import_all = requested.contains_key("*");
+
+        // Collect all available symbol names in the module for ImportNotFound check
+        let mut available_names: HashSet<String> = HashSet::new();
+        for item in &module_program.items {
+            match item {
+                Item::Function(f) => {
+                    available_names.insert(f.name.clone());
+                }
+                Item::Struct(s) => {
+                    available_names.insert(s.name.clone());
+                }
+                Item::Enum(e) => {
+                    available_names.insert(e.name.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Check for ImportNotFound + PrivateImport on explicitly requested symbols
+        if !import_all {
+            for (sym_name, (_, span)) in requested.iter() {
+                if sym_name == "*" {
+                    continue;
+                }
+                if !available_names.contains(sym_name) {
+                    // Symbol not found in module
+                    result.errors.push(
+                        CompilerError::new(
+                            ErrorCode::ImportNotFound,
+                            format!("'{}' not found in module '{}'", sym_name, module_key),
+                            *span,
+                        )
+                        .with_suggestion(format!("check available exports in {}", module_key)),
+                    );
+                } else {
+                    // Symbol found — check if private (camelCase = private, PascalCase = public)
+                    let is_public = sym_name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
+                    if !is_public {
+                        result.errors.push(
+                            CompilerError::new(
+                                ErrorCode::PrivateImport,
+                                format!("'{}' is private", sym_name),
+                                *span,
+                            )
+                            .with_suggestion(format!("rename to '{}'", capitalize_first(sym_name))),
+                        );
+                    }
+                }
+            }
+        }
 
         // First pass: collect struct/enum names that will be imported
         // so we can also import their associated functions
@@ -429,7 +499,7 @@ pub fn resolve_imports(
         for item in &module_program.items {
             match item {
                 Item::Function(f) => {
-                    // Public = starts with uppercase
+                    // Public = starts with uppercase (PascalCase)
                     let is_public = f
                         .name
                         .chars()
@@ -513,14 +583,62 @@ pub fn resolve_imports(
     // Process local module imports
     // Track visited modules to prevent infinite loops
     let mut visited_modules: HashSet<PathBuf> = HashSet::new();
-    // Change from tuple with reference to tuple with owned data (path_symbols only)
-    // The import decl is only needed for the initial requests, nested imports extract path from file
-    let mut pending_modules: Vec<(PathBuf, Vec<String>)> = local_import_requests
-        .iter()
-        .map(|(_, path, symbols)| (path.clone(), symbols.clone()))
-        .collect();
+    // Each entry: (module_path, path_symbols, import_chain_for_circular_detection, origin_span)
+    let mut pending_modules: Vec<(PathBuf, Vec<String>, Vec<PathBuf>, doo_core::Span)> =
+        local_import_requests
+            .iter()
+            .map(|(import_decl, path, symbols)| {
+                (path.clone(), symbols.clone(), vec![], import_decl.span)
+            })
+            .collect();
 
-    while let Some((module_path, path_symbols)) = pending_modules.pop() {
+    // Check visibility for explicitly requested local import symbols
+    for (import_decl, _module_path, path_symbols) in &local_import_requests {
+        for sym_name in path_symbols {
+            let is_public = sym_name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false);
+            if !is_public {
+                // Narrow span to just the symbol name at end of import path
+                let sym_span = narrow_span_to_symbol(&import_decl.span, sym_name);
+                result.errors.push(
+                    CompilerError::new(
+                        ErrorCode::PrivateImport,
+                        format!("'{}' is private", sym_name),
+                        sym_span,
+                    )
+                    .with_suggestion(format!("rename to '{}'", capitalize_first(sym_name))),
+                );
+            }
+        }
+        for item in &import_decl.items {
+            let sym_name = match item {
+                ImportItem::Symbol(name) => name,
+                ImportItem::Alias { name, .. } => name,
+                ImportItem::Wildcard => continue,
+            };
+            let is_public = sym_name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false);
+            if !is_public {
+                let sym_span = narrow_span_to_symbol(&import_decl.span, sym_name);
+                result.errors.push(
+                    CompilerError::new(
+                        ErrorCode::PrivateImport,
+                        format!("'{}' is private", sym_name),
+                        sym_span,
+                    )
+                    .with_suggestion(format!("rename to '{}'", capitalize_first(sym_name))),
+                );
+            }
+        }
+    }
+
+    while let Some((module_path, path_symbols, import_chain, origin_span)) = pending_modules.pop() {
         // Skip if already visited
         let canonical_path = module_path
             .canonicalize()
@@ -534,10 +652,10 @@ pub fn resolve_imports(
         let source = match fs::read_to_string(&module_path) {
             Ok(s) => s,
             Err(e) => {
-                result.errors.push(format!(
-                    "Failed to read module {}: {}",
-                    module_path.display(),
-                    e
+                result.errors.push(CompilerError::new(
+                    ErrorCode::ModuleNotFound,
+                    format!("failed to read module '{}': {}", module_path.display(), e),
+                    doo_core::Span::new(0, 0, 0),
                 ));
                 continue;
             }
@@ -547,10 +665,10 @@ pub fn resolve_imports(
         let module_program = match parser.parse_program() {
             Ok(p) => p,
             Err(e) => {
-                result.errors.push(format!(
-                    "Failed to parse module {}: {}",
-                    module_path.display(),
-                    e
+                result.errors.push(CompilerError::new(
+                    ErrorCode::IoError,
+                    format!("failed to parse module '{}': {}", module_path.display(), e),
+                    doo_core::Span::new(0, 0, 0),
                 ));
                 continue;
             }
@@ -591,6 +709,11 @@ pub fn resolve_imports(
         // This ensures transitive dependencies (e.g., User from directory.doo importing models::user)
         // are loaded into the merged program.
         // NOTE: Nested imports are resolved relative to project_root, not the current module's parent
+
+        // Build the import chain for circular detection: current chain + this module
+        let mut nested_chain = import_chain.clone();
+        nested_chain.push(canonical_path.clone());
+
         for item in &module_program.items {
             if let Item::Import(nested_import) = item {
                 if nested_import.path.is_empty() {
@@ -613,16 +736,8 @@ pub fn resolve_imports(
                 }
                 nested_module_path.set_extension("doo");
 
-                if nested_module_path.exists() {
-                    if debug {
-                        doo_debug!(
-                            "LOADER",
-                            "Queueing nested import: {} from {}",
-                            nested_module_path.display(),
-                            module_path.display()
-                        );
-                    }
-                    pending_modules.push((nested_module_path, nested_path_symbols));
+                let resolved_path = if nested_module_path.exists() {
+                    Some(nested_module_path)
                 } else if nested_import.path.len() >= 2 {
                     // Try alternate path: treat last segment as symbol
                     let mut alt_path = project_root.to_path_buf();
@@ -633,17 +748,52 @@ pub fn resolve_imports(
 
                     if alt_path.exists() {
                         let symbol = nested_import.path.last().unwrap().clone();
+                        nested_path_symbols.push(symbol);
+                        Some(alt_path)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(resolved) = resolved_path {
+                    let nested_canonical =
+                        resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+
+                    // Check for circular import: if this module is in our import chain
+                    if nested_chain.contains(&nested_canonical) {
+                        let from_name = module_path
+                            .file_stem()
+                            .and_then(|f| f.to_str())
+                            .unwrap_or("unknown");
+                        let to_name = resolved
+                            .file_stem()
+                            .and_then(|f| f.to_str())
+                            .unwrap_or("unknown");
+                        result.errors.push(
+                            CompilerError::new(
+                                ErrorCode::CircularImport,
+                                format!("'{}' and '{}' form a cycle", from_name, to_name),
+                                origin_span,
+                            )
+                            .with_suggestion("extract shared types into a third module"),
+                        );
+                    } else if !visited_modules.contains(&nested_canonical) {
                         if debug {
                             doo_debug!(
                                 "LOADER",
-                                "Queueing nested import: {} (symbol: {}) from {}",
-                                alt_path.display(),
-                                symbol,
+                                "Queueing nested import: {} from {}",
+                                resolved.display(),
                                 module_path.display()
                             );
                         }
-                        nested_path_symbols.push(symbol);
-                        pending_modules.push((alt_path, nested_path_symbols));
+                        pending_modules.push((
+                            resolved,
+                            nested_path_symbols,
+                            nested_chain.clone(),
+                            origin_span,
+                        ));
                     }
                 }
             }
@@ -799,6 +949,34 @@ pub fn merge_imports(program: &mut Program, resolution: ImportResolution) {
     let original_items = std::mem::take(&mut program.items);
     program.items = resolution.items;
     program.items.extend(original_items);
+}
+
+/// Capitalize the first character of a string (for suggestions)
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Narrow a full-import span to just the symbol name at the end.
+/// e.g. `import defs::types::internalState;` -> caret on `internalState` only.
+fn narrow_span_to_symbol(full_span: &Span, sym_name: &str) -> Span {
+    let sym_len = sym_name.len() as u32;
+    // The symbol is near the end of the span (before the `;`)
+    // Approximate: end of span - 1 (semicolon) - sym_len
+    let span_len = full_span.end.saturating_sub(full_span.start);
+    if span_len > sym_len + 1 {
+        let sym_start = full_span.end.saturating_sub(sym_len).saturating_sub(1);
+        Span::new(
+            full_span.file_id,
+            sym_start,
+            full_span.end.saturating_sub(1),
+        )
+    } else {
+        *full_span
+    }
 }
 
 #[cfg(test)]
