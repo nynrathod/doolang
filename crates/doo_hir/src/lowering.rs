@@ -20,7 +20,7 @@ use doo_frontend::ast::{
     ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
     TypeExpr, UnaryOp,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::types::*;
 
@@ -37,6 +37,8 @@ pub struct Lower {
     json_stringify_sources: FxHashMap<String, TypeId>,
     /// Items hoisted from inside function bodies (local struct/enum declarations).
     hoisted_items: Vec<HirItem>,
+    /// Known function names in the program (for disambiguating Namespace::Func from EnumVariant).
+    known_functions: FxHashSet<String>,
 }
 
 /// Lowering error.
@@ -64,6 +66,7 @@ impl Lower {
             unique_counter: 0,
             json_stringify_sources: FxHashMap::default(),
             hoisted_items: Vec::new(),
+            known_functions: FxHashSet::default(),
         }
     }
 
@@ -267,6 +270,13 @@ impl Lower {
 
     /// Lower an entire program.
     pub fn lower_program(&mut self, program: &Program) -> HirProgram {
+        // Pre-collect function names for namespace-qualified call disambiguation
+        for item in &program.items {
+            if let Item::Function(f) = item {
+                self.known_functions.insert(f.name.clone());
+            }
+        }
+
         let mut items: Vec<HirItem> = program
             .items
             .iter()
@@ -287,6 +297,14 @@ impl Lower {
         program: &Program,
         registry: &mut TypeRegistry,
     ) -> HirProgram {
+        // Pre-collect all function names so we can disambiguate
+        // Namespace::Func(args) from EnumVariant during expression lowering.
+        for item in &program.items {
+            if let Item::Function(f) = item {
+                self.known_functions.insert(f.name.clone());
+            }
+        }
+
         for item in &program.items {
             match item {
                 Item::Struct(s) => {
@@ -826,13 +844,31 @@ impl Lower {
             }
 
             StmtKind::Print(exprs) => {
-                // Lower print as function call
-                let args = exprs.iter().map(|e| self.lower_expr(e)).collect();
+                // Flatten StringInterpolation parts as separate print args
+                // so composite types (Array, Map, Struct) get proper formatting
+                // via the Print handler instead of broken string concat.
+                let mut args = Vec::new();
+                let mut has_interpolation = false;
+                for e in exprs {
+                    if let ExprKind::StringInterpolation(parts) = &e.kind {
+                        has_interpolation = true;
+                        for part in parts {
+                            args.push(self.lower_string_part(part));
+                        }
+                    } else {
+                        args.push(self.lower_expr(e));
+                    }
+                }
+                let func_name = if has_interpolation {
+                    "__print_interp"
+                } else {
+                    "print"
+                };
                 HirStmtKind::Expr(HirExpr::new(
                     HirExprKind::Call {
                         func: Box::new(HirExpr::new(
                             HirExprKind::Global {
-                                name: "print".to_string(),
+                                name: func_name.to_string(),
                             },
                             stmt.span,
                         )),
@@ -1112,15 +1148,43 @@ impl Lower {
             }
 
             StmtKind::Print(exprs) => {
-                let args = exprs
-                    .iter()
-                    .map(|e| self.lower_expr_typed(e, registry))
-                    .collect();
+                // Flatten StringInterpolation parts as separate print args.
+                // Don't cast to STR — keep original types so the Print handler
+                // uses type-specific formatters (Array, Map, Struct, etc.)
+                let mut args = Vec::new();
+                let mut has_interpolation = false;
+                for e in exprs {
+                    if let ExprKind::StringInterpolation(parts) = &e.kind {
+                        has_interpolation = true;
+                        for part in parts {
+                            match part {
+                                ast::StringPart::Literal(s) => {
+                                    args.push(HirExpr::with_type(
+                                        HirExprKind::Const(ConstValue::Str(s.clone())),
+                                        builtin::STR,
+                                        stmt.span,
+                                    ));
+                                }
+                                ast::StringPart::Expr(expr) => {
+                                    // Lower WITHOUT Cast to STR — preserve original type
+                                    args.push(self.lower_expr_typed(expr, registry));
+                                }
+                            }
+                        }
+                    } else {
+                        args.push(self.lower_expr_typed(e, registry));
+                    }
+                }
+                let func_name = if has_interpolation {
+                    "__print_interp"
+                } else {
+                    "print"
+                };
                 HirStmtKind::Expr(HirExpr::new(
                     HirExprKind::Call {
                         func: Box::new(HirExpr::new(
                             HirExprKind::Global {
-                                name: "print".to_string(),
+                                name: func_name.to_string(),
                             },
                             stmt.span,
                         )),
@@ -1454,11 +1518,27 @@ impl Lower {
                 enum_name,
                 variant,
                 payload,
-            } => HirExprKind::EnumVariant {
-                enum_name: enum_name.clone(),
-                variant: variant.clone(),
-                payload: payload.iter().map(|e| self.lower_expr(e)).collect(),
-            },
+            } => {
+                if self.known_functions.contains(variant) {
+                    // Namespace-qualified function call: Namespace::Func(args) -> Func(args)
+                    let func_expr = HirExpr::new(
+                        HirExprKind::Global {
+                            name: variant.clone(),
+                        },
+                        expr.span,
+                    );
+                    HirExprKind::Call {
+                        func: Box::new(func_expr),
+                        args: payload.iter().map(|e| self.lower_expr(e)).collect(),
+                    }
+                } else {
+                    HirExprKind::EnumVariant {
+                        enum_name: enum_name.clone(),
+                        variant: variant.clone(),
+                        payload: payload.iter().map(|e| self.lower_expr(e)).collect(),
+                    }
+                }
+            }
 
             ExprKind::Range {
                 start,
@@ -1730,6 +1810,10 @@ impl Lower {
                     .and_then(|tid| registry.get(tid))
                     .map(|info| matches!(info.kind, TypeKind::Struct { .. }))
                     .unwrap_or(false);
+                let is_enum = type_id
+                    .and_then(|tid| registry.get(tid))
+                    .map(|info| matches!(info.kind, TypeKind::Enum { .. }))
+                    .unwrap_or(false);
 
                 if is_struct {
                     // Convert to MethodCall: Type::method(args) -> Type.method(args)
@@ -1743,6 +1827,25 @@ impl Lower {
                     HirExprKind::MethodCall {
                         receiver: Box::new(receiver),
                         method: variant.clone(),
+                        args: payload
+                            .iter()
+                            .map(|e| self.lower_expr_typed(e, registry))
+                            .collect(),
+                    }
+                } else if self.known_functions.contains(variant) {
+                    // Namespace-qualified function call: Array::Sum(args) -> Sum(args)
+                    // The parser treats Name::Name(args) as EnumVariant, but when
+                    // the "variant" name matches a known function and the "enum_name"
+                    // is not a real enum, this is a qualified call through a namespace
+                    // import (e.g., `import std::Array` then `Array::Sum(...)`).
+                    let func_expr = HirExpr::new(
+                        HirExprKind::Global {
+                            name: variant.clone(),
+                        },
+                        expr.span,
+                    );
+                    HirExprKind::Call {
+                        func: Box::new(func_expr),
                         args: payload
                             .iter()
                             .map(|e| self.lower_expr_typed(e, registry))

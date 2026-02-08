@@ -199,7 +199,6 @@ impl DiagnosticEmitter {
 
             for err in file_errors {
                 let ctx = source_map.span_context(&err.span);
-                let snippet: String = ctx.source_line.trim().chars().take(30).collect();
 
                 write!(self.stream, "  ")?;
                 self.write_severity_label_short(err.severity)?;
@@ -209,12 +208,7 @@ impl DiagnosticEmitter {
                 self.write_severity_color(err.severity, true)?;
                 write!(self.stream, " {:<18}", err.code.title())?;
                 self.reset_color()?;
-                write!(self.stream, " {:<30}", snippet)?;
-                if let Some(ref suggestion) = err.suggestion {
-                    self.set_color(Color::Green, false)?;
-                    write!(self.stream, " -> {}", suggestion)?;
-                    self.reset_color()?;
-                }
+                write!(self.stream, " {}", err.message)?;
                 writeln!(self.stream)?;
             }
             writeln!(self.stream)?;

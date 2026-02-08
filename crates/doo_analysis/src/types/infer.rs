@@ -458,7 +458,7 @@ impl TypeInference {
                 if let HirExprKind::Local { name } | HirExprKind::Global { name } = &func.kind {
                     match name.as_str() {
                         "typeOf" => return builtin::STR,
-                        "print" | "println" => return builtin::VOID,
+                        "print" | "println" | "__print_interp" => return builtin::VOID,
                         _ => {
                             // Look up function return type from our registry
                             if let Some(&ret_type) = self.functions.get(name) {

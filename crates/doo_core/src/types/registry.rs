@@ -418,6 +418,10 @@ impl TypeRegistry {
                     (TypeKind::Array { element: a_elem }, TypeKind::Array { element: e_elem }) => {
                         self.is_compatible(*a_elem, *e_elem)
                     }
+                    // Map covariance
+                    (TypeKind::Map { key: a_key, value: a_val }, TypeKind::Map { key: e_key, value: e_val }) => {
+                        self.is_compatible(*a_key, *e_key) && self.is_compatible(*a_val, *e_val)
+                    }
                     // Optional covariance
                     (TypeKind::Optional { inner: a_inner }, TypeKind::Optional { inner: e_inner }) => {
                         self.is_compatible(*a_inner, *e_inner)

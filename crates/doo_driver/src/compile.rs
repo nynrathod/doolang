@@ -40,6 +40,8 @@ use doo_analysis::{
     transform::{transform_inline_closures, transform_route_groups},
     // Borrow checking
     BorrowChecker,
+    // Decorator validation
+    DecoratorValidator,
     DropInserter,
     // Error flow analysis
     ErrorFlowChecker,
@@ -418,6 +420,15 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
             )
             .with_suggestion(format!("rename to '{}'", capitalized)),
         );
+    }
+
+    // 5.8: Decorator Validation
+    // All logic lives in DecoratorValidator::validate_program() — single source of truth.
+    // Validates: type compatibility, arg counts, combination conflicts, and
+    // compile-time constant values in struct literals (email format, min/max).
+    {
+        let decorator_validator = DecoratorValidator::new(&type_registry);
+        analysis_errors.extend(decorator_validator.validate_program(&hir));
     }
 
     // Report any analysis errors via the diagnostic emitter

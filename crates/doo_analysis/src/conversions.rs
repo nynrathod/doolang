@@ -375,49 +375,12 @@ impl From<VisibilityError> for CompilerError {
 
 // ============================================================================
 // DecoratorError → CompilerError
+// Delegates to decorators::to_compiler_error (single source of truth).
 // ============================================================================
 
 impl From<DecoratorError> for CompilerError {
     fn from(e: DecoratorError) -> Self {
-        match &e {
-            DecoratorError::InvalidType { decorator, field, struct_name, expected, found } => {
-                CompilerError::new(
-                    ErrorCode::InvalidDecorator,
-                    format!("@{} on {}.{} requires type {}, found {}", decorator, struct_name, field, expected, found),
-                    doo_core::Span::dummy(),
-                )
-                .with_suggestion(format!("change field type to {}", expected))
-            }
-            DecoratorError::InvalidArgs { decorator, field, message } => {
-                CompilerError::new(
-                    ErrorCode::InvalidDecorator,
-                    format!("@{} on {}: {}", decorator, field, message),
-                    doo_core::Span::dummy(),
-                )
-            }
-            DecoratorError::Unknown { decorator, struct_name, field } => {
-                CompilerError::new(
-                    ErrorCode::InvalidDecorator,
-                    format!("unknown decorator @{} on {}.{}", decorator, struct_name, field),
-                    doo_core::Span::dummy(),
-                )
-                .with_suggestion("valid decorators: @email, @url, @min, @max, @primary, @unique, @hash, @optional, @default, @pattern")
-            }
-            DecoratorError::Conflict { decorator1, decorator2, struct_name, field, reason } => {
-                CompilerError::new(
-                    ErrorCode::ConflictingDecorators,
-                    format!("@{} and @{} conflict on {}.{}: {}", decorator1, decorator2, struct_name, field, reason),
-                    doo_core::Span::dummy(),
-                )
-            }
-            DecoratorError::InvalidOptional { decorator, struct_name, field, reason } => {
-                CompilerError::new(
-                    ErrorCode::InvalidDecorator,
-                    format!("@{} on optional field {}.{}: {}", decorator, struct_name, field, reason),
-                    doo_core::Span::dummy(),
-                )
-            }
-        }
+        crate::semantic::decorators::to_compiler_error(&e, doo_core::Span::dummy())
     }
 }
 

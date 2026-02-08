@@ -694,6 +694,8 @@ pub enum MirInstrKind {
     Print {
         values: Vec<MirOperand>,
         value_types: Vec<TypeId>,
+        /// When false, no space separator between values (used for string interpolation)
+        separator: bool,
     },
 
     // ========================================================================
@@ -820,6 +822,7 @@ impl MirInstr {
             MirInstrKind::Print {
                 values,
                 value_types: _,
+                separator: _,
             } => values.iter().collect(),
             MirInstrKind::TypeOf { value, .. } => vec![value],
             MirInstrKind::Panic { message } => vec![message],

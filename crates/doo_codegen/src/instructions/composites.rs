@@ -44,21 +44,50 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
             MirInstrKind::TupleCreate { dest, elements } => {
                 let types: Vec<_> = elements.iter().map(|_| ctx.i64_type().into()).collect();
                 let tuple_type = ctx.context.struct_type(&types, false);
-                let alloca = ctx.builder.build_alloca(tuple_type, dest).ok()?;
+
+                // CRITICAL: Use heap allocation (malloc) instead of stack allocation (alloca).
+                // When a tuple is wrapped in WrapOk and returned from a function, the stack
+                // frame is deallocated before the caller reads the tuple → dangling pointer.
+                // Heap allocation ensures the tuple survives the function return.
+                let ptr_type = ctx.ptr_type();
+                let i64_type = ctx.context.i64_type();
+                let malloc_fn = ctx
+                    .module
+                    .get_function(doo_core::constants::ffi_names::MALLOC)
+                    .unwrap_or_else(|| {
+                        let fn_ty = ptr_type.fn_type(&[i64_type.into()], false);
+                        ctx.module
+                            .add_function(doo_core::constants::ffi_names::MALLOC, fn_ty, None)
+                    });
+                let tuple_size = tuple_type
+                    .size_of()
+                    .map(|v| v.get_zero_extended_constant().unwrap_or(64))
+                    .unwrap_or((elements.len() * 8) as u64);
+                let heap_ptr = ctx
+                    .builder
+                    .build_call(
+                        malloc_fn,
+                        &[i64_type.const_int(tuple_size.max(16), false).into()],
+                        "tuple_alloc",
+                    )
+                    .ok()?
+                    .try_as_basic_value()
+                    .basic()?
+                    .into_pointer_value();
 
                 for (i, elem) in elements.iter().enumerate() {
                     if let Some(val) = operand_to_value(ctx, elem) {
                         if let Ok(ptr) =
                             ctx.builder
-                                .build_struct_gep(tuple_type, alloca, i as u32, "field_ptr")
+                                .build_struct_gep(tuple_type, heap_ptr, i as u32, "field_ptr")
                         {
                             ctx.builder.build_store(ptr, val).ok();
                         }
                     }
                 }
 
-                ctx.set_temp(dest, alloca.into());
-                Some(alloca.into())
+                ctx.set_temp(dest, heap_ptr.into());
+                Some(heap_ptr.into())
             }
 
             MirInstrKind::TupleGet {

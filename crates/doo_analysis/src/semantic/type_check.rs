@@ -392,10 +392,10 @@ impl TypeChecker {
 
                 // Type mismatch check: annotated type vs. actual value type
                 if let Some(expected) = type_id {
-                    if value_type != *expected
-                        && value_type != builtin::ANY
+                    if value_type != builtin::ANY
                         && *expected != builtin::ANY
                         && value_type != builtin::VOID
+                        && !self.registry.is_compatible(value_type, *expected)
                     {
                         self.direct_errors.push(CompilerError::new(
                             ErrorCode::TypeMismatch,
@@ -467,11 +467,11 @@ impl TypeChecker {
                 let value_type = self.check_expr(value);
 
                 // Type mismatch check: target type vs value type
-                if target_type != value_type
-                    && target_type != builtin::ANY
+                if target_type != builtin::ANY
                     && value_type != builtin::ANY
                     && target_type != builtin::VOID
                     && value_type != builtin::VOID
+                    && !self.registry.is_compatible(value_type, target_type)
                 {
                     self.direct_errors.push(CompilerError::new(
                         ErrorCode::TypeMismatch,
@@ -695,6 +695,64 @@ impl TypeChecker {
                 expr.type_id.unwrap_or(builtin::ANY)
             }
 
+            // Struct literal — check field types against struct definition
+            HirExprKind::Struct { name, fields } => {
+                let struct_type_id = expr
+                    .type_id
+                    .unwrap_or_else(|| self.registry.lookup(name).unwrap_or(builtin::ANY));
+
+                // Look up struct definition from registry
+                if let Some(info) = self.registry.get(struct_type_id) {
+                    if let TypeKind::Struct {
+                        fields: declared, ..
+                    } = &info.kind
+                    {
+                        let declared = declared.clone(); // avoid borrow issues
+
+                        for (fname, fexpr) in fields {
+                            let value_type = self.check_expr(fexpr);
+
+                            if let Some((_, expected_type, _)) =
+                                declared.iter().find(|(n, _, _)| n == fname)
+                            {
+                                // Skip ANY — inferred or unresolved types
+                                if value_type != builtin::ANY
+                                    && *expected_type != builtin::ANY
+                                    && !self.registry.is_compatible(value_type, *expected_type)
+                                {
+                                    self.direct_errors.push(
+                                        CompilerError::new(
+                                            ErrorCode::TypeMismatch,
+                                            format!(
+                                                "{}.{}: expected {}, found {}",
+                                                name,
+                                                fname,
+                                                self.type_name(*expected_type),
+                                                self.type_name(value_type),
+                                            ),
+                                            fexpr.span,
+                                        )
+                                        .with_suggestion(
+                                            format!(
+                                                "change value to type {}",
+                                                self.type_name(*expected_type)
+                                            ),
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Still recurse into field values even if struct not found
+                    for (_, fexpr) in fields {
+                        self.check_expr(fexpr);
+                    }
+                }
+
+                struct_type_id
+            }
+
             _ => expr.type_id.unwrap_or(builtin::ANY),
         }
     }
@@ -787,6 +845,57 @@ impl TypeChecker {
             // Error handling expressions - recurse into inner value
             HirExprKind::Ok(inner) | HirExprKind::Err(inner) | HirExprKind::Try(inner) => {
                 self.check_expr(inner);
+            }
+
+            // Struct literal — recurse into field values + check types
+            HirExprKind::Struct { name, fields } => {
+                let struct_type_id = expr
+                    .type_id
+                    .unwrap_or_else(|| self.registry.lookup(name).unwrap_or(builtin::ANY));
+
+                if let Some(info) = self.registry.get(struct_type_id) {
+                    if let TypeKind::Struct {
+                        fields: declared, ..
+                    } = &info.kind
+                    {
+                        let declared = declared.clone();
+                        for (fname, fexpr) in fields {
+                            let value_type = self.check_expr(fexpr);
+                            if let Some((_, expected_type, _)) =
+                                declared.iter().find(|(n, _, _)| n == fname)
+                            {
+                                if value_type != builtin::ANY
+                                    && *expected_type != builtin::ANY
+                                    && !self.registry.is_compatible(value_type, *expected_type)
+                                {
+                                    self.direct_errors.push(
+                                        CompilerError::new(
+                                            ErrorCode::TypeMismatch,
+                                            format!(
+                                                "{}.{}: expected {}, found {}",
+                                                name,
+                                                fname,
+                                                self.type_name(*expected_type),
+                                                self.type_name(value_type),
+                                            ),
+                                            fexpr.span,
+                                        )
+                                        .with_suggestion(
+                                            format!(
+                                                "change value to type {}",
+                                                self.type_name(*expected_type)
+                                            ),
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    for (_, fexpr) in fields {
+                        self.check_expr(fexpr);
+                    }
+                }
             }
 
             _ => {}

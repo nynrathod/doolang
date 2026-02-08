@@ -186,6 +186,14 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 if let Some(dest_name) = dest {
                     if let Some(ret_val) = call_site.try_as_basic_value().basic() {
                         ctx.set_temp(dest_name, ret_val);
+                        // CRITICAL: Set variable type and struct type from function return type
+                        // This enables FieldGet to work on return values (e.g., CreateUser().Email)
+                        if let Some(rt) = ctx.get_function_return_type(func) {
+                            ctx.set_variable_type(dest_name, rt);
+                            if let Some(struct_name) = ctx.get_struct_name_from_type_id(rt) {
+                                ctx.set_temp_struct_type(dest_name, &struct_name);
+                            }
+                        }
                         return Some(ret_val);
                     }
                 }
@@ -506,6 +514,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
             MirInstrKind::Print {
                 values,
                 value_types,
+                separator,
             } => {
                 // Print built-in: call printf or custom print function
                 // Declare printf if not already declared
@@ -639,7 +648,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                             emit_print_value(ctx, printf, ty, v, false, false);
                         }
 
-                        if !is_last {
+                        if !is_last && *separator {
                             let fmt = ctx.const_string("%s");
                             let space = ctx.const_string(" ");
                             ctx.builder
@@ -1419,6 +1428,21 @@ fn emit_print_value<'ctx>(
                         .ok();
                 }
             }
+        } else if val.is_pointer_value() {
+            // Pointer holding a bool (e.g., from ManualErrorExtract) — convert ptr→i64→i1
+            let i64_val = ctx.builder.build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64").ok();
+            if let Some(i64_val) = i64_val {
+                let is_true = ctx.builder.build_int_compare(IntPredicate::NE, i64_val, ctx.i64_type().const_zero(), "is_true").ok();
+                if let Some(is_true) = is_true {
+                    let true_s = ctx.const_string(if newline { "true\n" } else { "true" });
+                    let false_s = ctx.const_string(if newline { "false\n" } else { "false" });
+                    let out = ctx.builder.build_select(is_true, true_s, false_s, "bool_s").ok();
+                    if let Some(out) = out {
+                        let fmt = ctx.const_string("%s");
+                        ctx.builder.build_call(printf, &[fmt.into(), out.into()], "print_bool").ok();
+                    }
+                }
+            }
         }
         return;
     }
@@ -1430,6 +1454,24 @@ fn emit_print_value<'ctx>(
             ctx.builder
                 .build_call(printf, &[fmt.into(), val.into()], "print_f")
                 .ok();
+        } else if val.is_pointer_value() {
+            // Pointer holding a float (e.g., from ManualErrorExtract) — convert ptr→i64→f64
+            let i64_val = ctx.builder.build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64").ok();
+            if let Some(i64_val) = i64_val {
+                let tmp = ctx.builder.build_alloca(ctx.i64_type(), "f_tmp").ok();
+                if let Some(tmp) = tmp {
+                    ctx.builder.build_store(tmp, i64_val).ok();
+                    let f_ptr = ctx.builder.build_pointer_cast(tmp, ctx.context.ptr_type(inkwell::AddressSpace::default()), "f_ptr").ok();
+                    if let Some(f_ptr) = f_ptr {
+                        let f_val = ctx.builder.build_load(ctx.f64_type(), f_ptr, "f_val").ok();
+                        if let Some(f_val) = f_val {
+                            let fmt = if newline { "%f\n" } else { "%f" };
+                            let fmt = ctx.const_string(fmt);
+                            ctx.builder.build_call(printf, &[fmt.into(), f_val.into()], "print_f").ok();
+                        }
+                    }
+                }
+            }
         }
         return;
     }
@@ -1461,6 +1503,14 @@ fn emit_print_value<'ctx>(
                 result.ok();
             } else if std::env::var("DOO_DEBUG").is_ok() {
                 doo_debug!("CODEGEN", "emit_print_value INT: i64 extend failed");
+            }
+        } else if val.is_pointer_value() {
+            // Pointer holding an int (e.g., from ManualErrorExtract) — convert ptr→i64
+            let i64v = ctx.builder.build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_int").ok();
+            if let Some(i64v) = i64v {
+                let fmt = if newline { "%lld\n" } else { "%lld" };
+                let fmt = ctx.const_string(fmt);
+                ctx.builder.build_call(printf, &[fmt.into(), i64v.into()], "print_i").ok();
             }
         } else if std::env::var("DOO_DEBUG").is_ok() {
             doo_debug!(

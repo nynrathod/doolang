@@ -550,7 +550,28 @@ pub fn resolve_imports(
                             }
                         }
                         imported_names.insert(func_key);
-                        result.items.push(item.clone());
+
+                        // Check if this function has an alias
+                        // e.g., `import std::Math::{Sqrt as Sq}` or `import std::Math::Floor as Fl`
+                        // If so, push both the original (for namespace access) and a renamed copy
+                        if let Some((Some(alias), _)) = requested.get(&f.name) {
+                            if debug {
+                                doo_debug!(
+                                    "LOADER",
+                                    "  Aliasing function: {} -> {}",
+                                    f.name,
+                                    alias
+                                );
+                            }
+                            // Push original for qualified access (e.g., Math::Sqrt)
+                            result.items.push(item.clone());
+                            // Push aliased copy for direct access (e.g., Sq)
+                            let mut aliased_func = f.clone();
+                            aliased_func.name = alias.clone();
+                            result.items.push(Item::Function(aliased_func));
+                        } else {
+                            result.items.push(item.clone());
+                        }
                     }
                 }
                 Item::Struct(s) => {

@@ -313,7 +313,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 .collect();
 
             // Intrinsic: print(...) or println(...) -> MirInstrKind::Print
-            if func_name == "print" || func_name == "println" {
+            if func_name == "print" || func_name == "println" || func_name == "__print_interp" {
+                let separator = func_name != "__print_interp";
                 // Use infer_operand_type for proper type tracking (handles temps with recorded types)
                 let value_types: Vec<_> = arg_ops
                     .iter()
@@ -323,6 +324,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     MirInstrKind::Print {
                         values: arg_ops,
                         value_types,
+                        separator,
                     },
                     span,
                 );
