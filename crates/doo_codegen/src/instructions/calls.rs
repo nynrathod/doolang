@@ -4028,12 +4028,20 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             for (idx, param_type) in all_param_types.iter().enumerate() {
                 // Determine the correct source field for this parameter:
                 // 1. JWT middleware + single Int param -> user_id (index 6)
-                // 2. Path param match -> params (index 4), then extract specific field
+                // 2. Path param match -> params (index 4)
+                //    - For STRUCT types: pass entire params JSON (struct fields extracted by emit_parse_struct)
+                //    - For primitive types: extract specific field value first
                 // 3. Otherwise -> body (index 2)
 
                 let is_int_param = ctx
                     .get_type_kind(*param_type)
                     .map(|k| matches!(k, TypeKind::Int))
+                    .unwrap_or(false);
+
+                // Check if param type is a struct (needs whole params JSON, not extracted field)
+                let is_struct_param = ctx
+                    .get_type_kind(*param_type)
+                    .map(|k| matches!(k, TypeKind::Struct { .. }))
                     .unwrap_or(false);
 
                 let source_ptr = if has_jwt_middleware && param_count == 1 && is_int_param {
@@ -4043,34 +4051,38 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     }
                     load_request_field(ctx, 6, "user_id")
                 } else if idx < path_param_names.len() {
-                    // This param corresponds to a path parameter - need to extract the specific field
+                    // This param corresponds to a path parameter
                     let path_param_name = path_param_names.get(idx).cloned().unwrap_or_default();
                     if debug {
                         doo_debug!(
                             "CODEGEN",
-                            "Param {} from params (path param: {})",
+                            "Param {} from params (path param: {}, is_struct={})",
                             idx,
-                            path_param_name
+                            path_param_name,
+                            is_struct_param
                         );
                     }
                     let params_json = load_request_field(ctx, 4, "params");
 
-                    // Extract the specific field from the params JSON object
-                    // params is like {"authorId": "1"}, we need to extract "authorId" value
-                    let field_name_str = ctx.const_string(&path_param_name);
-                    let field_value = ctx
-                        .builder
-                        .build_call(
-                            json_get_field_fn,
-                            &[params_json.into(), field_name_str.into()],
-                            "field_json",
-                        )
-                        .ok()
-                        .and_then(|cs| cs.try_as_basic_value().basic())
-                        .map(|v| v.into_pointer_value())
-                        .unwrap_or_else(|| ptr_type.const_null());
-
-                    field_value
+                    if is_struct_param {
+                        // For STRUCT types: pass entire params JSON object
+                        // emit_parse_struct will extract individual fields from it
+                        params_json
+                    } else {
+                        // For primitive types: extract the specific field value first
+                        // params is like {"id": "123"}, extract "id" → "123"
+                        let field_name_str = ctx.const_string(&path_param_name);
+                        ctx.builder
+                            .build_call(
+                                json_get_field_fn,
+                                &[params_json.into(), field_name_str.into()],
+                                "field_json",
+                            )
+                            .ok()
+                            .and_then(|cs| cs.try_as_basic_value().basic())
+                            .map(|v| v.into_pointer_value())
+                            .unwrap_or_else(|| ptr_type.const_null())
+                    }
                 } else {
                     // Default: use body
                     if debug {

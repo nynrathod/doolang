@@ -16,10 +16,17 @@ fn main() {
         std::process::exit(0);
     }
 
-    // Set debug mode
-    if cli.debug {
-        std::env::set_var("DOO_DEBUG", "1");
+    // Initialize centralized debug system
+    // Debug builds: always enabled. Release: only with --debug flag.
+    let debug_enabled =
+        cli.debug || matches!(&cli.command, Some(Commands::Run { debug: true, .. }));
+    if debug_enabled {
+        std::env::set_var("DOO_DEBUG", "1"); // Propagate to child processes (FFI runtime)
     }
+    if cli.warn {
+        std::env::set_var("DOO_SHOW_WARNINGS", "1");
+    }
+    doo_core::debug::init(debug_enabled);
 
     // Route commands
     let exit_code = match cli.command {
@@ -30,8 +37,11 @@ fn main() {
             keep_ll,
             keep_obj,
             print_ast,
+            print_hir,
             print_mir,
-        }) => build_command(path, output, keep_ll, keep_obj, print_ast, print_mir),
+        }) => build_command(
+            path, output, keep_ll, keep_obj, print_ast, print_hir, print_mir,
+        ),
         Some(Commands::Run {
             path,
             keep_ll,
@@ -54,6 +64,7 @@ fn build_command(
     keep_ll: bool,
     keep_obj: bool,
     print_ast: bool,
+    print_hir: bool,
     print_mir: bool,
 ) -> i32 {
     let opts = CompileOptions {
@@ -61,26 +72,28 @@ fn build_command(
         output_name: output.clone(),
         dev_mode: false,
         print_ast,
+        print_hir,
         print_mir,
         keep_ll,
         keep_obj,
         check_only: false,
+        show_warnings: std::env::var("DOO_SHOW_WARNINGS").is_ok(),
     };
     match compile_project(opts) {
         Ok(result) => {
             if result.error_count > 0 {
-                eprintln!("✗ Build failed with {} errors", result.error_count);
+                eprintln!("Build failed with {} error(s)", result.error_count);
                 1
             } else if result.success {
-                println!("✓ Build successful: {}", output);
+                println!("Build successful: {}", output);
                 0
             } else {
-                eprintln!("✗ Build failed");
+                eprintln!("Build failed");
                 1
             }
         }
         Err(e) => {
-            eprintln!("✗ Error: {}", e);
+            eprintln!("Error: {}", e);
             1
         }
     }
@@ -103,10 +116,12 @@ fn check_command(path: std::path::PathBuf) -> i32 {
         output_name: "output".to_string(),
         dev_mode: false,
         print_ast: false,
+        print_hir: false,
         print_mir: false,
         keep_ll: false,
         keep_obj: false,
         check_only: true,
+        show_warnings: std::env::var("DOO_SHOW_WARNINGS").is_ok(),
     };
     match compile_project(opts) {
         Ok(result) => {
