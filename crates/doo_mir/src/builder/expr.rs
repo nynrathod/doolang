@@ -1338,9 +1338,16 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             
             // Check if it's a Result type by looking for the function in function_result_types
             // Handle both Call and MethodCall expressions
+            // Check both Local and Global - namespace-qualified calls (like File::Read)
+            // are lowered to Call with Global { name } func
             let is_result_type = match &inner.kind {
                 HirExprKind::Call { func, .. } => {
-                    if let HirExprKind::Local { name } = &func.kind {
+                    let func_name = match &func.kind {
+                        HirExprKind::Local { name } => Some(name.as_str()),
+                        HirExprKind::Global { name } => Some(name.as_str()),
+                        _ => None,
+                    };
+                    if let Some(name) = func_name {
                         let resolved_name = builder.resolve_function_name(name);
                         let found = builder.function_result_types.contains_key(&resolved_name);
                         if std::env::var("DOO_DEBUG").is_ok() {

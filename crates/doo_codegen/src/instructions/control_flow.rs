@@ -47,11 +47,38 @@ fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicVal
         .get_function("printf")
         .unwrap_or_else(|| ctx.module.add_function("printf", printf_type, None));
 
+    // If message is a pointer, it might be an error struct (like FileError)
+    // Error structs have Message as first field - extract it
+    let msg_ptr = if message.is_pointer_value() {
+        let ptr = message.into_pointer_value();
+        // Load the first field (Message) from the error struct
+        // FileError = { Message: *char } -> first field at offset 0
+        let msg_field_ptr = unsafe {
+            ctx.builder.build_gep(
+                ctx.ptr_type(),  // Field type is a pointer (to char)
+                ptr,
+                &[ctx.context.i32_type().const_zero()],
+                "error_msg_ptr",
+            ).ok()
+        };
+        match msg_field_ptr {
+            Some(field_ptr) => {
+                // Load the message pointer from the struct
+                ctx.builder.build_load(ctx.ptr_type(), field_ptr, "error_msg")
+                    .map(|v| v.into())
+                    .unwrap_or(message)
+            }
+            None => message,
+        }
+    } else {
+        message
+    };
+
     // Print panic message
     let panic_fmt = ctx.const_string("panic: %s\n");
     let _ = ctx.builder.build_call(
         printf,
-        &[panic_fmt.into(), message.into()],
+        &[panic_fmt.into(), msg_ptr.into()],
         "print_panic",
     );
 
