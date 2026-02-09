@@ -11,7 +11,7 @@
 //   }
 //
 //   fn main() {
-//       let db = Database::postgres()?;
+//       let db = Database::Postgres()?;
 //       let users = db.raw("SELECT * FROM users")?;
 //       // users is JSON array that auto-deserializes to [User] based on return type
 //   }
@@ -35,9 +35,9 @@ struct DatabaseError {
 // Connect to PostgreSQL database
 // Automatically reads DATABASE_URL from environment
 @extern("doo_db", "doo_db_connect_postgres")
-fn Database.postgres() -> Database !DatabaseError {}
+fn Database.Postgres() -> Database !DatabaseError {}
 
-// Get global database instance (after postgres() was called)
+// Get global database instance (after Postgres() was called)
 // Allows handlers to access database without explicit parameter passing
 @extern("doo_db", "doo_db_get_global")
 fn Database.get() -> Database !DatabaseError {}
