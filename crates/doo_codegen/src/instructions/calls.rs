@@ -4504,17 +4504,38 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         ptr_type.const_null()
                     };
 
-                    // Check if return type is Response - if so, extract Body field
+                    // Check if return type is Response - if so, check status + extract
                     let should_extract_body = return_type_name.as_deref() == Some("Response");
 
-                    let result_value = if should_extract_body {
-                        // Extract Body field (index 1) from Response struct
+                    if should_extract_body {
+                        // Response struct: { i64 Status, ptr Body, ptr ContentType }
+                        // Must check Status to properly propagate errors through middleware chain
                         let response_struct_type = ctx.context.struct_type(
                             &[i64_type.into(), ptr_type.into(), ptr_type.into()],
                             false,
                         );
 
-                        ctx.builder
+                        // Read Status field (index 0)
+                        let status_val = ctx
+                            .builder
+                            .build_struct_gep(
+                                response_struct_type,
+                                response_ptr,
+                                0,
+                                "status_field_ptr",
+                            )
+                            .ok()
+                            .and_then(|gep| {
+                                ctx.builder
+                                    .build_load(i64_type, gep, "response_status")
+                                    .ok()
+                            })
+                            .map(|v| v.into_int_value())
+                            .unwrap_or_else(|| i64_type.const_int(200, false));
+
+                        // Read Body field (index 1)
+                        let body_val = ctx
+                            .builder
                             .build_struct_gep(
                                 response_struct_type,
                                 response_ptr,
@@ -4526,7 +4547,154 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                                 ctx.builder.build_load(ptr_type, gep, "response_body").ok()
                             })
                             .map(|v| v.into_pointer_value())
-                            .unwrap_or_else(|| ptr_type.const_null())
+                            .unwrap_or_else(|| ptr_type.const_null());
+
+                        // Check if status >= 400 (error response from inner middleware)
+                        let is_error = ctx
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::SGE,
+                                status_val,
+                                i64_type.const_int(400, false),
+                                "is_error_status",
+                            )
+                            .unwrap();
+
+                        let parent = ctx
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let resp_ok_block = ctx.context.append_basic_block(parent, "resp_ok");
+                        let resp_err_block = ctx.context.append_basic_block(parent, "resp_err");
+                        let resp_merge_block = ctx.context.append_basic_block(parent, "resp_merge");
+
+                        ctx.builder
+                            .build_conditional_branch(is_error, resp_err_block, resp_ok_block)
+                            .ok();
+
+                        // OK PATH: status < 400 → DooResult{tag=0, value=body}
+                        ctx.builder.position_at_end(resp_ok_block);
+                        if let Ok(tag_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            0,
+                            "ok_tag",
+                        ) {
+                            let _ = ctx.builder.build_store(tag_ptr, i64_type.const_zero());
+                        }
+                        if let Ok(value_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            1,
+                            "ok_value",
+                        ) {
+                            let _ = ctx.builder.build_store(value_ptr, body_val);
+                        }
+                        if let Ok(owner_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            2,
+                            "ok_owner",
+                        ) {
+                            let _ = ctx
+                                .builder
+                                .build_store(owner_ptr, i32_type.const_int(1, false));
+                        }
+                        ctx.builder
+                            .build_unconditional_branch(resp_merge_block)
+                            .ok();
+
+                        // ERR PATH: status >= 400 → DooResult{tag=1, value=error_response}
+                        ctx.builder.position_at_end(resp_err_block);
+                        let error_struct_type = ctx.context.struct_type(
+                            &[i32_type.into(), ptr_type.into(), ptr_type.into()],
+                            false,
+                        );
+
+                        let error_struct_size = i64_type.const_int(24, false);
+                        let malloc_fn = ctx.module.get_function("malloc").unwrap();
+                        let error_struct_ptr = ctx
+                            .builder
+                            .build_call(malloc_fn, &[error_struct_size.into()], "error_response")
+                            .ok()
+                            .and_then(|cv| cv.try_as_basic_value().basic())
+                            .map(|v| v.into_pointer_value())
+                            .unwrap_or_else(|| ptr_type.const_null());
+
+                        let status_i32 = ctx
+                            .builder
+                            .build_int_truncate(status_val, i32_type, "status_i32")
+                            .unwrap();
+                        if let Ok(gep) = ctx.builder.build_struct_gep(
+                            error_struct_type,
+                            error_struct_ptr,
+                            0,
+                            "err_status",
+                        ) {
+                            let _ = ctx.builder.build_store(gep, status_i32);
+                        }
+                        if let Ok(gep) = ctx.builder.build_struct_gep(
+                            error_struct_type,
+                            error_struct_ptr,
+                            1,
+                            "err_body",
+                        ) {
+                            let _ = ctx.builder.build_store(gep, body_val);
+                        }
+                        let ct_val = ctx
+                            .builder
+                            .build_struct_gep(response_struct_type, response_ptr, 2, "ct_field_ptr")
+                            .ok()
+                            .and_then(|gep| {
+                                ctx.builder.build_load(ptr_type, gep, "response_ct").ok()
+                            })
+                            .map(|v| v.into_pointer_value())
+                            .unwrap_or_else(|| ctx.const_string("application/json"));
+                        if let Ok(gep) = ctx.builder.build_struct_gep(
+                            error_struct_type,
+                            error_struct_ptr,
+                            2,
+                            "err_ct",
+                        ) {
+                            let _ = ctx.builder.build_store(gep, ct_val);
+                        }
+
+                        if let Ok(tag_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            0,
+                            "err_tag",
+                        ) {
+                            let _ = ctx
+                                .builder
+                                .build_store(tag_ptr, i64_type.const_int(1, false));
+                        }
+                        if let Ok(value_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            1,
+                            "err_value",
+                        ) {
+                            let _ = ctx.builder.build_store(value_ptr, error_struct_ptr);
+                        }
+                        if let Ok(owner_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            2,
+                            "err_owner",
+                        ) {
+                            let _ = ctx
+                                .builder
+                                .build_store(owner_ptr, i32_type.const_int(1, false));
+                        }
+                        ctx.builder
+                            .build_unconditional_branch(resp_merge_block)
+                            .ok();
+
+                        // MERGE
+                        ctx.builder.position_at_end(resp_merge_block);
                     } else {
                         // Serialize the Response struct to JSON
                         let serialize_fn = ctx
@@ -4548,7 +4716,8 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                             .map(|g| g.as_pointer_value())
                             .unwrap_or_else(|_| ptr_type.const_null());
 
-                        ctx.builder
+                        let result_value = ctx
+                            .builder
                             .build_call(
                                 serialize_fn,
                                 &[response_ptr.into(), handler_name_str.into()],
@@ -4557,9 +4726,260 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                             .ok()
                             .and_then(|cs| cs.try_as_basic_value().basic())
                             .map(|v| v.into_pointer_value())
-                            .unwrap_or_else(|| ptr_type.const_null())
-                    };
+                            .unwrap_or_else(|| ptr_type.const_null());
 
+                        if let Ok(tag_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            0,
+                            "tag_ptr",
+                        ) {
+                            let _ = ctx
+                                .builder
+                                .build_store(tag_ptr, i64_type.const_int(0, false));
+                        }
+                        if let Ok(value_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            1,
+                            "value_ptr",
+                        ) {
+                            let _ = ctx.builder.build_store(value_ptr, result_value);
+                        }
+                        if let Ok(owner_ptr) = ctx.builder.build_struct_gep(
+                            result_struct_type,
+                            doo_result_ptr,
+                            2,
+                            "owner_ptr",
+                        ) {
+                            let _ = ctx
+                                .builder
+                                .build_store(owner_ptr, i32_type.const_int(1, false));
+                        }
+                    }
+                }
+            } else {
+                // User returned Response directly (pointer)
+                // Response struct layout: { i64 Status, ptr Body, ptr ContentType }
+                let response_ptr = if val.is_pointer_value() {
+                    val.into_pointer_value()
+                } else {
+                    ptr_type.const_null()
+                };
+
+                // Check if return type name is "Response" - if so, check status + extract
+                // Otherwise serialize as before (for other return types)
+                let should_extract_body = return_type_name.as_deref() == Some("Response");
+
+                if should_extract_body {
+                    // Response struct: { i64 Status, ptr Body, ptr ContentType }
+                    // Must check Status to properly propagate errors through middleware chain
+                    let response_struct_type = ctx
+                        .context
+                        .struct_type(&[i64_type.into(), ptr_type.into(), ptr_type.into()], false);
+
+                    // Read Status field (index 0)
+                    let status_val = ctx
+                        .builder
+                        .build_struct_gep(response_struct_type, response_ptr, 0, "status_field_ptr")
+                        .ok()
+                        .and_then(|gep| {
+                            ctx.builder
+                                .build_load(i64_type, gep, "response_status")
+                                .ok()
+                        })
+                        .map(|v| v.into_int_value())
+                        .unwrap_or_else(|| i64_type.const_int(200, false));
+
+                    // Read Body field (index 1)
+                    let body_val = ctx
+                        .builder
+                        .build_struct_gep(response_struct_type, response_ptr, 1, "body_field_ptr")
+                        .ok()
+                        .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "response_body").ok())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+
+                    // Check if status >= 400 (error response from inner middleware)
+                    let is_error = ctx
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::SGE,
+                            status_val,
+                            i64_type.const_int(400, false),
+                            "is_error_status",
+                        )
+                        .unwrap();
+
+                    let parent = ctx
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let resp_ok_block = ctx.context.append_basic_block(parent, "resp_ok");
+                    let resp_err_block = ctx.context.append_basic_block(parent, "resp_err");
+                    let resp_merge_block = ctx.context.append_basic_block(parent, "resp_merge");
+
+                    ctx.builder
+                        .build_conditional_branch(is_error, resp_err_block, resp_ok_block)
+                        .ok();
+
+                    // OK PATH: status < 400 → DooResult{tag=0, value=body}
+                    ctx.builder.position_at_end(resp_ok_block);
+                    if let Ok(tag_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        0,
+                        "ok_tag",
+                    ) {
+                        let _ = ctx.builder.build_store(tag_ptr, i64_type.const_zero());
+                    }
+                    if let Ok(value_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        1,
+                        "ok_value",
+                    ) {
+                        let _ = ctx.builder.build_store(value_ptr, body_val);
+                    }
+                    if let Ok(owner_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        2,
+                        "ok_owner",
+                    ) {
+                        let _ = ctx
+                            .builder
+                            .build_store(owner_ptr, i32_type.const_int(1, false));
+                    }
+                    ctx.builder
+                        .build_unconditional_branch(resp_merge_block)
+                        .ok();
+
+                    // ERR PATH: status >= 400 → DooResult{tag=1, value=error_response}
+                    // Build error response struct { i32 status, ptr body, ptr ct }
+                    ctx.builder.position_at_end(resp_err_block);
+                    let error_struct_type = ctx
+                        .context
+                        .struct_type(&[i32_type.into(), ptr_type.into(), ptr_type.into()], false);
+
+                    let error_struct_size = i64_type.const_int(24, false);
+                    let malloc_fn = ctx.module.get_function("malloc").unwrap();
+                    let error_struct_ptr = ctx
+                        .builder
+                        .build_call(malloc_fn, &[error_struct_size.into()], "error_response")
+                        .ok()
+                        .and_then(|cv| cv.try_as_basic_value().basic())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+
+                    // Truncate i64 status to i32 for error struct
+                    let status_i32 = ctx
+                        .builder
+                        .build_int_truncate(status_val, i32_type, "status_i32")
+                        .unwrap();
+                    if let Ok(gep) = ctx.builder.build_struct_gep(
+                        error_struct_type,
+                        error_struct_ptr,
+                        0,
+                        "err_status",
+                    ) {
+                        let _ = ctx.builder.build_store(gep, status_i32);
+                    }
+                    if let Ok(gep) = ctx.builder.build_struct_gep(
+                        error_struct_type,
+                        error_struct_ptr,
+                        1,
+                        "err_body",
+                    ) {
+                        let _ = ctx.builder.build_store(gep, body_val);
+                    }
+                    // Read ContentType field (index 2) from original Response
+                    let ct_val = ctx
+                        .builder
+                        .build_struct_gep(response_struct_type, response_ptr, 2, "ct_field_ptr")
+                        .ok()
+                        .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "response_ct").ok())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ctx.const_string("application/json"));
+                    if let Ok(gep) = ctx.builder.build_struct_gep(
+                        error_struct_type,
+                        error_struct_ptr,
+                        2,
+                        "err_ct",
+                    ) {
+                        let _ = ctx.builder.build_store(gep, ct_val);
+                    }
+
+                    if let Ok(tag_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        0,
+                        "err_tag",
+                    ) {
+                        let _ = ctx
+                            .builder
+                            .build_store(tag_ptr, i64_type.const_int(1, false));
+                    }
+                    if let Ok(value_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        1,
+                        "err_value",
+                    ) {
+                        let _ = ctx.builder.build_store(value_ptr, error_struct_ptr);
+                    }
+                    if let Ok(owner_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        2,
+                        "err_owner",
+                    ) {
+                        let _ = ctx
+                            .builder
+                            .build_store(owner_ptr, i32_type.const_int(1, false));
+                    }
+                    ctx.builder
+                        .build_unconditional_branch(resp_merge_block)
+                        .ok();
+
+                    // MERGE
+                    ctx.builder.position_at_end(resp_merge_block);
+                } else {
+                    // Non-Response return type: serialize to JSON and store with tag=0
+                    let serialize_fn = ctx
+                        .module
+                        .get_function("doohttp_serialize_struct_to_json")
+                        .unwrap_or_else(|| {
+                            let fn_type =
+                                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                            ctx.module.add_function(
+                                "doohttp_serialize_struct_to_json",
+                                fn_type,
+                                None,
+                            )
+                        });
+
+                    let handler_name_str = ctx
+                        .builder
+                        .build_global_string_ptr(user_func_name, "middleware_name_direct")
+                        .map(|g| g.as_pointer_value())
+                        .unwrap_or_else(|_| ptr_type.const_null());
+
+                    let result_value = ctx
+                        .builder
+                        .build_call(
+                            serialize_fn,
+                            &[response_ptr.into(), handler_name_str.into()],
+                            "serialized_direct",
+                        )
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().basic())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+
+                    // Store in DooResult with tag=0 (Ok)
                     if let Ok(tag_ptr) = ctx.builder.build_struct_gep(
                         result_struct_type,
                         doo_result_ptr,
@@ -4588,87 +5008,6 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                             .builder
                             .build_store(owner_ptr, i32_type.const_int(1, false));
                     }
-                }
-            } else {
-                // User returned Response directly (pointer) - extract Body field
-                // Response struct layout: { i64 Status, ptr Body, ptr ContentType }
-                let response_ptr = if val.is_pointer_value() {
-                    val.into_pointer_value()
-                } else {
-                    ptr_type.const_null()
-                };
-
-                // Check if return type name is "Response" - if so, extract Body field
-                // Otherwise serialize as before (for other return types)
-                let should_extract_body = return_type_name.as_deref() == Some("Response");
-
-                let result_value = if should_extract_body {
-                    // Extract Body field (index 1) from Response struct { i64, ptr, ptr }
-                    let response_struct_type = ctx
-                        .context
-                        .struct_type(&[i64_type.into(), ptr_type.into(), ptr_type.into()], false);
-
-                    ctx.builder
-                        .build_struct_gep(response_struct_type, response_ptr, 1, "body_field_ptr")
-                        .ok()
-                        .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "response_body").ok())
-                        .map(|v| v.into_pointer_value())
-                        .unwrap_or_else(|| ptr_type.const_null())
-                } else {
-                    // Serialize the struct to JSON (for non-Response return types)
-                    let serialize_fn = ctx
-                        .module
-                        .get_function("doohttp_serialize_struct_to_json")
-                        .unwrap_or_else(|| {
-                            let fn_type =
-                                ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-                            ctx.module.add_function(
-                                "doohttp_serialize_struct_to_json",
-                                fn_type,
-                                None,
-                            )
-                        });
-
-                    let handler_name_str = ctx
-                        .builder
-                        .build_global_string_ptr(user_func_name, "middleware_name_direct")
-                        .map(|g| g.as_pointer_value())
-                        .unwrap_or_else(|_| ptr_type.const_null());
-
-                    ctx.builder
-                        .build_call(
-                            serialize_fn,
-                            &[response_ptr.into(), handler_name_str.into()],
-                            "serialized_direct",
-                        )
-                        .ok()
-                        .and_then(|cs| cs.try_as_basic_value().basic())
-                        .map(|v| v.into_pointer_value())
-                        .unwrap_or_else(|| ptr_type.const_null())
-                };
-
-                // Store in DooResult with tag=0 (Ok)
-                if let Ok(tag_ptr) =
-                    ctx.builder
-                        .build_struct_gep(result_struct_type, doo_result_ptr, 0, "tag_ptr")
-                {
-                    let _ = ctx
-                        .builder
-                        .build_store(tag_ptr, i64_type.const_int(0, false));
-                }
-                if let Ok(value_ptr) =
-                    ctx.builder
-                        .build_struct_gep(result_struct_type, doo_result_ptr, 1, "value_ptr")
-                {
-                    let _ = ctx.builder.build_store(value_ptr, result_value);
-                }
-                if let Ok(owner_ptr) =
-                    ctx.builder
-                        .build_struct_gep(result_struct_type, doo_result_ptr, 2, "owner_ptr")
-                {
-                    let _ = ctx
-                        .builder
-                        .build_store(owner_ptr, i32_type.const_int(1, false));
                 }
             }
         } else {
