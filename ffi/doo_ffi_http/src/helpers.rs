@@ -46,10 +46,11 @@ impl RawErrorResponse {
         let json_body = if body.starts_with('{') || body.starts_with('[') {
             body.to_string()
         } else {
-            // Format plain message as RFC 7807-style JSON
+            // Format plain message as RFC 7807-style JSON using centralized type/title
+            let s = status as u16;
             serde_json::json!({
-                "type": "about:blank",
-                "title": status_to_title(status),
+                "type": doo_ffi_core::error_type_for_status(s),
+                "title": doo_ffi_core::title_for_status(s),
                 "status": status,
                 "detail": body
             })
@@ -71,22 +72,9 @@ impl RawErrorResponse {
     }
 }
 
-/// Convert HTTP status code to standard title
+/// Convert HTTP status code to standard title (delegates to centralized source)
 fn status_to_title(status: i32) -> &'static str {
-    match status {
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        422 => "Unprocessable Entity",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        _ => "Error",
-    }
+    doo_ffi_core::title_for_status(status as u16)
 }
 
 /// Allocate and populate an error response struct

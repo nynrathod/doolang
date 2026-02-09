@@ -173,10 +173,10 @@ fn validate_enum(field_name: &str, value: &str, args: &[String]) -> Result<(), V
     if !args.contains(&value.to_string()) {
         return Err(ValidationError {
             field: field_name.to_string(),
-            rule: "enum".to_string(),
-            message: format!("Invalid enum value '{}'", value),
-            expected: Some(format!("one of: {}", args.join(", "))),
-            received: Some(value.to_string()),
+            rule: format!("enum:{}", args.join("|")),
+            message: format!("Must be one of: {}", args.join(", ")),
+            expected: None,
+            received: None,
         });
     }
     Ok(())

@@ -36,6 +36,8 @@ pub use memory::{
     doo_clone_string, doo_free, doo_realloc, HEADER_SIZE,
 };
 pub use result::{DooResult, ResultTag};
-pub use rfc7807::{FieldError, Rfc7807Error};
+pub use rfc7807::{
+    error_type_for_status, title_for_status, FieldError, ParameterError, Rfc7807Error,
+};
 pub use string::DooString;
 pub use validation::{validate_field, FieldDecorator, ValidationError};

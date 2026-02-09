@@ -961,13 +961,9 @@ pub extern "C" fn doohttp_error_variant_to_status(
 pub extern "C" fn doohttp_build_rfc7807_error(status: i32, title: *const c_char) -> *const c_char {
     let title_str = c_to_string(title);
 
-    // Build RFC 7807 compliant error JSON
-    let error_json = format!(
-        r#"{{"type":"about:blank","title":"{}","status":{},"detail":"Request failed"}}"#,
-        title_str, status
-    );
-
-    string_to_c(&error_json)
+    // Build RFC 7807 compliant error JSON using centralized source
+    let err = Rfc7807Error::new(status as u16, &title_str);
+    string_to_c(&err.to_json())
 }
 
 /// Format an error message string as JSON with {"error": "message"} format.
@@ -1025,10 +1021,9 @@ fn validate_item_against_schema(
     let obj = match item.as_object() {
         Some(o) => o,
         None => {
-            return Err(format!(
-                r#"{{"type":"about:blank","title":"Bad Request","status":400,"detail":"Expected JSON object","instance":"{}"}}"#,
-                path
-            ))
+            return Err(Rfc7807Error::bad_request("Expected JSON object")
+                .with_instance(path)
+                .to_json())
         }
     };
 
@@ -1041,13 +1036,18 @@ fn validate_item_against_schema(
                 if let Some(str_val) = value.as_str() {
                     let str_val_lower = str_val.to_lowercase();
                     if !variants.iter().any(|v| v.to_lowercase() == str_val_lower) {
-                        return Err(format!(
-                            r#"{{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"Invalid enum value '{}' for field '{}'. Expected one of: {}","instance":"{}"}}"#,
-                            str_val,
-                            field_meta.name,
-                            variants.join(", "),
-                            path
-                        ));
+                        let mut fields = std::collections::HashMap::new();
+                        fields.insert(
+                            field_meta.name.clone(),
+                            doo_ffi_core::FieldError::new(&field_meta.name, format!("Must be one of: {}", variants.join(", ")))
+                                .with_rule(format!("enum:{}", variants.join("|")))
+                                .with_value(str_val),
+                        );
+                        return Err(
+                            Rfc7807Error::validation_error(fields)
+                                .with_instance(path)
+                                .to_json()
+                        );
                     }
                 }
             }
@@ -1074,29 +1074,52 @@ fn validate_decorator(
     if decorator == "email" {
         if let Some(s) = value.as_str() {
             if !s.contains('@') || !s.contains('.') {
-                return Err(format!(
-                    r#"{{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"Invalid email format for field '{}'","instance":"{}"}}"#,
-                    field_name, path
-                ));
+                let mut fields = std::collections::HashMap::new();
+                fields.insert(
+                    field_name.to_string(),
+                    doo_ffi_core::FieldError::new(field_name, "Invalid email format")
+                        .with_rule("email")
+                        .with_value(s),
+                );
+                return Err(
+                    Rfc7807Error::validation_error(fields)
+                        .with_instance(path)
+                        .to_json()
+                );
             }
         }
     } else if decorator.starts_with("min(") && decorator.ends_with(')') {
         let min_str = &decorator[4..decorator.len() - 1];
         if let Ok(min_val) = min_str.parse::<i64>() {
-            // Check if it's a string length or numeric min
             if let Some(s) = value.as_str() {
                 if (s.len() as i64) < min_val {
-                    return Err(format!(
-                        r#"{{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"Field '{}' must have minimum length of {}","instance":"{}"}}"#,
-                        field_name, min_val, path
-                    ));
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert(
+                        field_name.to_string(),
+                        doo_ffi_core::FieldError::new(field_name, format!("Must be at least {} characters", min_val))
+                            .with_rule(format!("min:{}", min_val))
+                            .with_value(s),
+                    );
+                    return Err(
+                        Rfc7807Error::validation_error(fields)
+                            .with_instance(path)
+                            .to_json()
+                    );
                 }
             } else if let Some(n) = value.as_i64() {
                 if n < min_val {
-                    return Err(format!(
-                        r#"{{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"Field '{}' must be at least {}","instance":"{}"}}"#,
-                        field_name, min_val, path
-                    ));
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert(
+                        field_name.to_string(),
+                        doo_ffi_core::FieldError::new(field_name, format!("Must be at least {}", min_val))
+                            .with_rule(format!("min:{}", min_val))
+                            .with_value(n.to_string()),
+                    );
+                    return Err(
+                        Rfc7807Error::validation_error(fields)
+                            .with_instance(path)
+                            .to_json()
+                    );
                 }
             }
         }
@@ -1105,17 +1128,33 @@ fn validate_decorator(
         if let Ok(max_val) = max_str.parse::<i64>() {
             if let Some(s) = value.as_str() {
                 if (s.len() as i64) > max_val {
-                    return Err(format!(
-                        r#"{{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"Field '{}' must have maximum length of {}","instance":"{}"}}"#,
-                        field_name, max_val, path
-                    ));
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert(
+                        field_name.to_string(),
+                        doo_ffi_core::FieldError::new(field_name, format!("Maximum {} characters allowed", max_val))
+                            .with_rule(format!("max:{}", max_val))
+                            .with_value(s),
+                    );
+                    return Err(
+                        Rfc7807Error::validation_error(fields)
+                            .with_instance(path)
+                            .to_json()
+                    );
                 }
             } else if let Some(n) = value.as_i64() {
                 if n > max_val {
-                    return Err(format!(
-                        r#"{{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"Field '{}' must be at most {}","instance":"{}"}}"#,
-                        field_name, max_val, path
-                    ));
+                    let mut fields = std::collections::HashMap::new();
+                    fields.insert(
+                        field_name.to_string(),
+                        doo_ffi_core::FieldError::new(field_name, format!("Maximum {} allowed", max_val))
+                            .with_rule(format!("max:{}", max_val))
+                            .with_value(n.to_string()),
+                    );
+                    return Err(
+                        Rfc7807Error::validation_error(fields)
+                            .with_instance(path)
+                            .to_json()
+                    );
                 }
             }
         }
@@ -2614,13 +2653,12 @@ pub extern "C" fn doohttp_extract_param_int(
     match value_str.parse::<i64>() {
         Ok(v) => v,
         Err(_) => {
-            let err = bad_request(
-                format!(
-                    "Invalid path parameter type: expected Int, got '{}'",
-                    value_str
-                ),
-                get_current_request_path(),
-            );
+            let param_name_str = c_to_string(param_name);
+            let path = get_current_request_path();
+            let param = ParameterError::new(&param_name_str)
+                .with_expected("Int")
+                .with_received(&value_str);
+            let err = Rfc7807Error::invalid_path_param(&path, param);
             set_last_error(400, err.to_json());
             0
         }
@@ -2644,13 +2682,12 @@ pub extern "C" fn doohttp_extract_param_float(
     match value_str.parse::<f64>() {
         Ok(v) => v,
         Err(_) => {
-            let err = bad_request(
-                format!(
-                    "Invalid path parameter type: expected Float, got '{}'",
-                    value_str
-                ),
-                get_current_request_path(),
-            );
+            let param_name_str = c_to_string(param_name);
+            let path = get_current_request_path();
+            let param = ParameterError::new(&param_name_str)
+                .with_expected("Float")
+                .with_received(&value_str);
+            let err = Rfc7807Error::invalid_path_param(&path, param);
             set_last_error(400, err.to_json());
             0.0
         }
@@ -2675,10 +2712,10 @@ pub extern "C" fn doohttp_extract_param_typed(
     let value_ptr = doo_http_req_param(req, param_name);
 
     if value_ptr.is_null() {
-        let err = bad_request(
-            format!("Path parameter '{}' not found", param_name_str),
-            get_current_request_path(),
-        );
+        let path = get_current_request_path();
+        let param = ParameterError::new(&param_name_str)
+            .with_message(format!("Path parameter '{}' is required", param_name_str));
+        let err = Rfc7807Error::missing_path_param(&path, param);
         set_last_error(400, err.to_json());
         return std::ptr::null();
     }
@@ -2691,13 +2728,11 @@ pub extern "C" fn doohttp_extract_param_typed(
             if value.parse::<i64>().is_ok() {
                 string_to_c(&value)
             } else {
-                let err = bad_request(
-                    format!(
-                        "Invalid path parameter type for '{}': expected Int, got '{}'",
-                        param_name_str, value
-                    ),
-                    get_current_request_path(),
-                );
+                let path = get_current_request_path();
+                let param = ParameterError::new(&param_name_str)
+                    .with_expected("Int")
+                    .with_received(&value);
+                let err = Rfc7807Error::invalid_path_param(&path, param);
                 set_last_error(400, err.to_json());
                 std::ptr::null()
             }
@@ -2706,13 +2741,11 @@ pub extern "C" fn doohttp_extract_param_typed(
             if value.parse::<f64>().is_ok() {
                 string_to_c(&value)
             } else {
-                let err = bad_request(
-                    format!(
-                        "Invalid path parameter type for '{}': expected Float, got '{}'",
-                        param_name_str, value
-                    ),
-                    get_current_request_path(),
-                );
+                let path = get_current_request_path();
+                let param = ParameterError::new(&param_name_str)
+                    .with_expected("Float")
+                    .with_received(&value);
+                let err = Rfc7807Error::invalid_path_param(&path, param);
                 set_last_error(400, err.to_json());
                 std::ptr::null()
             }
@@ -2721,13 +2754,11 @@ pub extern "C" fn doohttp_extract_param_typed(
             if value == "true" || value == "false" {
                 string_to_c(&value)
             } else {
-                let err = bad_request(
-                    format!(
-                        "Invalid path parameter type for '{}': expected Bool, got '{}'",
-                        param_name_str, value
-                    ),
-                    get_current_request_path(),
-                );
+                let path = get_current_request_path();
+                let param = ParameterError::new(&param_name_str)
+                    .with_expected("Bool")
+                    .with_received(&value);
+                let err = Rfc7807Error::invalid_path_param(&path, param);
                 set_last_error(400, err.to_json());
                 std::ptr::null()
             }
@@ -3065,7 +3096,7 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             if !source_data.contains_key(field_name)
                 && !(field_type.starts_with("Optional(") && field_type.ends_with(')'))
             {
-                let err = FieldError::new("Field is required").with_rule("required");
+                let err = FieldError::required();
                 field_errors.insert(full_field_name, err);
                 continue;
             }
@@ -3101,14 +3132,16 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                     serde_json::Value::Object(_) => "Object",
                                 };
 
-                                let err = FieldError::new(format!(
-                                    "Element [{}] has wrong type: expected {}, got {}",
-                                    i, elem_type, received_type
-                                ))
-                                .with_rule("type_mismatch")
-                                .with_expected(elem_type.to_string())
-                                .with_received(received_type.to_string());
-                                field_errors.insert(format!("{}[{}]", full_field_name, i), err);
+                                let elem_value_str = match elem {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    serde_json::Value::Null => "null".to_string(),
+                                    serde_json::Value::Bool(b) => b.to_string(),
+                                    serde_json::Value::Number(n) => n.to_string(),
+                                    _ => elem.to_string(),
+                                };
+                                let err = FieldError::type_mismatch(elem_type, received_type)
+                                    .with_value(elem_value_str);
+                                field_errors.entry(full_field_name.clone()).or_insert(err);
                             }
                         }
                     } else {
@@ -3120,10 +3153,15 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                             serde_json::Value::Object(_) => "Object",
                             serde_json::Value::Array(_) => "Array",
                         };
-                        let err = FieldError::new(format!("Expected array, got {}", received_type))
-                            .with_rule("type_mismatch")
-                            .with_expected(field_type.to_string())
-                            .with_received(received_type.to_string());
+                        let value_str = match value {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Null => "null".to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            _ => value.to_string(),
+                        };
+                        let err = FieldError::type_mismatch(field_type, received_type)
+                            .with_value(value_str);
                         field_errors.insert(full_field_name, err);
                     }
                 } else {
@@ -3151,15 +3189,21 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                         "Float"
                                     }
                                 }
-                                serde_json::Value::String(_) => "Str",
+                                serde_json::Value::String(_) => "String",
                                 serde_json::Value::Array(_) => "Array",
                                 serde_json::Value::Object(_) => "Object",
                             };
+                            // Get the raw value string for the response
+                            let value_str = match value {
+                                serde_json::Value::String(s) => s.clone(),
+                                serde_json::Value::Null => "null".to_string(),
+                                serde_json::Value::Bool(b) => b.to_string(),
+                                serde_json::Value::Number(n) => n.to_string(),
+                                _ => value.to_string(),
+                            };
                             let err =
-                                FieldError::new(format!("Invalid type, expected {}", field_type))
-                                    .with_rule("type_mismatch")
-                                    .with_expected(field_type.to_string())
-                                    .with_received(received_type.to_string());
+                                FieldError::type_mismatch(field_type, received_type)
+                                    .with_value(value_str);
                             field_errors.insert(full_field_name, err);
                         }
                     } else if let Some(variants) = metadata.enum_variants.get(field_type) {
@@ -3181,12 +3225,11 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 serde_json::Value::Object(_) => "Object".to_string(),
                             };
                             let err = FieldError::new(format!(
-                                "Invalid enum value '{}', expected one of: {:?}",
-                                received_str, variants
+                                "Must be one of: {}",
+                                variants.join(", ")
                             ))
-                            .with_rule("enum_value")
-                            .with_expected(format!("{:?}", variants))
-                            .with_received(received_str);
+                            .with_rule(format!("enum:{}", variants.join("|")))
+                            .with_value(received_str);
                             field_errors.insert(full_field_name, err);
                         }
                     } else if metadata.struct_layouts.contains_key(field_type) {
@@ -3208,11 +3251,16 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 serde_json::Value::Array(_) => "Array",
                                 serde_json::Value::Object(_) => "Object",
                             };
+                            let value_str = match value {
+                                serde_json::Value::String(s) => s.clone(),
+                                serde_json::Value::Null => "null".to_string(),
+                                serde_json::Value::Bool(b) => b.to_string(),
+                                serde_json::Value::Number(n) => n.to_string(),
+                                _ => value.to_string(),
+                            };
                             let err =
-                                FieldError::new(format!("Expected object, got {}", received_type))
-                                    .with_rule("type_mismatch")
-                                    .with_expected(field_type.to_string())
-                                    .with_received(received_type.to_string());
+                                FieldError::type_mismatch(field_type, received_type)
+                                    .with_value(value_str);
                             field_errors.insert(full_field_name, err);
                         }
                     }
@@ -3233,18 +3281,29 @@ pub extern "C" fn doohttp_populate_struct_from_request(
     }
 
     if !field_errors.is_empty() {
-        // Type mismatch errors are parsing errors (400), not validation errors (422)
-        // Convert to core FieldErrors
-        let core_errors: Vec<doo_ffi_core::FieldError> = field_errors
+        // Convert to core FieldErrors in a HashMap preserving field names
+        let core_fields: HashMap<String, doo_ffi_core::FieldError> = field_errors
             .into_iter()
-            .map(|(field, err)| err.to_core(&field))
+            .map(|(field, err)| (field.clone(), err.to_core(&field)))
             .collect();
 
-        let err = doo_ffi_core::Rfc7807Error::bad_request("Request body parsing failed")
+        // Determine detail based on error types
+        let has_required = core_fields.values().any(|e| e.error.as_deref() == Some("required"));
+        let has_type_mismatch = core_fields.values().any(|e| e.expected.is_some() && e.received.is_some() && e.rule.is_none());
+
+        let (status, detail) = if has_required && !has_type_mismatch {
+            (400u16, "Required field missing in request body")
+        } else if has_type_mismatch && !has_required {
+            (400, "Type mismatch in request body")
+        } else {
+            (400, "Request body parsing failed")
+        };
+
+        let err = doo_ffi_core::Rfc7807Error::new(status, detail)
             .with_instance(path_str)
-            .with_errors(core_errors);
-        set_last_error(400, err.to_json());
-        return 400;
+            .with_fields(core_fields);
+        set_last_error(status as i32, err.to_json());
+        return status as i32;
     }
 
     // Always update request.body with the merged/typed JSON
@@ -3324,8 +3383,7 @@ pub extern "C" fn doohttp_get_validated_body(
     if request_ptr.is_null() {
         set_last_error(
             400,
-            r#"{"type":"about:blank","title":"Bad Request","status":400,"detail":"Null request"}"#
-                .to_string(),
+            Rfc7807Error::bad_request("Null request").to_json(),
         );
         return std::ptr::null();
     }
@@ -3853,7 +3911,16 @@ fn make_ok_json(json: &str) -> *mut DooResult {
 /// Create an error result using centralized error response builder
 /// Error response struct layout: { i32 status, ptr body, ptr content_type }
 fn make_err_http(status: i32, message: &str) -> *mut DooResult {
-    set_last_error(status, message.to_string());
+    // Ensure set_last_error always stores proper RFC 7807 JSON
+    let json_body = if message.starts_with('{') || message.starts_with('[') {
+        message.to_string()
+    } else {
+        let path = get_current_request_path();
+        Rfc7807Error::new(status as u16, message)
+            .with_instance(&path)
+            .to_json()
+    };
+    set_last_error(status, json_body);
     unsafe {
         // Use centralized helper to build error response struct
         let error_response = alloc_error_response(status, message);

@@ -303,7 +303,7 @@ pub const SELF_RETURNING_ACCESSORS: &[&str] = &[
 /// Connection method names that establish connections returning typed handles
 pub const SELF_RETURNING_CONNECTORS: &[&str] = &[
     "connect",  // Database.connect() -> Database
-    "postgres", // Database.postgres() -> Database
+    "Postgres", // Database.Postgres() -> Database
     "mysql",    // Database.mysql() -> Database
     "sqlite",   // Database.sqlite() -> Database
     "open",     // File.open() -> File

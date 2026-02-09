@@ -167,12 +167,48 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let (route_entry, params) = match registry.match_route(&method, &path) {
         Some(r) => r,
         None => {
+            // Check if path exists with other methods → 405 vs 404
+            let allowed = registry.find_allowed_methods(&path);
             drop(registry);
+            if !allowed.is_empty() {
+                // 405 Method Not Allowed
+                let err = Rfc7807Error::method_not_allowed(&method, &path, allowed);
+                return Ok(build_response(405, &err.to_json()));
+            }
             // 404 Not Found
-            let err = not_found(&format!("No route for {} {}", method, path), &path);
+            let err = Rfc7807Error::route_not_found(&method, &path);
             return Ok(build_response(404, &err.to_json()));
         }
     };
+
+    // ========================================================================
+    // Request validation (Content-Type and JSON body)
+    // Only for methods that send a body (POST, PUT, PATCH)
+    // ========================================================================
+    let has_body = matches!(method.as_str(), "POST" | "PUT" | "PATCH");
+    if has_body && !body_str.is_empty() {
+        // Check Content-Type header
+        let content_type = headers_map.get("content-type");
+        match content_type {
+            None => {
+                // Missing Content-Type — still allow if body is valid JSON
+                // Some clients don't set Content-Type for simple JSON
+            }
+            Some(ct) if !ct.contains("application/json") => {
+                let err = Rfc7807Error::wrong_content_type(&path, ct);
+                return Ok(build_response(400, &err.to_json()));
+            }
+            _ => {} // Valid Content-Type
+        }
+
+        // Validate JSON body
+        if !body_str.is_empty() {
+            if let Err(_) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                let err = Rfc7807Error::malformed_json(&path);
+                return Ok(build_response(400, &err.to_json()));
+            }
+        }
+    }
 
     // Build DooRequest
     let doo_request = unsafe {

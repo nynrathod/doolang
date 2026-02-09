@@ -252,6 +252,19 @@ impl RouteRegistry {
     pub fn count(&self) -> usize {
         self.route_count
     }
+
+    /// Find all HTTP methods that have a matching route for the given path.
+    /// Used to generate 405 Method Not Allowed responses with `allowed_methods`.
+    pub fn find_allowed_methods(&self, path: &str) -> Vec<String> {
+        let mut allowed = Vec::new();
+        for (method, router) in &self.routers {
+            if router.at(path).is_ok() {
+                allowed.push(method.clone());
+            }
+        }
+        allowed.sort();
+        allowed
+    }
 }
 
 // Global route registry

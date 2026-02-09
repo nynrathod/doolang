@@ -245,10 +245,18 @@ pub extern "C" fn ratelimit_middleware_handler(
 /// Error response struct layout: { i32 status, ptr body, ptr content_type }
 /// This matches the format expected by server.rs handle_request
 fn make_err_response(status: i32, message: &str) -> *mut DooResult {
-    set_last_error(status, message.to_string());
+    // Build a proper RFC 7807 error response using centralized Rfc7807Error
+    let path = crate::helpers::get_current_request_path();
+    let err = match status {
+        401 => Rfc7807Error::unauthorized_with_message(&path, message),
+        403 => Rfc7807Error::forbidden_with_message(&path, message),
+        429 => Rfc7807Error::rate_limited().with_instance(&path).with_message(message),
+        _ => Rfc7807Error::new(status as u16, message).with_instance(&path),
+    };
+    let json = err.to_json();
+    set_last_error(status, json.clone());
     unsafe {
-        // Use centralized helper to build error response struct
-        let error_response = alloc_error_response(status, message);
+        let error_response = alloc_error_response(status, &json);
         if error_response.is_null() {
             return std::ptr::null_mut();
         }
