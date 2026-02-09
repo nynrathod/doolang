@@ -2,13 +2,17 @@
 //!
 //! The ONE result type for all FFI operations.
 //! MEMORY MODEL: Pure Ownership/Borrow - No RC, No GC
-//! All string data uses doo_alloc_string from memory.rs (single source of truth).
+//! All string data uses doo_alloc_string (simple C strings).
+//! Codegen converts to Doo format automatically via clone_ffi_string_to_rc.
+//!
+//! CRITICAL: Layout MUST match codegen expectation: { i32 tag, ptr value }
 
-use std::ffi::c_void;
 use crate::memory::doo_alloc_string;
+use std::ffi::c_void;
 
 /// Result tag indicating Ok or Err.
-#[repr(u8)]
+/// Using i32 to match LLVM codegen expectations
+#[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultTag {
     Ok = 0,
@@ -16,81 +20,87 @@ pub enum ResultTag {
 }
 
 /// The unified result type for all FFI operations.
+/// CRITICAL: Layout MUST be { i32, ptr } to match codegen Result struct.
+/// The codegen generates: struct { i32 tag, ptr value }
 #[repr(C)]
 pub struct DooResult {
-    /// Tag: 0 = Ok, 1 = Err
-    pub tag: u8,
-    /// Error code (0 if Ok)
-    pub code: u16,
+    /// Tag: 0 = Ok, 1 = Err (i32 to match LLVM codegen)
+    pub tag: i32,
     /// Pointer to data (owned, allocated with libc)
+    /// - For Ok: points to actual value (string, struct, etc.)
+    /// - For Err: points to error struct (e.g., FileError)
     pub data: *mut c_void,
-    /// Data length
-    pub len: u32,
 }
 
 impl DooResult {
     /// Create an Ok result with data.
     /// OWNERSHIP: Takes ownership of data pointer.
-    pub fn ok(data: *mut c_void, len: u32) -> Self {
+    #[inline]
+    pub fn ok(data: *mut c_void, _len: u32) -> Self {
         Self {
-            tag: ResultTag::Ok as u8,
-            code: 0,
+            tag: ResultTag::Ok as i32,
             data,
-            len,
         }
     }
 
     /// Create an Ok result with no data.
+    #[inline]
     pub fn ok_empty() -> Self {
         Self {
-            tag: ResultTag::Ok as u8,
-            code: 0,
+            tag: ResultTag::Ok as i32,
             data: std::ptr::null_mut(),
-            len: 0,
         }
     }
 
     /// Create an Ok result from a string.
-    /// OWNERSHIP: Allocates string using libc malloc (centralized).
+    /// OWNERSHIP: Allocates simple C string, codegen converts to Doo format.
+    #[inline]
     pub fn ok_string(message: &str) -> Self {
-        let len = message.len() as u32;
-        // Use centralized string allocation - NOT std::mem::forget!
+        // Use simple C string - codegen will convert it
         let ptr = doo_alloc_string(message) as *mut c_void;
-        Self::ok(ptr, len)
+        Self {
+            tag: ResultTag::Ok as i32,
+            data: ptr,
+        }
     }
 
     /// Create an Err result.
     /// OWNERSHIP: Takes ownership of data pointer.
-    pub fn err(code: u16, data: *mut c_void, len: u32) -> Self {
+    #[inline]
+    pub fn err(_code: u16, data: *mut c_void, _len: u32) -> Self {
         Self {
-            tag: ResultTag::Err as u8,
-            code,
+            tag: ResultTag::Err as i32,
             data,
-            len,
         }
     }
 
     /// Create an Err result from a string.
-    /// OWNERSHIP: Allocates string using libc malloc (centralized).
-    pub fn err_str(code: u16, message: &str) -> Self {
-        let len = message.len() as u32;
-        // Use centralized string allocation - NOT std::mem::forget!
+    /// OWNERSHIP: Allocates simple C string, codegen converts to Doo format.
+    #[inline]
+    pub fn err_str(_code: u16, message: &str) -> Self {
+        // Use simple C string - codegen will convert it
         let ptr = doo_alloc_string(message) as *mut c_void;
-        Self::err(code, ptr, len)
+        Self {
+            tag: ResultTag::Err as i32,
+            data: ptr,
+        }
     }
 
     /// Check if result is Ok.
+    #[inline]
     pub fn is_ok(&self) -> bool {
-        self.tag == ResultTag::Ok as u8
+        self.tag == ResultTag::Ok as i32
     }
 
     /// Check if result is Err.
+    #[inline]
     pub fn is_err(&self) -> bool {
-        self.tag == ResultTag::Err as u8
+        self.tag == ResultTag::Err as i32
     }
 
     /// Convert to raw pointer (consumer must free with doo_result_free).
     /// OWNERSHIP: Transfers ownership to caller.
+    #[inline]
     pub fn into_raw(self) -> *mut Self {
         Box::into_raw(Box::new(self))
     }

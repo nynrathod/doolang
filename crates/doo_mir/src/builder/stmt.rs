@@ -78,10 +78,13 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             // Check if this is a call to a Result-returning function
             // If so, use ManualErrorExtract instead of TupleLet
             // Resolve aliases to handle imported associated functions
+            // Check both Local and Global - namespace-qualified calls (like File::Write)
+            // are lowered to Call with Global { name } func
             let is_result_call = if let HirExprKind::Call { func, .. } = &value.kind {
-                // Extract function name
+                // Extract function name from both Local and Global
                 let func_name = match &func.kind {
                     HirExprKind::Local { name } => Some(name.as_str()),
+                    HirExprKind::Global { name } => Some(name.as_str()),
                     _ => None,
                 };
                 // Check if it returns a Result (resolve alias first)
@@ -110,8 +113,14 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
                 // Get Result's ok and err types from function_result_types
                 // Resolve aliases to handle imported associated functions
+                // Check both Local and Global for namespace-qualified calls
                 let (ok_type, err_type) = if let HirExprKind::Call { func, .. } = &value.kind {
-                    if let HirExprKind::Local { name } = &func.kind {
+                    let func_name = match &func.kind {
+                        HirExprKind::Local { name } => Some(name.as_str()),
+                        HirExprKind::Global { name } => Some(name.as_str()),
+                        _ => None,
+                    };
+                    if let Some(name) = func_name {
                         let resolved_name = builder.resolve_function_name(name);
                         builder
                             .function_result_types
@@ -497,7 +506,9 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 doo_debug!(
                     "MIR",
                     "While labels: cond={}, body={}, exit={}",
-                    cond_label, body_label, exit_label
+                    cond_label,
+                    body_label,
+                    exit_label
                 );
             }
 
@@ -556,11 +567,40 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             let src = builder.build_expr(expr);
             let span = builder.convert_span(stmt.span);
 
-            // Get the result type info from the expression
-            // For now, use Any/Any as fallback types - the codegen will
-            // determine actual types from the Result struct at runtime
-            let ok_type = doo_core::types::builtin::ANY;
-            let err_type = doo_core::types::builtin::ANY;
+            // Get Result's ok and err types from function_result_types
+            // This matches how TupleLet handles Result-returning functions
+            // Check both Local and Global - namespace-qualified calls (like File::Write)
+            // are lowered to Call with Global { name } func
+            let (ok_type, err_type) = if let HirExprKind::Call { func, .. } = &expr.kind {
+                let func_name = match &func.kind {
+                    HirExprKind::Local { name } => Some(name.as_str()),
+                    HirExprKind::Global { name } => Some(name.as_str()),
+                    _ => None,
+                };
+                if let Some(name) = func_name {
+                    let resolved_name = builder.resolve_function_name(name);
+                    builder
+                        .function_result_types
+                        .get(&resolved_name)
+                        .copied()
+                        .unwrap_or((builtin::ANY, builtin::ANY))
+                } else {
+                    (builtin::ANY, builtin::ANY)
+                }
+            } else {
+                (builtin::ANY, builtin::ANY)
+            };
+
+            // Register error variable type so codegen knows it's a struct
+            if error_name != "_" {
+                builder.set_temp_type(error_name, err_type);
+            }
+            // Register ok variable types
+            for ok_name in ok_names {
+                if ok_name != "_" {
+                    builder.set_temp_type(&ok_name, ok_type);
+                }
+            }
 
             // Emit ManualErrorExtract instruction
             builder.emit(

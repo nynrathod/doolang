@@ -180,6 +180,13 @@ pub fn doo_alloc_map(entry_count: usize, entry_size: usize) -> *mut u8 {
 }
 
 // ============================================================================
+// (RC String functions removed - use simple C strings instead)
+// ============================================================================
+// FFI returns simple C strings (null-terminated)
+// Codegen calls clone_ffi_string_to_rc() to add Doo format header
+// This keeps FFI layer simple and lets compiler handle format details
+
+// ============================================================================
 // Utility Functions
 // ============================================================================
 
