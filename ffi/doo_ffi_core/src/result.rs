@@ -20,12 +20,12 @@ pub enum ResultTag {
 }
 
 /// The unified result type for all FFI operations.
-/// CRITICAL: Layout MUST be { i32, ptr } to match codegen Result struct.
-/// The codegen generates: struct { i32 tag, ptr value }
+/// CRITICAL: Layout MUST be { i64, ptr } to match codegen Result struct.
+/// The codegen generates: struct { i64 tag, i64 value } and loads tag as i64.
 #[repr(C)]
 pub struct DooResult {
-    /// Tag: 0 = Ok, 1 = Err (i32 to match LLVM codegen)
-    pub tag: i32,
+    /// Tag: 0 = Ok, 1 = Err (i64 to match LLVM codegen which loads as i64)
+    pub tag: i64,
     /// Pointer to data (owned, allocated with libc)
     /// - For Ok: points to actual value (string, struct, etc.)
     /// - For Err: points to error struct (e.g., FileError)
@@ -38,7 +38,7 @@ impl DooResult {
     #[inline]
     pub fn ok(data: *mut c_void, _len: u32) -> Self {
         Self {
-            tag: ResultTag::Ok as i32,
+            tag: ResultTag::Ok as i64,
             data,
         }
     }
@@ -47,7 +47,7 @@ impl DooResult {
     #[inline]
     pub fn ok_empty() -> Self {
         Self {
-            tag: ResultTag::Ok as i32,
+            tag: ResultTag::Ok as i64,
             data: std::ptr::null_mut(),
         }
     }
@@ -59,7 +59,7 @@ impl DooResult {
         // Use simple C string - codegen will convert it
         let ptr = doo_alloc_string(message) as *mut c_void;
         Self {
-            tag: ResultTag::Ok as i32,
+            tag: ResultTag::Ok as i64,
             data: ptr,
         }
     }
@@ -69,7 +69,7 @@ impl DooResult {
     #[inline]
     pub fn err(_code: u16, data: *mut c_void, _len: u32) -> Self {
         Self {
-            tag: ResultTag::Err as i32,
+            tag: ResultTag::Err as i64,
             data,
         }
     }
@@ -81,7 +81,7 @@ impl DooResult {
         // Use simple C string - codegen will convert it
         let ptr = doo_alloc_string(message) as *mut c_void;
         Self {
-            tag: ResultTag::Err as i32,
+            tag: ResultTag::Err as i64,
             data: ptr,
         }
     }
@@ -89,13 +89,13 @@ impl DooResult {
     /// Check if result is Ok.
     #[inline]
     pub fn is_ok(&self) -> bool {
-        self.tag == ResultTag::Ok as i32
+        self.tag == ResultTag::Ok as i64
     }
 
     /// Check if result is Err.
     #[inline]
     pub fn is_err(&self) -> bool {
-        self.tag == ResultTag::Err as i32
+        self.tag == ResultTag::Err as i64
     }
 
     /// Convert to raw pointer (consumer must free with doo_result_free).
