@@ -676,6 +676,10 @@ impl<'ctx> CodegenContext<'ctx> {
         self.locals.clear();
         self.temps.clear();
         self.borrow_origins.clear();
+        self.array_element_types.clear();
+        self.array_element_temps.clear();
+        self.variable_types.clear();
+        self.temp_struct_types.clear();
     }
 
     // ========================================================================
