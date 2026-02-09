@@ -103,7 +103,7 @@ pub struct MirBuilder<'a> {
     pub(crate) ffi_functions: FxHashMap<String, FfiFunctionInfo>,
 
     /// Function name aliases: maps simple import names to mangled names.
-    /// e.g., "postgres" -> "_method_Database_postgres"
+    /// e.g., "Postgres" -> "_method_Database_Postgres"
     /// This allows calling imported associated functions by their simple name.
     pub(crate) function_aliases: FxHashMap<String, String>,
 }
@@ -228,7 +228,7 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 // Create alias from simple name to mangled name for imported associated functions
-                // e.g., "_method_Database_postgres" -> alias "postgres" -> "_method_Database_postgres"
+                // e.g., "_method_Database_Postgres" -> alias "Postgres" -> "_method_Database_Postgres"
                 if f.name.starts_with("_method_") {
                     // Extract simple name: "_method_TypeName_MethodName" -> "MethodName"
                     if let Some(pos) = f.name[8..].find('_') {

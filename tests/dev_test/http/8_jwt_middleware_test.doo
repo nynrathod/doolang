@@ -1,5 +1,5 @@
 import std::Http::{Server, Request, Response};
-import std::Database::{postgres};
+import std::Database::{Postgres};
 import std::Auth::{Jwt};
 
 struct User {
@@ -67,7 +67,7 @@ fn GetPublicInfo() -> MessageResponse {
 }
 
 fn main() {
-    let db = postgres()?;
+    let db = Postgres()?;
 
     let app = Server::new(":3108");
 

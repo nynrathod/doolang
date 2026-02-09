@@ -57,7 +57,7 @@ fn GetUser(id: Int) -> UserProfile ! DatabaseError {
 }
 
 fn main() {
-    let db = Database::postgres()?;
+    let db = Database::Postgres()?;
     let app = Server::new(":3113");
 
     // Auth endpoints - will auto-handle @writeOnly password

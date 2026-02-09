@@ -41,7 +41,7 @@ pub struct Lower {
     /// Only contains functions WITHOUT an associated type (i.e., not methods like Server.get).
     known_functions: FxHashSet<String>,
     /// Known qualified methods: maps (TypeName, MethodName) pairs for associated functions.
-    /// e.g., Server.get -> ("Server", "get"), Database.postgres -> ("Database", "postgres")
+    /// e.g., Server.get -> ("Server", "get"), Database.Postgres -> ("Database", "Postgres")
     known_qualified_methods: FxHashMap<String, FxHashSet<String>>,
 }
 
@@ -1835,7 +1835,7 @@ impl Lower {
                 payload,
             } => {
                 // Check if this is actually a static method call on a struct
-                // e.g., Database::postgres() should be MethodCall, not EnumVariant
+                // e.g., Database::Postgres() should be MethodCall, not EnumVariant
                 let type_id = registry.lookup(enum_name);
                 let is_struct = type_id
                     .and_then(|tid| registry.get(tid))

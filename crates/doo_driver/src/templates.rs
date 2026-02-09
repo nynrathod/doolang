@@ -170,7 +170,7 @@ struct Todo {
 
 fn main() {
     // Auto read DATABASE_URL in .env
-    let db = Database::postgres()?;
+    let db = Database::Postgres()?;
 
     let app = Server::new(":3105");
 
@@ -286,7 +286,7 @@ import handlers::{GetFeed, GetUserPosts, GetMyPosts};
 
 fn main() {
     // Auto read DATABASE_URL in .env
-    let db = Database::postgres()?;
+    let db = Database::Postgres()?;
 
     let app = Server::new(":3106");
 

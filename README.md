@@ -28,7 +28,7 @@ struct Todo {
 }
 
 fn main() {
-    let db = Database::postgres()?;
+    let db = Database::Postgres()?;
     let app = Server::new(":3000");
 
     // Authentication via JWT
@@ -141,7 +141,7 @@ fn GetUrgent() -> [Task] ! DatabaseError {
 }
 
 fn main() {
-    let db = Database::postgres()?;
+    let db = Database::Postgres()?;
     let app = Server::new(":3000");
 
     app.auth("/signup", "/login", User, db);

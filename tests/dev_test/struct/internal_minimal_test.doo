@@ -24,7 +24,7 @@ struct User {
 }
 
 fn main() {
-    let db = Database::postgres()?;
+    let db = Database::Postgres()?;
     let app = Server::new(":3114");
     app.auth("/signup", "/login", User, db);
     app.crud("/users", User, db);
