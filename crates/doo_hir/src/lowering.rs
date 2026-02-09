@@ -37,8 +37,12 @@ pub struct Lower {
     json_stringify_sources: FxHashMap<String, TypeId>,
     /// Items hoisted from inside function bodies (local struct/enum declarations).
     hoisted_items: Vec<HirItem>,
-    /// Known function names in the program (for disambiguating Namespace::Func from EnumVariant).
+    /// Known standalone function names in the program (for disambiguating Namespace::Func from EnumVariant).
+    /// Only contains functions WITHOUT an associated type (i.e., not methods like Server.get).
     known_functions: FxHashSet<String>,
+    /// Known qualified methods: maps (TypeName, MethodName) pairs for associated functions.
+    /// e.g., Server.get -> ("Server", "get"), Database.postgres -> ("Database", "postgres")
+    known_qualified_methods: FxHashMap<String, FxHashSet<String>>,
 }
 
 /// Lowering error.
@@ -67,6 +71,7 @@ impl Lower {
             json_stringify_sources: FxHashMap::default(),
             hoisted_items: Vec::new(),
             known_functions: FxHashSet::default(),
+            known_qualified_methods: FxHashMap::default(),
         }
     }
 
@@ -273,7 +278,16 @@ impl Lower {
         // Pre-collect function names for namespace-qualified call disambiguation
         for item in &program.items {
             if let Item::Function(f) = item {
-                self.known_functions.insert(f.name.clone());
+                if let Some(ref assoc_type) = f.associated_type {
+                    // Associated method: track under its type namespace
+                    self.known_qualified_methods
+                        .entry(assoc_type.clone())
+                        .or_default()
+                        .insert(f.name.clone());
+                } else {
+                    // Standalone function only
+                    self.known_functions.insert(f.name.clone());
+                }
             }
         }
 
@@ -301,7 +315,16 @@ impl Lower {
         // Namespace::Func(args) from EnumVariant during expression lowering.
         for item in &program.items {
             if let Item::Function(f) = item {
-                self.known_functions.insert(f.name.clone());
+                if let Some(ref assoc_type) = f.associated_type {
+                    // Associated method: track under its type namespace
+                    self.known_qualified_methods
+                        .entry(assoc_type.clone())
+                        .or_default()
+                        .insert(f.name.clone());
+                } else {
+                    // Standalone function only
+                    self.known_functions.insert(f.name.clone());
+                }
             }
         }
 
@@ -1519,7 +1542,15 @@ impl Lower {
                 variant,
                 payload,
             } => {
-                if self.known_functions.contains(variant) {
+                // Check if this is a qualified method call: Type::method(args)
+                // e.g., Database::get() should resolve to the Database.get associated method
+                let is_qualified_method = self
+                    .known_qualified_methods
+                    .get(enum_name)
+                    .map(|methods| methods.contains(variant))
+                    .unwrap_or(false);
+
+                if is_qualified_method || self.known_functions.contains(variant) {
                     // Namespace-qualified function call: Namespace::Func(args) -> Func(args)
                     let func_expr = HirExpr::new(
                         HirExprKind::Global {
@@ -1832,8 +1863,15 @@ impl Lower {
                             .map(|e| self.lower_expr_typed(e, registry))
                             .collect(),
                     }
-                } else if self.known_functions.contains(variant) {
+                } else if self
+                    .known_qualified_methods
+                    .get(enum_name)
+                    .map(|methods| methods.contains(variant))
+                    .unwrap_or(false)
+                    || self.known_functions.contains(variant)
+                {
                     // Namespace-qualified function call: Array::Sum(args) -> Sum(args)
+                    // or Type::method(args) -> method(args) for associated functions
                     // The parser treats Name::Name(args) as EnumVariant, but when
                     // the "variant" name matches a known function and the "enum_name"
                     // is not a real enum, this is a qualified call through a namespace

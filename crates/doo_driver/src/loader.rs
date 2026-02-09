@@ -454,8 +454,13 @@ pub fn resolve_imports(
                         .with_suggestion(format!("check available exports in {}", module_key)),
                     );
                 } else {
-                    // Symbol found — check if public (PascalCase or @extern)
-                    if !is_symbol_public_in_module(sym_name, &module_program) {
+                    // Symbol found — check if private (camelCase = private, PascalCase = public)
+                    let is_public = sym_name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
+                    if !is_public {
                         result.errors.push(
                             CompilerError::new(
                                 ErrorCode::PrivateImport,
@@ -475,7 +480,12 @@ pub fn resolve_imports(
         for item in &module_program.items {
             match item {
                 Item::Struct(s) => {
-                    let is_wanted = import_all || requested.contains_key(&s.name);
+                    // Auto-import the module's primary struct (name matches module key)
+                    // This allows `import std::Database::{DatabaseError}` to also make
+                    // Database::postgres() and Database::get() available
+                    let is_primary_struct = s.name == *module_key;
+                    let is_wanted =
+                        import_all || requested.contains_key(&s.name) || is_primary_struct;
                     if is_wanted {
                         imported_type_names.insert(s.name.clone());
                     }
@@ -494,8 +504,13 @@ pub fn resolve_imports(
         for item in &module_program.items {
             match item {
                 Item::Function(f) => {
-                    // Check if function is public (PascalCase or @extern)
-                    let is_public = is_function_public(f);
+                    // Public = starts with uppercase (PascalCase)
+                    let is_public = f
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
 
                     // Check if this is an associated function for an imported type
                     let is_associated_with_imported_type = f
@@ -565,7 +580,9 @@ pub fn resolve_imports(
                     }
                 }
                 Item::Struct(s) => {
-                    let is_wanted = import_all || requested.contains_key(&s.name);
+                    let is_primary_struct = s.name == *module_key;
+                    let is_wanted =
+                        import_all || requested.contains_key(&s.name) || is_primary_struct;
                     if is_wanted && !imported_names.contains(&s.name) {
                         if debug {
                             doo_debug!("LOADER", "  Importing struct: {}", s.name);
@@ -603,8 +620,51 @@ pub fn resolve_imports(
             })
             .collect();
 
-    // NOTE: Visibility checks for local imports are deferred until module parsing.
-    // This ensures @extern functions (FFI) are properly recognized as public.
+    // Check visibility for explicitly requested local import symbols
+    for (import_decl, _module_path, path_symbols) in &local_import_requests {
+        for sym_name in path_symbols {
+            let is_public = sym_name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false);
+            if !is_public {
+                // Narrow span to just the symbol name at end of import path
+                let sym_span = narrow_span_to_symbol(&import_decl.span, sym_name);
+                result.errors.push(
+                    CompilerError::new(
+                        ErrorCode::PrivateImport,
+                        format!("'{}' is private", sym_name),
+                        sym_span,
+                    )
+                    .with_suggestion(format!("rename to '{}'", capitalize_first(sym_name))),
+                );
+            }
+        }
+        for item in &import_decl.items {
+            let sym_name = match item {
+                ImportItem::Symbol(name) => name,
+                ImportItem::Alias { name, .. } => name,
+                ImportItem::Wildcard => continue,
+            };
+            let is_public = sym_name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false);
+            if !is_public {
+                let sym_span = narrow_span_to_symbol(&import_decl.span, sym_name);
+                result.errors.push(
+                    CompilerError::new(
+                        ErrorCode::PrivateImport,
+                        format!("'{}' is private", sym_name),
+                        sym_span,
+                    )
+                    .with_suggestion(format!("rename to '{}'", capitalize_first(sym_name))),
+                );
+            }
+        }
+    }
 
     while let Some((module_path, path_symbols, import_chain, origin_span)) = pending_modules.pop() {
         // Skip if already visited
@@ -786,13 +846,23 @@ pub fn resolve_imports(
         for item in &module_program.items {
             match item {
                 Item::Struct(s) => {
-                    let is_public = is_name_pascal_case(&s.name);
+                    let is_public = s
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
                     if is_public {
                         imported_type_names.insert(s.name.clone());
                     }
                 }
                 Item::Enum(e) => {
-                    let is_public = is_name_pascal_case(&e.name);
+                    let is_public = e
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
                     if is_public {
                         imported_type_names.insert(e.name.clone());
                     }
@@ -805,8 +875,13 @@ pub fn resolve_imports(
         for item in &module_program.items {
             match item {
                 Item::Function(f) => {
-                    // Check if function is public (PascalCase or @extern)
-                    let is_public = is_function_public(f);
+                    // Check visibility: PascalCase = public, camelCase = private
+                    let is_public = f
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
 
                     // Check if this is an associated function for an imported type
                     let is_associated_with_imported_type = f
@@ -844,7 +919,12 @@ pub fn resolve_imports(
                 }
                 Item::Struct(s) => {
                     // Check visibility: PascalCase = public
-                    let is_public = is_name_pascal_case(&s.name);
+                    let is_public = s
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
 
                     if is_public && !imported_names.contains(&s.name) {
                         if debug {
@@ -856,7 +936,12 @@ pub fn resolve_imports(
                 }
                 Item::Enum(e) => {
                     // Check visibility: PascalCase = public
-                    let is_public = is_name_pascal_case(&e.name);
+                    let is_public = e
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
 
                     if is_public && !imported_names.contains(&e.name) {
                         if debug {
@@ -901,44 +986,6 @@ fn capitalize_first(s: &str) -> String {
         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
     }
-}
-
-/// Check if a name follows public naming convention (PascalCase - starts with uppercase)
-fn is_name_pascal_case(name: &str) -> bool {
-    name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-}
-
-/// Check if a function is public (SINGLE SOURCE OF TRUTH for function visibility)
-/// A function is public if:
-/// - Its name starts with uppercase (PascalCase) OR
-/// - It has an @extern decorator (FFI functions are always public)
-fn is_function_public(f: &doo_frontend::ast::FunctionDecl) -> bool {
-    // Check naming convention
-    if is_name_pascal_case(&f.name) {
-        return true;
-    }
-    // Check for @extern decorator - FFI functions are always public
-    f.decorators.iter().any(|d| d.name == "extern")
-}
-
-/// Check if a symbol name refers to a public function in a module program.
-/// Returns true if:
-/// - The name follows PascalCase convention, OR
-/// - There's a function with that name that has @extern decorator
-fn is_symbol_public_in_module(sym_name: &str, module_program: &Program) -> bool {
-    // First check naming convention
-    if is_name_pascal_case(sym_name) {
-        return true;
-    }
-    // Look up the function in the module to check for @extern
-    for item in &module_program.items {
-        if let Item::Function(f) = item {
-            if f.name == sym_name {
-                return is_function_public(f);
-            }
-        }
-    }
-    false
 }
 
 /// Narrow a full-import span to just the symbol name at the end.
