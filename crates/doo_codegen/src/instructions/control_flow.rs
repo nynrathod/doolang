@@ -3,11 +3,11 @@
 //! Handles control flow terminators (handled separately in builder)
 //! This handler is a placeholder for any non-terminator control flow.
 
-use inkwell::values::BasicValueEnum;
-use doo_mir::{MirInstr, MirInstrKind};
+use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::utils::operand_to_value;
-use super::InstructionHandler;
+use doo_mir::{MirInstr, MirInstrKind};
+use inkwell::values::BasicValueEnum;
 
 /// Control flow instruction handler.
 pub struct ControlFlowHandler;
@@ -26,10 +26,10 @@ impl<'ctx> InstructionHandler<'ctx> for ControlFlowHandler {
             MirInstrKind::Panic { message } => {
                 // Get message value (should be a string pointer)
                 let msg_val = operand_to_value(ctx, message)?;
-                
+
                 // Emit panic: print message and abort
                 emit_panic_with_value(ctx, msg_val);
-                
+
                 None
             }
             _ => None,
@@ -54,17 +54,20 @@ fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicVal
         // Load the first field (Message) from the error struct
         // FileError = { Message: *char } -> first field at offset 0
         let msg_field_ptr = unsafe {
-            ctx.builder.build_gep(
-                ctx.ptr_type(),  // Field type is a pointer (to char)
-                ptr,
-                &[ctx.context.i32_type().const_zero()],
-                "error_msg_ptr",
-            ).ok()
+            ctx.builder
+                .build_gep(
+                    ctx.ptr_type(), // Field type is a pointer (to char)
+                    ptr,
+                    &[ctx.context.i32_type().const_zero()],
+                    "error_msg_ptr",
+                )
+                .ok()
         };
         match msg_field_ptr {
             Some(field_ptr) => {
                 // Load the message pointer from the struct
-                ctx.builder.build_load(ctx.ptr_type(), field_ptr, "error_msg")
+                ctx.builder
+                    .build_load(ctx.ptr_type(), field_ptr, "error_msg")
                     .map(|v| v.into())
                     .unwrap_or(message)
             }
@@ -76,11 +79,9 @@ fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicVal
 
     // Print panic message
     let panic_fmt = ctx.const_string("panic: %s\n");
-    let _ = ctx.builder.build_call(
-        printf,
-        &[panic_fmt.into(), msg_ptr.into()],
-        "print_panic",
-    );
+    let _ = ctx
+        .builder
+        .build_call(printf, &[panic_fmt.into(), msg_ptr.into()], "print_panic");
 
     // Get or declare exit
     let exit_type = ctx
@@ -94,7 +95,9 @@ fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicVal
 
     // Exit with code 1
     let exit_code = ctx.i32_type().const_int(1, false);
-    let _ = ctx.builder.build_call(exit_fn, &[exit_code.into()], "exit_on_panic");
+    let _ = ctx
+        .builder
+        .build_call(exit_fn, &[exit_code.into()], "exit_on_panic");
 
     // Don't emit unreachable here - let MirTerminator::Unreachable handle it
 }

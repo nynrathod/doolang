@@ -35,16 +35,26 @@ pub struct DooFileError {
 
 /// FileMetadata struct layout - matches Doo's FileMetadata struct exactly
 /// Field order MUST match std/File.doo declaration order
-#[repr(C)]
+/// LLVM struct: %FileMetadata = type { i1, i1, i1, i64, i1, i64, i64, i64 }
+/// LLVM uses natural alignment:
+///   - i1 at offset 0, 1, 2 (each 1 byte)
+///   - i64 at offset 8 (aligned, 5 bytes padding after i1s)
+///   - i1 at offset 16
+///   - i64 at offset 24 (aligned, 7 bytes padding after i1)
+///   - i64 at offset 32, 40
+/// Total: 48 bytes
+#[repr(C, align(8))]
 pub struct DooFileMetadata {
-    pub is_file: i32,    // IsFile: Bool (i32 in FFI)
-    pub is_dir: i32,     // IsDir: Bool
-    pub is_symlink: i32, // IsSymlink: Bool
-    pub size: i64,       // Size: Int (i64)
-    pub readonly: i32,   // Readonly: Bool
-    pub created: i64,    // Created: Int
-    pub modified: i64,   // Modified: Int
-    pub accessed: i64,   // Accessed: Int
+    pub is_file: u8,    // offset 0: IsFile (i1)
+    pub is_dir: u8,     // offset 1: IsDir (i1)
+    pub is_symlink: u8, // offset 2: IsSymlink (i1)
+    pub _pad1: [u8; 5], // offset 3-7: padding for i64 alignment
+    pub size: i64,      // offset 8: Size (i64)
+    pub readonly: u8,   // offset 16: Readonly (i1)
+    pub _pad2: [u8; 7], // offset 17-23: padding for i64 alignment
+    pub created: i64,   // offset 24: Created (i64)
+    pub modified: i64,  // offset 32: Modified (i64)
+    pub accessed: i64,  // offset 40: Accessed (i64)
 }
 
 // ============================================================================
@@ -430,8 +440,10 @@ pub extern "C" fn doo_file_metadata(path: *const c_char) -> *mut DooResult {
                 is_file: if meta.is_file() { 1 } else { 0 },
                 is_dir: if meta.is_dir() { 1 } else { 0 },
                 is_symlink: if meta.file_type().is_symlink() { 1 } else { 0 },
+                _pad1: [0; 5],
                 size: meta.len() as i64,
                 readonly: if meta.permissions().readonly() { 1 } else { 0 },
+                _pad2: [0; 7],
                 created: to_timestamp(meta.created()),
                 modified: to_timestamp(meta.modified()),
                 accessed: to_timestamp(meta.accessed()),
