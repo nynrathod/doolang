@@ -15,31 +15,29 @@ impl ParserTypes for Parser {
     fn parse_type_expr(&mut self) -> ParseResult<TypeExpr> {
         let start = self.current_span();
 
-        // Array type: [T]
-        if self.check(TokenKind::LBracket) {
+        // Array type: [T] or [T]?
+        let base = if self.check(TokenKind::LBracket) {
             self.advance();
             let element = self.parse_type_expr()?;
             self.expect(TokenKind::RBracket)?;
             let end = self.prev_span();
-            return Ok(TypeExpr::array(element, start.merge(&end)));
-        }
+            TypeExpr::array(element, start.merge(&end))
 
-        // Map type: {K: V}
-        if self.check(TokenKind::LBrace) {
+        // Map type: {K: V} or {K: V}?
+        } else if self.check(TokenKind::LBrace) {
             self.advance();
             let key = self.parse_type_expr()?;
             self.expect(TokenKind::Colon)?;
             let value = self.parse_type_expr()?;
             self.expect(TokenKind::RBrace)?;
             let end = self.prev_span();
-            return Ok(TypeExpr::new(
+            TypeExpr::new(
                 TypeExprKind::Map(Box::new(key), Box::new(value)),
                 start.merge(&end),
-            ));
-        }
+            )
 
-        // Tuple type: (T1, T2, ...)
-        if self.check(TokenKind::LParen) {
+        // Tuple type: (T1, T2, ...) or (T1, T2)?
+        } else if self.check(TokenKind::LParen) {
             self.advance();
             let mut types = Vec::new();
             while !self.check(TokenKind::RParen) && !self.is_at_end() {
@@ -50,29 +48,31 @@ impl ParserTypes for Parser {
             }
             self.expect(TokenKind::RParen)?;
             let end = self.prev_span();
-            return Ok(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end)));
-        }
+            TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end))
 
-        // Named type
-        let name = self.expect_ident().map_err(|_| {
-            CompilerError::new(
-                ErrorCode::InvalidTypeExpr,
-                format!("expected type expression, got `{}`", self.current().kind),
-                self.current_span(),
-            )
-            .with_suggestion("expected a type like Int, String, [T], {K: V}")
-        })?;
+        // Named type: T or T?
+        } else {
+            let name = self.expect_ident().map_err(|_| {
+                CompilerError::new(
+                    ErrorCode::InvalidTypeExpr,
+                    format!("expected type expression, got `{}`", self.current().kind),
+                    self.current_span(),
+                )
+                .with_suggestion("expected a type like Int, String, [T], {K: V}")
+            })?;
 
-        // Check for optional: T?
+            let end = self.prev_span();
+            TypeExpr::named(name, start.merge(&end))
+        };
+
+        // Check for optional suffix: T?, [T]?, {K: V}?, (T1, T2)?
         if self.check(TokenKind::Question) {
             self.advance();
             let end = self.prev_span();
-            let inner = TypeExpr::named(&name, start);
-            return Ok(TypeExpr::optional(inner, start.merge(&end)));
+            return Ok(TypeExpr::optional(base, start.merge(&end)));
         }
 
-        let end = self.prev_span();
-        Ok(TypeExpr::named(name, start.merge(&end)))
+        Ok(base)
     }
 
     // === Patterns ===

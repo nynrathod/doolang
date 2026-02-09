@@ -2776,11 +2776,21 @@ fn convert_to_ffi_arg<'ctx>(
         Some("ptr") => {
             // Convert non-pointer types to string pointers
             if val.is_int_value() {
+                let int_val = val.into_int_value();
+                let ptr_type = ctx.ptr_type();
+
+                // Check if this is a null/nil value (i64 0 from MirConst::Nil)
+                // In that case, pass a null pointer directly instead of stringifying
+                if let Some(const_val) = int_val.get_zero_extended_constant() {
+                    if const_val == 0 {
+                        return ptr_type.const_null().into();
+                    }
+                }
+
                 // Convert i64 to string using sprintf
                 // Allocate buffer for max int64 string: "-9223372036854775808" (20 chars + null)
                 let i8_type = ctx.context.i8_type();
                 let i64_type = ctx.i64_type();
-                let ptr_type = ctx.ptr_type();
 
                 // Allocate 24 bytes for safety
                 let buffer = ctx
@@ -3691,9 +3701,10 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
     let i8_type = ctx.context.i8_type();
 
     // Allocate result on heap (we'll need this for both success and error paths)
+    // DooResult layout: { i64 tag, ptr data, i32 owner }
     let result_struct_type = ctx
         .context
-        .struct_type(&[i32_type.into(), ptr_type.into(), i8_type.into()], false);
+        .struct_type(&[i64_type.into(), ptr_type.into(), i32_type.into()], false);
 
     let malloc_fn = ctx.module.get_function("malloc").unwrap_or_else(|| {
         let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
@@ -3916,7 +3927,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             ) {
                 let _ = ctx
                     .builder
-                    .build_store(tag_ptr, i32_type.const_int(1, false)); // tag = 1 (error)
+                    .build_store(tag_ptr, i64_type.const_int(1, false)); // tag = 1 (error)
             }
             if let Ok(value_ptr) = ctx.builder.build_struct_gep(
                 result_struct_type,
@@ -3934,7 +3945,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             ) {
                 let _ = ctx
                     .builder
-                    .build_store(owner_ptr, i8_type.const_int(1, false)); // owner = 1 (FFI)
+                    .build_store(owner_ptr, i32_type.const_int(1, false)); // owner = 1 (FFI)
             }
 
             let _ = ctx.builder.build_return(Some(&error_result_ptr));
@@ -4264,7 +4275,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         0,
                         "ok_tag_ptr",
                     ) {
-                        let _ = ctx.builder.build_store(tag_ptr, i32_type.const_zero());
+                        let _ = ctx.builder.build_store(tag_ptr, i64_type.const_zero());
                     }
                     if let Ok(value_ptr) = ctx.builder.build_struct_gep(
                         result_struct_type,
@@ -4282,7 +4293,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     ) {
                         let _ = ctx
                             .builder
-                            .build_store(owner_ptr, i8_type.const_int(1, false));
+                            .build_store(owner_ptr, i32_type.const_int(1, false));
                     }
                     ctx.builder.build_unconditional_branch(merge_block).ok();
 
@@ -4454,7 +4465,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     ) {
                         let _ = ctx
                             .builder
-                            .build_store(tag_ptr, i32_type.const_int(1, false));
+                            .build_store(tag_ptr, i64_type.const_int(1, false));
                     }
                     if let Ok(value_ptr) = ctx.builder.build_struct_gep(
                         result_struct_type,
@@ -4472,7 +4483,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     ) {
                         let _ = ctx
                             .builder
-                            .build_store(owner_ptr, i8_type.const_int(1, false));
+                            .build_store(owner_ptr, i32_type.const_int(1, false));
                     }
                     ctx.builder.build_unconditional_branch(merge_block).ok();
 
@@ -4557,7 +4568,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     ) {
                         let _ = ctx
                             .builder
-                            .build_store(tag_ptr, i32_type.const_int(0, false));
+                            .build_store(tag_ptr, i64_type.const_int(0, false));
                     }
                     if let Ok(value_ptr) = ctx.builder.build_struct_gep(
                         result_struct_type,
@@ -4575,7 +4586,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     ) {
                         let _ = ctx
                             .builder
-                            .build_store(owner_ptr, i8_type.const_int(1, false));
+                            .build_store(owner_ptr, i32_type.const_int(1, false));
                     }
                 }
             } else {
@@ -4643,7 +4654,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 {
                     let _ = ctx
                         .builder
-                        .build_store(tag_ptr, i32_type.const_int(0, false));
+                        .build_store(tag_ptr, i64_type.const_int(0, false));
                 }
                 if let Ok(value_ptr) =
                     ctx.builder
@@ -4657,7 +4668,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 {
                     let _ = ctx
                         .builder
-                        .build_store(owner_ptr, i8_type.const_int(1, false));
+                        .build_store(owner_ptr, i32_type.const_int(1, false));
                 }
             }
         } else {
@@ -4668,7 +4679,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             {
                 let _ = ctx
                     .builder
-                    .build_store(tag_ptr, i32_type.const_int(1, false));
+                    .build_store(tag_ptr, i64_type.const_int(1, false));
             }
             if let Ok(value_ptr) =
                 ctx.builder
@@ -4682,7 +4693,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
             {
                 let _ = ctx
                     .builder
-                    .build_store(owner_ptr, i8_type.const_int(1, false));
+                    .build_store(owner_ptr, i32_type.const_int(1, false));
             }
         }
 
@@ -4806,7 +4817,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     0,
                     "ok_tag_ptr",
                 ) {
-                    let _ = ctx.builder.build_store(tag_ptr, i32_type.const_zero());
+                    let _ = ctx.builder.build_store(tag_ptr, i64_type.const_zero());
                 }
                 if let Ok(value_ptr) = ctx.builder.build_struct_gep(
                     result_struct_type,
@@ -4824,7 +4835,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 ) {
                     let _ = ctx
                         .builder
-                        .build_store(owner_ptr, i8_type.const_int(1, false));
+                        .build_store(owner_ptr, i32_type.const_int(1, false));
                 }
                 let _ = ctx.builder.build_return(Some(&doo_result_ptr));
 
@@ -4903,7 +4914,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 ) {
                     let _ = ctx
                         .builder
-                        .build_store(tag_ptr, i32_type.const_int(1, false));
+                        .build_store(tag_ptr, i64_type.const_int(1, false));
                 }
                 if let Ok(value_ptr) = ctx.builder.build_struct_gep(
                     result_struct_type,
@@ -4921,7 +4932,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 ) {
                     let _ = ctx
                         .builder
-                        .build_store(owner_ptr, i8_type.const_int(1, false));
+                        .build_store(owner_ptr, i32_type.const_int(1, false));
                 }
                 let _ = ctx.builder.build_return(Some(&doo_result_ptr));
 
@@ -4941,7 +4952,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
         {
             let _ = ctx
                 .builder
-                .build_store(tag_ptr, i32_type.const_int(1, false));
+                .build_store(tag_ptr, i64_type.const_int(1, false));
         }
         if let Ok(value_ptr) =
             ctx.builder
@@ -4955,7 +4966,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
         {
             let _ = ctx
                 .builder
-                .build_store(owner_ptr, i8_type.const_int(1, false));
+                .build_store(owner_ptr, i32_type.const_int(1, false));
         }
         let _ = ctx.builder.build_return(Some(&doo_result_ptr));
 
@@ -5039,7 +5050,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
     if let Some(tag_ptr) = tag_ptr {
         let _ = ctx
             .builder
-            .build_store(tag_ptr, ctx.i32_type().const_int(0, false));
+            .build_store(tag_ptr, ctx.i64_type().const_int(0, false));
     }
 
     // Set value = user result (as pointer)
@@ -5069,7 +5080,7 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
     if let Some(owner_ptr) = owner_ptr {
         let _ = ctx
             .builder
-            .build_store(owner_ptr, ctx.context.i8_type().const_int(1, false));
+            .build_store(owner_ptr, ctx.i32_type().const_int(1, false));
     }
 
     // Return the result pointer

@@ -587,11 +587,20 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 
                 // Fallback: Look up the method's return type from the function registry
                 // Method functions are named _method_{TypeName}_{method}
-                if let Some(type_info) = builder.type_registry.get(receiver_type) {
-                    if let TypeKind::Struct { name, .. } = &type_info.kind {
-                        let mangled_name = format!("_method_{}_{}", name, method);
-                        return builder.get_function_return_type(&mangled_name);
-                    }
+                // CRITICAL: Use receiver_type_name for static calls (e.g., Server.new())
+                // where receiver_type may be ANY but we know the type name from the receiver
+                let type_name = receiver_type_name.as_ref().cloned().or_else(|| {
+                    builder.type_registry.get(receiver_type).and_then(|info| {
+                        if let TypeKind::Struct { name, .. } = &info.kind {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
+                if let Some(name) = type_name {
+                    let mangled_name = format!("_method_{}_{}", name, method);
+                    return builder.get_function_return_type(&mangled_name);
                 }
                 None
             });
@@ -613,7 +622,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 //   e.g. Database::get(), Server::new(":3000") - receiver is just for method lookup
                 // Instance calls (is_module_receiver=false): receiver IS the object, passed as first arg
                 //   e.g. app.get("/path", handler) - receiver is the actual server instance
-                let ffi_args = if is_module_receiver {
+                let mut ffi_args = if is_module_receiver {
                     // Static call: don't include module/type name as argument
                     arg_ops
                 } else {
@@ -622,6 +631,17 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     args.extend(arg_ops);
                     args
                 };
+
+                // Pad missing optional parameters with Nil (null pointer)
+                // This handles calls like app.cors() where options: {Str: Str}? is omitted
+                if let Some(mangled) = &mangled_method_name {
+                    if let Some(param_types) = builder.get_function_param_types(mangled) {
+                        let expected = param_types.len();
+                        while ffi_args.len() < expected {
+                            ffi_args.push(MirOperand::Const(MirConst::Nil));
+                        }
+                    }
+                }
                 
                 builder.emit(
                     MirInstrKind::FfiCall {

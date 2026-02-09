@@ -126,6 +126,20 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         return Ok(build_response(200, r#"{"status":"ok"}"#));
     }
 
+    // Handle CORS preflight (OPTIONS) requests before route matching
+    // When CORS is configured, OPTIONS requests should return 204 with CORS headers
+    // NOTE: Check config first, then drop lock BEFORE calling build_response
+    // (build_response also locks cors_config to add headers — avoid deadlock)
+    if method == "OPTIONS" {
+        let has_cors = crate::middleware::get_cors_config()
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false);
+        if has_cors {
+            return Ok(build_response(204, ""));
+        }
+    }
+
     // Set thread-local request path for RFC 7807
     set_current_request_path(&path);
     clear_last_error();
@@ -148,10 +162,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // Match route
     let routes = get_routes();
     let registry = routes.lock().unwrap();
-    ffi_debug!(
-        "SERVER", "Route registry has {} routes",
-        registry.count()
-    );
+    ffi_debug!("SERVER", "Route registry has {} routes", registry.count());
 
     let (route_entry, params) = match registry.match_route(&method, &path) {
         Some(r) => r,
@@ -197,13 +208,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     let response = {
         // Execute middleware chain, then handler
-        ffi_debug!(
-            "SERVER", "About to execute handler for {} {}",
-            method, path
-        );
+        ffi_debug!("SERVER", "About to execute handler for {} {}", method, path);
         let result = execute_middleware_chain(doo_request, &middleware_chain, handler);
         ffi_debug!(
-            "SERVER", "Handler returned, result is_null={}",
+            "SERVER",
+            "Handler returned, result is_null={}",
             result.is_null()
         );
 
@@ -226,7 +235,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 } else {
                     let res = &*result;
                     ffi_debug!(
-                        "SERVER", "Result tag={}, value_is_null={}",
+                        "SERVER",
+                        "Result tag={}, value_is_null={}",
                         res.tag,
                         res.value.is_null()
                     );
@@ -238,7 +248,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         } else {
                             let body_str = c_to_string(res.value as *const i8);
                             ffi_debug!(
-                                "SERVER", "Success with body len={}: {}",
+                                "SERVER",
+                                "Success with body len={}: {}",
                                 body_str.len(),
                                 &body_str[..body_str.len().min(200)]
                             );
@@ -291,9 +302,26 @@ fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
     let status_code =
         StatusCode::from_u16(status as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
-    Response::builder()
+    let mut builder = Response::builder()
         .status(status_code)
-        .header("Content-Type", CONTENT_TYPE_JSON)
+        .header("Content-Type", CONTENT_TYPE_JSON);
+
+    // Add CORS headers if CORS is configured (single source of truth via get_cors_config)
+    if let Ok(guard) = crate::middleware::get_cors_config().lock() {
+        if let Some(config) = guard.as_ref() {
+            builder = builder.header("Access-Control-Allow-Origin", config.origins.join(", "));
+            builder = builder.header("Access-Control-Allow-Methods", config.methods.join(", "));
+            builder = builder.header("Access-Control-Allow-Headers", config.headers.join(", "));
+            if config.credentials {
+                builder = builder.header("Access-Control-Allow-Credentials", "true");
+            }
+            if let Some(max_age) = config.max_age {
+                builder = builder.header("Access-Control-Max-Age", max_age.to_string());
+            }
+        }
+    }
+
+    builder
         .body(Full::new(Bytes::from(body.to_string())))
         .unwrap_or_else(|_| {
             Response::new(Full::new(Bytes::from(
