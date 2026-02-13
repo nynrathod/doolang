@@ -1,0 +1,11 @@
+[package]
+name = "doo_ffi_runtime"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tokio = { version = "1.49.0", features = ["full"] }
+doo_ffi_core = { path = "../doo_ffi_core" }
