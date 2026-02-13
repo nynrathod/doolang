@@ -1,0 +1,84 @@
+// =============================================================================
+// Process Module — Command execution and process management
+// =============================================================================
+//
+// Run commands synchronously or spawn long-running processes.
+// Process handles are returned as opaque strings (handle IDs).
+//
+// Usage:
+//   import std::Process::{Process, ProcessError};
+//
+//   // Run to completion:
+//   let result = Process::run("ls", "['-la']")?;
+//   print(result);  // JSON: {"exit_code":0,"stdout":"...","stderr":""}
+//
+//   // Get just stdout:
+//   let out = Process::output("echo", "[\"hello\"]")?;
+//   print(out);  // "hello"
+//
+//   // Spawn background process:
+//   let proc = Process::spawn("sleep", "[\"5\"]")?;
+//   let running = Process::isRunning(proc);
+//   Process::kill(proc)?;
+
+// Marker struct for namespace — Process::run(), Process::spawn(), etc.
+struct Process {}
+
+// Error type for process operations
+struct ProcessError {
+    Message: Str,
+}
+
+// ============================================================================
+// Associated Functions — Process::run, Process::spawn, Process::output
+// ============================================================================
+
+// Run a command to completion and return JSON result.
+// args_json: JSON array string, e.g. '["arg1", "arg2"]'
+// Returns JSON: {"exit_code": N, "stdout": "...", "stderr": "..."}
+@extern("doo_process", "doo_process_run")
+fn Process.run(cmd: Str, args_json: Str) -> Str ! ProcessError {}
+
+// Run a command and return just the stdout string (trimmed).
+// Fails if the command exits with non-zero status.
+@extern("doo_process", "doo_process_output")
+fn Process.output(cmd: Str, args_json: Str) -> Str ! ProcessError {}
+
+// Spawn a background process. Returns a handle ID string.
+// The process runs asynchronously; use kill/status/waitForOutput with the handle.
+@extern("doo_process", "doo_process_spawn")
+fn Process.spawn(cmd: Str, args_json: Str) -> Str ! ProcessError {}
+
+// Kill a spawned process by handle ID.
+@extern("doo_process", "doo_process_kill")
+fn Process.kill(handle: Str) -> Void ! ProcessError {}
+
+// Get the status of a spawned process as JSON.
+// Returns: {"status": "running"|"exited", "exit_code": N|null}
+@extern("doo_process", "doo_process_status")
+fn Process.status(handle: Str) -> Str ! ProcessError {}
+
+// Wait for a spawned process to complete and return its output.
+// Returns JSON: {"exit_code": N, "stdout": "...", "stderr": "..."}
+@extern("doo_process", "doo_process_wait_output")
+fn Process.waitForOutput(handle: Str) -> Str ! ProcessError {}
+
+// Check if a spawned process is still running.
+@extern("doo_process", "doo_process_is_running")
+fn Process.isRunning(handle: Str) -> Bool {}
+
+// Read buffered stdout from a spawned process.
+@extern("doo_process", "doo_process_read_stdout")
+fn Process.readStdout(handle: Str) -> Str ! ProcessError {}
+
+// Read buffered stderr from a spawned process.
+@extern("doo_process", "doo_process_read_stderr")
+fn Process.readStderr(handle: Str) -> Str ! ProcessError {}
+
+// Shut down all spawned processes (graceful cleanup).
+@extern("doo_process", "doo_process_shutdown")
+fn Process.shutdown() -> Void {}
+
+// Get count of active spawned processes.
+@extern("doo_process", "doo_process_active_count")
+fn Process.activeCount() -> Int {}
