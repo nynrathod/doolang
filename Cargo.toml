@@ -14,6 +14,8 @@ members = [
 	"ffi/doo_ffi_db",
 	"ffi/doo_ffi_auth",
 	"ffi/doo_ffi_file",
+	"ffi/doo_ffi_runtime",
+	"ffi/doo_ffi_process",
 ]
 resolver = "2"
 
@@ -58,11 +60,13 @@ ctrlc = "3.5"
 ureq = { version = "3.1", features = ["json"] }
 
 
-[lib]
-name = "doo"
-path = "src/lib.rs"
-crate-type = ["rlib", "cdylib"]
-
 [[bin]]
 name = "doo"
 path = "src/main.rs"
+
+[dev-dependencies]
+doo_frontend = { path = "crates/doo_frontend" }
+doo_hir = { path = "crates/doo_hir" }
+doo_analysis = { path = "crates/doo_analysis" }
+doo_mir = { path = "crates/doo_mir" }
+doo_codegen = { path = "crates/doo_codegen" }

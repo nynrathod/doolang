@@ -116,6 +116,31 @@ impl MirProgram {
         }
     }
 
+    /// Check if any function in the program uses async features.
+    /// Used by codegen to emit `doo_runtime_init()` in `main()`.
+    pub fn has_async_features(&self) -> bool {
+        self.functions.iter().any(|f| {
+            f.is_async
+                || f.blocks.iter().any(|b| {
+                    b.instructions.iter().any(|i| {
+                        matches!(
+                            &i.kind,
+                            MirInstrKind::Sleep { .. }
+                                | MirInstrKind::Await { .. }
+                                | MirInstrKind::Spawn { .. }
+                                | MirInstrKind::ScopeCreate { .. }
+                                | MirInstrKind::ScopeSpawn { .. }
+                                | MirInstrKind::ScopeWait { .. }
+                        ) || matches!(
+                            &i.kind,
+                            MirInstrKind::FfiCall { symbol, .. }
+                                if symbol.starts_with("doo_process_")
+                        )
+                    })
+                })
+        })
+    }
+
     /// Validate all functions
     pub fn validate(&self) -> Result<(), MirError> {
         for func in &self.functions {
@@ -176,6 +201,8 @@ pub struct MirFunction {
     pub span: Span,
     /// Whether this is a closure function (requires env param and i64 calling convention)
     pub is_closure: bool,
+    /// Whether this is an async function
+    pub is_async: bool,
 }
 
 /// Parameter definition
@@ -212,6 +239,7 @@ impl MirFunction {
             ffi: None,
             span: Span::default(),
             is_closure: false,
+            is_async: false,
         }
     }
 
@@ -714,6 +742,22 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Panic with message (abort program execution)
     Panic { message: MirOperand },
+
+    // ========================================================================
+    // Async & Concurrency
+    // ========================================================================
+    /// Sleep for N milliseconds: `sleep(ms)` — blocking
+    Sleep { ms: MirOperand },
+    /// Await a task handle: `await handle` → result
+    Await { dest: String, handle: MirOperand },
+    /// Spawn a task: `go { body }` → task handle
+    Spawn { dest: String, func: String },
+    /// Create an empty scope: `scope {` → scope handle
+    ScopeCreate { dest: String },
+    /// Spawn a task into a scope: `go { body }` inside scope
+    ScopeSpawn { scope: MirOperand, func: String },
+    /// Wait for all scope tasks to finish: `}` of scope → result
+    ScopeWait { dest: String, scope: MirOperand },
 }
 
 /// Binary operators
@@ -834,6 +878,10 @@ impl MirInstr {
             } => values.iter().collect(),
             MirInstrKind::TypeOf { value, .. } => vec![value],
             MirInstrKind::Panic { message } => vec![message],
+            MirInstrKind::Sleep { ms } => vec![ms],
+            MirInstrKind::Await { handle, .. } => vec![handle],
+            MirInstrKind::ScopeWait { scope, .. } => vec![scope],
+            MirInstrKind::ScopeSpawn { scope, .. } => vec![scope],
             _ => vec![],
         }
     }
@@ -875,6 +923,10 @@ impl MirInstr {
             | MirInstrKind::MethodCall { dest, .. }
             | MirInstrKind::FfiCall { dest, .. }
             | MirInstrKind::ClosureCall { dest, .. } => dest.as_ref(),
+            MirInstrKind::Await { dest, .. }
+            | MirInstrKind::Spawn { dest, .. }
+            | MirInstrKind::ScopeCreate { dest, .. }
+            | MirInstrKind::ScopeWait { dest, .. } => Some(dest),
             _ => None,
         }
     }

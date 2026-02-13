@@ -13,6 +13,7 @@ pub mod calls;
 pub mod enums;
 pub mod closures;
 pub mod casts;
+pub mod async_ops;
 
 use doo_core::doo_debug;
 
@@ -59,6 +60,7 @@ impl<'ctx> InstructionDispatcher<'ctx> {
                 Box::new(enums::EnumHandler),
                 Box::new(closures::ClosureHandler),
                 Box::new(casts::CastHandler),
+                Box::new(async_ops::AsyncOpsHandler),
             ],
         }
     }

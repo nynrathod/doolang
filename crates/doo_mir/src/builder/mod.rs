@@ -106,6 +106,10 @@ pub struct MirBuilder<'a> {
     /// e.g., "Postgres" -> "_method_Database_Postgres"
     /// This allows calling imported associated functions by their simple name.
     pub(crate) function_aliases: FxHashMap<String, String>,
+
+    /// Stack of active scope variable names.
+    /// When non-empty, `go { ... }` emits ScopeSpawn instead of Spawn.
+    pub(crate) scope_stack: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +140,7 @@ impl<'a> MirBuilder<'a> {
             closure_return_types: FxHashMap::default(),
             ffi_functions: FxHashMap::default(),
             function_aliases: FxHashMap::default(),
+            scope_stack: Vec::new(),
         }
     }
 
@@ -163,6 +168,7 @@ impl<'a> MirBuilder<'a> {
             closure_return_types: FxHashMap::default(),
             ffi_functions: FxHashMap::default(),
             function_aliases: FxHashMap::default(),
+            scope_stack: Vec::new(),
         }
     }
 
@@ -196,7 +202,9 @@ impl<'a> MirBuilder<'a> {
                         doo_debug!(
                             "MIR",
                             "Registered Result function: {} (ok={:?}, err={:?})",
-                            f.name, return_type, error_type
+                            f.name,
+                            return_type,
+                            error_type
                         );
                     }
                     // Also store the return type for the temp type (will be the ok value for unwrapping)
@@ -205,6 +213,11 @@ impl<'a> MirBuilder<'a> {
                 } else if let Some(return_type) = f.return_type {
                     self.function_return_types
                         .insert(f.name.clone(), return_type);
+                } else {
+                    // Void functions with no error type — still register so is_function_name() works
+                    // (needed when void functions are passed as FuncRef, e.g. WS event handlers)
+                    self.function_return_types
+                        .insert(f.name.clone(), builtin::VOID);
                 }
 
                 // Collect parameter types for type-aware argument building
@@ -221,7 +234,9 @@ impl<'a> MirBuilder<'a> {
                         doo_debug!(
                             "MIR",
                             "Registered FFI function: {} -> lib={} sym={}",
-                            f.name, ffi_info.library, ffi_info.symbol
+                            f.name,
+                            ffi_info.library,
+                            ffi_info.symbol
                         );
                     }
                     self.ffi_functions.insert(f.name.clone(), ffi_info);
@@ -240,7 +255,8 @@ impl<'a> MirBuilder<'a> {
                                 doo_debug!(
                                     "MIR",
                                     "Registered function alias: {} -> {}",
-                                    simple_name, f.name
+                                    simple_name,
+                                    f.name
                                 );
                             }
                         }
@@ -405,9 +421,11 @@ impl<'a> MirBuilder<'a> {
                         for instr in &block.instructions {
                             if let crate::MirInstrKind::BinaryOp { op, .. } = &instr.kind {
                                 match op {
-                                    crate::BinaryOp::Add | crate::BinaryOp::Sub |
-                                    crate::BinaryOp::Mul | crate::BinaryOp::Div |
-                                    crate::BinaryOp::Mod => {
+                                    crate::BinaryOp::Add
+                                    | crate::BinaryOp::Sub
+                                    | crate::BinaryOp::Mul
+                                    | crate::BinaryOp::Div
+                                    | crate::BinaryOp::Mod => {
                                         return_type = builtin::FLOAT;
                                         break;
                                     }
@@ -465,6 +483,7 @@ impl<'a> MirBuilder<'a> {
             .collect();
         func.return_type = hir.return_type;
         func.error_type = hir.error_type;
+        func.is_async = hir.is_async;
 
         // Set FFI linkage info if this is an FFI function
         if let Some(ffi_info) = self.ffi_functions.get(&hir.name) {

@@ -29,6 +29,8 @@ impl Expr {
                 | ExprKind::Block(_, _)
                 | ExprKind::StructLit { .. }
                 | ExprKind::RouteBlock { .. }
+                | ExprKind::GoSpawn { .. }
+                | ExprKind::ScopeBlock { .. }
         )
     }
 }
@@ -162,6 +164,14 @@ pub enum ExprKind {
     /// Route block: `{ get("/path", Handler), post("/path", Handler) }`
     /// Used in app.group() for inline route definitions
     RouteBlock { routes: Vec<Expr> },
+
+    // === Async & Concurrency ===
+    /// Await expression: `await expr`
+    Await(Box<Expr>),
+    /// Go spawn: `go { ... }` — spawns a concurrent task, returns TaskHandle
+    GoSpawn { body: Box<Expr> },
+    /// Structured scope: `scope { ... }` — all inner `go` blocks joined before exit
+    ScopeBlock { body: Vec<super::Stmt> },
 }
 
 /// Binary operators.

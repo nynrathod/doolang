@@ -522,6 +522,7 @@ fn extract_closures_from_expr(expr: &mut Expr, generated: &mut Vec<FunctionDecl>
                         receiver: None,
                         associated_type: None,
                         is_expr_fn: false,
+                        is_async: false,
                         span: body.span,
                     };
 

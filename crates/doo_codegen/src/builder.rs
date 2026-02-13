@@ -307,6 +307,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Declare FFI runtime functions
         self.declare_runtime_functions(&mut ctx);
 
+        // Check if async features are used — sets flag for main() runtime init
+        ctx.has_async = mir.has_async_features();
+
         let dispatcher = InstructionDispatcher::new();
 
         // Pre-pass: declare all struct types from the type registry
@@ -620,6 +623,13 @@ impl<'ctx> CodegenBuilder<'ctx> {
             .copied()
             .unwrap_or_else(|| ctx.context.append_basic_block(llvm_func, "entry"));
         ctx.builder.position_at_end(entry_bb);
+
+        // If this is main() and async features are used, emit doo_runtime_init()
+        let func_name = llvm_func.get_name().to_str().unwrap_or("");
+        if func_name == "main" && ctx.has_async {
+            let init_fn = crate::instructions::async_ops::get_or_declare_doo_runtime_init(ctx);
+            let _ = ctx.builder.build_call(init_fn, &[], "runtime_init");
+        }
 
         // For closures, first LLVM param is env_ptr (skip it when mapping to MIR params)
         // Closure params now use actual types (no i64 conversion needed)

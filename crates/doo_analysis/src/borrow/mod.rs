@@ -410,6 +410,16 @@ impl BorrowChecker {
                 self.check_expr(value, false);
             }
 
+            // Async & concurrency
+            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
+                self.check_expr(inner, false);
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.check_stmt(s);
+                }
+            }
+
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
     }

@@ -286,6 +286,17 @@ impl<'a> DropInserter<'a> {
             HirExprKind::Cast { value, .. } => {
                 self.scan_expr_for_uses(value);
             }
+
+            // Async & concurrency
+            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
+                self.scan_expr_for_uses(inner);
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.scan_stmt_for_uses(s);
+                }
+            }
+
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
     }

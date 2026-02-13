@@ -28,6 +28,8 @@ pub struct FunctionDecl {
     pub associated_type: Option<String>,
     /// Is this an expression function (uses =>)?
     pub is_expr_fn: bool,
+    /// Is this an async function (`async fn`)?
+    pub is_async: bool,
     /// Source location.
     pub span: Span,
 }
@@ -50,6 +52,7 @@ impl FunctionDecl {
             receiver: None,
             associated_type: None,
             is_expr_fn: false,
+            is_async: false,
             span,
         }
     }

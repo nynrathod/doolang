@@ -148,6 +148,38 @@ impl ParserExpr for Parser {
             TokenKind::Ok => parse_ok(self, start),
             TokenKind::Err => parse_err(self, start),
 
+            // === Async & Concurrency ===
+            TokenKind::Await => {
+                self.advance();
+                let expr = self.parse_unary()?;
+                let expr = self.parse_postfix(expr)?;
+                Ok(Expr::new(
+                    ExprKind::Await(Box::new(expr)),
+                    start.merge(&self.prev_span()),
+                ))
+            }
+            TokenKind::Go => {
+                self.advance();
+                let body = parse_block(self, self.current_span())?;
+                Ok(Expr::new(
+                    ExprKind::GoSpawn { body: Box::new(body) },
+                    start.merge(&self.prev_span()),
+                ))
+            }
+            TokenKind::Scope => {
+                self.advance();
+                self.expect(TokenKind::LBrace)?;
+                let mut stmts = Vec::new();
+                while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+                    stmts.push(self.parse_statement()?);
+                }
+                self.expect(TokenKind::RBrace)?;
+                Ok(Expr::new(
+                    ExprKind::ScopeBlock { body: stmts },
+                    start.merge(&self.prev_span()),
+                ))
+            }
+
             _ => {
                 // Distinguish operator-like tokens from general invalid expressions
                 let (code, msg) = match self.current().kind {

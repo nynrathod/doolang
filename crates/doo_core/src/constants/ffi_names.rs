@@ -34,6 +34,10 @@ pub const MODULE_RANDOM: &str = "Random";
 pub const MODULE_ARRAY: &str = "Array";
 /// Console module for console I/O
 pub const MODULE_CONSOLE: &str = "Console";
+/// WebSocket module for WebSocket server operations
+pub const MODULE_WEBSOCKET: &str = "WebSocket";
+/// Process module for command/process execution
+pub const MODULE_PROCESS: &str = "Process";
 
 /// All built-in module names in a static array for iteration/lookup
 pub const BUILTIN_MODULES: &[&str] = &[
@@ -46,6 +50,8 @@ pub const BUILTIN_MODULES: &[&str] = &[
     MODULE_RANDOM,
     MODULE_ARRAY,
     MODULE_CONSOLE,
+    MODULE_WEBSOCKET,
+    MODULE_PROCESS,
 ];
 
 /// Check if a name is a built-in module
@@ -150,6 +156,7 @@ pub const DOO_JSON_IS_UNIT_VARIANT: &str = "doo_json_is_unit_variant";
 
 pub const DOO_HTTP_SERVER_NEW: &str = "doo_http_server_new";
 pub const DOO_HTTP_SERVER_LISTEN: &str = "doo_http_server_listen";
+pub const DOO_HTTP_GET_SERVER_INSTANCE: &str = "doo_http_get_server_instance";
 pub const DOO_HTTP_REGISTER_ROUTE: &str = "doo_http_register_route";
 pub const DOO_HTTP_REGISTER_WITH_MIDDLEWARE: &str = "doo_http_register_with_middleware";
 pub const DOO_HTTP_GROUP: &str = "doo_http_group";
@@ -325,12 +332,63 @@ pub fn is_self_returning_method(method: &str) -> bool {
 // and re-exported here for compiler crates to use.
 
 pub use doo_ffi_core::constants::{
-    is_auth_middleware, is_builtin_middleware, is_middleware_identifier_func,
-    BUILTIN_MIDDLEWARES, DOO_JWT_FUNC_NAME, MIDDLEWARE_CORS, MIDDLEWARE_JWT,
-    MIDDLEWARE_RATELIMIT,
+    is_auth_middleware, is_builtin_middleware, is_middleware_identifier_func, BUILTIN_MIDDLEWARES,
+    DOO_JWT_FUNC_NAME, MIDDLEWARE_CORS, MIDDLEWARE_JWT, MIDDLEWARE_RATELIMIT,
 };
 
 /// Auth middleware name (legacy, kept for compatibility)
 pub const MIDDLEWARE_AUTH: &str = "auth";
 /// Rate limit middleware name (legacy alias)
 pub const MIDDLEWARE_RATE_LIMIT: &str = MIDDLEWARE_RATELIMIT;
+
+// ============================================================================
+// Doo WebSocket FFI (doo_ffi_websocket) - Single Source of Truth
+// ============================================================================
+
+// Route registration
+pub const DOO_WS_ROUTE: &str = "doo_ws_route";
+pub const DOO_WS_INIT: &str = "doo_ws_init";
+pub const DOO_WS_CONFIG: &str = "doo_ws_config";
+pub const DOO_WS_SHUTDOWN: &str = "doo_ws_shutdown";
+pub const DOO_WS_ACTIVE_CONNECTIONS: &str = "doo_ws_active_connections";
+
+// Connection operations
+pub const DOO_WS_CONN_ID: &str = "doo_ws_conn_id";
+pub const DOO_WS_CONN_EMIT: &str = "doo_ws_conn_emit";
+pub const DOO_WS_CONN_EMIT_BINARY: &str = "doo_ws_conn_emit_binary";
+pub const DOO_WS_CONN_JOIN: &str = "doo_ws_conn_join";
+pub const DOO_WS_CONN_LEAVE: &str = "doo_ws_conn_leave";
+pub const DOO_WS_CONN_CLOSE: &str = "doo_ws_conn_close";
+pub const DOO_WS_CONN_IS_CLOSED: &str = "doo_ws_conn_is_closed";
+pub const DOO_WS_CONN_ON: &str = "doo_ws_conn_on";
+pub const DOO_WS_CONN_ON_CONNECT: &str = "doo_ws_conn_on_connect";
+pub const DOO_WS_CONN_ON_DISCONNECT: &str = "doo_ws_conn_on_disconnect";
+pub const DOO_WS_CONN_ON_ERROR: &str = "doo_ws_conn_on_error";
+
+// WebSocket route check (used by HTTP server)
+pub const DOO_WS_IS_WS_ROUTE: &str = "doo_ws_is_ws_route";
+
+// Broadcast & room operations
+pub const DOO_WS_BROADCAST: &str = "doo_ws_broadcast";
+pub const DOO_WS_ROOM_EMIT: &str = "doo_ws_room_emit";
+
+// ============================================================================
+// Doo Process FFI (doo_ffi_process) - Single Source of Truth
+// ============================================================================
+
+// Synchronous command execution
+pub const DOO_PROCESS_RUN: &str = "doo_process_run";
+pub const DOO_PROCESS_OUTPUT: &str = "doo_process_output";
+
+// Async spawn / handle
+pub const DOO_PROCESS_SPAWN: &str = "doo_process_spawn";
+pub const DOO_PROCESS_KILL: &str = "doo_process_kill";
+pub const DOO_PROCESS_STATUS: &str = "doo_process_status";
+pub const DOO_PROCESS_WAIT_OUTPUT: &str = "doo_process_wait_output";
+pub const DOO_PROCESS_IS_RUNNING: &str = "doo_process_is_running";
+pub const DOO_PROCESS_READ_STDOUT: &str = "doo_process_read_stdout";
+pub const DOO_PROCESS_READ_STDERR: &str = "doo_process_read_stderr";
+
+// Lifecycle
+pub const DOO_PROCESS_SHUTDOWN: &str = "doo_process_shutdown";
+pub const DOO_PROCESS_ACTIVE_COUNT: &str = "doo_process_active_count";

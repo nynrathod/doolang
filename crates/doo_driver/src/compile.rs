@@ -746,6 +746,10 @@ fn normalize_ffi_lib_name(name: &str) -> String {
         "doo_file" => "doo_ffi_file".to_string(),
         "doo_json" => "doo_ffi_json".to_string(),
         "doo_core" => "doo_ffi_core".to_string(),
+        // WS symbols live inside doo_ffi_http — no separate crate
+        "doo_ws" | "doo_websocket" => "doo_ffi_http".to_string(),
+        // Process module
+        "doo_process" => "doo_ffi_process".to_string(),
         // Already normalized or unknown - pass through
         _ if name.starts_with("doo_ffi_") => name.to_string(),
         _ => name.to_string(),
@@ -788,6 +792,19 @@ fn link_object_file(
         ffi_libs.insert("doo_ffi_auth".to_string());
     }
 
+    // Detect WebSocket usage (WS is part of doo_ffi_http, not a separate crate)
+    let has_ws = mir_program.functions.iter().any(|f| {
+        f.ffi
+            .as_ref()
+            .map(|l| l.library == "doo_ffi_http" || l.library == "doo_ws" || l.library == "doo_http")
+            .unwrap_or(false)
+            && f.name.contains("ws")
+    });
+    if has_ws {
+        ffi_libs.insert("doo_ffi_http".to_string());
+        ffi_libs.insert("doo_ffi_runtime".to_string());
+    }
+
     // Detect database usage
     let has_db = mir_program.functions.iter().any(|f| {
         f.ffi
@@ -798,6 +815,24 @@ fn link_object_file(
     });
     if has_db {
         ffi_libs.insert("doo_ffi_db".to_string());
+    }
+
+    // Detect async/concurrency usage — link doo_ffi_runtime
+    let has_async = mir_program.has_async_features();
+    if has_async || has_http {
+        ffi_libs.insert("doo_ffi_runtime".to_string());
+    }
+
+    // Detect process usage — link doo_ffi_process + doo_ffi_runtime
+    let has_process = mir_program.functions.iter().any(|f| {
+        f.ffi
+            .as_ref()
+            .map(|l| l.library == "doo_ffi_process" || l.library == "doo_process")
+            .unwrap_or(false)
+    });
+    if has_process {
+        ffi_libs.insert("doo_ffi_process".to_string());
+        ffi_libs.insert("doo_ffi_runtime".to_string());
     }
 
     // Build search paths
@@ -1097,6 +1132,7 @@ fn link_unix(
         "doo_auth",
         "doo_db",
         "doo_file",
+        "doo_process",
         "doo_runtime",
         "doo",
     ];
@@ -1497,6 +1533,7 @@ mod tests {
                 }],
                 span: test_span(),
                 decorators: vec![],
+                is_async: false,
             })],
             span: test_span(),
         };
@@ -1566,6 +1603,7 @@ mod tests {
                 ],
                 span: test_span(),
                 decorators: vec![],
+                is_async: false,
             })],
             span: test_span(),
         };

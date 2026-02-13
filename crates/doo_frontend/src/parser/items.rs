@@ -34,6 +34,13 @@ impl ParserItems for Parser {
                 func.decorators = decorators;
                 Ok(Item::Function(func))
             }
+            TokenKind::Async => {
+                // async fn — consume `async`, then parse the function
+                let mut func = self.parse_function()?;
+                func.is_async = true;
+                func.decorators = decorators;
+                Ok(Item::Function(func))
+            }
             TokenKind::Struct => {
                 let mut s = self.parse_struct()?;
                 s.decorators = decorators;
@@ -121,6 +128,15 @@ impl ParserItems for Parser {
 
     fn parse_function(&mut self) -> ParseResult<FunctionDecl> {
         let start = self.current_span();
+
+        // Handle `async fn` — consume `async` if present
+        let is_async = if self.check(TokenKind::Async) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         self.expect(TokenKind::Fn)?;
 
         // Check for associated type: fn TypeName.methodName
@@ -226,6 +242,7 @@ impl ParserItems for Parser {
             receiver,
             associated_type,
             is_expr_fn,
+            is_async,
             span: start.merge(&end),
         })
     }

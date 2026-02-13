@@ -87,6 +87,12 @@ impl<'a> Lexer<'a> {
         map.insert("true", TokenKind::True);
         map.insert("false", TokenKind::False);
 
+        // Async & concurrency
+        map.insert("async", TokenKind::Async);
+        map.insert("await", TokenKind::Await);
+        map.insert("go", TokenKind::Go);
+        map.insert("scope", TokenKind::Scope);
+
         map
     }
 

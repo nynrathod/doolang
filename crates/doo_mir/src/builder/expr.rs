@@ -329,6 +329,15 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     span,
                 );
                 MirOperand::Const(MirConst::Nil)
+            // Intrinsic: sleep(ms) -> MirInstrKind::Sleep
+            } else if func_name == "sleep" && args.len() == 1 {
+                builder.emit(
+                    MirInstrKind::Sleep {
+                        ms: arg_ops.into_iter().next().unwrap(),
+                    },
+                    span,
+                );
+                MirOperand::Const(MirConst::Nil)
             // Intrinsic: typeOf(x) -> MirInstrKind::TypeOf
             } else if func_name == "typeOf" && args.len() == 1 {
                 let dest = builder.new_temp();
@@ -1740,6 +1749,105 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 span,
             );
             MirOperand::Temp(dest)
+        }
+
+        // === Async & Concurrency ===
+        HirExprKind::Await(inner) => {
+            // In Doo's compiled model, async fns run synchronously.
+            // `await someFunc()` just calls the function — no TaskHandle to join.
+            // Only emit MirInstrKind::Await when awaiting a variable (task handle from `go {}`).
+            match &inner.kind {
+                HirExprKind::Call { .. } | HirExprKind::MethodCall { .. } => {
+                    // Function call — runs synchronously, await is pass-through
+                    builder.build_expr(inner)
+                }
+                _ => {
+                    // Variable or other expression — likely a TaskHandle, emit real await
+                    let handle = builder.build_expr(inner);
+                    let dest = builder.new_temp();
+                    let span = builder.convert_span(expr.span);
+                    builder.emit(
+                        MirInstrKind::Await {
+                            dest: dest.clone(),
+                            handle,
+                        },
+                        span,
+                    );
+                    MirOperand::Temp(dest)
+                }
+            }
+        }
+
+        HirExprKind::Spawn { body } => {
+            // Spawn wraps body into a closure-like function,
+            // then emits a Spawn or ScopeSpawn instruction.
+            let closure_name = format!("__spawn_{}", builder.closure_counter);
+            builder.closure_counter += 1;
+            builder
+                .pending_closures
+                .push((closure_name.clone(), Vec::new(), body.clone()));
+            let span = builder.convert_span(expr.span);
+
+            // If we're inside a scope, emit ScopeSpawn (tracked by scope_stack)
+            if let Some(scope_var) = builder.scope_stack.last().cloned() {
+                builder.emit(
+                    MirInstrKind::ScopeSpawn {
+                        scope: MirOperand::Temp(scope_var),
+                        func: closure_name,
+                    },
+                    span,
+                );
+                // ScopeSpawn is void — return a dummy empty result
+                let dest = builder.new_temp();
+                builder.emit(
+                    MirInstrKind::Assign {
+                        dest: dest.clone(),
+                        value: MirOperand::Const(crate::types::MirConst::Int(0)),
+                    },
+                    span,
+                );
+                MirOperand::Temp(dest)
+            } else {
+                // Regular spawn — returns a TaskHandle
+                let dest = builder.new_temp();
+                builder.emit(
+                    MirInstrKind::Spawn {
+                        dest: dest.clone(),
+                        func: closure_name,
+                    },
+                    span,
+                );
+                MirOperand::Temp(dest)
+            }
+        }
+
+        HirExprKind::ScopeBlock { stmts } => {
+            let scope_dest = builder.new_temp();
+            let span = builder.convert_span(expr.span);
+            builder.emit(
+                MirInstrKind::ScopeCreate {
+                    dest: scope_dest.clone(),
+                },
+                span,
+            );
+            // Push scope onto stack so inner `go { }` emits ScopeSpawn
+            builder.scope_stack.push(scope_dest.clone());
+            // Build all statements inside the scope
+            for s in stmts {
+                builder.build_stmt(s);
+            }
+            // Pop scope stack
+            builder.scope_stack.pop();
+            // Wait for all scope tasks
+            let result_dest = builder.new_temp();
+            builder.emit(
+                MirInstrKind::ScopeWait {
+                    dest: result_dest.clone(),
+                    scope: MirOperand::Temp(scope_dest),
+                },
+                span,
+            );
+            MirOperand::Temp(result_dest)
         }
     }
 }

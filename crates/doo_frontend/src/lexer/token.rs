@@ -96,6 +96,16 @@ pub enum TokenKind {
     /// `false`
     False,
 
+    // === Async & Concurrency ===
+    /// `async`
+    Async,
+    /// `await`
+    Await,
+    /// `go`
+    Go,
+    /// `scope`
+    Scope,
+
     // === Literals ===
     /// Integer literal: `123`, `0`, `-42`
     Integer,
@@ -244,6 +254,10 @@ impl TokenKind {
             Self::Match => Some("match"),
             Self::True => Some("true"),
             Self::False => Some("false"),
+            Self::Async => Some("async"),
+            Self::Await => Some("await"),
+            Self::Go => Some("go"),
+            Self::Scope => Some("scope"),
             _ => None,
         }
     }
@@ -328,6 +342,10 @@ impl TokenKind {
             Self::Match => "`match`",
             Self::True => "`true`",
             Self::False => "`false`",
+            Self::Async => "`async`",
+            Self::Await => "`await`",
+            Self::Go => "`go`",
+            Self::Scope => "`scope`",
             Self::Integer => "integer",
             Self::Float => "float",
             Self::String => "string",

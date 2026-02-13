@@ -224,6 +224,17 @@ pub trait HirVisitor {
             HirExprKind::Cast { value, .. } => {
                 self.visit_expr(value);
             }
+            HirExprKind::Await(inner) => {
+                self.visit_expr(inner);
+            }
+            HirExprKind::Spawn { body, .. } => {
+                self.visit_expr(body);
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for stmt in stmts {
+                    self.visit_stmt(stmt);
+                }
+            }
         }
     }
 
@@ -445,6 +456,17 @@ pub trait HirVisitorMut {
             }
             HirExprKind::Cast { value, .. } => {
                 self.visit_expr_mut(value);
+            }
+            HirExprKind::Await(inner) => {
+                self.visit_expr_mut(inner);
+            }
+            HirExprKind::Spawn { body, .. } => {
+                self.visit_expr_mut(body);
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for stmt in stmts {
+                    self.visit_stmt_mut(stmt);
+                }
             }
         }
     }

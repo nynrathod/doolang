@@ -371,6 +371,16 @@ impl<'a> ErrorFlowChecker<'a> {
                 }
             }
 
+            // Async & concurrency
+            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
+                self.check_expr(inner);
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.check_stmt(s);
+                }
+            }
+
             // Terminal expressions - no recursion needed
             HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}
         }

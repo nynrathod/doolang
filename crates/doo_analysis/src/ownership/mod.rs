@@ -467,6 +467,17 @@ impl OwnershipAnalyzer {
             HirExprKind::Cast { value, .. } => {
                 self.count_uses_in_expr(value);
             }
+
+            // Async & concurrency
+            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
+                self.count_uses_in_expr(inner);
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.count_uses_in_stmt(s);
+                }
+            }
+
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
     }
@@ -691,6 +702,17 @@ impl OwnershipAnalyzer {
             HirExprKind::Cast { value, .. } => {
                 self.analyze_expr(value);
             }
+
+            // Async & concurrency
+            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
+                self.analyze_expr(inner);
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.analyze_stmt(s);
+                }
+            }
+
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
     }

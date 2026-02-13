@@ -83,6 +83,17 @@ fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicVal
         .builder
         .build_call(printf, &[panic_fmt.into(), msg_ptr.into()], "print_panic");
 
+    // Flush stdout to ensure panic message is visible before exit
+    let fflush_type = ctx.i32_type().fn_type(&[ctx.ptr_type().into()], false);
+    let fflush_fn = ctx
+        .module
+        .get_function("fflush")
+        .unwrap_or_else(|| ctx.module.add_function("fflush", fflush_type, None));
+    let null_ptr = ctx.ptr_type().const_null();
+    let _ = ctx
+        .builder
+        .build_call(fflush_fn, &[null_ptr.into()], "flush_before_exit");
+
     // Get or declare exit
     let exit_type = ctx
         .context

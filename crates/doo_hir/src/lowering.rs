@@ -268,6 +268,14 @@ impl Lower {
             HirExprKind::Cast { value, .. } => {
                 self.substitute_local_in_expr(value, old_name, new_name);
             }
+            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
+                self.substitute_local_in_expr(inner, old_name, new_name);
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.substitute_local_in_stmt(s, old_name, new_name);
+                }
+            }
             // Literals and constants don't have local references
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
         }
@@ -443,6 +451,7 @@ impl Lower {
             error_type: None,
             body,
             decorators,
+            is_async: f.is_async,
             span: f.span,
         }
     }
@@ -532,6 +541,7 @@ impl Lower {
                 .map(|t| self.resolve_type_expr(t, registry)),
             body,
             decorators,
+            is_async: f.is_async,
             span: f.span,
         }
     }
@@ -1664,6 +1674,17 @@ impl Lower {
                 routes: routes.iter().map(|r| self.lower_expr(r)).collect(),
             },
 
+            // === Async & Concurrency ===
+            ExprKind::Await(inner) => {
+                HirExprKind::Await(Box::new(self.lower_expr(inner)))
+            }
+            ExprKind::GoSpawn { body } => HirExprKind::Spawn {
+                body: Box::new(self.lower_expr(body)),
+            },
+            ExprKind::ScopeBlock { body } => HirExprKind::ScopeBlock {
+                stmts: body.iter().map(|s| self.lower_stmt(s)).collect(),
+            },
+
             ExprKind::StringInterpolation(parts) => {
                 // Desugar: "a ${b} c" -> "a" + (b as Str) + "c"
                 if parts.is_empty() {
@@ -2034,6 +2055,17 @@ impl Lower {
                     .iter()
                     .map(|r| self.lower_expr_typed(r, registry))
                     .collect(),
+            },
+
+            // === Async & Concurrency ===
+            ExprKind::Await(inner) => {
+                HirExprKind::Await(Box::new(self.lower_expr_typed(inner, registry)))
+            }
+            ExprKind::GoSpawn { body } => HirExprKind::Spawn {
+                body: Box::new(self.lower_expr_typed(body, registry)),
+            },
+            ExprKind::ScopeBlock { body } => HirExprKind::ScopeBlock {
+                stmts: body.iter().map(|s| self.lower_stmt_typed(s, registry)).collect(),
             },
 
             ExprKind::StringInterpolation(parts) => {

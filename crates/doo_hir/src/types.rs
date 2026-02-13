@@ -229,6 +229,14 @@ pub enum HirExprKind {
         value: Box<HirExpr>,
         to_type: TypeId,
     },
+
+    // === Async & Concurrency ===
+    /// Await expression: `await expr`
+    Await(Box<HirExpr>),
+    /// Go spawn: `go { ... }`
+    Spawn { body: Box<HirExpr> },
+    /// Structured scope: `scope { ... }`
+    ScopeBlock { stmts: Vec<HirStmt> },
 }
 
 /// Binary operators (simplified set).
@@ -393,6 +401,7 @@ pub struct HirFunction {
     pub error_type: Option<TypeId>,
     pub body: Vec<HirStmt>,
     pub decorators: Vec<HirDecorator>,
+    pub is_async: bool,
     pub span: Span,
 }
 

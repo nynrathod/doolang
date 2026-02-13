@@ -160,6 +160,13 @@ pub struct CodegenContext<'ctx> {
     /// When an array is created, tracks the individual element temps so
     /// mixed-type arrays can be serialized by checking each element.
     pub array_element_temps: FxHashMap<String, Vec<String>>,
+
+    // ========================================================================
+    // Async Features Flag
+    // ========================================================================
+    /// Whether the program uses async features (set during build).
+    /// When true, codegen emits `doo_runtime_init()` at the start of main().
+    pub has_async: bool,
 }
 
 impl<'ctx> CodegenContext<'ctx> {
@@ -197,6 +204,7 @@ impl<'ctx> CodegenContext<'ctx> {
             ffi_symbols: FxHashMap::default(),
             array_element_types: FxHashMap::default(),
             array_element_temps: FxHashMap::default(),
+            has_async: false,
         }
     }
 
