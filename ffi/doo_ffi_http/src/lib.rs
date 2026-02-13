@@ -13,6 +13,7 @@ mod middleware;
 mod router;
 mod server;
 mod types;
+pub mod ws;
 
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr};
@@ -133,6 +134,19 @@ fn call_db_query_with_params(sql: *const c_char, params: *const c_char) -> *mut 
 // SERVER LIFECYCLE
 // ============================================================================
 
+/// Global server instance pointer — accessible to handler wrappers that need `app: Server`.
+static GLOBAL_SERVER_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Get the global server instance pointer. Called by codegen-generated handler
+/// wrappers when a user handler has `app: Server` parameter.
+#[no_mangle]
+pub extern "C" fn doo_http_get_server_instance() -> *const c_void {
+    GLOBAL_SERVER_PTR
+        .get()
+        .map(|p| *p as *const c_void)
+        .unwrap_or(std::ptr::null())
+}
+
 #[no_mangle]
 pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut c_void {
     let host_port_str = if host_port.is_null() {
@@ -167,6 +181,9 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut c_void {
 
 #[no_mangle]
 pub extern "C" fn doo_http_listen(server_ptr: *const c_void) -> *mut DooResult {
+    // Store global server pointer for handler wrappers with `app: Server` param
+    let _ = GLOBAL_SERVER_PTR.set(server_ptr as usize);
+
     let (host, port) = if server_ptr.is_null() {
         ("0.0.0.0".to_string(), 3000u16)
     } else {
@@ -1039,15 +1056,16 @@ fn validate_item_against_schema(
                         let mut fields = std::collections::HashMap::new();
                         fields.insert(
                             field_meta.name.clone(),
-                            doo_ffi_core::FieldError::new(&field_meta.name, format!("Must be one of: {}", variants.join(", ")))
-                                .with_rule(format!("enum:{}", variants.join("|")))
-                                .with_value(str_val),
+                            doo_ffi_core::FieldError::new(
+                                &field_meta.name,
+                                format!("Must be one of: {}", variants.join(", ")),
+                            )
+                            .with_rule(format!("enum:{}", variants.join("|")))
+                            .with_value(str_val),
                         );
-                        return Err(
-                            Rfc7807Error::validation_error(fields)
-                                .with_instance(path)
-                                .to_json()
-                        );
+                        return Err(Rfc7807Error::validation_error(fields)
+                            .with_instance(path)
+                            .to_json());
                     }
                 }
             }
@@ -1081,11 +1099,9 @@ fn validate_decorator(
                         .with_rule("email")
                         .with_value(s),
                 );
-                return Err(
-                    Rfc7807Error::validation_error(fields)
-                        .with_instance(path)
-                        .to_json()
-                );
+                return Err(Rfc7807Error::validation_error(fields)
+                    .with_instance(path)
+                    .to_json());
             }
         }
     } else if decorator.starts_with("min(") && decorator.ends_with(')') {
@@ -1096,30 +1112,32 @@ fn validate_decorator(
                     let mut fields = std::collections::HashMap::new();
                     fields.insert(
                         field_name.to_string(),
-                        doo_ffi_core::FieldError::new(field_name, format!("Must be at least {} characters", min_val))
-                            .with_rule(format!("min:{}", min_val))
-                            .with_value(s),
+                        doo_ffi_core::FieldError::new(
+                            field_name,
+                            format!("Must be at least {} characters", min_val),
+                        )
+                        .with_rule(format!("min:{}", min_val))
+                        .with_value(s),
                     );
-                    return Err(
-                        Rfc7807Error::validation_error(fields)
-                            .with_instance(path)
-                            .to_json()
-                    );
+                    return Err(Rfc7807Error::validation_error(fields)
+                        .with_instance(path)
+                        .to_json());
                 }
             } else if let Some(n) = value.as_i64() {
                 if n < min_val {
                     let mut fields = std::collections::HashMap::new();
                     fields.insert(
                         field_name.to_string(),
-                        doo_ffi_core::FieldError::new(field_name, format!("Must be at least {}", min_val))
-                            .with_rule(format!("min:{}", min_val))
-                            .with_value(n.to_string()),
+                        doo_ffi_core::FieldError::new(
+                            field_name,
+                            format!("Must be at least {}", min_val),
+                        )
+                        .with_rule(format!("min:{}", min_val))
+                        .with_value(n.to_string()),
                     );
-                    return Err(
-                        Rfc7807Error::validation_error(fields)
-                            .with_instance(path)
-                            .to_json()
-                    );
+                    return Err(Rfc7807Error::validation_error(fields)
+                        .with_instance(path)
+                        .to_json());
                 }
             }
         }
@@ -1131,30 +1149,32 @@ fn validate_decorator(
                     let mut fields = std::collections::HashMap::new();
                     fields.insert(
                         field_name.to_string(),
-                        doo_ffi_core::FieldError::new(field_name, format!("Maximum {} characters allowed", max_val))
-                            .with_rule(format!("max:{}", max_val))
-                            .with_value(s),
+                        doo_ffi_core::FieldError::new(
+                            field_name,
+                            format!("Maximum {} characters allowed", max_val),
+                        )
+                        .with_rule(format!("max:{}", max_val))
+                        .with_value(s),
                     );
-                    return Err(
-                        Rfc7807Error::validation_error(fields)
-                            .with_instance(path)
-                            .to_json()
-                    );
+                    return Err(Rfc7807Error::validation_error(fields)
+                        .with_instance(path)
+                        .to_json());
                 }
             } else if let Some(n) = value.as_i64() {
                 if n > max_val {
                     let mut fields = std::collections::HashMap::new();
                     fields.insert(
                         field_name.to_string(),
-                        doo_ffi_core::FieldError::new(field_name, format!("Maximum {} allowed", max_val))
-                            .with_rule(format!("max:{}", max_val))
-                            .with_value(n.to_string()),
+                        doo_ffi_core::FieldError::new(
+                            field_name,
+                            format!("Maximum {} allowed", max_val),
+                        )
+                        .with_rule(format!("max:{}", max_val))
+                        .with_value(n.to_string()),
                     );
-                    return Err(
-                        Rfc7807Error::validation_error(fields)
-                            .with_instance(path)
-                            .to_json()
-                    );
+                    return Err(Rfc7807Error::validation_error(fields)
+                        .with_instance(path)
+                        .to_json());
                 }
             }
         }
@@ -3201,9 +3221,8 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 serde_json::Value::Number(n) => n.to_string(),
                                 _ => value.to_string(),
                             };
-                            let err =
-                                FieldError::type_mismatch(field_type, received_type)
-                                    .with_value(value_str);
+                            let err = FieldError::type_mismatch(field_type, received_type)
+                                .with_value(value_str);
                             field_errors.insert(full_field_name, err);
                         }
                     } else if let Some(variants) = metadata.enum_variants.get(field_type) {
@@ -3224,12 +3243,10 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 serde_json::Value::Array(_) => "Array".to_string(),
                                 serde_json::Value::Object(_) => "Object".to_string(),
                             };
-                            let err = FieldError::new(format!(
-                                "Must be one of: {}",
-                                variants.join(", ")
-                            ))
-                            .with_rule(format!("enum:{}", variants.join("|")))
-                            .with_value(received_str);
+                            let err =
+                                FieldError::new(format!("Must be one of: {}", variants.join(", ")))
+                                    .with_rule(format!("enum:{}", variants.join("|")))
+                                    .with_value(received_str);
                             field_errors.insert(full_field_name, err);
                         }
                     } else if metadata.struct_layouts.contains_key(field_type) {
@@ -3258,9 +3275,8 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                                 serde_json::Value::Number(n) => n.to_string(),
                                 _ => value.to_string(),
                             };
-                            let err =
-                                FieldError::type_mismatch(field_type, received_type)
-                                    .with_value(value_str);
+                            let err = FieldError::type_mismatch(field_type, received_type)
+                                .with_value(value_str);
                             field_errors.insert(full_field_name, err);
                         }
                     }
@@ -3273,8 +3289,8 @@ pub extern "C" fn doohttp_populate_struct_from_request(
     // Validate fields for ALL param types (multi-param handler support)
     let mut field_errors: HashMap<String, FieldError> = HashMap::new();
     for param_type in &metadata.param_types {
-        // Skip special types
-        if param_type == "Request" || param_type == "DooRequest" {
+        // Skip special/injected types — not sourced from request data
+        if param_type == "Request" || param_type == "DooRequest" || param_type == "Server" {
             continue;
         }
         validate_struct_fields(&source_data, param_type, "", &metadata, &mut field_errors);
@@ -3288,8 +3304,12 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             .collect();
 
         // Determine detail based on error types
-        let has_required = core_fields.values().any(|e| e.error.as_deref() == Some("required"));
-        let has_type_mismatch = core_fields.values().any(|e| e.expected.is_some() && e.received.is_some() && e.rule.is_none());
+        let has_required = core_fields
+            .values()
+            .any(|e| e.error.as_deref() == Some("required"));
+        let has_type_mismatch = core_fields
+            .values()
+            .any(|e| e.expected.is_some() && e.received.is_some() && e.rule.is_none());
 
         let (status, detail) = if has_required && !has_type_mismatch {
             (400u16, "Required field missing in request body")
@@ -3381,10 +3401,7 @@ pub extern "C" fn doohttp_get_validated_body(
     clear_last_error();
 
     if request_ptr.is_null() {
-        set_last_error(
-            400,
-            Rfc7807Error::bad_request("Null request").to_json(),
-        );
+        set_last_error(400, Rfc7807Error::bad_request("Null request").to_json());
         return std::ptr::null();
     }
 
@@ -4004,5 +4021,320 @@ pub extern "C" fn doo_http_next_call(next: *const std::ffi::c_void) -> *mut std:
         }
 
         response_ptr as *mut std::ffi::c_void
+    }
+}
+
+// ============================================================================
+// WEBSOCKET FFI ENTRY POINTS — All WS FFI functions centralized here
+// ============================================================================
+// These delegate to the ws:: submodule. Keeping FFI surface in lib.rs
+// follows the same pattern as HTTP routes above.
+
+/// Register a WebSocket route on the HTTP server.
+/// Doo syntax: `app.ws("/chat", (conn) => { ... })`
+#[no_mangle]
+pub extern "C" fn doo_ws_route(
+    _server: *const c_void,
+    path: *const c_char,
+    handler: ws::WsConnectionHandler,
+) -> *mut DooResult {
+    let path_str = c_to_string(path);
+    ffi_debug!("WS", "Registering WebSocket route: {}", path_str);
+    ws::get_ws_registry().register_route(&path_str, handler);
+    make_ok_void()
+}
+
+/// Initialize WebSocket subsystem (called automatically).
+#[no_mangle]
+pub extern "C" fn doo_ws_init() {
+    ffi_debug!("WS", "WebSocket subsystem initialized");
+}
+
+/// Get the connection ID.
+/// Doo syntax: `conn.id`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_id(conn: *const ws::WsConnection) -> *const c_char {
+    if conn.is_null() {
+        return string_to_c("");
+    }
+    unsafe { string_to_c(&(*conn).id) }
+}
+
+/// Emit a JSON event to a specific connection.
+/// Doo syntax: `conn.emit("event", data)?`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_emit(
+    conn: *const ws::WsConnection,
+    event: *const c_char,
+    payload: *const c_char,
+) -> *mut DooResult {
+    if conn.is_null() {
+        return make_err_http(400, "Null connection");
+    }
+    let event_str = c_to_string(event);
+    let payload_str = c_to_string(payload);
+    let conn_id = unsafe { &(*conn).id };
+
+    let frame = ws::build_ws_frame(&event_str, &payload_str);
+
+    ffi_debug!("WS", "conn.emit({}) to {}", event_str, conn_id);
+
+    match ws::get_conn_registry().send_text(conn_id, &frame) {
+        Ok(_) => make_ok_void(),
+        Err(e) => make_err_http(500, &format!("emit failed: {}", e)),
+    }
+}
+
+/// Emit binary data to a specific connection.
+/// Doo syntax: `conn.emitBinary(bytes)?`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_emit_binary(
+    conn: *const ws::WsConnection,
+    data: *const u8,
+    len: i64,
+) -> *mut DooResult {
+    if conn.is_null() || data.is_null() || len <= 0 {
+        return make_err_http(400, "Invalid binary emit parameters");
+    }
+    let conn_id = unsafe { &(*conn).id };
+    let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
+
+    match ws::get_conn_registry().send_binary(conn_id, bytes) {
+        Ok(_) => make_ok_void(),
+        Err(e) => make_err_http(500, &format!("emitBinary failed: {}", e)),
+    }
+}
+
+/// Join a room.
+/// Doo syntax: `conn.join("room1")?`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_join(
+    conn: *const ws::WsConnection,
+    room: *const c_char,
+) -> *mut DooResult {
+    if conn.is_null() {
+        return make_err_http(400, "Null connection");
+    }
+    let conn_id = unsafe { &(*conn).id };
+    let room_str = c_to_string(room);
+    ffi_debug!("WS", "conn.join({}) for {}", room_str, conn_id);
+    ws::get_room_registry().join(&room_str, conn_id);
+    make_ok_void()
+}
+
+/// Leave a room.
+/// Doo syntax: `conn.leave("room1")?`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_leave(
+    conn: *const ws::WsConnection,
+    room: *const c_char,
+) -> *mut DooResult {
+    if conn.is_null() {
+        return make_err_http(400, "Null connection");
+    }
+    let conn_id = unsafe { &(*conn).id };
+    let room_str = c_to_string(room);
+    ffi_debug!("WS", "conn.leave({}) for {}", room_str, conn_id);
+    ws::get_room_registry().leave(&room_str, conn_id);
+    make_ok_void()
+}
+
+/// Close a connection.
+/// Doo syntax: `conn.close()?`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_close(conn: *const ws::WsConnection) -> *mut DooResult {
+    if conn.is_null() {
+        return make_err_http(400, "Null connection");
+    }
+    let conn_id = unsafe { &(*conn).id };
+    ffi_debug!("WS", "conn.close() for {}", conn_id);
+    ws::get_conn_registry().close(conn_id);
+    make_ok_void()
+}
+
+/// Check if a connection is closed.
+/// Doo syntax: `conn.isClosed()`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_is_closed(conn: *const ws::WsConnection) -> i64 {
+    if conn.is_null() {
+        return 1;
+    }
+    let conn_id = unsafe { &(*conn).id };
+    if ws::get_conn_registry().is_closed(conn_id) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Register an event handler on the connection.
+/// Doo syntax: `conn.on("message", (msg) => { ... })`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_on(
+    conn: *const ws::WsConnection,
+    event: *const c_char,
+    handler: ws::WsEventHandler,
+) -> *mut DooResult {
+    if conn.is_null() {
+        return make_err_http(400, "Null connection");
+    }
+    let conn_id = unsafe { &(*conn).id };
+    let event_str = c_to_string(event);
+    ffi_debug!("WS", "conn.on({}) for {}", event_str, conn_id);
+    ws::get_conn_registry().register_event_handler(conn_id, &event_str, handler);
+    make_ok_void()
+}
+
+/// Register onConnect handler.
+/// Doo syntax: `conn.onConnect(() => { ... })`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_on_connect(
+    conn: *const ws::WsConnection,
+    handler: ws::WsLifecycleHandler,
+) -> *mut DooResult {
+    if conn.is_null() {
+        return make_err_http(400, "Null connection");
+    }
+    let conn_id = unsafe { &(*conn).id };
+    ffi_debug!("WS", "conn.onConnect for {}", conn_id);
+    ws::get_conn_registry().set_on_connect(conn_id, handler);
+    make_ok_void()
+}
+
+/// Register onDisconnect handler.
+/// Doo syntax: `conn.onDisconnect(() => { ... })`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_on_disconnect(
+    conn: *const ws::WsConnection,
+    handler: ws::WsLifecycleHandler,
+) -> *mut DooResult {
+    if conn.is_null() {
+        return make_err_http(400, "Null connection");
+    }
+    let conn_id = unsafe { &(*conn).id };
+    ffi_debug!("WS", "conn.onDisconnect for {}", conn_id);
+    ws::get_conn_registry().set_on_disconnect(conn_id, handler);
+    make_ok_void()
+}
+
+/// Register onError handler.
+/// Doo syntax: `conn.onError((err) => { ... })`
+#[no_mangle]
+pub extern "C" fn doo_ws_conn_on_error(
+    conn: *const ws::WsConnection,
+    handler: ws::WsErrorHandler,
+) -> *mut DooResult {
+    if conn.is_null() {
+        return make_err_http(400, "Null connection");
+    }
+    let conn_id = unsafe { &(*conn).id };
+    ffi_debug!("WS", "conn.onError for {}", conn_id);
+    ws::get_conn_registry().set_on_error(conn_id, handler);
+    make_ok_void()
+}
+
+/// Broadcast an event to ALL connected clients.
+/// Doo syntax: `ws.broadcast("event", data)?`
+#[no_mangle]
+pub extern "C" fn doo_ws_broadcast(
+    _server: *const c_void,
+    event: *const c_char,
+    payload: *const c_char,
+) -> *mut DooResult {
+    let event_str = c_to_string(event);
+    let payload_str = c_to_string(payload);
+
+    let frame = ws::build_ws_frame(&event_str, &payload_str);
+
+    ffi_debug!("WS", "broadcast({})", event_str);
+    let failures = ws::get_conn_registry().broadcast_text(&frame);
+    if failures > 0 {
+        ffi_debug!("WS", "broadcast had {} failed sends", failures);
+    }
+    make_ok_void()
+}
+
+/// Emit an event to all connections in a specific room.
+/// Doo syntax: `ws.to("room1").emit("event", data)?`
+#[no_mangle]
+pub extern "C" fn doo_ws_room_emit(
+    _server: *const c_void,
+    room: *const c_char,
+    event: *const c_char,
+    payload: *const c_char,
+) -> *mut DooResult {
+    let room_str = c_to_string(room);
+    let event_str = c_to_string(event);
+    let payload_str = c_to_string(payload);
+
+    let frame = ws::build_ws_frame(&event_str, &payload_str);
+
+    ffi_debug!("WS", "room_emit({}, {})", room_str, event_str);
+    let conn_ids = ws::get_room_registry().get_members(&room_str);
+    let mut failures = 0usize;
+    for conn_id in &conn_ids {
+        if ws::get_conn_registry().send_text(conn_id, &frame).is_err() {
+            failures += 1;
+        }
+    }
+    if failures > 0 {
+        ffi_debug!("WS", "room_emit had {} failed sends", failures);
+    }
+    make_ok_void()
+}
+
+/// Set WebSocket configuration.
+/// Doo syntax: `ws.config({ "max_message_size": "65536", ... })`
+#[no_mangle]
+pub extern "C" fn doo_ws_config(
+    _server: *const c_void,
+    config_json: *const c_char,
+) -> *mut DooResult {
+    let json_str = c_to_string(config_json);
+    ffi_debug!("WS", "Setting WS config: {}", json_str);
+
+    match serde_json::from_str::<serde_json::Value>(&json_str) {
+        Ok(val) => {
+            let mut cfg = ws::get_ws_config().write().unwrap();
+            if let Some(v) = val.get("max_message_size").and_then(|v| v.as_u64()) {
+                cfg.max_message_size = v as usize;
+            }
+            if let Some(v) = val.get("heartbeat_interval").and_then(|v| v.as_u64()) {
+                cfg.heartbeat_interval_secs = v;
+            }
+            if let Some(v) = val.get("heartbeat_timeout").and_then(|v| v.as_u64()) {
+                cfg.heartbeat_timeout_secs = v;
+            }
+            if let Some(v) = val.get("send_queue_size").and_then(|v| v.as_u64()) {
+                cfg.send_queue_size = v as usize;
+            }
+            drop(cfg);
+            make_ok_void()
+        }
+        Err(e) => make_err_http(400, &format!("Invalid config JSON: {}", e)),
+    }
+}
+
+/// Graceful shutdown — close all WebSocket connections.
+#[no_mangle]
+pub extern "C" fn doo_ws_shutdown(_server: *const c_void) {
+    ffi_debug!("WS", "Shutting down WebSocket subsystem");
+    ws::get_conn_registry().shutdown_all();
+}
+
+/// Get count of active WebSocket connections.
+#[no_mangle]
+pub extern "C" fn doo_ws_active_connections(_server: *const c_void) -> i64 {
+    ws::get_conn_registry().count() as i64
+}
+
+/// Check if a path is a registered WebSocket route (used by server.rs).
+#[no_mangle]
+pub extern "C" fn doo_ws_is_ws_route(_server: *const c_void, path: *const c_char) -> i64 {
+    let path_str = c_to_string(path);
+    if ws::is_ws_route(&path_str) {
+        1
+    } else {
+        0
     }
 }

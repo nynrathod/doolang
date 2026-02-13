@@ -140,6 +140,84 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         }
     }
 
+    // ========================================================================
+    // WebSocket Upgrade Detection
+    // Must happen BEFORE body consumption — hyper::upgrade::on needs the request
+    // ========================================================================
+    let is_ws_upgrade = req
+        .headers()
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+
+    if is_ws_upgrade {
+        if crate::ws::is_ws_route(&path) {
+            // Extract the Sec-WebSocket-Key for the accept handshake
+            let ws_key = req
+                .headers()
+                .get("sec-websocket-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+
+            let accept_key =
+                tokio_tungstenite::tungstenite::handshake::derive_accept_key(ws_key.as_bytes());
+
+            let path_clone = path.clone();
+
+            // Spawn task that awaits the HTTP → WS upgrade from hyper
+            tokio::spawn(async move {
+                eprintln!("[Doo] WS: Awaiting upgrade for {}", path_clone);
+                match hyper::upgrade::on(req).await {
+                    Ok(upgraded) => {
+                        eprintln!(
+                            "[Doo] WS: Upgrade OK for {}, creating WebSocket stream",
+                            path_clone
+                        );
+                        let io = TokioIo::new(upgraded);
+                        let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                            io,
+                            tokio_tungstenite::tungstenite::protocol::Role::Server,
+                            None,
+                        )
+                        .await;
+                        eprintln!(
+                            "[Doo] WS: Stream ready, starting handler for {}",
+                            path_clone
+                        );
+                        crate::ws::upgrade::handle_ws_connection(ws_stream, &path_clone).await;
+                        eprintln!("[Doo] WS: Connection handler finished for {}", path_clone);
+                    }
+                    Err(e) => {
+                        eprintln!("[Doo] WebSocket upgrade failed for {}: {}", path_clone, e);
+                    }
+                }
+            });
+
+            // Return 101 Switching Protocols — hyper completes the upgrade
+            println!(
+                "[Doo] {} | 101 | WebSocket | {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                path,
+            );
+
+            let response = Response::builder()
+                .status(StatusCode::SWITCHING_PROTOCOLS)
+                .header("Upgrade", "websocket")
+                .header("Connection", "Upgrade")
+                .header("Sec-WebSocket-Accept", accept_key)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+
+            return Ok(response);
+        } else {
+            // WS upgrade requested but no WS route registered for this path
+            let err = Rfc7807Error::route_not_found("WS", &path);
+            return Ok(build_response(404, &err.to_json()));
+        }
+    }
+
     // Set thread-local request path for RFC 7807
     set_current_request_path(&path);
     clear_last_error();
@@ -370,8 +448,23 @@ fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
 pub fn start_server(host: &str, port: u16) -> Result<(), String> {
     let _ = STARTUP_INSTANT.set(Instant::now());
 
-    let runtime =
-        tokio::runtime::Runtime::new().map_err(|e| format!("Failed to create runtime: {}", e))?;
+    // Use the global Tokio runtime from doo_ffi_runtime (single source of truth).
+    // Falls back to creating a local runtime if the global one isn't initialized
+    // (e.g., when HTTP server is started without async features in main).
+    let local_runtime;
+    let runtime: &tokio::runtime::Runtime = if doo_ffi_runtime::runtime::is_runtime_initialized() {
+        doo_ffi_runtime::runtime::get_runtime()
+    } else {
+        // Initialize global runtime if not yet done
+        doo_ffi_runtime::runtime::doo_runtime_init();
+        if doo_ffi_runtime::runtime::is_runtime_initialized() {
+            doo_ffi_runtime::runtime::get_runtime()
+        } else {
+            local_runtime = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("Failed to create runtime: {}", e))?;
+            &local_runtime
+        }
+    };
 
     let addr: SocketAddr = format!("{}:{}", host, port)
         .parse()
@@ -390,6 +483,7 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
         // Count registered routes
         let routes = get_routes();
         let total_routes = routes.lock().map(|r| r.count()).unwrap_or(0);
+        let ws_routes = crate::ws::get_ws_registry().count();
 
         // Print banner
         println!("\x1b[36m  ____              ");
@@ -403,6 +497,7 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
         println!("• Boot Time:            {} ms", boot_time);
         println!("• Listening on:         http://{}:{}", addr.ip(), port);
         println!("• Handlers Loaded:      {}", total_routes);
+        println!("• WebSocket Routes:     {}", ws_routes);
         println!("• Process ID:           {}", std::process::id());
         println!("-------------------------------------------");
         println!("🚀 Server Started on http://{}:{}\n", addr.ip(), port);
@@ -418,6 +513,7 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             tokio::spawn(async move {
                 let _ = http1::Builder::new()
                     .serve_connection(io, service_fn(handle_request))
+                    .with_upgrades()
                     .await;
             });
         }

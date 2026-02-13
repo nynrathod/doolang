@@ -75,14 +75,23 @@ impl DooResult {
     }
 
     /// Create an Err result from a string.
-    /// OWNERSHIP: Allocates simple C string, codegen converts to Doo format.
+    /// OWNERSHIP: Wraps string in { *char } struct to match codegen error path.
+    /// Codegen does: GEP(data, 0) → load ptr → gets the error message string.
+    /// This matches the same layout as FileError { message: *char } etc.
     #[inline]
     pub fn err_str(_code: u16, message: &str) -> Self {
-        // Use simple C string - codegen will convert it
-        let ptr = doo_alloc_string(message) as *mut c_void;
-        Self {
-            tag: ResultTag::Err as i64,
-            data: ptr,
+        let str_ptr = doo_alloc_string(message);
+        // Wrap in a single-field struct { *char message } matching codegen expectations.
+        // Codegen's panic handler loads the first pointer-sized field from data.
+        unsafe {
+            let wrapper = libc::malloc(std::mem::size_of::<*mut c_void>()) as *mut *mut c_void;
+            if !wrapper.is_null() {
+                *wrapper = str_ptr as *mut c_void;
+            }
+            Self {
+                tag: ResultTag::Err as i64,
+                data: wrapper as *mut c_void,
+            }
         }
     }
 
