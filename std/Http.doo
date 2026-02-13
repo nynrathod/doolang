@@ -415,3 +415,120 @@ fn Response.Json(data: Str) -> Response {
         ContentType: "application/json",
     };
 }
+
+// ============================================================================
+// WebSocket — Built-in, no separate import needed
+// ============================================================================
+//
+// Usage:
+//   app.ws("/chat", (conn) => {
+//       conn.on("message", (msg) => {
+//           conn.emit("echo", msg)
+//       })
+//       conn.onConnect(() => { print("connected") })
+//       conn.onDisconnect(() => { print("disconnected") })
+//       conn.onError((err) => { print("error: " + err) })
+//       conn.join("room1")
+//   })
+//
+//   // Broadcast to all connections
+//   WS.broadcast("announcement", "{\"msg\": \"hello all\"}")
+//
+//   // Emit to a room
+//   WS.toRoom("room1").emit("chat", "{\"text\": \"hi room\"}")
+
+// WebSocket Connection — represents a single connected client
+struct WsConnection {
+    Id: Str,
+    Closed: Bool,
+}
+
+// WebSocket Error — represents an error on a WebSocket connection
+// Passed as a string message from the FFI layer
+struct WsError {
+    Message: Str,
+}
+
+// ============================================================================
+// Server.ws — Register a WebSocket route
+// ============================================================================
+
+@extern("doo_http", "doo_ws_route")
+fn Server.ws(self, path: Str, handler: Fn) -> !HttpError {}
+
+// ============================================================================
+// WsConnection Methods — Instance methods on a connection
+// ============================================================================
+
+// Get the unique connection ID
+@extern("doo_http", "doo_ws_conn_id")
+fn WsConnection.id(self) -> Str {}
+
+// Emit a JSON event to this connection
+// Event framing: { "event": "<event>", "data": <payload> }
+@extern("doo_http", "doo_ws_conn_emit")
+fn WsConnection.emit(self, event: Str, data: Str) -> !HttpError {}
+
+// Emit raw binary data to this connection
+@extern("doo_http", "doo_ws_conn_emit_binary")
+fn WsConnection.emitBinary(self, data: Str, len: Int) -> !HttpError {}
+
+// Join a room
+@extern("doo_http", "doo_ws_conn_join")
+fn WsConnection.join(self, room: Str) -> !HttpError {}
+
+// Leave a room
+@extern("doo_http", "doo_ws_conn_leave")
+fn WsConnection.leave(self, room: Str) -> !HttpError {}
+
+// Close the connection
+@extern("doo_http", "doo_ws_conn_close")
+fn WsConnection.close(self) -> !HttpError {}
+
+// Check if connection is closed
+@extern("doo_http", "doo_ws_conn_is_closed")
+fn WsConnection.isClosed(self) -> Bool {}
+
+// Register an event handler — handler receives (conn, data)
+@extern("doo_http", "doo_ws_conn_on")
+fn WsConnection.on(self, event: Str, handler: Fn) -> !HttpError {}
+
+// Register lifecycle: onConnect — handler receives (conn)
+@extern("doo_http", "doo_ws_conn_on_connect")
+fn WsConnection.onConnect(self, handler: Fn) -> !HttpError {}
+
+// Register lifecycle: onDisconnect — handler receives (conn)
+@extern("doo_http", "doo_ws_conn_on_disconnect")
+fn WsConnection.onDisconnect(self, handler: Fn) -> !HttpError {}
+
+// Register lifecycle: onError — handler receives (conn, err)
+@extern("doo_http", "doo_ws_conn_on_error")
+fn WsConnection.onError(self, handler: Fn) -> !HttpError {}
+
+// ============================================================================
+// Server WebSocket Instance Methods — Accessible via app.broadcast(), etc.
+// ============================================================================
+
+// Broadcast an event to ALL connected WebSocket clients
+@extern("doo_http", "doo_ws_broadcast")
+fn Server.broadcast(self, event: Str, data: Str) -> !HttpError {}
+
+// Emit an event to all connections in a specific room
+@extern("doo_http", "doo_ws_room_emit")
+fn Server.toRoomEmit(self, room: Str, event: Str, data: Str) -> !HttpError {}
+
+// Set WebSocket configuration (JSON string)
+@extern("doo_http", "doo_ws_config")
+fn Server.wsConfig(self, options: Str) -> !HttpError {}
+
+// Graceful shutdown — close all WebSocket connections
+@extern("doo_http", "doo_ws_shutdown")
+fn Server.wsShutdown(self) {}
+
+// Get count of active WebSocket connections
+@extern("doo_http", "doo_ws_active_connections")
+fn Server.activeWsConnections(self) -> Int {}
+
+// Check if a path is a registered WebSocket route
+@extern("doo_http", "doo_ws_is_ws_route")
+fn Server.isWsRoute(self, path: Str) -> Bool {}
