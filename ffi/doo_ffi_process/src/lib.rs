@@ -1,6 +1,6 @@
 //! # Doo FFI Process
 //!
-//! Production-grade process management for Doo.
+//! Production-grade process management for Doo & DooCloud.
 //! Single source of truth for all process/command execution.
 //!
 //! ## Architecture
@@ -12,16 +12,28 @@
 //! - `ProcessHandle.waitForOutput()` — Block until process finishes, return output
 //! - `ProcessHandle.isRunning()` — Check if process is still running
 //!
+//! ## Security (DooCloud-grade)
+//!
+//! - Windows shell injection prevention (cmd.exe /c argument sanitization)
+//! - Environment variable leak prevention (strips JWT_SECRET, DATABASE_URL, etc.)
+//! - Command validation (no path traversal, null bytes, newlines)
+//! - Docker argument sanitization (no --privileged, socket mounts, etc.)
+//! - Input/output size limits (prevent DoS / OOM)
+//! - Concurrent process limit (prevent resource exhaustion)
+//! - catch_unwind at every FFI boundary (no panic across FFI = no UB)
+//!
 //! ## Concurrency
 //!
-//! - Uses the global Tokio runtime from `doo_ffi_runtime`
+//! - Uses a dedicated single-threaded Tokio runtime (avoids nested block_on)
 //! - `spawn()` runs processes asynchronously
 //! - `run()` blocks on the runtime for synchronous result
 //! - All process handles stored in a global DashMap registry
+//! - Processes auto-removed from registry after completion/kill
 
 mod handle;
 mod helpers;
 mod registry;
+pub mod security;
 
 pub use handle::*;
 pub use helpers::*;
@@ -29,6 +41,7 @@ pub use registry::*;
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use std::panic;
 
 use doo_ffi_core::ffi_debug;
 use doo_ffi_core::memory::doo_alloc_string;
@@ -41,15 +54,16 @@ use doo_ffi_core::result::DooResult;
 // get_runtime() to DIFFERENT copies of GLOBAL_RUNTIME across .so files.
 // Solution: each library owns its runtime via OnceLock::get_or_init().
 // Zero cross-library calls → works identically on Windows, Mac, Linux.
+//
+// Uses current_thread (single-threaded) to avoid:
+// 1. Wasting OS threads (process ops only need I/O polling)
+// 2. Nested block_on panics (separate runtime from doo_ffi_runtime)
 // ============================================================================
 
 use std::sync::OnceLock;
 static PROCESS_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Get or create the Tokio runtime local to this library.
-/// Uses current_thread (single-threaded) to avoid wasting resources —
-/// process operations only need I/O polling, not a full multi-threaded pool.
-/// This prevents doubling the worker thread count vs doo_ffi_runtime.
 pub(crate) fn ensure_runtime() -> &'static tokio::runtime::Runtime {
     PROCESS_RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_current_thread()
@@ -77,21 +91,30 @@ fn string_to_c(s: &str) -> *const c_char {
 }
 
 /// Create an Ok DooResult with no data.
-/// Uses `into_raw()` (libc::malloc) to match `doo_result_free` (libc::free).
 fn make_ok_void() -> *mut DooResult {
     DooResult::ok_empty().into_raw()
 }
 
 /// Create an Ok DooResult with a string value.
-/// Uses `into_raw()` (libc::malloc) to match `doo_result_free` (libc::free).
 fn make_ok_str(s: &str) -> *mut DooResult {
     DooResult::ok_string(s).into_raw()
 }
 
 /// Create an Err DooResult with a message.
-/// Uses `into_raw()` (libc::malloc) to match `doo_result_free` (libc::free).
 fn make_err(msg: &str) -> *mut DooResult {
     DooResult::err_str(500, msg).into_raw()
+}
+
+/// Create an Err DooResult from a panic payload.
+fn make_panic_err(payload: Box<dyn std::any::Any + Send>) -> *mut DooResult {
+    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+        format!("Process FFI panic: {}", s)
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        format!("Process FFI panic: {}", s)
+    } else {
+        "Process FFI panic: unknown error".to_string()
+    };
+    make_err(&msg)
 }
 
 // ============================================================================
@@ -105,24 +128,37 @@ fn make_err(msg: &str) -> *mut DooResult {
 /// FFI: `doo_process_run(cmd, args_json) -> *mut DooResult`
 ///
 /// `args_json` is a JSON array string: `["arg1", "arg2"]`
+///
+/// Security: catch_unwind at boundary, input validation, output limits.
 #[no_mangle]
 pub extern "C" fn doo_process_run(cmd: *const c_char, args_json: *const c_char) -> *mut DooResult {
-    let cmd_str = c_to_string(cmd);
-    let args_str = c_to_string(args_json);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let cmd_str = c_to_string(cmd);
+        let args_str = c_to_string(args_json);
 
-    ffi_debug!("PROCESS", "run({}, {})", cmd_str, args_str);
+        ffi_debug!("PROCESS", "run({}, {})", cmd_str, args_str);
 
-    // Parse args from JSON array
-    let args = parse_args_json(&args_str);
+        // Parse args from JSON array (with validation)
+        let args = match parse_args_json(&args_str) {
+            Ok(a) => a,
+            Err(e) => return make_err(&e),
+        };
 
-    // Use the global tokio runtime to run the command
-    let rt = ensure_runtime();
+        // Use the local tokio runtime to run the command
+        let rt = ensure_runtime();
 
-    let result: Result<String, String> = rt.block_on(async { run_command(&cmd_str, &args).await });
+        let result: Result<String, String> =
+            rt.block_on(async { run_command(&cmd_str, &args).await });
+
+        match result {
+            Ok(ref output) => make_ok_str(output),
+            Err(ref e) => make_err(e),
+        }
+    }));
 
     match result {
-        Ok(ref output) => make_ok_str(output),
-        Err(ref e) => make_err(e),
+        Ok(ptr) => ptr,
+        Err(payload) => make_panic_err(payload),
     }
 }
 
@@ -135,26 +171,38 @@ pub extern "C" fn doo_process_run(cmd: *const c_char, args_json: *const c_char) 
 ///
 /// Doo syntax: `let proc = process.spawn("docker", ["run", ...])?`
 /// FFI: `doo_process_spawn(cmd, args_json) -> *mut DooResult` (ok = handle_id string)
+///
+/// Security: enforces concurrent process limit, validates command & args.
 #[no_mangle]
 pub extern "C" fn doo_process_spawn(
     cmd: *const c_char,
     args_json: *const c_char,
 ) -> *mut DooResult {
-    let cmd_str = c_to_string(cmd);
-    let args_str = c_to_string(args_json);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let cmd_str = c_to_string(cmd);
+        let args_str = c_to_string(args_json);
 
-    ffi_debug!("PROCESS", "spawn({}, {})", cmd_str, args_str);
+        ffi_debug!("PROCESS", "spawn({}, {})", cmd_str, args_str);
 
-    let args = parse_args_json(&args_str);
+        let args = match parse_args_json(&args_str) {
+            Ok(a) => a,
+            Err(e) => return make_err(&e),
+        };
 
-    let rt = ensure_runtime();
+        let rt = ensure_runtime();
 
-    let result: Result<String, String> =
-        rt.block_on(async { spawn_process(&cmd_str, &args).await });
+        let result: Result<String, String> =
+            rt.block_on(async { spawn_process(&cmd_str, &args).await });
+
+        match result {
+            Ok(ref handle_id) => make_ok_str(handle_id),
+            Err(ref e) => make_err(e),
+        }
+    }));
 
     match result {
-        Ok(ref handle_id) => make_ok_str(handle_id),
-        Err(ref e) => make_err(e),
+        Ok(ptr) => ptr,
+        Err(payload) => make_panic_err(payload),
     }
 }
 
@@ -163,17 +211,25 @@ pub extern "C" fn doo_process_spawn(
 // ============================================================================
 
 /// Kill a spawned process by handle ID.
+/// Also removes the process from the registry to prevent leaks.
 ///
 /// Doo syntax: `proc.kill()?`
 /// FFI: `doo_process_kill(handle_ptr) -> *mut DooResult`
 #[no_mangle]
 pub extern "C" fn doo_process_kill(handle_ptr: *const c_char) -> *mut DooResult {
-    let handle_id = c_to_string(handle_ptr);
-    ffi_debug!("PROCESS", "kill({})", handle_id);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let handle_id = c_to_string(handle_ptr);
+        ffi_debug!("PROCESS", "kill({})", handle_id);
 
-    match get_registry().kill_process(&handle_id) {
-        Ok(_) => make_ok_void(),
-        Err(e) => make_err(&e),
+        match get_registry().kill_process(&handle_id) {
+            Ok(_) => make_ok_void(),
+            Err(e) => make_err(&e),
+        }
+    }));
+
+    match result {
+        Ok(ptr) => ptr,
+        Err(payload) => make_panic_err(payload),
     }
 }
 
@@ -188,12 +244,19 @@ pub extern "C" fn doo_process_kill(handle_ptr: *const c_char) -> *mut DooResult 
 /// FFI: `doo_process_status(handle_ptr) -> *mut DooResult`
 #[no_mangle]
 pub extern "C" fn doo_process_status(handle_ptr: *const c_char) -> *mut DooResult {
-    let handle_id = c_to_string(handle_ptr);
-    ffi_debug!("PROCESS", "status({})", handle_id);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let handle_id = c_to_string(handle_ptr);
+        ffi_debug!("PROCESS", "status({})", handle_id);
 
-    match get_registry().get_status(&handle_id) {
-        Ok(status_json) => make_ok_str(&status_json),
-        Err(e) => make_err(&e),
+        match get_registry().get_status(&handle_id) {
+            Ok(status_json) => make_ok_str(&status_json),
+            Err(e) => make_err(&e),
+        }
+    }));
+
+    match result {
+        Ok(ptr) => ptr,
+        Err(payload) => make_panic_err(payload),
     }
 }
 
@@ -203,22 +266,30 @@ pub extern "C" fn doo_process_status(handle_ptr: *const c_char) -> *mut DooResul
 
 /// Wait for a spawned process to complete and return its output.
 /// Returns JSON: `{ "exit_code": N, "stdout": "...", "stderr": "..." }`
+/// Automatically removes the process from the registry after completion.
 ///
 /// Doo syntax: `let output = proc.waitForOutput()?`
 /// FFI: `doo_process_wait_output(handle_ptr) -> *mut DooResult`
 #[no_mangle]
 pub extern "C" fn doo_process_wait_output(handle_ptr: *const c_char) -> *mut DooResult {
-    let handle_id = c_to_string(handle_ptr);
-    ffi_debug!("PROCESS", "waitForOutput({})", handle_id);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let handle_id = c_to_string(handle_ptr);
+        ffi_debug!("PROCESS", "waitForOutput({})", handle_id);
 
-    let rt = ensure_runtime();
+        let rt = ensure_runtime();
 
-    let result: Result<String, String> =
-        rt.block_on(async { get_registry().wait_for_output(&handle_id).await });
+        let result: Result<String, String> =
+            rt.block_on(async { get_registry().wait_for_output(&handle_id).await });
+
+        match result {
+            Ok(ref output) => make_ok_str(output),
+            Err(ref e) => make_err(e),
+        }
+    }));
 
     match result {
-        Ok(ref output) => make_ok_str(output),
-        Err(ref e) => make_err(e),
+        Ok(ptr) => ptr,
+        Err(payload) => make_panic_err(payload),
     }
 }
 
@@ -233,11 +304,18 @@ pub extern "C" fn doo_process_wait_output(handle_ptr: *const c_char) -> *mut Doo
 /// FFI: `doo_process_is_running(handle_ptr) -> i64`
 #[no_mangle]
 pub extern "C" fn doo_process_is_running(handle_ptr: *const c_char) -> i64 {
-    let handle_id = c_to_string(handle_ptr);
-    if get_registry().is_running(&handle_id) {
-        1
-    } else {
-        0
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let handle_id = c_to_string(handle_ptr);
+        if get_registry().is_running(&handle_id) {
+            1i64
+        } else {
+            0i64
+        }
+    }));
+
+    match result {
+        Ok(v) => v,
+        Err(_) => 0, // On panic, report not running (safe default)
     }
 }
 
@@ -255,21 +333,31 @@ pub extern "C" fn doo_process_output(
     cmd: *const c_char,
     args_json: *const c_char,
 ) -> *mut DooResult {
-    let cmd_str = c_to_string(cmd);
-    let args_str = c_to_string(args_json);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let cmd_str = c_to_string(cmd);
+        let args_str = c_to_string(args_json);
 
-    ffi_debug!("PROCESS", "output({}, {})", cmd_str, args_str);
+        ffi_debug!("PROCESS", "output({}, {})", cmd_str, args_str);
 
-    let args = parse_args_json(&args_str);
+        let args = match parse_args_json(&args_str) {
+            Ok(a) => a,
+            Err(e) => return make_err(&e),
+        };
 
-    let rt = ensure_runtime();
+        let rt = ensure_runtime();
 
-    let result: Result<String, String> =
-        rt.block_on(async { run_command_stdout(&cmd_str, &args).await });
+        let result: Result<String, String> =
+            rt.block_on(async { run_command_stdout(&cmd_str, &args).await });
+
+        match result {
+            Ok(ref stdout) => make_ok_str(stdout),
+            Err(ref e) => make_err(e),
+        }
+    }));
 
     match result {
-        Ok(ref stdout) => make_ok_str(stdout),
-        Err(ref e) => make_err(e),
+        Ok(ptr) => ptr,
+        Err(payload) => make_panic_err(payload),
     }
 }
 
@@ -283,12 +371,19 @@ pub extern "C" fn doo_process_output(
 /// FFI: `doo_process_read_stdout(handle_ptr) -> *mut DooResult`
 #[no_mangle]
 pub extern "C" fn doo_process_read_stdout(handle_ptr: *const c_char) -> *mut DooResult {
-    let handle_id = c_to_string(handle_ptr);
-    ffi_debug!("PROCESS", "readStdout({})", handle_id);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let handle_id = c_to_string(handle_ptr);
+        ffi_debug!("PROCESS", "readStdout({})", handle_id);
 
-    match get_registry().read_stdout(&handle_id) {
-        Ok(out) => make_ok_str(&out),
-        Err(e) => make_err(&e),
+        match get_registry().read_stdout(&handle_id) {
+            Ok(out) => make_ok_str(&out),
+            Err(e) => make_err(&e),
+        }
+    }));
+
+    match result {
+        Ok(ptr) => ptr,
+        Err(payload) => make_panic_err(payload),
     }
 }
 
@@ -298,12 +393,19 @@ pub extern "C" fn doo_process_read_stdout(handle_ptr: *const c_char) -> *mut Doo
 /// FFI: `doo_process_read_stderr(handle_ptr) -> *mut DooResult`
 #[no_mangle]
 pub extern "C" fn doo_process_read_stderr(handle_ptr: *const c_char) -> *mut DooResult {
-    let handle_id = c_to_string(handle_ptr);
-    ffi_debug!("PROCESS", "readStderr({})", handle_id);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let handle_id = c_to_string(handle_ptr);
+        ffi_debug!("PROCESS", "readStderr({})", handle_id);
 
-    match get_registry().read_stderr(&handle_id) {
-        Ok(out) => make_ok_str(&out),
-        Err(e) => make_err(&e),
+        match get_registry().read_stderr(&handle_id) {
+            Ok(out) => make_ok_str(&out),
+            Err(e) => make_err(&e),
+        }
+    }));
+
+    match result {
+        Ok(ptr) => ptr,
+        Err(payload) => make_panic_err(payload),
     }
 }
 
@@ -316,8 +418,10 @@ pub extern "C" fn doo_process_read_stderr(handle_ptr: *const c_char) -> *mut Doo
 /// FFI: `doo_process_shutdown()`
 #[no_mangle]
 pub extern "C" fn doo_process_shutdown() {
-    ffi_debug!("PROCESS", "Shutting down all processes");
-    get_registry().shutdown_all();
+    let _ = panic::catch_unwind(|| {
+        ffi_debug!("PROCESS", "Shutting down all processes");
+        get_registry().shutdown_all();
+    });
 }
 
 /// Get count of active spawned processes.
@@ -325,5 +429,6 @@ pub extern "C" fn doo_process_shutdown() {
 /// FFI: `doo_process_active_count() -> i64`
 #[no_mangle]
 pub extern "C" fn doo_process_active_count() -> i64 {
-    get_registry().count() as i64
+    let result = panic::catch_unwind(|| get_registry().count() as i64);
+    result.unwrap_or(0)
 }
