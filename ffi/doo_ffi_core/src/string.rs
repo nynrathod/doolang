@@ -7,7 +7,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use crate::memory::{doo_alloc_string, doo_alloc_empty_string, doo_free};
+use crate::memory::{doo_alloc_empty_string, doo_alloc_string, doo_free};
 
 /// FFI string type - length-prefixed for safety.
 #[repr(C)]
@@ -24,7 +24,14 @@ impl DooString {
     /// Create a DooString from a Rust string.
     /// OWNERSHIP: Allocates string using libc malloc (centralized).
     pub fn from_str(s: &str) -> Self {
-        let len = s.len() as u32;
+        // Guard against u32 overflow: strings > 4GB are truncated with a warning.
+        // In practice, HTTP bodies and Doo strings will never be this large.
+        let byte_len = s.len();
+        let len = if byte_len > u32::MAX as usize {
+            u32::MAX
+        } else {
+            byte_len as u32
+        };
         let cap = len;
         // Use centralized string allocation - NOT CString::into_raw()!
         let data = doo_alloc_string(s);
@@ -66,7 +73,9 @@ pub extern "C" fn doo_string_from_c(ptr: *const c_char) -> DooString {
     }
 }
 
-/// Create a DooString from a Rust string slice.
+/// Create a DooString from a byte slice with length.
+/// SAFETY: If bytes are not valid UTF-8, they are replaced with U+FFFD (lossy).
+/// This prevents UB from `from_utf8_unchecked` on invalid input.
 #[no_mangle]
 pub extern "C" fn doo_string_new(ptr: *const u8, len: u32) -> DooString {
     if ptr.is_null() || len == 0 {
@@ -74,24 +83,32 @@ pub extern "C" fn doo_string_new(ptr: *const u8, len: u32) -> DooString {
     }
     unsafe {
         let slice = std::slice::from_raw_parts(ptr, len as usize);
-        let s = std::str::from_utf8_unchecked(slice);
-        DooString::from_str(s)
+        // SAFE: from_utf8_lossy handles invalid UTF-8 gracefully
+        let cow = String::from_utf8_lossy(slice);
+        DooString::from_str(&cow)
     }
 }
 
 /// Free a DooString.
 /// OWNERSHIP: Takes ownership of the DooString and frees all memory.
+/// NOTE: Does NOT use Box::from_raw — the DooString may not have been Box-allocated.
+/// Instead, reads fields directly and frees inner data with libc (matching doo_alloc_string).
 #[no_mangle]
 pub extern "C" fn doo_string_free(s: *mut DooString) {
     if s.is_null() {
         return;
     }
     unsafe {
-        let string = Box::from_raw(s);
-        if !string.data.is_null() {
-            // Use centralized free - NOT CString::from_raw()!
-            doo_free(string.data as *mut u8);
+        // Read the data pointer before freeing anything
+        let data = (*s).data;
+        if !data.is_null() {
+            // Free the string data (allocated with doo_alloc_string → libc::malloc)
+            doo_free(data as *mut u8);
         }
+        // Zero out the struct to prevent use-after-free
+        (*s).data = std::ptr::null_mut();
+        (*s).len = 0;
+        (*s).cap = 0;
     }
 }
 

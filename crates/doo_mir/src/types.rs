@@ -203,6 +203,8 @@ pub struct MirFunction {
     pub is_closure: bool,
     /// Whether this is an async function
     pub is_async: bool,
+    /// Captured variable names from outer scope (for spawn/closure env unpacking)
+    pub captures: Vec<String>,
 }
 
 /// Parameter definition
@@ -240,6 +242,7 @@ impl MirFunction {
             span: Span::default(),
             is_closure: false,
             is_async: false,
+            captures: Vec::new(),
         }
     }
 
@@ -751,11 +754,19 @@ pub enum MirInstrKind {
     /// Await a task handle: `await handle` → result
     Await { dest: String, handle: MirOperand },
     /// Spawn a task: `go { body }` → task handle
-    Spawn { dest: String, func: String },
+    Spawn {
+        dest: String,
+        func: String,
+        captures: Vec<MirOperand>,
+    },
     /// Create an empty scope: `scope {` → scope handle
     ScopeCreate { dest: String },
     /// Spawn a task into a scope: `go { body }` inside scope
-    ScopeSpawn { scope: MirOperand, func: String },
+    ScopeSpawn {
+        scope: MirOperand,
+        func: String,
+        captures: Vec<MirOperand>,
+    },
     /// Wait for all scope tasks to finish: `}` of scope → result
     ScopeWait { dest: String, scope: MirOperand },
 }
@@ -881,7 +892,14 @@ impl MirInstr {
             MirInstrKind::Sleep { ms } => vec![ms],
             MirInstrKind::Await { handle, .. } => vec![handle],
             MirInstrKind::ScopeWait { scope, .. } => vec![scope],
-            MirInstrKind::ScopeSpawn { scope, .. } => vec![scope],
+            MirInstrKind::ScopeSpawn {
+                scope, captures, ..
+            } => {
+                let mut ops = vec![scope];
+                ops.extend(captures.iter());
+                ops
+            }
+            MirInstrKind::Spawn { captures, .. } => captures.iter().collect(),
             _ => vec![],
         }
     }

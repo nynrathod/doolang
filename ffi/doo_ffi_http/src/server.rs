@@ -1,8 +1,22 @@
 //! HTTP Server
 //! Hyper-based HTTP server with request handling and middleware execution.
 //!
-//! Performance-critical path — every allocation and lock matters here.
-//! Routes and CORS are frozen (lock-free) before the accept loop.
+//! Production-grade features:
+//! - Graceful shutdown with SIGTERM/SIGINT handling (Docker/GKE/Fly.io)
+//! - Connection limiting via Semaphore (prevents FD/memory exhaustion)
+//! - Request body size limit (prevents OOM from malicious POSTs)
+//! - Request timeout (prevents slow client starvation)
+//! - K8s-ready health checks (/health, /ready, /live)
+//! - Connection tracking for drain on shutdown
+//!
+//! ## Environment Variables
+//!
+//! | Variable              | Default | Description                        |
+//! |-----------------------|---------|------------------------------------|
+//! | `DOO_MAX_CONNECTIONS` | 10000   | Max concurrent TCP connections     |
+//! | `DOO_REQUEST_TIMEOUT` | 30000   | Per-request timeout (ms)           |
+//! | `DOO_MAX_BODY_SIZE`   | 1048576 | Max request body size (bytes, 1MB) |
+//! | `DOO_NO_BANNER`       | unset   | Set to "1" to suppress banner      |
 
 use crate::error::*;
 use crate::helpers::*;
@@ -13,8 +27,9 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::net::SocketAddr;
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
@@ -23,9 +38,30 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 static STARTUP_INSTANT: OnceLock<Instant> = OnceLock::new();
 const VERSION: &str = "0.4.0";
+
+/// Server is in draining state (shutting down, rejecting new requests)
+static DRAINING: AtomicBool = AtomicBool::new(false);
+
+/// Active in-flight request counter for drain tracking
+static ACTIVE_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Max body size (bytes). Default 1MB. Configurable via DOO_MAX_BODY_SIZE.
+static MAX_BODY_SIZE: AtomicUsize = AtomicUsize::new(1_048_576);
+
+/// Per-request timeout (ms). Default 30s. Configurable via DOO_REQUEST_TIMEOUT.
+static REQUEST_TIMEOUT_MS: AtomicUsize = AtomicUsize::new(30_000);
+
+/// Read env var as usize with default
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+}
 
 // ============================================================================
 // MIDDLEWARE EXECUTION - Single Source of Truth
@@ -148,9 +184,42 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let path = req.uri().path().to_string();
     let query_raw = req.uri().query().unwrap_or("").to_string();
 
-    // Built-in health check endpoint for server readiness (fast path)
-    if path == "/health" && method == "GET" {
-        return Ok(build_response(200, "{\"status\":\"ok\"}"));
+    // Built-in health check endpoints for container orchestration (fast path)
+    // /health and /live — liveness probe: is the process alive?
+    // /ready — readiness probe: is the server ready to accept traffic?
+    if method == "GET" {
+        match path.as_str() {
+            "/health" | "/live" => {
+                let uptime = STARTUP_INSTANT
+                    .get()
+                    .map(|s| s.elapsed().as_secs())
+                    .unwrap_or(0);
+                let body = format!(
+                    "{{\"status\":\"ok\",\"version\":\"{}\",\"uptime_s\":{}}}",
+                    VERSION, uptime
+                );
+                return Ok(build_response(200, &body));
+            }
+            "/ready" => {
+                // During draining (shutdown), return 503 so LB stops sending traffic
+                if DRAINING.load(Ordering::Relaxed) {
+                    return Ok(build_response(
+                        503,
+                        "{\"status\":\"draining\",\"detail\":\"Server is shutting down\"}",
+                    ));
+                }
+                let uptime = STARTUP_INSTANT
+                    .get()
+                    .map(|s| s.elapsed().as_secs())
+                    .unwrap_or(0);
+                let body = format!(
+                    "{{\"status\":\"ready\",\"version\":\"{}\",\"uptime_s\":{}}}",
+                    VERSION, uptime
+                );
+                return Ok(build_response(200, &body));
+            }
+            _ => {}
+        }
     }
 
     // Handle CORS preflight (OPTIONS) requests before route matching
@@ -259,10 +328,40 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     // ========================================================================
     // Conditional body collection — skip for methods that don't send a body
+    // Enforces DOO_MAX_BODY_SIZE to prevent OOM from malicious POSTs
     // ========================================================================
     let has_body_method = matches!(method.as_str(), "POST" | "PUT" | "PATCH");
     let body_str = if has_body_method {
+        let max_body = MAX_BODY_SIZE.load(Ordering::Relaxed);
+        // Check Content-Length header first for early rejection (before reading body)
+        if let Some(cl) = headers_map.get("content-length") {
+            if let Ok(len) = cl.parse::<usize>() {
+                if len > max_body {
+                    let err = Rfc7807Error::new(
+                        413,
+                        format!(
+                            "Request body size {} exceeds limit of {} bytes",
+                            len, max_body
+                        ),
+                    )
+                    .with_instance(&path);
+                    return Ok(build_response(413, &err.to_json()));
+                }
+            }
+        }
         let body_bytes = req.collect().await?.to_bytes();
+        if body_bytes.len() > max_body {
+            let err = Rfc7807Error::new(
+                413,
+                format!(
+                    "Request body size {} exceeds limit of {} bytes",
+                    body_bytes.len(),
+                    max_body
+                ),
+            )
+            .with_instance(&path);
+            return Ok(build_response(413, &err.to_json()));
+        }
         if body_bytes.is_empty() {
             String::new()
         } else {
@@ -346,25 +445,27 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                     let err = internal_error("Handler returned null", &path);
                     build_response(500, &err.to_json())
                 } else {
-                    let res = &*result;
+                    // CRITICAL: Read result using doo_ffi_core::DooResult layout
+                    // { i64 tag, *mut c_void data } — matches codegen output exactly.
+                    let res = &*(result as *const doo_ffi_core::DooResult);
                     ffi_debug!(
                         "SERVER",
-                        "Result tag={}, value_is_null={}",
+                        "Result tag={}, data_is_null={}",
                         res.tag,
-                        res.value.is_null()
+                        res.data.is_null()
                     );
                     if res.tag == 0 {
                         // Success
-                        let body = if res.value.is_null() {
+                        let body = if res.data.is_null() {
                             "{}".to_string()
                         } else {
-                            c_to_string(res.value as *const i8)
+                            c_to_string(res.data as *const i8)
                         };
                         build_response(200, &body)
                     } else {
                         // Error
-                        if !res.value.is_null() {
-                            let error_struct = res.value as *const i8;
+                        if !res.data.is_null() {
+                            let error_struct = res.data as *const i8;
                             let error_status = *(error_struct as *const i32);
                             let body_ptr =
                                 *((error_struct as *const u8).add(8) as *const *const i8);
@@ -464,9 +565,20 @@ fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
         })
 }
 
-/// Start the server with frozen routes and CORS for maximum throughput
+/// Start the server with frozen routes and CORS for maximum throughput.
+///
+/// Production features:
+/// - Graceful shutdown on SIGTERM/SIGINT (Docker, GKE, Fly.io)
+/// - Connection limiting via Semaphore (prevents FD exhaustion)
+/// - Per-request timeout
+/// - Connection draining on shutdown
 pub fn start_server(host: &str, port: u16) -> Result<(), String> {
     let _ = STARTUP_INSTANT.set(Instant::now());
+
+    // Load configuration from environment variables
+    let max_connections = env_usize("DOO_MAX_CONNECTIONS", 10_000);
+    MAX_BODY_SIZE.store(env_usize("DOO_MAX_BODY_SIZE", 1_048_576), Ordering::Relaxed);
+    REQUEST_TIMEOUT_MS.store(env_usize("DOO_REQUEST_TIMEOUT", 30_000), Ordering::Relaxed);
 
     // ========================================================================
     // FREEZE: Convert mutable registries to lock-free immutable state.
@@ -494,6 +606,9 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
         .parse()
         .map_err(|e| format!("Invalid address: {}", e))?;
 
+    // Connection limiter — prevents FD exhaustion and OOM under load
+    let conn_semaphore = std::sync::Arc::new(Semaphore::new(max_connections));
+
     runtime.block_on(async move {
         let listener = TcpListener::bind(addr)
             .await
@@ -509,40 +624,154 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
         let total_routes = registry.count();
         let ws_routes = crate::ws::get_ws_registry().count();
 
-        // Print banner
-        println!("\x1b[36m  ____              ");
-        println!(" |  _ \\  ___   ___  ");
-        println!(" | | | |/ _ \\ / _ \\ ");
-        println!(" | |_| | (_) | (_) |");
-        println!(" |____/ \\___/ \\___/          Doo v{}\x1b[0m", VERSION);
-        println!("-------------------------------------------");
-        println!("Info Server Online");
-        println!("-------------------------------------------");
-        println!("• Boot Time:            {} ms", boot_time);
-        println!("• Listening on:         http://{}:{}", addr.ip(), port);
-        println!("• Handlers Loaded:      {}", total_routes);
-        println!("• WebSocket Routes:     {}", ws_routes);
-        println!("• Process ID:           {}", std::process::id());
-        println!("-------------------------------------------");
-        println!("🚀 Server Started on http://{}:{}\n", addr.ip(), port);
+        // Print banner (suppressible via DOO_NO_BANNER=1)
+        let no_banner = std::env::var("DOO_NO_BANNER").map(|v| v == "1").unwrap_or(false);
+        if !no_banner {
+            println!("\x1b[36m  ____              ");
+            println!(" |  _ \\  ___   ___  ");
+            println!(" | | | |/ _ \\ / _ \\ ");
+            println!(" | |_| | (_) | (_) |");
+            println!(" |____/ \\___/ \\___/          Doo v{}\x1b[0m", VERSION);
+            println!("-------------------------------------------");
+            println!("Info Server Online");
+            println!("-------------------------------------------");
+            println!("  Boot Time:            {} ms", boot_time);
+            println!("  Listening on:         http://{}:{}", addr.ip(), port);
+            println!("  Handlers Loaded:      {}", total_routes);
+            println!("  WebSocket Routes:     {}", ws_routes);
+            println!("  Process ID:           {}", std::process::id());
+            println!("  Max Connections:      {}", max_connections);
+            println!("  Max Body Size:        {} bytes", MAX_BODY_SIZE.load(Ordering::Relaxed));
+            println!("  Request Timeout:      {} ms", REQUEST_TIMEOUT_MS.load(Ordering::Relaxed));
+            println!("-------------------------------------------");
+        }
+        // Always print the server started line (useful for container health checks)
+        eprintln!("[Doo] Server started on http://{}:{} (pid={})", addr.ip(), port, std::process::id());
 
+        // ====================================================================
+        // Graceful shutdown signal handling
+        // Listens for SIGTERM (Docker/GKE), SIGINT (Ctrl+C), and CancellationToken
+        // ====================================================================
+        let cancel_token = doo_ffi_runtime::runtime::get_cancel_token().clone();
+
+        let shutdown_signal = async {
+            // Platform-specific signal handling
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigterm = signal(SignalKind::terminate())
+                    .expect("Failed to register SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        eprintln!("[Doo] Received SIGINT, shutting down gracefully...");
+                    }
+                    _ = sigterm.recv() => {
+                        eprintln!("[Doo] Received SIGTERM, shutting down gracefully...");
+                    }
+                    _ = cancel_token.cancelled() => {
+                        eprintln!("[Doo] Shutdown requested via runtime, shutting down...");
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        eprintln!("[Doo] Received Ctrl+C, shutting down gracefully...");
+                    }
+                    _ = cancel_token.cancelled() => {
+                        eprintln!("[Doo] Shutdown requested via runtime, shutting down...");
+                    }
+                }
+            }
+        };
+
+        // Pin the shutdown future
+        tokio::pin!(shutdown_signal);
+
+        // ====================================================================
+        // Accept loop with graceful shutdown
+        // ====================================================================
         loop {
-            let (stream, _) = listener
-                .accept()
-                .await
-                .map_err(|e| format!("Accept failed: {}", e))?;
+            tokio::select! {
+                biased; // Check shutdown first for faster drain
 
-            // TCP_NODELAY: disable Nagle's algorithm for lower latency
-            let _ = stream.set_nodelay(true);
+                _ = &mut shutdown_signal => {
+                    // Shutdown signal received
+                    DRAINING.store(true, Ordering::SeqCst);
 
-            let io = TokioIo::new(stream);
+                    // Signal runtime shutdown
+                    doo_ffi_runtime::runtime::doo_runtime_shutdown();
 
-            tokio::spawn(async move {
-                let _ = http1::Builder::new()
-                    .serve_connection(io, service_fn(handle_request))
-                    .with_upgrades()
-                    .await;
-            });
+                    // Wait for in-flight requests to drain (with timeout)
+                    let timeout = Duration::from_millis(
+                        doo_ffi_runtime::runtime::get_shutdown_timeout_ms()
+                    );
+                    let drain_start = Instant::now();
+
+                    loop {
+                        let active = ACTIVE_REQUESTS.load(Ordering::Relaxed);
+                        if active == 0 {
+                            eprintln!("[Doo] All connections drained, exiting.");
+                            break;
+                        }
+                        if drain_start.elapsed() > timeout {
+                            eprintln!(
+                                "[Doo] Shutdown timeout reached with {} active requests, forcing exit.",
+                                active
+                            );
+                            break;
+                        }
+                        eprintln!("[Doo] Draining... {} active requests remaining", active);
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+
+                    return Ok(());
+                }
+
+                result = listener.accept() => {
+                    let (stream, _) = result
+                        .map_err(|e| format!("Accept failed: {}", e))?;
+
+                    // TCP_NODELAY: disable Nagle's algorithm for lower latency
+                    let _ = stream.set_nodelay(true);
+
+                    // Acquire connection permit — backpressure under load
+                    let permit = match conn_semaphore.clone().try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            // At connection limit — drop the TCP connection
+                            // The client will get a connection reset, LB will retry
+                            drop(stream);
+                            continue;
+                        }
+                    };
+
+                    let io = TokioIo::new(stream);
+                    let request_timeout = Duration::from_millis(
+                        REQUEST_TIMEOUT_MS.load(Ordering::Relaxed) as u64
+                    );
+
+                    tokio::spawn(async move {
+                        // Track active request for drain
+                        ACTIVE_REQUESTS.fetch_add(1, Ordering::Relaxed);
+
+                        // Wrap the connection with a timeout
+                        let conn = http1::Builder::new()
+                            .keep_alive(true)
+                            .serve_connection(io, service_fn(handle_request))
+                            .with_upgrades();
+
+                        // Per-connection timeout prevents slow clients from holding resources
+                        let _ = tokio::time::timeout(request_timeout, conn).await;
+
+                        // Release connection tracking
+                        ACTIVE_REQUESTS.fetch_sub(1, Ordering::Relaxed);
+                        // Release connection permit (Semaphore RAII)
+                        drop(permit);
+                    });
+                }
+            }
         }
     })
 }

@@ -1481,10 +1481,12 @@ mod tests {
             output_name: "my_output".to_string(),
             dev_mode: true,
             print_ast: true,
+            print_hir: false,
             print_mir: false,
             keep_ll: true,
             keep_obj: false,
             check_only: false,
+            show_warnings: false,
         };
         let opts2 = opts1.clone();
         assert_eq!(opts1.output_name, opts2.output_name);

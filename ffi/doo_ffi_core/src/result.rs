@@ -5,9 +5,10 @@
 //! All string data uses doo_alloc_string (simple C strings).
 //! Codegen converts to Doo format automatically via clone_ffi_string_to_rc.
 //!
-//! CRITICAL: Layout MUST match codegen expectation: { i32 tag, ptr value }
+//! CRITICAL: Layout MUST match codegen expectation: { i64 tag, i64 value }
+//! Codegen loads tag as i64 and value as i64 (inttoptr for pointers).
 
-use crate::memory::doo_alloc_string;
+use crate::memory::{doo_alloc_string, doo_free};
 use std::ffi::c_void;
 
 /// Result tag indicating Ok or Err.
@@ -109,23 +110,52 @@ impl DooResult {
 
     /// Convert to raw pointer (consumer must free with doo_result_free).
     /// OWNERSHIP: Transfers ownership to caller.
+    /// Uses libc::malloc for consistency with all other FFI allocations.
     #[inline]
     pub fn into_raw(self) -> *mut Self {
-        Box::into_raw(Box::new(self))
+        unsafe {
+            let size = std::mem::size_of::<Self>();
+            let ptr = libc::malloc(size) as *mut Self;
+            if ptr.is_null() {
+                // OOM — return null, caller must handle
+                return std::ptr::null_mut();
+            }
+            std::ptr::write(ptr, self);
+            ptr
+        }
     }
 }
 
 /// Free a DooResult (must be called by Doo code after use).
+/// Handles:
+///   - Err results from `err_str`: data -> wrapper { *char } -> frees inner string + wrapper
+///   - Ok results: frees data pointer directly
+///   - Outer DooResult shell: freed with libc::free (matching into_raw)
 #[no_mangle]
 pub extern "C" fn doo_result_free(result: *mut DooResult) {
     if result.is_null() {
         return;
     }
     unsafe {
-        let res = Box::from_raw(result);
-        if !res.data.is_null() {
-            libc::free(res.data);
+        // Read the result fields before freeing
+        let tag = (*result).tag;
+        let data = (*result).data;
+
+        if !data.is_null() {
+            if tag == ResultTag::Err as i64 {
+                // Err results from err_str have data -> wrapper { *char message }
+                // Free the inner string pointer first, then the wrapper
+                let inner_str = *(data as *const *mut c_void);
+                if !inner_str.is_null() {
+                    doo_free(inner_str as *mut u8);
+                }
+            }
+            // Free the data/wrapper pointer itself
+            libc::free(data);
         }
+
+        // Free the outer DooResult shell (allocated with libc::malloc in into_raw)
+        libc::free(result as *mut c_void);
     }
 }
 

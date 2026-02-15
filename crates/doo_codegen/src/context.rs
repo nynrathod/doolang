@@ -568,6 +568,18 @@ impl<'ctx> CodegenContext<'ctx> {
         alloca
     }
 
+    /// Replace a local variable's alloca pointer with an external pointer.
+    /// Used by reference capture: the spawn function uses the OUTER function's
+    /// alloca directly, so writes propagate back to the parent scope.
+    pub fn replace_local_ptr(
+        &mut self,
+        name: &str,
+        ptr: PointerValue<'ctx>,
+        ty: BasicTypeEnum<'ctx>,
+    ) {
+        self.locals.insert(name.to_string(), (ptr, ty));
+    }
+
     /// Get a local variable pointer.
     pub fn get_local(&self, name: &str) -> Option<PointerValue<'ctx>> {
         self.locals.get(name).map(|(ptr, _)| *ptr)

@@ -1712,7 +1712,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // The body will be built as a separate MIR function
             builder
                 .pending_closures
-                .push((closure_name.clone(), params.clone(), body.clone()));
+                .push((closure_name.clone(), params.clone(), body.clone(), Vec::new()));
 
             // Emit ClosureCreate instruction that references the closure function
             let dest = builder.new_temp();
@@ -1813,10 +1813,20 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // then emits a Spawn or ScopeSpawn instruction.
             let closure_name = format!("__spawn_{}", builder.closure_counter);
             builder.closure_counter += 1;
+
+            // Collect free variables from the body — these must be captured
+            let captures = super::capture::collect_free_vars(body, builder);
+
             builder
                 .pending_closures
-                .push((closure_name.clone(), Vec::new(), body.clone()));
+                .push((closure_name.clone(), Vec::new(), body.clone(), captures.clone()));
             let span = builder.convert_span(expr.span);
+
+            // Build capture operands from the outer scope
+            let capture_operands: Vec<MirOperand> = captures
+                .iter()
+                .map(|name| MirOperand::Local(name.clone()))
+                .collect();
 
             // If we're inside a scope, emit ScopeSpawn (tracked by scope_stack)
             if let Some(scope_var) = builder.scope_stack.last().cloned() {
@@ -1824,6 +1834,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     MirInstrKind::ScopeSpawn {
                         scope: MirOperand::Temp(scope_var),
                         func: closure_name,
+                        captures: capture_operands,
                     },
                     span,
                 );
@@ -1844,6 +1855,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     MirInstrKind::Spawn {
                         dest: dest.clone(),
                         func: closure_name,
+                        captures: capture_operands,
                     },
                     span,
                 );

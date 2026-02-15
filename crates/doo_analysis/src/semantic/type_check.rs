@@ -892,7 +892,8 @@ impl TypeChecker {
                     let is_builtin = ffi_names::is_builtin_module(name)
                         || name == "print"
                         || name == "panic"
-                        || name == "toString";
+                        || name == "toString"
+                        || name == "sleep";
 
                     // Validate argument count and types against function signature
                     if let Some(param_types) = self.functions.get(name).cloned() {
@@ -1432,6 +1433,7 @@ impl TypeChecker {
                     && name != "print"
                     && name != "panic"
                     && name != "toString"
+                    && name != "sleep"
                 {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::Undefined(name.clone()),

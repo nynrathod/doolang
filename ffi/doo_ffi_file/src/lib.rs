@@ -508,16 +508,31 @@ pub extern "C" fn doo_file_modified_time(path: *const c_char) -> i64 {
 // ============================================================================
 
 /// Free a DooResult (must be called by Doo runtime after use)
+/// Handles Err results: data -> error struct { *char message, ... } -> frees inner string + struct.
+/// All allocations use libc::malloc, so all frees use libc::free.
 #[no_mangle]
 pub extern "C" fn doo_file_free_result(result: *mut DooResult) {
     if result.is_null() {
         return;
     }
     unsafe {
-        let res = Box::from_raw(result);
-        if !res.data.is_null() {
-            libc::free(res.data as *mut c_void);
+        let tag = (*result).tag;
+        let data = (*result).data;
+
+        if !data.is_null() {
+            if tag == 1 {
+                // Err: data -> error struct with *char message as first field
+                // Free the inner message string first
+                let inner_str = *(data as *const *mut c_void);
+                if !inner_str.is_null() {
+                    libc::free(inner_str);
+                }
+            }
+            libc::free(data as *mut c_void);
         }
+
+        // Free the outer DooResult shell (allocated with libc::malloc in into_raw)
+        libc::free(result as *mut c_void);
     }
 }
 

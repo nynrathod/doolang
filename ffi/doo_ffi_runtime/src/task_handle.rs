@@ -2,9 +2,15 @@
 //!
 //! Wraps `tokio::task::JoinHandle` behind an opaque FFI pointer.
 //! Doo code interacts with this through FFI functions only.
+//!
+//! SAFETY:
+//! - All FFI functions wrapped in `catch_unwind`
+//! - `safe_block_on` avoids nested `block_on` panics in `doo_task_await`
+//! - `doo_task_cancel` aborts + frees in one call (no handle leak)
 
-use crate::runtime::make_err_result;
+use crate::runtime::{make_err_result, safe_block_on};
 use doo_ffi_core::DooResult;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use tokio::task::JoinHandle;
 
 /// Wrapper for *mut DooResult to satisfy Send bounds on JoinHandle output.
@@ -49,39 +55,55 @@ impl TaskHandle {
 /// Await a task handle, blocking the current thread until the task completes.
 /// Returns the task's result. Consumes the handle (frees it).
 ///
+/// Uses `safe_block_on` to handle the case where we're already inside
+/// a `block_on` context (e.g., called from `doo_runtime_block_on`).
+/// This avoids the "Cannot start a runtime from within a runtime" panic.
+///
 /// # Safety
 /// `handle` must be a valid pointer from `doo_spawn`.
 #[no_mangle]
 pub extern "C" fn doo_task_await(handle: *mut TaskHandle) -> *mut DooResult {
-    if handle.is_null() {
-        return make_err_result("TaskHandle is null");
-    }
-
-    let task = unsafe { TaskHandle::from_raw(handle) };
-    let rt = crate::runtime::get_runtime();
-
-    // Use the global runtime to block on the task.
-    // If we're already inside a block_on context, use spawn_blocking to avoid nesting.
-    rt.block_on(async {
-        match task.handle.await {
-            Ok(send_result) => send_result.0,
-            Err(e) => make_err_result(&format!("Task panicked: {}", e)),
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return make_err_result("TaskHandle is null");
         }
-    })
+
+        let task = unsafe { TaskHandle::from_raw(handle) };
+
+        // Use safe_block_on to avoid nested block_on panic
+        safe_block_on(async {
+            match task.handle.await {
+                Ok(send_result) => send_result.0,
+                Err(e) => {
+                    if e.is_cancelled() {
+                        make_err_result("task cancelled")
+                    } else {
+                        make_err_result(&format!("Task panicked: {}", e))
+                    }
+                }
+            }
+        })
+    }));
+    result.unwrap_or_else(|_| make_err_result("task_await panicked"))
 }
 
-/// Cancel a task. The task will be aborted.
-/// Does NOT free the handle — call `doo_task_free` after.
+/// Cancel a task and free the handle in one operation.
+/// The task will be aborted and the handle memory released.
+/// This prevents the handle leak that occurred when cancel and free
+/// were separate operations.
 ///
 /// # Safety
 /// `handle` must be a valid pointer from `doo_spawn`.
 #[no_mangle]
 pub extern "C" fn doo_task_cancel(handle: *mut TaskHandle) {
-    if handle.is_null() {
-        return;
-    }
-    let task = unsafe { &*handle };
-    task.handle.abort();
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return;
+        }
+        let task = unsafe { TaskHandle::from_raw(handle) };
+        task.handle.abort();
+        // Box drops here — handle freed, no leak
+    }));
 }
 
 /// Check if a task has finished.
@@ -91,11 +113,18 @@ pub extern "C" fn doo_task_cancel(handle: *mut TaskHandle) {
 /// `handle` must be a valid pointer from `doo_spawn`.
 #[no_mangle]
 pub extern "C" fn doo_task_is_finished(handle: *mut TaskHandle) -> i32 {
-    if handle.is_null() {
-        return 1; // Null handle is considered "finished"
-    }
-    let task = unsafe { &*handle };
-    if task.handle.is_finished() { 1 } else { 0 }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return 1; // Null handle is considered "finished"
+        }
+        let task = unsafe { &*handle };
+        if task.handle.is_finished() {
+            1
+        } else {
+            0
+        }
+    }));
+    result.unwrap_or(1) // On panic, treat as finished
 }
 
 /// Free a task handle without awaiting it.
@@ -105,11 +134,13 @@ pub extern "C" fn doo_task_is_finished(handle: *mut TaskHandle) -> i32 {
 /// `handle` must be a valid pointer from `doo_spawn`.
 #[no_mangle]
 pub extern "C" fn doo_task_free(handle: *mut TaskHandle) {
-    if handle.is_null() {
-        return;
-    }
-    unsafe {
-        let _ = TaskHandle::from_raw(handle);
-        // Box drops here, JoinHandle drops → task is detached
-    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return;
+        }
+        unsafe {
+            let _ = TaskHandle::from_raw(handle);
+            // Box drops here, JoinHandle drops → task is detached
+        }
+    }));
 }

@@ -47,10 +47,15 @@ use std::sync::OnceLock;
 static PROCESS_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Get or create the Tokio runtime local to this library.
-/// Uses OnceLock::get_or_init — no cross-.so symbol resolution needed.
+/// Uses current_thread (single-threaded) to avoid wasting resources —
+/// process operations only need I/O polling, not a full multi-threaded pool.
+/// This prevents doubling the worker thread count vs doo_ffi_runtime.
 pub(crate) fn ensure_runtime() -> &'static tokio::runtime::Runtime {
     PROCESS_RUNTIME.get_or_init(|| {
-        tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime for process module")
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create Tokio runtime for process module")
     })
 }
 
@@ -72,18 +77,21 @@ fn string_to_c(s: &str) -> *const c_char {
 }
 
 /// Create an Ok DooResult with no data.
+/// Uses `into_raw()` (libc::malloc) to match `doo_result_free` (libc::free).
 fn make_ok_void() -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult::ok_empty()))
+    DooResult::ok_empty().into_raw()
 }
 
 /// Create an Ok DooResult with a string value.
+/// Uses `into_raw()` (libc::malloc) to match `doo_result_free` (libc::free).
 fn make_ok_str(s: &str) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult::ok_string(s)))
+    DooResult::ok_string(s).into_raw()
 }
 
 /// Create an Err DooResult with a message.
+/// Uses `into_raw()` (libc::malloc) to match `doo_result_free` (libc::free).
 fn make_err(msg: &str) -> *mut DooResult {
-    Box::into_raw(Box::new(DooResult::err_str(500, msg)))
+    DooResult::err_str(500, msg).into_raw()
 }
 
 // ============================================================================

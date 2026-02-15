@@ -100,17 +100,24 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
 
             // ================================================================
             // Spawn: spawn a function as an async task
-            // doo_spawn(fn_ptr: extern "C" fn() -> *mut DooResult) -> *mut TaskHandle
+            // doo_spawn(fn_ptr, env_ptr) -> *mut TaskHandle
             // ================================================================
-            MirInstrKind::Spawn { dest, func } => {
+            MirInstrKind::Spawn {
+                dest,
+                func,
+                captures,
+            } => {
                 // Get the function value for the closure/function to spawn
                 let func_val = ctx.get_function(func)?;
                 let func_ptr = func_val.as_global_value().as_pointer_value();
 
+                // Pack captures into env struct (or null if none)
+                let env_ptr = build_env_pack(ctx, captures)?;
+
                 let spawn_fn = get_or_declare_doo_spawn(ctx);
                 let call_site = ctx
                     .builder
-                    .build_call(spawn_fn, &[func_ptr.into()], "spawn_handle")
+                    .build_call(spawn_fn, &[func_ptr.into(), env_ptr.into()], "spawn_handle")
                     .ok()?;
 
                 if let Some(handle_ptr) = call_site.try_as_basic_value().basic() {
@@ -142,9 +149,13 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
 
             // ================================================================
             // ScopeSpawn: spawn a task within a scope
-            // doo_scope_spawn(scope: *mut ScopeHandle, fn_ptr: extern "C" fn() -> *mut DooResult)
+            // doo_scope_spawn(scope, fn_ptr, env_ptr)
             // ================================================================
-            MirInstrKind::ScopeSpawn { scope, func } => {
+            MirInstrKind::ScopeSpawn {
+                scope,
+                func,
+                captures,
+            } => {
                 let scope_val = operand_to_value(ctx, scope)?;
 
                 // Ensure scope is a pointer
@@ -166,12 +177,15 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                 let func_val = ctx.get_function(func)?;
                 let func_ptr = func_val.as_global_value().as_pointer_value();
 
+                // Pack captures into env struct (or null if none)
+                let env_ptr = build_env_pack(ctx, captures)?;
+
                 let scope_spawn_fn = get_or_declare_doo_scope_spawn(ctx);
                 let _ = ctx
                     .builder
                     .build_call(
                         scope_spawn_fn,
-                        &[scope_ptr.into(), func_ptr.into()],
+                        &[scope_ptr.into(), func_ptr.into(), env_ptr.into()],
                         "scope_spawn",
                     )
                     .ok()?;
@@ -237,10 +251,11 @@ fn get_or_declare_doo_task_await<'ctx>(
     }
     let ptr_ty = ctx.ptr_type();
     let fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
-/// `doo_spawn(fn_ptr: ptr) -> ptr`
+/// `doo_spawn(fn_ptr: ptr, env: ptr) -> ptr`
 fn get_or_declare_doo_spawn<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
@@ -249,8 +264,9 @@ fn get_or_declare_doo_spawn<'ctx>(
         return f;
     }
     let ptr_ty = ctx.ptr_type();
-    let fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    let fn_ty = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_scope_create() -> ptr`
@@ -263,10 +279,11 @@ fn get_or_declare_doo_scope_create<'ctx>(
     }
     let ptr_ty = ctx.ptr_type();
     let fn_ty = ptr_ty.fn_type(&[], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
-/// `doo_scope_spawn(scope: ptr, fn_ptr: ptr)` — void return
+/// `doo_scope_spawn(scope: ptr, fn_ptr: ptr, env: ptr)` — void return
 fn get_or_declare_doo_scope_spawn<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
@@ -276,8 +293,9 @@ fn get_or_declare_doo_scope_spawn<'ctx>(
     }
     let ptr_ty = ctx.ptr_type();
     let void_ty = ctx.context.void_type();
-    let fn_ty = void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    let fn_ty = void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false);
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_scope_wait(scope: ptr) -> ptr`
@@ -290,7 +308,8 @@ fn get_or_declare_doo_scope_wait<'ctx>(
     }
     let ptr_ty = ctx.ptr_type();
     let fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_runtime_init() -> i32`
@@ -303,7 +322,8 @@ pub fn get_or_declare_doo_runtime_init<'ctx>(
     }
     let i32_ty = ctx.i32_type();
     let fn_ty = i32_ty.fn_type(&[], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_runtime_block_on(fn_ptr: ptr) -> ptr`
@@ -316,7 +336,8 @@ pub fn get_or_declare_doo_runtime_block_on<'ctx>(
     }
     let ptr_ty = ctx.ptr_type();
     let fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_sleep(ms: i64) -> ptr`
@@ -330,7 +351,8 @@ pub fn get_or_declare_doo_sleep<'ctx>(
     let ptr_ty = ctx.ptr_type();
     let i64_ty = ctx.i64_type();
     let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_sleep_async(ms: i64) -> ptr`
@@ -344,7 +366,8 @@ pub fn get_or_declare_doo_sleep_async<'ctx>(
     let ptr_ty = ctx.ptr_type();
     let i64_ty = ctx.i64_type();
     let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_timeout(ms: i64, fn_ptr: ptr) -> ptr`
@@ -358,10 +381,11 @@ pub fn get_or_declare_doo_timeout<'ctx>(
     let ptr_ty = ctx.ptr_type();
     let i64_ty = ctx.i64_type();
     let fn_ty = ptr_ty.fn_type(&[i64_ty.into(), ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
-/// `doo_spawn_detach(fn_ptr: ptr)` — void return
+/// `doo_spawn_detach(fn_ptr: ptr, env: ptr)` — void return
 pub fn get_or_declare_doo_spawn_detach<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
@@ -371,8 +395,9 @@ pub fn get_or_declare_doo_spawn_detach<'ctx>(
     }
     let ptr_ty = ctx.ptr_type();
     let void_ty = ctx.context.void_type();
-    let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    let fn_ty = void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_task_cancel(handle: ptr)` — void return
@@ -386,7 +411,8 @@ pub fn get_or_declare_doo_task_cancel<'ctx>(
     let ptr_ty = ctx.ptr_type();
     let void_ty = ctx.context.void_type();
     let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_task_free(handle: ptr)` — void return
@@ -400,7 +426,8 @@ pub fn get_or_declare_doo_task_free<'ctx>(
     let ptr_ty = ctx.ptr_type();
     let void_ty = ctx.context.void_type();
     let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_scope_free(scope: ptr)` — void return
@@ -414,7 +441,8 @@ pub fn get_or_declare_doo_scope_free<'ctx>(
     let ptr_ty = ctx.ptr_type();
     let void_ty = ctx.context.void_type();
     let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
 }
 
 /// `doo_spawn_blocking(fn_ptr: ptr) -> ptr` — for CPU-heavy work
@@ -427,5 +455,160 @@ pub fn get_or_declare_doo_spawn_blocking<'ctx>(
     }
     let ptr_ty = ctx.ptr_type();
     let fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
-    ctx.module.add_function(NAME, fn_ty, Some(Linkage::External))
+    ctx.module
+        .add_function(NAME, fn_ty, Some(Linkage::External))
+}
+
+// ============================================================================
+// Capture Environment Packing/Unpacking
+// ============================================================================
+
+/// Pack captured variable values into a heap-allocated env struct.
+/// Returns a pointer to the env (or null if no captures).
+///
+/// Layout: `[i64 × N]` — each slot stores a POINTER (ptrtoint'd) to the
+/// outer function's alloca for that captured variable. The spawn function
+/// uses these pointers directly, so writes propagate back to the parent scope.
+/// The env struct itself is freed by the spawn function after unpacking.
+fn build_env_pack<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    captures: &[doo_mir::MirOperand],
+) -> Option<inkwell::values::PointerValue<'ctx>> {
+    if captures.is_empty() {
+        // No captures — pass null env pointer
+        return Some(ctx.ptr_type().const_null());
+    }
+
+    let i64_ty = ctx.i64_type();
+    let count = captures.len() as u64;
+
+    // malloc(count * 8) — one i64 slot per captured variable
+    let size = i64_ty.const_int(count * 8, false);
+    let malloc_fn = get_or_declare_malloc(ctx);
+    let env_raw = ctx
+        .builder
+        .build_call(malloc_fn, &[size.into()], "env_malloc")
+        .ok()?
+        .try_as_basic_value()
+        .basic()?
+        .into_pointer_value();
+
+    // Store POINTER to each captured variable's alloca (reference capture)
+    for (i, cap) in captures.iter().enumerate() {
+        let cap_name = match cap {
+            doo_mir::MirOperand::Local(n) | doo_mir::MirOperand::Temp(n) => n.as_str(),
+            _ => continue,
+        };
+
+        // Get the alloca pointer for this variable in the OUTER scope
+        let alloca_ptr = match ctx.get_local(cap_name) {
+            Some(ptr) => ptr,
+            None => continue,
+        };
+
+        // Convert alloca pointer to i64 for uniform storage
+        let as_i64 = ctx
+            .builder
+            .build_ptr_to_int(alloca_ptr, i64_ty, &format!("cap_ref_{}", i))
+            .ok()?;
+
+        // GEP to the i-th i64 slot and store
+        let field_ptr = unsafe {
+            ctx.builder
+                .build_gep(
+                    i64_ty,
+                    env_raw,
+                    &[i64_ty.const_int(i as u64, false)],
+                    &format!("env_field_{}", i),
+                )
+                .ok()?
+        };
+        ctx.builder.build_store(field_ptr, as_i64).ok()?;
+    }
+
+    Some(env_raw)
+}
+
+/// Emit env unpack code at the start of a spawn function.
+/// Loads POINTERS to outer allocas from the env struct, then replaces
+/// the spawn function's local allocas with the outer pointers.
+/// This implements reference capture — the spawn function directly
+/// reads/writes the parent scope's variables.
+/// Frees the env struct after unpacking (it only holds pointers, not values).
+pub fn emit_env_unpack<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    captures: &[String],
+    llvm_func: inkwell::values::FunctionValue<'ctx>,
+) {
+    if captures.is_empty() {
+        return;
+    }
+
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type();
+
+    // env_ptr is always param 0 for closure/spawn functions
+    let env_ptr = llvm_func.get_nth_param(0).unwrap().into_pointer_value();
+
+    // Load each captured alloca pointer from the env struct
+    for (i, cap_name) in captures.iter().enumerate() {
+        let field_ptr = unsafe {
+            ctx.builder
+                .build_gep(
+                    i64_ty,
+                    env_ptr,
+                    &[i64_ty.const_int(i as u64, false)],
+                    &format!("env_load_{}", i),
+                )
+                .ok()
+        };
+        if let Some(field_ptr) = field_ptr {
+            if let Ok(loaded_i64) =
+                ctx.builder
+                    .build_load(i64_ty, field_ptr, &format!("cap_raw_{}", cap_name))
+            {
+                // Convert i64 back to pointer (this is the outer alloca pointer)
+                if let Ok(outer_alloca) = ctx.builder.build_int_to_ptr(
+                    loaded_i64.into_int_value(),
+                    ptr_ty,
+                    &format!("cap_ptr_{}", cap_name),
+                ) {
+                    // Get the type of the local alloca we're replacing
+                    let local_ty = ctx.get_local_type(cap_name).unwrap_or(i64_ty.into());
+                    // Replace the spawn function's local alloca with the outer pointer
+                    ctx.replace_local_ptr(cap_name, outer_alloca, local_ty);
+                }
+            }
+        }
+    }
+
+    // Free the env struct — it only held pointer values, not the actual data
+    let free_fn = get_or_declare_free(ctx);
+    let _ = ctx
+        .builder
+        .build_call(free_fn, &[env_ptr.into()], "env_free");
+}
+
+/// `malloc(size: i64) -> ptr`
+fn get_or_declare_malloc<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::FunctionValue<'ctx> {
+    if let Some(f) = ctx.module.get_function("malloc") {
+        return f;
+    }
+    let ptr_ty = ctx.ptr_type();
+    let i64_ty = ctx.context.i64_type();
+    let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
+    ctx.module
+        .add_function("malloc", fn_ty, Some(Linkage::External))
+}
+
+/// `free(ptr: ptr)` — void return
+fn get_or_declare_free<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::FunctionValue<'ctx> {
+    if let Some(f) = ctx.module.get_function("free") {
+        return f;
+    }
+    let ptr_ty = ctx.ptr_type();
+    let void_ty = ctx.context.void_type();
+    let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
+    ctx.module
+        .add_function("free", fn_ty, Some(Linkage::External))
 }

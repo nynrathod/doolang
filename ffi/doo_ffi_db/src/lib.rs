@@ -739,16 +739,30 @@ pub extern "C" fn doo_db_result_value(result: *mut DooResult) -> *const c_char {
 }
 
 /// Free a DooResult.
+/// Handles Err results from err_str: data -> wrapper { *char } -> frees inner string + wrapper.
+/// Matches doo_ffi_core::doo_result_free semantics.
 #[no_mangle]
 pub extern "C" fn doo_db_result_free(result: *mut DooResult) {
     if result.is_null() {
         return;
     }
     unsafe {
-        let res = Box::from_raw(result);
-        if !res.data.is_null() {
-            libc::free(res.data);
+        let tag = (*result).tag;
+        let data = (*result).data;
+
+        if !data.is_null() {
+            if tag == 1 {
+                // Err: data -> wrapper { *char message } -> free inner string first
+                let inner_str = *(data as *const *mut c_void);
+                if !inner_str.is_null() {
+                    libc::free(inner_str);
+                }
+            }
+            libc::free(data);
         }
+
+        // Free the outer DooResult shell (allocated with libc::malloc in into_raw)
+        libc::free(result as *mut c_void);
     }
 }
 

@@ -2,6 +2,7 @@
 //!
 //! Converts HIR to MIR with lowering of high-level constructs.
 
+pub mod capture;
 pub mod expr;
 pub mod pattern;
 pub mod stmt;
@@ -91,8 +92,13 @@ pub struct MirBuilder<'a> {
     pub(crate) closure_counter: usize,
 
     /// Pending closure functions to be added to the program.
-    /// Each entry is (func_name, params, body_expr).
-    pub(crate) pending_closures: Vec<(String, Vec<(String, Option<CoreTypeId>)>, Box<HirExpr>)>,
+    /// Each entry is (func_name, params, body_expr, captures).
+    pub(crate) pending_closures: Vec<(
+        String,
+        Vec<(String, Option<CoreTypeId>)>,
+        Box<HirExpr>,
+        Vec<String>,
+    )>,
 
     /// Closure return types for type propagation.
     /// Key: closure function name, Value: return type
@@ -312,8 +318,9 @@ impl<'a> MirBuilder<'a> {
         }
 
         // Generate MIR functions for all pending closures
-        while let Some((closure_name, params, body)) = self.pending_closures.pop() {
-            let closure_func = self.build_closure_function(&closure_name, &params, &body);
+        while let Some((closure_name, params, body, captures)) = self.pending_closures.pop() {
+            let closure_func =
+                self.build_closure_function(&closure_name, &params, &body, &captures);
             program.functions.push(closure_func);
         }
 
@@ -326,6 +333,7 @@ impl<'a> MirBuilder<'a> {
         name: &str,
         params: &[(String, Option<CoreTypeId>)],
         body: &HirExpr,
+        captures: &[String],
     ) -> MirFunction {
         // Save current state
         let saved_func = self.current_func.take();
@@ -367,6 +375,18 @@ impl<'a> MirBuilder<'a> {
                     name: pname.clone(),
                     type_id: ptype.unwrap_or(builtin::INT),
                     mutable: false,
+                });
+            }
+        }
+
+        // Register captured variables as locals (populated from env struct at codegen)
+        if let Some(f) = &mut self.current_func {
+            f.captures = captures.to_vec();
+            for cap_name in captures {
+                f.locals.push(LocalDef {
+                    name: cap_name.clone(),
+                    type_id: builtin::INT, // captures are i64 values
+                    mutable: true,         // may be assigned inside the body
                 });
             }
         }

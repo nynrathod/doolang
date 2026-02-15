@@ -151,8 +151,21 @@ pub fn doo_clone_string(src: *const c_char) -> *mut c_char {
 /// To get header, subtract HEADER_SIZE from returned pointer.
 #[inline]
 pub fn doo_alloc_array(element_count: usize, element_size: usize) -> *mut u8 {
-    let data_size = element_count * element_size;
-    let total_size = HEADER_SIZE + data_size;
+    // Checked arithmetic to prevent integer overflow → heap buffer overflow
+    let data_size = match element_count.checked_mul(element_size) {
+        Some(size) => size,
+        None => {
+            ffi_debug!("MEMORY", "doo_alloc_array: overflow in element_count({}) * element_size({})", element_count, element_size);
+            return std::ptr::null_mut();
+        }
+    };
+    let total_size = match HEADER_SIZE.checked_add(data_size) {
+        Some(size) => size,
+        None => {
+            ffi_debug!("MEMORY", "doo_alloc_array: overflow in HEADER_SIZE + data_size({})", data_size);
+            return std::ptr::null_mut();
+        }
+    };
 
     // Minimum allocation to prevent empty array crashes
     let alloc_size = total_size.max(MIN_ALLOCATION_SIZE);
@@ -202,7 +215,9 @@ pub extern "C" fn doo_zero(ptr: *mut u8, size: usize) {
     }
 }
 
-/// Copy memory.
+/// Copy memory (overlap-safe).
+/// Uses std::ptr::copy which correctly handles overlapping regions,
+/// unlike copy_nonoverlapping which is UB on overlap.
 #[no_mangle]
 #[inline]
 pub extern "C" fn doo_memcpy(dest: *mut u8, src: *const u8, size: usize) {
@@ -210,7 +225,7 @@ pub extern "C" fn doo_memcpy(dest: *mut u8, src: *const u8, size: usize) {
         return;
     }
     unsafe {
-        std::ptr::copy_nonoverlapping(src, dest, size);
+        std::ptr::copy(src, dest, size);
     }
 }
 

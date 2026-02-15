@@ -293,8 +293,14 @@ impl<'a> DropInserter<'a> {
             }
 
             // Async & concurrency
-            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
+            HirExprKind::Await(inner) => {
                 self.scan_expr_for_uses(inner);
+            }
+            HirExprKind::Spawn { .. } => {
+                // Do NOT recurse into spawn bodies.
+                // Spawn bodies are built as separate MIR functions with their own scope.
+                // Traversing into them would treat spawn-local variables as outer variables,
+                // causing invalid Drop insertions in the outer function.
             }
             HirExprKind::ScopeBlock { stmts } => {
                 for s in stmts {

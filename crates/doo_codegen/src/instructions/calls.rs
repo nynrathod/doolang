@@ -837,6 +837,38 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                 // Try to get the Result struct (load if pointer)
                 if let Some(result_struct) = load_result_struct(ctx, result_val) {
+                    // If we loaded from a heap pointer, free the outer DooResult shell
+                    // and update the temp map so UnwrapOk/UnwrapErr see a struct value
+                    // (not the freed pointer). This prevents 16-byte leaks per FFI call.
+                    if result_val.is_pointer_value() && !result_val.is_struct_value() {
+                        // Free the heap-allocated DooResult outer shell
+                        let doo_free_fn = ctx.get_function("doo_free").unwrap_or_else(|| {
+                            let free_type = ctx.context.void_type().fn_type(
+                                &[ctx.ptr_type().into()],
+                                false,
+                            );
+                            ctx.module.add_function("doo_free", free_type, None)
+                        });
+                        let _ = ctx.builder.build_call(
+                            doo_free_fn,
+                            &[result_val.into_pointer_value().into()],
+                            "free_result_shell",
+                        );
+
+                        // Update the operand's value in the temp map to the loaded struct
+                        // so that subsequent UnwrapOk/UnwrapErr reads the struct directly
+                        // instead of the now-freed pointer
+                        let operand_name = match value {
+                            MirOperand::Local(n) | MirOperand::Temp(n) | MirOperand::Global(n) => {
+                                Some(n.as_str())
+                            }
+                            _ => None,
+                        };
+                        if let Some(name) = operand_name {
+                            ctx.set_temp(name, result_struct.into());
+                        }
+                    }
+
                     // Extract tag (field 0) - i64 for ABI compatibility
                     let tag = ctx
                         .builder
@@ -1054,10 +1086,26 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     let result_struct_type = ctx
                         .context
                         .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
-                    ctx.builder
+                    let loaded = ctx.builder
                         .build_load(result_struct_type, result_ptr, "result_struct_load")
                         .ok()?
-                        .into_struct_value()
+                        .into_struct_value();
+
+                    // Free the heap-allocated DooResult outer shell after loading
+                    let doo_free_fn = ctx.get_function("doo_free").unwrap_or_else(|| {
+                        let free_type = ctx.context.void_type().fn_type(
+                            &[ctx.ptr_type().into()],
+                            false,
+                        );
+                        ctx.module.add_function("doo_free", free_type, None)
+                    });
+                    let _ = ctx.builder.build_call(
+                        doo_free_fn,
+                        &[result_ptr.into()],
+                        "free_result_shell",
+                    );
+
+                    loaded
                 } else if result_val.is_struct_value() {
                     result_val.into_struct_value()
                 } else {

@@ -573,8 +573,8 @@ mod tests {
         let user_id = reg.register_struct(
             "User",
             vec![
-                ("id".to_string(), builtin::INT),
-                ("name".to_string(), builtin::STR),
+                ("id".to_string(), builtin::INT, false),
+                ("name".to_string(), builtin::STR, false),
             ],
         );
 

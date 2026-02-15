@@ -806,6 +806,12 @@ impl<'ctx> CodegenBuilder<'ctx> {
             }
         }
 
+        // Unpack captured variables from env pointer for spawn functions.
+        // Must happen AFTER allocas are created and BEFORE block code generation.
+        if func.is_closure && !func.captures.is_empty() {
+            crate::instructions::async_ops::emit_env_unpack(ctx, &func.captures, llvm_func);
+        }
+
         // Generate code for each block
         for mir_block in &func.blocks {
             let bb = block_map[&mir_block.label];

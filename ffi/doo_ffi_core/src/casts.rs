@@ -91,16 +91,23 @@ pub extern "C" fn doo_cast_int_to_str(value: i64) -> *mut c_char {
 
 /// Convert a float to a C string.
 /// OWNERSHIP: Caller owns the returned string and must call doo_free.
+/// Handles NaN and Infinity edge cases explicitly.
 #[no_mangle]
 pub extern "C" fn doo_cast_float_to_str(value: f64) -> *mut c_char {
-    // Format with reasonable precision, removing trailing zeros
-    let s = if value.fract() == 0.0 {
-        // Whole number - format without decimal
+    let s = if value.is_nan() {
+        "NaN".to_string()
+    } else if value.is_infinite() {
+        if value.is_sign_positive() {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        }
+    } else if value.fract() == 0.0 {
+        // Whole number - format with one decimal place
         format!("{:.1}", value)
     } else {
         // Has fractional part - format with full precision
-        let formatted = format!("{}", value);
-        formatted
+        format!("{}", value)
     };
     doo_alloc_string(&s)
 }
