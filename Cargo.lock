@@ -724,9 +724,12 @@ name = "doo_ffi_db"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "deadpool",
  "deadpool-postgres",
  "doo_ffi_core",
+ "doo_ffi_runtime",
  "libc",
+ "num_cpus",
  "serde",
  "serde_json",
  "tokio",
