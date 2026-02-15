@@ -82,14 +82,20 @@ impl RouteRegistry {
             Ok(_) => {
                 self.route_count += 1;
                 ffi_debug!(
-                    "ROUTER", "Registered: {} {} (total: {})",
-                    method_upper, path, self.route_count
+                    "ROUTER",
+                    "Registered: {} {} (total: {})",
+                    method_upper,
+                    path,
+                    self.route_count
                 );
             }
             Err(e) => {
                 ffi_debug!(
-                    "ROUTER", "Failed to register {} {}: {:?}",
-                    method_upper, path, e
+                    "ROUTER",
+                    "Failed to register {} {}: {:?}",
+                    method_upper,
+                    path,
+                    e
                 );
             }
         }
@@ -160,14 +166,20 @@ impl RouteRegistry {
             Ok(_) => {
                 self.route_count += 1;
                 ffi_debug!(
-                    "ROUTER", "Registered (w/ middleware): {} {} (total: {})",
-                    method_upper, path, self.route_count
+                    "ROUTER",
+                    "Registered (w/ middleware): {} {} (total: {})",
+                    method_upper,
+                    path,
+                    self.route_count
                 );
             }
             Err(e) => {
                 ffi_debug!(
-                    "ROUTER", "Failed to register {} {}: {:?}",
-                    method_upper, path, e
+                    "ROUTER",
+                    "Failed to register {} {}: {:?}",
+                    method_upper,
+                    path,
+                    e
                 );
             }
         }
@@ -201,31 +213,33 @@ impl RouteRegistry {
     }
 
     /// Match a route and extract parameters
+    /// NOTE: `method` is expected to be uppercase (hyper always provides uppercase)
     pub fn match_route(
         &self,
         method: &str,
         path: &str,
     ) -> Option<(&RouteEntry, HashMap<String, String>)> {
-        let method_upper = method.to_uppercase();
-
-        // Debug: list all routers and their state
+        // hyper methods are already uppercase — skip to_uppercase() allocation
         ffi_debug!(
-            "ROUTER", "Looking for {} in routers. Available methods: {:?}",
-            method_upper,
+            "ROUTER",
+            "Looking for {} in routers. Available methods: {:?}",
+            method,
             self.routers.keys().collect::<Vec<_>>()
         );
 
-        let router = match self.routers.get(&method_upper) {
+        let router = match self.routers.get(method) {
             Some(r) => r,
             None => {
-                ffi_debug!("ROUTER", "No router for method: {}", method_upper);
+                ffi_debug!("ROUTER", "No router for method: {}", method);
                 return None;
             }
         };
 
         ffi_debug!(
-            "ROUTER", "Found router for {}, attempting match on '{}'",
-            method_upper, path
+            "ROUTER",
+            "Found router for {}, attempting match on '{}'",
+            method,
+            path
         );
 
         match router.at(path) {
@@ -236,13 +250,16 @@ impl RouteRegistry {
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect();
                 ffi_debug!(
-                    "ROUTER", "Matched: {} {} -> params: {:?}",
-                    method_upper, path, params
+                    "ROUTER",
+                    "Matched: {} {} -> params: {:?}",
+                    method,
+                    path,
+                    params
                 );
                 Some((matched.value, params))
             }
             Err(e) => {
-                ffi_debug!("ROUTER", "No match for {} {}: {:?}", method_upper, path, e);
+                ffi_debug!("ROUTER", "No match for {} {}: {:?}", method, path, e);
                 None
             }
         }
@@ -267,9 +284,32 @@ impl RouteRegistry {
     }
 }
 
-// Global route registry
+// Global route registry — mutable during registration (before server starts)
 static ROUTES: std::sync::OnceLock<Mutex<RouteRegistry>> = std::sync::OnceLock::new();
 
+/// Frozen, lock-free registry used for ALL request-time lookups (after server starts)
+static FROZEN_ROUTES: std::sync::OnceLock<RouteRegistry> = std::sync::OnceLock::new();
+
+/// Get mutable route registry for registration (before server starts)
 pub fn get_routes() -> &'static Mutex<RouteRegistry> {
     ROUTES.get_or_init(|| Mutex::new(RouteRegistry::new()))
+}
+
+/// Freeze the registry — move from Mutex to lock-free OnceLock.
+/// Called exactly once before the accept loop starts.
+/// After this, `get_frozen_routes()` provides zero-cost access.
+pub fn freeze_routes() {
+    let routes = get_routes();
+    let mut guard = routes.lock().unwrap();
+    let registry = std::mem::replace(&mut *guard, RouteRegistry::new());
+    let _ = FROZEN_ROUTES.set(registry);
+}
+
+/// Request-time lookup: NO lock, NO contention.
+/// Panics if `freeze_routes()` was not called.
+#[inline]
+pub fn get_frozen_routes() -> &'static RouteRegistry {
+    FROZEN_ROUTES
+        .get()
+        .expect("Routes not frozen — call freeze_routes() before serving")
 }

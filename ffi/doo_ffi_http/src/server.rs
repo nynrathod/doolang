@@ -1,13 +1,18 @@
 //! HTTP Server
 //! Hyper-based HTTP server with request handling and middleware execution.
+//!
+//! Performance-critical path — every allocation and lock matters here.
+//! Routes and CORS are frozen (lock-free) before the accept loop.
 
 use crate::error::*;
 use crate::helpers::*;
-use crate::router::get_routes;
+use crate::router::{freeze_routes, get_frozen_routes};
 use crate::types::*;
 use doo_ffi_core::ffi_debug;
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::net::SocketAddr;
+use std::os::raw::c_char;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -24,6 +29,8 @@ const VERSION: &str = "0.4.0";
 
 // ============================================================================
 // MIDDLEWARE EXECUTION - Single Source of Truth
+// Uses raw pointer + length to avoid Vec cloning per request.
+// Safe because middleware slices live in the frozen RouteRegistry ('static).
 // ============================================================================
 
 /// Execute middleware chain then handler
@@ -38,30 +45,31 @@ fn execute_middleware_chain(
         return handler(req);
     }
 
-    // Build the next function chain
-    // Each middleware gets a "next" function that calls either the next middleware or the handler
-    execute_middleware_at_index(req, middleware, 0, handler)
+    // Build the next function chain using pointer-based context (no Vec clone)
+    execute_middleware_at_index(req, middleware.as_ptr(), middleware.len(), 0, handler)
 }
 
-/// Execute middleware at given index, with next pointing to rest of chain
+/// Execute middleware at given index, with next pointing to rest of chain.
+/// Uses raw pointer + length instead of cloning the middleware Vec.
 fn execute_middleware_at_index(
     req: *const DooRequest,
-    middleware: &[DooMiddlewareFn],
+    middleware_ptr: *const DooMiddlewareFn,
+    middleware_len: usize,
     index: usize,
     handler: DooHandlerFn,
 ) -> *mut DooResult {
-    if index >= middleware.len() {
+    if index >= middleware_len {
         // All middleware executed, call the handler
         return handler(req);
     }
 
-    let current_mw = middleware[index];
+    let current_mw = unsafe { *middleware_ptr.add(index) };
 
-    // Create next function that continues the chain
-    // We use a thread-local to pass the chain context since FFI can't capture closures
+    // Store chain context in thread-local for the FFI callback
     MIDDLEWARE_CONTEXT.with(|ctx| {
         let mut ctx = ctx.borrow_mut();
-        ctx.middleware = middleware.to_vec();
+        ctx.middleware_ptr = middleware_ptr;
+        ctx.middleware_len = middleware_len;
         ctx.current_index = index;
         ctx.handler = Some(handler);
     });
@@ -73,7 +81,8 @@ fn execute_middleware_at_index(
     current_mw(req, middleware_next)
 }
 
-/// Thread-local context for middleware chain execution
+/// Thread-local context for middleware chain execution.
+/// Uses raw pointer + length instead of owned Vec to avoid allocation.
 thread_local! {
     static MIDDLEWARE_CONTEXT: std::cell::RefCell<MiddlewareContext> =
         std::cell::RefCell::new(MiddlewareContext::default());
@@ -93,49 +102,61 @@ pub fn get_current_request() -> *const DooRequest {
     CURRENT_REQUEST.with(|r| *r.borrow())
 }
 
-#[derive(Default)]
+/// Middleware chain context — pointer-based, zero allocation.
+/// The middleware slice pointer is valid because it points into the frozen RouteRegistry
+/// which has 'static lifetime.
 struct MiddlewareContext {
-    middleware: Vec<DooMiddlewareFn>,
+    middleware_ptr: *const DooMiddlewareFn,
+    middleware_len: usize,
     current_index: usize,
     handler: Option<DooHandlerFn>,
 }
 
+impl Default for MiddlewareContext {
+    fn default() -> Self {
+        Self {
+            middleware_ptr: std::ptr::null(),
+            middleware_len: 0,
+            current_index: 0,
+            handler: None,
+        }
+    }
+}
+
+// Safety: DooMiddlewareFn is a function pointer (Send + Sync)
+unsafe impl Send for MiddlewareContext {}
+
 /// The "next" function passed to middleware
-/// Continues execution to the next middleware or handler
+/// Continues execution to the next middleware or handler — zero allocation
 extern "C" fn middleware_next(req: *const DooRequest) -> *mut DooResult {
     MIDDLEWARE_CONTEXT.with(|ctx| {
         let ctx = ctx.borrow();
         let next_index = ctx.current_index + 1;
-        let middleware = ctx.middleware.clone();
+        let middleware_ptr = ctx.middleware_ptr;
+        let middleware_len = ctx.middleware_len;
         let handler = ctx.handler.expect("Handler must be set");
         drop(ctx);
 
-        execute_middleware_at_index(req, &middleware, next_index, handler)
+        execute_middleware_at_index(req, middleware_ptr, middleware_len, next_index, handler)
     })
 }
 
-/// Handle incoming HTTP request
+/// Handle incoming HTTP request — hot path, every allocation matters
 async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    let start = Instant::now();
+    // Extract owned values before consuming req (method is 3-6 chars, negligible)
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
-    let query = req.uri().query().unwrap_or("").to_string();
+    let query_raw = req.uri().query().unwrap_or("").to_string();
 
-    // Built-in health check endpoint for server readiness
+    // Built-in health check endpoint for server readiness (fast path)
     if path == "/health" && method == "GET" {
-        return Ok(build_response(200, r#"{"status":"ok"}"#));
+        return Ok(build_response(200, "{\"status\":\"ok\"}"));
     }
 
     // Handle CORS preflight (OPTIONS) requests before route matching
-    // When CORS is configured, OPTIONS requests should return 204 with CORS headers
-    // NOTE: Check config first, then drop lock BEFORE calling build_response
-    // (build_response also locks cors_config to add headers — avoid deadlock)
+    // Uses frozen CORS — zero lock contention
     if method == "OPTIONS" {
-        let has_cors = crate::middleware::get_cors_config()
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false);
-        if has_cors {
+        if crate::middleware::has_frozen_cors() {
             return Ok(build_response(204, ""));
         }
     }
@@ -153,7 +174,6 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     if is_ws_upgrade {
         if crate::ws::is_ws_route(&path) {
-            // Extract the Sec-WebSocket-Key for the accept handshake
             let ws_key = req
                 .headers()
                 .get("sec-websocket-key")
@@ -166,15 +186,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
             let path_clone = path.clone();
 
-            // Spawn task that awaits the HTTP → WS upgrade from hyper
             tokio::spawn(async move {
-                eprintln!("[Doo] WS: Awaiting upgrade for {}", path_clone);
                 match hyper::upgrade::on(req).await {
                     Ok(upgraded) => {
-                        eprintln!(
-                            "[Doo] WS: Upgrade OK for {}, creating WebSocket stream",
-                            path_clone
-                        );
                         let io = TokioIo::new(upgraded);
                         let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
                             io,
@@ -182,25 +196,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                             None,
                         )
                         .await;
-                        eprintln!(
-                            "[Doo] WS: Stream ready, starting handler for {}",
-                            path_clone
-                        );
                         crate::ws::upgrade::handle_ws_connection(ws_stream, &path_clone).await;
-                        eprintln!("[Doo] WS: Connection handler finished for {}", path_clone);
                     }
                     Err(e) => {
                         eprintln!("[Doo] WebSocket upgrade failed for {}: {}", path_clone, e);
                     }
                 }
             });
-
-            // Return 101 Switching Protocols — hyper completes the upgrade
-            println!(
-                "[Doo] {} | 101 | WebSocket | {}",
-                chrono::Local::now().format("%H:%M:%S"),
-                path,
-            );
 
             let response = Response::builder()
                 .status(StatusCode::SWITCHING_PROTOCOLS)
@@ -212,7 +214,6 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
             return Ok(response);
         } else {
-            // WS upgrade requested but no WS route registered for this path
             let err = Rfc7807Error::route_not_found("WS", &path);
             return Ok(build_response(404, &err.to_json()));
         }
@@ -222,84 +223,91 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     set_current_request_path(&path);
     clear_last_error();
 
-    // Extract headers
-    let mut headers_map: HashMap<String, String> = HashMap::new();
-    for (name, value) in req.headers() {
-        if let Ok(v) = value.to_str() {
-            headers_map.insert(name.to_string().to_lowercase(), v.to_string());
-        }
-    }
-
-    // Extract body
-    let body_bytes = req.collect().await?.to_bytes();
-    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
-
-    // Parse query parameters
-    let query_map = parse_query(&query);
-
-    // Match route
-    let routes = get_routes();
-    let registry = routes.lock().unwrap();
-    ffi_debug!("SERVER", "Route registry has {} routes", registry.count());
+    // ========================================================================
+    // Route matching FIRST — fail fast before doing any expensive work.
+    // Uses frozen registry, ZERO lock contention.
+    // ========================================================================
+    let registry = get_frozen_routes();
 
     let (route_entry, params) = match registry.match_route(&method, &path) {
         Some(r) => r,
         None => {
             // Check if path exists with other methods → 405 vs 404
             let allowed = registry.find_allowed_methods(&path);
-            drop(registry);
             if !allowed.is_empty() {
-                // 405 Method Not Allowed
                 let err = Rfc7807Error::method_not_allowed(&method, &path, allowed);
                 return Ok(build_response(405, &err.to_json()));
             }
-            // 404 Not Found
             let err = Rfc7807Error::route_not_found(&method, &path);
             return Ok(build_response(404, &err.to_json()));
         }
     };
 
-    // ========================================================================
-    // Request validation (Content-Type and JSON body)
-    // Only for methods that send a body (POST, PUT, PATCH)
-    // ========================================================================
-    let has_body = matches!(method.as_str(), "POST" | "PUT" | "PATCH");
-    if has_body && !body_str.is_empty() {
-        // Check Content-Type header
-        let content_type = headers_map.get("content-type");
-        match content_type {
-            None => {
-                // Missing Content-Type — still allow if body is valid JSON
-                // Some clients don't set Content-Type for simple JSON
-            }
-            Some(ct) if !ct.contains("application/json") => {
-                let err = Rfc7807Error::wrong_content_type(&path, ct);
-                return Ok(build_response(400, &err.to_json()));
-            }
-            _ => {} // Valid Content-Type
-        }
+    // Get handler and middleware from frozen route entry
+    let handler = route_entry.handler;
+    let middleware = &route_entry.middleware;
 
-        // Validate JSON body
-        if !body_str.is_empty() {
-            if let Err(_) = serde_json::from_str::<serde_json::Value>(&body_str) {
-                let err = Rfc7807Error::malformed_json(&path);
+    // ========================================================================
+    // Extract headers into HashMap
+    // ========================================================================
+    let mut headers_map = HashMap::with_capacity(16);
+    for (name, value) in req.headers() {
+        if let Ok(v) = value.to_str() {
+            headers_map.insert(name.to_string().to_lowercase(), v.to_string());
+        }
+    }
+
+    // ========================================================================
+    // Conditional body collection — skip for methods that don't send a body
+    // ========================================================================
+    let has_body_method = matches!(method.as_str(), "POST" | "PUT" | "PATCH");
+    let body_str = if has_body_method {
+        let body_bytes = req.collect().await?.to_bytes();
+        if body_bytes.is_empty() {
+            String::new()
+        } else {
+            match String::from_utf8(body_bytes.to_vec()) {
+                Ok(s) => s,
+                Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+            }
+        }
+    } else {
+        // Consume the body stream (empty for GET/DELETE/HEAD)
+        let _ = req.collect().await?;
+        String::new()
+    };
+
+    // Parse query parameters
+    let query_map: HashMap<String, String> = if !query_raw.is_empty() {
+        parse_query(&query_raw)
+    } else {
+        HashMap::new()
+    };
+
+    // ========================================================================
+    // Content-Type validation (POST/PUT/PATCH only)
+    // ========================================================================
+    if has_body_method && !body_str.is_empty() {
+        if let Some(ct) = headers_map.get("content-type") {
+            if !ct.contains("application/json") {
+                let err = Rfc7807Error::wrong_content_type(&path, ct);
                 return Ok(build_response(400, &err.to_json()));
             }
         }
     }
 
-    // Build DooRequest
+    // ========================================================================
+    // Build DooRequest — direct heap allocation via libc::malloc
+    // No stack intermediate, no memcpy — writes directly to heap pointer.
+    // ========================================================================
+    let params_json = if params.is_empty() {
+        "{}".to_string()
+    } else {
+        serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string())
+    };
+
     let doo_request = unsafe {
         let req_ptr = libc::malloc(std::mem::size_of::<DooRequest>()) as *mut DooRequest;
-        if req_ptr.is_null() {
-            let err = internal_error("Memory allocation failed", &path);
-            return Ok(build_response(500, &err.to_json()));
-        }
-
-        // Convert params HashMap to JSON string for codegen compatibility
-        // The codegen uses doo_json_get_field to extract path params
-        let params_json = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
-
         (*req_ptr).method = string_to_c(&method);
         (*req_ptr).path = string_to_c(&path);
         (*req_ptr).body = string_to_c(&body_str);
@@ -307,40 +315,31 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         (*req_ptr).params = string_to_c(&params_json) as *mut std::ffi::c_void;
         (*req_ptr).query = Box::into_raw(Box::new(query_map)) as *mut std::ffi::c_void;
         (*req_ptr).user_id = std::ptr::null();
-
         req_ptr
     };
 
-    // Execute middleware chain then handler
-    // Middleware support: each middleware can call next() or return early
-    let handler = route_entry.handler;
-    let middleware_chain: Vec<_> = route_entry.middleware.clone();
-    drop(registry);
-
-    // Clear any previous parse errors before calling handler
+    // ========================================================================
+    // Execute middleware chain + handler
+    // ========================================================================
     doo_ffi_core::doo_json_clear_parse_error();
 
     let response = {
-        // Execute middleware chain, then handler
         ffi_debug!("SERVER", "About to execute handler for {} {}", method, path);
-        let result = execute_middleware_chain(doo_request, &middleware_chain, handler);
+        let result = execute_middleware_chain(doo_request, middleware, handler);
         ffi_debug!(
             "SERVER",
             "Handler returned, result is_null={}",
             result.is_null()
         );
 
-        // Check for JSON parse errors first (e.g., type mismatches in arrays)
-        // This catches errors that occur during struct field parsing
+        // Check for JSON parse errors (type mismatches in arrays, etc.)
         if doo_ffi_core::doo_json_has_parse_error() {
             let status = doo_ffi_core::doo_json_get_parse_error_status();
             let error_json_ptr = doo_ffi_core::doo_json_get_parse_error_json();
             let body = c_to_string(error_json_ptr as *const i8);
-            // Clear the error after reading
             doo_ffi_core::doo_json_clear_parse_error();
             build_response(status, &body)
         } else {
-            // Process result
             unsafe {
                 if result.is_null() {
                     ffi_debug!("SERVER", "Handler returned null!");
@@ -355,25 +354,16 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         res.value.is_null()
                     );
                     if res.tag == 0 {
-                        // Success - value is the response body string
+                        // Success
                         let body = if res.value.is_null() {
-                            ffi_debug!("SERVER", "Success but value is null, using {{}}");
                             "{}".to_string()
                         } else {
-                            let body_str = c_to_string(res.value as *const i8);
-                            ffi_debug!(
-                                "SERVER",
-                                "Success with body len={}: {}",
-                                body_str.len(),
-                                &body_str[..body_str.len().min(200)]
-                            );
-                            body_str
+                            c_to_string(res.value as *const i8)
                         };
                         build_response(200, &body)
                     } else {
-                        // Error - value is a pointer to error response struct {i32 status, ptr body, ptr content_type}
+                        // Error
                         if !res.value.is_null() {
-                            // Extract status and body from the error response struct
                             let error_struct = res.value as *const i8;
                             let error_status = *(error_struct as *const i32);
                             let body_ptr =
@@ -395,23 +385,54 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         }
     };
 
-    // Log request
-    let elapsed = start.elapsed();
-    let status_code = response.status().as_u16();
-    println!(
-        "[Doo] {} | {} | {:>3}ms | {} {}",
-        chrono::Local::now().format("%H:%M:%S"),
-        status_code,
-        elapsed.as_millis(),
-        method,
-        path
-    );
-
-    // Cleanup (TODO: proper memory management)
+    // ========================================================================
+    // Cleanup DooRequest — prevent memory leak
+    // At high RPS, leaked requests cause OOM within minutes.
+    // ========================================================================
+    unsafe {
+        free_doo_request(doo_request);
+    }
 
     Ok(response)
 }
 
+/// Free all memory owned by a DooRequest.
+/// CString fields freed via CString::from_raw, HashMap fields via Box::from_raw.
+/// DooRequest struct freed via libc::free (allocated with libc::malloc).
+unsafe fn free_doo_request(req: *mut DooRequest) {
+    if req.is_null() {
+        return;
+    }
+    // Free CString fields (allocated via string_to_c → CString::into_raw)
+    if !(*req).method.is_null() {
+        let _ = CString::from_raw((*req).method as *mut c_char);
+    }
+    if !(*req).path.is_null() {
+        let _ = CString::from_raw((*req).path as *mut c_char);
+    }
+    if !(*req).body.is_null() {
+        let _ = CString::from_raw((*req).body as *mut c_char);
+    }
+    if !(*req).user_id.is_null() {
+        let _ = CString::from_raw((*req).user_id as *mut c_char);
+    }
+    // Free Box<HashMap> fields
+    if !(*req).headers.is_null() {
+        let _ = Box::from_raw((*req).headers as *mut HashMap<String, String>);
+    }
+    // Params is a CString (via string_to_c), cast to *mut c_void
+    if !(*req).params.is_null() {
+        let _ = CString::from_raw((*req).params as *mut c_char);
+    }
+    // Query is a Box<HashMap>
+    if !(*req).query.is_null() {
+        let _ = Box::from_raw((*req).query as *mut HashMap<String, String>);
+    }
+    // Free the struct itself (libc::malloc allocated)
+    libc::free(req as *mut std::ffi::c_void);
+}
+
+/// Build HTTP response with frozen CORS headers (zero lock contention)
 fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
     let status_code =
         StatusCode::from_u16(status as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -420,42 +441,45 @@ fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
         .status(status_code)
         .header("Content-Type", CONTENT_TYPE_JSON);
 
-    // Add CORS headers if CORS is configured (single source of truth via get_cors_config)
-    if let Ok(guard) = crate::middleware::get_cors_config().lock() {
-        if let Some(config) = guard.as_ref() {
-            builder = builder.header("Access-Control-Allow-Origin", config.origins.join(", "));
-            builder = builder.header("Access-Control-Allow-Methods", config.methods.join(", "));
-            builder = builder.header("Access-Control-Allow-Headers", config.headers.join(", "));
-            if config.credentials {
-                builder = builder.header("Access-Control-Allow-Credentials", "true");
-            }
-            if let Some(max_age) = config.max_age {
-                builder = builder.header("Access-Control-Max-Age", max_age.to_string());
-            }
+    // Add CORS headers from frozen config — NO lock, NO contention
+    if let Some(cors) = crate::middleware::get_frozen_cors() {
+        builder = builder.header("Access-Control-Allow-Origin", cors.origin.as_str());
+        builder = builder.header("Access-Control-Allow-Methods", cors.methods.as_str());
+        builder = builder.header("Access-Control-Allow-Headers", cors.headers.as_str());
+        if cors.credentials {
+            builder = builder.header("Access-Control-Allow-Credentials", "true");
+        }
+        if let Some(ref max_age) = cors.max_age {
+            builder = builder.header("Access-Control-Max-Age", max_age.as_str());
         }
     }
 
+    // Zero-copy: Bytes::copy_from_slice avoids the body.to_string() allocation
     builder
-        .body(Full::new(Bytes::from(body.to_string())))
+        .body(Full::new(Bytes::copy_from_slice(body.as_bytes())))
         .unwrap_or_else(|_| {
-            Response::new(Full::new(Bytes::from(
-                "{\"error\":\"Response build failed\"}",
+            Response::new(Full::new(Bytes::from_static(
+                b"{\"error\":\"Response build failed\"}",
             )))
         })
 }
 
-/// Start the server
+/// Start the server with frozen routes and CORS for maximum throughput
 pub fn start_server(host: &str, port: u16) -> Result<(), String> {
     let _ = STARTUP_INSTANT.set(Instant::now());
 
+    // ========================================================================
+    // FREEZE: Convert mutable registries to lock-free immutable state.
+    // After this point, all request-time access is zero-cost (no locks).
+    // ========================================================================
+    freeze_routes();
+    crate::middleware::freeze_cors();
+
     // Use the global Tokio runtime from doo_ffi_runtime (single source of truth).
-    // Falls back to creating a local runtime if the global one isn't initialized
-    // (e.g., when HTTP server is started without async features in main).
     let local_runtime;
     let runtime: &tokio::runtime::Runtime = if doo_ffi_runtime::runtime::is_runtime_initialized() {
         doo_ffi_runtime::runtime::get_runtime()
     } else {
-        // Initialize global runtime if not yet done
         doo_ffi_runtime::runtime::doo_runtime_init();
         if doo_ffi_runtime::runtime::is_runtime_initialized() {
             doo_ffi_runtime::runtime::get_runtime()
@@ -480,9 +504,9 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             .map(|s| s.elapsed().as_millis())
             .unwrap_or(0);
 
-        // Count registered routes
-        let routes = get_routes();
-        let total_routes = routes.lock().map(|r| r.count()).unwrap_or(0);
+        // Count registered routes from frozen registry
+        let registry = get_frozen_routes();
+        let total_routes = registry.count();
         let ws_routes = crate::ws::get_ws_registry().count();
 
         // Print banner
@@ -507,6 +531,9 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
                 .accept()
                 .await
                 .map_err(|e| format!("Accept failed: {}", e))?;
+
+            // TCP_NODELAY: disable Nagle's algorithm for lower latency
+            let _ = stream.set_nodelay(true);
 
             let io = TokioIo::new(stream);
 

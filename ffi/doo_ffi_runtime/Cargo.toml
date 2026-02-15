@@ -9,3 +9,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 tokio = { version = "1.49.0", features = ["full"] }
 doo_ffi_core = { path = "../doo_ffi_core" }
+num_cpus = "1.17.0"

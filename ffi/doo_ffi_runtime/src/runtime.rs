@@ -32,6 +32,7 @@ pub fn is_runtime_initialized() -> bool {
 // ============================================================================
 
 /// Initialize the global multi-threaded Tokio runtime.
+/// Tuned for HTTP server workloads: all CPU cores, aggressive I/O polling.
 /// Must be called exactly once at program startup (before any async work).
 /// Returns 0 on success, 1 if already initialized, -1 on error.
 #[no_mangle]
@@ -40,7 +41,14 @@ pub extern "C" fn doo_runtime_init() -> i32 {
         return 1; // Already initialized
     }
 
-    match Runtime::new() {
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(num_cpus::get())
+        .max_blocking_threads(num_cpus::get() * 2)
+        .event_interval(256)           // Check I/O less aggressively (default 61)
+        .global_queue_interval(128)    // Balance work stealing frequency
+        .enable_all()
+        .build()
+    {
         Ok(rt) => {
             let _ = GLOBAL_RUNTIME.set(rt);
             0 // Success

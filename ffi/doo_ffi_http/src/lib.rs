@@ -7,6 +7,13 @@
 //! - Request helpers (params, query, headers)
 //! - Server lifecycle
 
+// ============================================================================
+// GLOBAL ALLOCATOR — mimalloc for reduced lock contention at high RPS
+// Since this is a cdylib, the allocator applies to all allocations in this DLL.
+// ============================================================================
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod error;
 mod helpers;
 mod middleware;
@@ -1012,11 +1019,9 @@ fn validate_item_against_schema(
     resource_name: &str,
     path: &str,
 ) -> Result<(), String> {
-    // Look up struct metadata for this resource
-    // The CRUD config stores struct name (e.g., "Task"), need to find it
+    // Look up struct metadata for this resource (frozen registry — no lock)
     let struct_name = {
-        let routes = get_routes();
-        let registry = routes.lock().unwrap();
+        let registry = get_frozen_routes();
         registry
             .crud_configs
             .iter()
@@ -2944,11 +2949,9 @@ pub extern "C" fn doohttp_populate_struct_from_request(
     let path_str = c_to_string(request.path);
     set_current_request_path(&path_str);
 
-    // Get handler metadata from registry
-    let routes = get_routes();
-    let registry = routes.lock().unwrap();
+    // Get handler metadata from frozen registry — no lock
+    let registry = get_frozen_routes();
     let metadata = registry.handler_metadata.get(&handler_name_str).cloned();
-    drop(registry);
 
     let metadata = match metadata {
         Some(m) => m,
@@ -3609,11 +3612,9 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
 
     let handler_name_str = c_to_string(handler_name);
 
-    // Get handler metadata from registry
-    let routes = get_routes();
-    let registry = routes.lock().unwrap();
+    // Get handler metadata from frozen registry — no lock
+    let registry = get_frozen_routes();
     let metadata = registry.handler_metadata.get(&handler_name_str).cloned();
-    drop(registry);
 
     let metadata = match metadata {
         Some(m) => m,

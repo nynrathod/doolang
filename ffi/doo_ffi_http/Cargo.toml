@@ -25,6 +25,9 @@ jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 libloading = "0.8"
 base64 = "0.22"
 
+# Performance: mimalloc reduces allocation contention under high concurrency
+mimalloc = { version = "0.1.48", default-features = false }
+
 # WebSocket support
 tokio-tungstenite = "0.26"
 dashmap = "6.1.0"

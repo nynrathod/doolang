@@ -15,6 +15,49 @@ static RATELIMIT_CONFIG: OnceLock<Mutex<Option<RateLimitConfig>>> = OnceLock::ne
 static RATELIMIT_STATE: OnceLock<Mutex<HashMap<String, RateLimitEntry>>> = OnceLock::new();
 static JWT_SECRET: OnceLock<String> = OnceLock::new();
 
+// ============================================================================
+// FROZEN CORS — Pre-computed header values for zero-cost request-time access
+// ============================================================================
+
+/// Pre-computed CORS header values (immutable after freeze)
+pub struct FrozenCorsHeaders {
+    pub origin: String,
+    pub methods: String,
+    pub headers: String,
+    pub credentials: bool,
+    pub max_age: Option<String>,
+}
+
+/// Frozen CORS headers — lock-free access during request handling
+static FROZEN_CORS: OnceLock<Option<FrozenCorsHeaders>> = OnceLock::new();
+
+/// Freeze CORS config into pre-computed header values.
+/// Called once before the accept loop starts.
+pub fn freeze_cors() {
+    let cors = get_cors_config().lock().ok().and_then(|guard| {
+        guard.as_ref().map(|config| FrozenCorsHeaders {
+            origin: config.origins.join(", "),
+            methods: config.methods.join(", "),
+            headers: config.headers.join(", "),
+            credentials: config.credentials,
+            max_age: config.max_age.map(|ma| ma.to_string()),
+        })
+    });
+    let _ = FROZEN_CORS.set(cors);
+}
+
+/// Get frozen CORS headers (zero-cost, no lock)
+#[inline]
+pub fn get_frozen_cors() -> Option<&'static FrozenCorsHeaders> {
+    FROZEN_CORS.get().and_then(|opt| opt.as_ref())
+}
+
+/// Check if CORS is configured (lock-free after freeze)
+#[inline]
+pub fn has_frozen_cors() -> bool {
+    FROZEN_CORS.get().map(|opt| opt.is_some()).unwrap_or(false)
+}
+
 pub fn get_cors_config() -> &'static Mutex<Option<CorsConfig>> {
     CORS_CONFIG.get_or_init(|| Mutex::new(None))
 }
@@ -250,7 +293,9 @@ fn make_err_response(status: i32, message: &str) -> *mut DooResult {
     let err = match status {
         401 => Rfc7807Error::unauthorized_with_message(&path, message),
         403 => Rfc7807Error::forbidden_with_message(&path, message),
-        429 => Rfc7807Error::rate_limited().with_instance(&path).with_message(message),
+        429 => Rfc7807Error::rate_limited()
+            .with_instance(&path)
+            .with_message(message),
         _ => Rfc7807Error::new(status as u16, message).with_instance(&path),
     };
     let json = err.to_json();
