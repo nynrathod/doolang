@@ -1988,8 +1988,10 @@ impl TypeChecker {
             HirBinOp::Add | HirBinOp::Sub | HirBinOp::Mul | HirBinOp::Div | HirBinOp::Mod => {
                 let lhs_numeric = lhs_type == builtin::INT || lhs_type == builtin::FLOAT;
                 let lhs_str = lhs_type == builtin::STR;
+                let rhs_str = rhs_type == builtin::STR;
 
-                if !lhs_numeric && !(matches!(op, HirBinOp::Add) && lhs_str) {
+                // For Add, allow any type if either side is Str (auto-coerce to string concat)
+                if !lhs_numeric && !(matches!(op, HirBinOp::Add) && (lhs_str || rhs_str)) {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::InvalidOp(format!(
                             "cannot apply arithmetic to {}",
@@ -2001,14 +2003,19 @@ impl TypeChecker {
                 }
 
                 if lhs_type != rhs_type {
-                    self.errors.push(TypeError {
-                        kind: TypeErrorKind::Incompatible {
-                            left: lhs_type,
-                            right: rhs_type,
-                            operation: format!("{:?}", op),
-                        },
-                        span,
-                    });
+                    // For Add, allow Str + non-Str (auto-coerce to string concatenation)
+                    if matches!(op, HirBinOp::Add) && (lhs_type == builtin::STR || rhs_type == builtin::STR) {
+                        // String concatenation with auto-coercion — allowed
+                    } else {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::Incompatible {
+                                left: lhs_type,
+                                right: rhs_type,
+                                operation: format!("{:?}", op),
+                            },
+                            span,
+                        });
+                    }
                 }
             }
             // Comparison: operands must be same type

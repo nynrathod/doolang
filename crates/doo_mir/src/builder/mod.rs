@@ -287,11 +287,49 @@ impl<'a> MirBuilder<'a> {
                                 name: f.name.clone(),
                                 type_id: f.type_id.unwrap_or(builtin::ANY),
                                 optional: f.is_optional,
-                                decorators: Vec::new(),
+                                decorators: f
+                                    .decorators
+                                    .iter()
+                                    .map(|d| {
+                                        crate::types::Decorator {
+                                            name: d.name.clone(),
+                                            args: d
+                                                .args
+                                                .iter()
+                                                .filter_map(|a| {
+                                                    // Convert HirExpr args to strings
+                                                    match &a.kind {
+                                                        HirExprKind::Const(cv) => match cv {
+                                                            ConstValue::Int(i) => {
+                                                                Some(i.to_string())
+                                                            }
+                                                            ConstValue::Float(f) => {
+                                                                Some(f.to_string())
+                                                            }
+                                                            ConstValue::Bool(b) => {
+                                                                Some(b.to_string())
+                                                            }
+                                                            ConstValue::Str(s) => Some(s.clone()),
+                                                            ConstValue::Nil => None,
+                                                        },
+                                                        _ => None,
+                                                    }
+                                                })
+                                                .collect(),
+                                        }
+                                    })
+                                    .collect(),
                                 default_value: None,
                             })
                             .collect(),
-                        decorators: Vec::new(),
+                        decorators: s
+                            .decorators
+                            .iter()
+                            .map(|d| crate::types::Decorator {
+                                name: d.name.clone(),
+                                args: Vec::new(),
+                            })
+                            .collect(),
                     };
                     program.structs.insert(s.name.clone(), mir_struct);
                 }

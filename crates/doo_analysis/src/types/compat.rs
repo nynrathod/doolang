@@ -44,8 +44,9 @@ impl TypeCompat {
     }
 
     /// Check if type supports string concatenation.
+    /// Allows Str + non-Str with auto-coercion.
     pub fn string_concat(a: TypeId, b: TypeId) -> bool {
-        a == builtin::STR && b == builtin::STR
+        a == builtin::STR || b == builtin::STR
     }
 }
 

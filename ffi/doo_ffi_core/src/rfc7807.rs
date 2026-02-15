@@ -44,7 +44,7 @@ pub fn title_for_status(status: u16) -> &'static str {
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
-        422 => "Validation Failed",
+        422 => "Unprocessable Entity",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         501 => "Not Implemented",
@@ -270,6 +270,8 @@ pub struct Rfc7807Error {
     pub message: Option<String>,
     /// Trace ID for server errors
     pub trace_id: Option<String>,
+    /// Override the `type` field (default derives from status code)
+    pub type_override: Option<String>,
 }
 
 impl Rfc7807Error {
@@ -288,6 +290,7 @@ impl Rfc7807Error {
             received: None,
             message: None,
             trace_id: None,
+            type_override: None,
         }
     }
 
@@ -356,6 +359,11 @@ impl Rfc7807Error {
         self
     }
 
+    pub fn with_type(mut self, error_type: impl Into<String>) -> Self {
+        self.type_override = Some(error_type.into());
+        self
+    }
+
     // kept for backward compat — wraps errors into empty field_name entries
     pub fn with_errors(mut self, errors: Vec<FieldError>) -> Self {
         let mut fields = HashMap::new();
@@ -375,10 +383,11 @@ impl Rfc7807Error {
         let mut obj = Map::new();
 
         // Required fields (always present)
-        obj.insert(
-            "type".to_string(),
-            json!(error_type_for_status(self.status)),
-        );
+        let error_type = self
+            .type_override
+            .as_deref()
+            .unwrap_or_else(|| error_type_for_status(self.status));
+        obj.insert("type".to_string(), json!(error_type));
         obj.insert("title".to_string(), json!(title_for_status(self.status)));
         obj.insert("status".to_string(), json!(self.status));
         obj.insert("detail".to_string(), json!(self.detail));
@@ -426,9 +435,13 @@ impl Rfc7807Error {
         }
 
         serde_json::to_string(&Value::Object(obj)).unwrap_or_else(|_| {
+            let et = self
+                .type_override
+                .as_deref()
+                .unwrap_or_else(|| error_type_for_status(self.status));
             format!(
                 r#"{{"type":"{}","title":"{}","status":{},"detail":"{}","instance":"{}"}}"#,
-                error_type_for_status(self.status),
+                et,
                 title_for_status(self.status),
                 self.status,
                 self.detail.replace('"', "\\\""),
@@ -530,12 +543,14 @@ impl Rfc7807Error {
         Self::bad_request("Type mismatch in request body")
             .with_instance(instance)
             .with_fields(fields)
+            .with_type("validation_error")
     }
 
     pub fn missing_required_field(instance: &str, fields: HashMap<String, FieldError>) -> Self {
         Self::bad_request("Required field missing in request body")
             .with_instance(instance)
             .with_fields(fields)
+            .with_type("validation_error")
     }
 
     pub fn unknown_fields_error(instance: &str, unknown: Vec<String>) -> Self {
@@ -548,24 +563,28 @@ impl Rfc7807Error {
         Self::bad_request("Invalid path parameter type")
             .with_instance(instance)
             .with_parameter(param)
+            .with_type("validation_error")
     }
 
     pub fn missing_path_param(instance: &str, param: ParameterError) -> Self {
         Self::bad_request("Path parameter not found")
             .with_instance(instance)
             .with_parameter(param)
+            .with_type("validation_error")
     }
 
     pub fn invalid_query_param(instance: &str, param: ParameterError) -> Self {
         Self::bad_request("Invalid query parameter type")
             .with_instance(instance)
             .with_parameter(param)
+            .with_type("validation_error")
     }
 
     pub fn missing_query_param(instance: &str, param: ParameterError) -> Self {
         Self::bad_request("Required query parameter missing")
             .with_instance(instance)
             .with_parameter(param)
+            .with_type("validation_error")
     }
 
     pub fn unauthorized_with_message(instance: &str, message: &str) -> Self {

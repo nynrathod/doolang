@@ -88,6 +88,10 @@ pub struct CodegenContext<'ctx> {
     /// Used for looking up field indices by name.
     pub struct_metadata: FxHashMap<String, Vec<String>>,
 
+    /// Struct field decorators: struct_name -> Vec<(field_name, Vec<decorator_string>)>.
+    /// Populated from MIR struct definitions which carry decorator info from HIR.
+    pub struct_field_decorators: FxHashMap<String, Vec<(String, Vec<String>)>>,
+
     /// Temp/local type tracking: variable_name -> struct_name.
     /// Tracks which struct type each temp/local variable holds.
     pub temp_struct_types: FxHashMap<String, String>,
@@ -193,6 +197,7 @@ impl<'ctx> CodegenContext<'ctx> {
             external_functions: FxHashMap::default(),
             module_dependencies: FxHashMap::default(),
             struct_metadata: FxHashMap::default(),
+            struct_field_decorators: FxHashMap::default(),
             temp_struct_types: FxHashMap::default(),
             variable_types: FxHashMap::default(),
             function_param_types: FxHashMap::default(),

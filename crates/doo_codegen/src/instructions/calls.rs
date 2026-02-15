@@ -843,10 +843,10 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     if result_val.is_pointer_value() && !result_val.is_struct_value() {
                         // Free the heap-allocated DooResult outer shell
                         let doo_free_fn = ctx.get_function("doo_free").unwrap_or_else(|| {
-                            let free_type = ctx.context.void_type().fn_type(
-                                &[ctx.ptr_type().into()],
-                                false,
-                            );
+                            let free_type = ctx
+                                .context
+                                .void_type()
+                                .fn_type(&[ctx.ptr_type().into()], false);
                             ctx.module.add_function("doo_free", free_type, None)
                         });
                         let _ = ctx.builder.build_call(
@@ -1086,17 +1086,18 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     let result_struct_type = ctx
                         .context
                         .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
-                    let loaded = ctx.builder
+                    let loaded = ctx
+                        .builder
                         .build_load(result_struct_type, result_ptr, "result_struct_load")
                         .ok()?
                         .into_struct_value();
 
                     // Free the heap-allocated DooResult outer shell after loading
                     let doo_free_fn = ctx.get_function("doo_free").unwrap_or_else(|| {
-                        let free_type = ctx.context.void_type().fn_type(
-                            &[ctx.ptr_type().into()],
-                            false,
-                        );
+                        let free_type = ctx
+                            .context
+                            .void_type()
+                            .fn_type(&[ctx.ptr_type().into()], false);
                         ctx.module.add_function("doo_free", free_type, None)
                     });
                     let _ = ctx.builder.build_call(
@@ -4736,6 +4737,19 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         .context
                         .struct_type(&[i64_type.into(), ptr_type.into(), ptr_type.into()], false);
 
+                    // Load the Status field (index 0) from the Response struct
+                    let status_field = ctx
+                        .builder
+                        .build_struct_gep(response_struct_type, value, 0, "status_field_ptr")
+                        .ok()
+                        .and_then(|gep| {
+                            ctx.builder
+                                .build_load(i64_type, gep, "response_status")
+                                .ok()
+                        })
+                        .map(|v| v.into_int_value())
+                        .unwrap_or_else(|| i64_type.const_int(200, false));
+
                     // Load the Body field (index 1) from the Response struct pointer
                     let body_field_ptr = ctx
                         .builder
@@ -4745,8 +4759,43 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         .map(|v| v.into_pointer_value())
                         .unwrap_or_else(|| ptr_type.const_null());
 
-                    // Store in DooResult with tag=0 (Ok)
-                    // The value should be the JSON body string from the Response.Body field
+                    // Load the ContentType field (index 2) from the Response struct
+                    let ct_field_ptr = ctx
+                        .builder
+                        .build_struct_gep(response_struct_type, value, 2, "ct_field_ptr")
+                        .ok()
+                        .and_then(|gep| ctx.builder.build_load(ptr_type, gep, "response_ct").ok())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+
+                    // Check if Response.Status >= 400 (error from inner middleware)
+                    // If so, propagate as error DooResult instead of wrapping as Ok
+                    let is_error_status = ctx
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::SGE,
+                            status_field,
+                            i64_type.const_int(400, false),
+                            "is_error_status",
+                        )
+                        .unwrap();
+
+                    let current_fn = ctx
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+                    let ok_normal = ctx.context.append_basic_block(current_fn, "ok_normal");
+                    let ok_error_passthrough = ctx
+                        .context
+                        .append_basic_block(current_fn, "ok_error_passthrough");
+                    ctx.builder
+                        .build_conditional_branch(is_error_status, ok_error_passthrough, ok_normal)
+                        .ok();
+
+                    // NORMAL OK PATH: status < 400, wrap as DooResult tag=0
+                    ctx.builder.position_at_end(ok_normal);
                     if let Ok(tag_ptr) = ctx.builder.build_struct_gep(
                         result_struct_type,
                         doo_result_ptr,
@@ -4768,6 +4817,95 @@ fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         doo_result_ptr,
                         2,
                         "ok_owner_ptr",
+                    ) {
+                        let _ = ctx
+                            .builder
+                            .build_store(owner_ptr, i32_type.const_int(1, false));
+                    }
+                    ctx.builder.build_unconditional_branch(merge_block).ok();
+
+                    // ERROR PASSTHROUGH PATH: status >= 400, build error struct and set tag=1
+                    // This propagates errors from inner middleware that were passed through
+                    ctx.builder.position_at_end(ok_error_passthrough);
+
+                    // Build error struct: { i32 status, ptr body, ptr content_type }
+                    let error_struct_type_inner = ctx
+                        .context
+                        .struct_type(&[i32_type.into(), ptr_type.into(), ptr_type.into()], false);
+                    let error_struct_size = error_struct_type_inner
+                        .size_of()
+                        .unwrap_or(i64_type.const_int(24, false));
+
+                    // Declare malloc
+                    let malloc_fn = ctx.module.get_function("malloc").unwrap_or_else(|| {
+                        let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
+                        ctx.module.add_function("malloc", fn_type, None)
+                    });
+
+                    let error_struct_mem = ctx
+                        .builder
+                        .build_call(malloc_fn, &[error_struct_size.into()], "error_struct_mem")
+                        .ok()
+                        .and_then(|cs| cs.try_as_basic_value().basic())
+                        .map(|v| v.into_pointer_value())
+                        .unwrap_or_else(|| ptr_type.const_null());
+
+                    // Truncate i64 status to i32 for the error struct
+                    let status_i32 = ctx
+                        .builder
+                        .build_int_truncate(status_field, i32_type, "status_i32")
+                        .unwrap();
+
+                    // Store status, body, content_type into error struct
+                    if let Ok(ep) = ctx.builder.build_struct_gep(
+                        error_struct_type_inner,
+                        error_struct_mem,
+                        0,
+                        "err_status_ptr",
+                    ) {
+                        let _ = ctx.builder.build_store(ep, status_i32);
+                    }
+                    if let Ok(ep) = ctx.builder.build_struct_gep(
+                        error_struct_type_inner,
+                        error_struct_mem,
+                        1,
+                        "err_body_ptr",
+                    ) {
+                        let _ = ctx.builder.build_store(ep, body_field_ptr);
+                    }
+                    if let Ok(ep) = ctx.builder.build_struct_gep(
+                        error_struct_type_inner,
+                        error_struct_mem,
+                        2,
+                        "err_ct_ptr",
+                    ) {
+                        let _ = ctx.builder.build_store(ep, ct_field_ptr);
+                    }
+
+                    // Store in DooResult with tag=1 (Error)
+                    if let Ok(tag_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        0,
+                        "passthrough_tag_ptr",
+                    ) {
+                        let _ = ctx
+                            .builder
+                            .build_store(tag_ptr, i64_type.const_int(1, false));
+                    }
+                    if let Ok(value_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        1,
+                        "passthrough_value_ptr",
+                    ) {
+                        let _ = ctx.builder.build_store(value_ptr, error_struct_mem);
+                    }
+                    if let Ok(owner_ptr) = ctx.builder.build_struct_gep(
+                        result_struct_type,
+                        doo_result_ptr,
+                        2,
+                        "passthrough_owner_ptr",
                     ) {
                         let _ = ctx
                             .builder
@@ -6100,6 +6238,17 @@ fn emit_handler_metadata_registration<'ctx>(
         ],
         "register_handler_meta",
     );
+
+    // Register struct metadata (including decorators) for all parameter types
+    // This is needed for decorator validation in doohttp_populate_struct_from_request
+    let param_type_ids: Vec<doo_core::types::TypeId> = ctx
+        .get_function_param_types(handler_name)
+        .map(|v| v.iter().copied().collect())
+        .unwrap_or_default();
+
+    for type_id in param_type_ids {
+        emit_struct_metadata_if_needed(ctx, type_id);
+    }
 }
 
 /// Emit struct/enum metadata registration for auth/crud calls.
@@ -6231,6 +6380,61 @@ fn emit_enum_metadata_if_needed<'ctx>(
     }
 }
 
+/// Emit struct metadata registration if the type is a struct.
+/// Also registers any enum types referenced by the struct fields.
+fn emit_struct_metadata_if_needed<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    type_id: doo_core::types::TypeId,
+) {
+    use doo_core::types::TypeKind;
+
+    let type_info = match ctx.type_registry.get(type_id) {
+        Some(info) => info,
+        None => return,
+    };
+
+    if let TypeKind::Struct { name, fields, .. } = &type_info.kind {
+        // Build struct metadata JSON (includes decorators from MIR)
+        let struct_metadata = build_struct_metadata_json(ctx, type_id);
+
+        // Get or declare doo_http_register_struct_metadata
+        let void_type = ctx.context.void_type();
+        let ptr_type = ctx.ptr_type();
+        let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+
+        let register_fn = ctx
+            .module
+            .get_function("doo_http_register_struct_metadata")
+            .unwrap_or_else(|| {
+                ctx.module
+                    .add_function("doo_http_register_struct_metadata", fn_type, None)
+            });
+
+        // Create string constants
+        let struct_name_ptr = ctx.const_string(name);
+        let metadata_ptr = ctx.const_string(&struct_metadata);
+
+        // Call doo_http_register_struct_metadata(name, metadata_json)
+        let _ = ctx.builder.build_call(
+            register_fn,
+            &[struct_name_ptr.into(), metadata_ptr.into()],
+            "register_struct_meta",
+        );
+
+        // Collect field type IDs before registering enum metadata
+        let field_type_ids: Vec<doo_core::types::TypeId> =
+            fields.iter().map(|(_, tid, _)| *tid).collect();
+
+        // Register any enum types referenced by struct fields
+        for field_type_id in field_type_ids {
+            emit_enum_metadata_if_needed(ctx, field_type_id);
+        }
+    } else if let TypeKind::Enum { .. } = &type_info.kind {
+        // If the parameter itself is an enum, register it
+        emit_enum_metadata_if_needed(ctx, type_id);
+    }
+}
+
 /// Build struct metadata JSON for a given type ID.
 fn build_struct_metadata_json<'ctx>(
     ctx: &CodegenContext<'ctx>,
@@ -6241,19 +6445,28 @@ fn build_struct_metadata_json<'ctx>(
         None => return "{}".to_string(),
     };
 
-    if let TypeKind::Struct { fields, .. } = &type_info.kind {
+    if let TypeKind::Struct { fields, name, .. } = &type_info.kind {
+        // Look up field decorators from MIR data stored on context
+        let field_decorators = ctx.struct_field_decorators.get(name.as_str());
+
         let field_list: Vec<serde_json::Value> = fields
             .iter()
-            .map(|(name, field_type_id, _is_public)| {
+            .map(|(fname, field_type_id, _is_public)| {
                 let type_name = type_id_to_string_inner(&ctx.type_registry, *field_type_id);
 
-                // Decorators are not stored in TypeKind::Struct - they're in the AST/HIR
-                // For now, we'll include just name and type; decorators would require
-                // extending the type registry or looking them up from AST metadata
+                // Look up decorators from the MIR-populated map
+                let decorators: Vec<String> = field_decorators
+                    .and_then(|fds| {
+                        fds.iter()
+                            .find(|(n, _)| n == fname)
+                            .map(|(_, decs)| decs.clone())
+                    })
+                    .unwrap_or_default();
+
                 serde_json::json!({
-                    "name": name,
+                    "name": fname,
                     "type": type_name,
-                    "decorators": []
+                    "decorators": decorators
                 })
             })
             .collect();

@@ -3233,7 +3233,13 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                             "Int" => value.is_i64() || value.is_u64(),
                             "Float" => value.is_f64(),
                             "Bool" => value.is_boolean(),
-                            "Str" | "String" => value.is_string(),
+                            "Str" | "String" => {
+                                // Str must be a string and not empty
+                                match value.as_str() {
+                                    Some(s) => !s.is_empty(),
+                                    None => false,
+                                }
+                            }
                             _ => true,
                         };
 
@@ -3335,12 +3341,50 @@ pub extern "C" fn doohttp_populate_struct_from_request(
         validate_struct_fields(&source_data, param_type, "", &metadata, &mut field_errors);
     }
 
+    // Decorator validation: validate @email, @min, @max etc. for fields that
+    // passed type validation. Uses StructMetadata registry populated by codegen.
+    for param_type in &metadata.param_types {
+        if param_type == "Request" || param_type == "DooRequest" || param_type == "Server" {
+            continue;
+        }
+        if let Some(struct_meta) = get_struct_metadata(param_type) {
+            for field_meta in &struct_meta.fields {
+                // Skip fields that already have type errors
+                if field_errors.contains_key(&field_meta.name) {
+                    continue;
+                }
+                if let Some(value) = source_data.get(&field_meta.name) {
+                    for decorator in &field_meta.decorators {
+                        if let Err(err_json) =
+                            validate_decorator(decorator, &field_meta.name, value, &path_str)
+                        {
+                            // Parse the RFC 7807 JSON to extract the field error
+                            // The validate_decorator returns a full RFC 7807 JSON string
+                            // We need to set the error and return 422
+                            set_last_error(422, err_json);
+                            return 422;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if !field_errors.is_empty() {
         // Convert to core FieldErrors in a HashMap preserving field names
         let core_fields: HashMap<String, doo_ffi_core::FieldError> = field_errors
             .into_iter()
             .map(|(field, err)| (field.clone(), err.to_core(&field)))
             .collect();
+
+        // Check if any param struct has decorator fields → use 422
+        // Structs with decorators use semantic validation (422 Unprocessable Entity)
+        // Plain structs use parsing validation (400 Bad Request)
+        let has_decorators = metadata.param_types.iter().any(|pt| {
+            get_struct_metadata(pt).map_or(false, |sm| {
+                sm.fields.iter().any(|f| !f.decorators.is_empty())
+            })
+        });
 
         // Determine detail based on error types
         let has_required = core_fields
@@ -3350,17 +3394,20 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             .values()
             .any(|e| e.expected.is_some() && e.received.is_some() && e.rule.is_none());
 
+        let base_status: u16 = if has_decorators { 422 } else { 400 };
+
         let (status, detail) = if has_required && !has_type_mismatch {
-            (400u16, "Required field missing in request body")
+            (base_status, "Required field missing in request body")
         } else if has_type_mismatch && !has_required {
-            (400, "Type mismatch in request body")
+            (base_status, "Type mismatch in request body")
         } else {
-            (400, "Request body parsing failed")
+            (base_status, "Request body parsing failed")
         };
 
         let err = doo_ffi_core::Rfc7807Error::new(status, detail)
             .with_instance(path_str)
-            .with_fields(core_fields);
+            .with_fields(core_fields)
+            .with_type("validation_error");
         set_last_error(status as i32, err.to_json());
         return status as i32;
     }

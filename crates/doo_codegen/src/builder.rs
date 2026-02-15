@@ -317,6 +317,29 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // that receive structs as parameters (like 'self')
         self.declare_struct_types(&mut ctx);
 
+        // Populate struct field decorators from MIR structs
+        for (struct_name, struct_def) in &mir.structs {
+            let field_decorators: Vec<(String, Vec<String>)> = struct_def
+                .fields
+                .iter()
+                .map(|f| {
+                    let decs: Vec<String> = f
+                        .decorators
+                        .iter()
+                        .map(|d| {
+                            if d.args.is_empty() {
+                                d.name.clone()
+                            } else {
+                                format!("{}({})", d.name, d.args.join(","))
+                            }
+                        })
+                        .collect();
+                    (f.name.clone(), decs)
+                })
+                .collect();
+            ctx.struct_field_decorators.insert(struct_name.clone(), field_decorators);
+        }
+
         // First pass: declare all functions
         for func in &mir.functions {
             self.declare_function(&mut ctx, func);
