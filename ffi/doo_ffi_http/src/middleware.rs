@@ -3,7 +3,6 @@
 
 use crate::error::*;
 use crate::helpers::*;
-use crate::router::get_routes;
 use crate::types::*;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -70,9 +69,17 @@ pub fn get_ratelimit_state() -> &'static Mutex<HashMap<String, RateLimitEntry>> 
     RATELIMIT_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Get JWT secret — reads from env once, caches in OnceLock.
+/// Returns empty string if JWT_SECRET is not set.
+pub fn get_jwt_secret() -> &'static str {
+    JWT_SECRET
+        .get_or_init(|| std::env::var("JWT_SECRET").unwrap_or_default())
+        .as_str()
+}
+
 /// JWT middleware handler
-/// Validates the JWT token and extracts the user ID, setting it on the request
-/// for handlers that need authenticated user information.
+/// Validates the JWT token signature + expiration, extracts the user ID,
+/// and sets it on the request for handlers that need authenticated user info.
 pub extern "C" fn jwt_middleware_handler(
     req: *const DooRequest,
     next: DooNextFn,
@@ -96,70 +103,68 @@ pub extern "C" fn jwt_middleware_handler(
             _ => return make_err_response(401, "Invalid Authorization header format"),
         };
 
-        // JWT format: header.payload.signature (base64 encoded)
-        let parts: Vec<&str> = token.split('.').collect();
-        if parts.len() != 3 {
-            return make_err_response(401, "Invalid token format");
+        // Token size limit — prevent DoS via oversized tokens
+        if token.len() > 8192 {
+            return make_err_response(401, "Token too large");
         }
 
-        // Decode the payload (middle part) to extract user ID
-        // JWT payload is base64url encoded JSON
-        let payload_b64 = parts[1];
-        let payload_json = match base64_url_decode(payload_b64) {
-            Ok(json) => json,
-            Err(_) => return make_err_response(401, "Invalid token payload encoding"),
+        // Get JWT secret — MUST be set, no fallback
+        let secret = get_jwt_secret();
+        if secret.is_empty() {
+            return make_err_response(500, "JWT_SECRET not configured");
+        }
+
+        // VERIFY JWT SIGNATURE + EXPIRATION using jsonwebtoken crate
+        // This is the critical fix — previously did ZERO verification
+        use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+
+        #[derive(serde::Deserialize)]
+        struct JwtClaims {
+            sub: Option<String>,
+            user_id: Option<i64>,
+            exp: Option<usize>,
+        }
+
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_required_spec_claims(&["exp", "sub"]);
+        validation.leeway = 30; // 30s clock skew tolerance
+
+        let decoding_key = DecodingKey::from_secret(secret.as_bytes());
+        let token_data = match decode::<JwtClaims>(token, &decoding_key, &validation) {
+            Ok(data) => data,
+            Err(e) => {
+                let err_str = e.to_string().to_lowercase();
+                if err_str.contains("expired") {
+                    return make_err_response(401, "Token has expired");
+                } else if err_str.contains("signature") {
+                    return make_err_response(401, "Invalid token signature");
+                } else {
+                    return make_err_response(401, "Invalid token");
+                }
+            }
         };
 
-        // Parse the payload JSON to extract user ID
-        // JWT payload typically has: { "sub": "email@example.com", "iat": ..., "exp": ... }
-        // We need to look up the user ID from the database based on the subject (email)
-        let user_id = match extract_user_id_from_jwt_payload(&payload_json) {
-            Some(id) => id,
-            None => return make_err_response(401, "Could not extract user ID from token"),
+        // Extract user_id from verified claims
+        // First try direct user_id claim, then fallback to DB lookup by sub (email)
+        let user_id = if let Some(uid) = token_data.claims.user_id {
+            uid
+        } else if let Some(ref email) = token_data.claims.sub {
+            match lookup_user_id_by_email(email) {
+                Some(id) => id,
+                None => return make_err_response(401, "User not found"),
+            }
+        } else {
+            return make_err_response(401, "Could not extract user ID from token");
         };
 
-        // Set the user_id on the request (as a JSON integer string for consistent parsing)
-        // The codegen will use doo_json_parse_int to read this
+        // Set the user_id on the request
         let user_id_str = user_id.to_string();
         let req_mut = req as *mut DooRequest;
         (*req_mut).user_id = string_to_c(&user_id_str);
 
-        // Call next handler with the modified request
+        // Call next handler with the verified request
         next(req)
     }
-}
-
-/// Decode base64url encoded string (used in JWT)
-fn base64_url_decode(input: &str) -> Result<String, String> {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-
-    // Add padding if needed
-    let padded = match input.len() % 4 {
-        2 => format!("{}==", input),
-        3 => format!("{}=", input),
-        _ => input.to_string(),
-    };
-
-    URL_SAFE_NO_PAD
-        .decode(&padded)
-        .or_else(|_| URL_SAFE_NO_PAD.decode(input))
-        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-        .map_err(|e| format!("Base64 decode error: {}", e))
-}
-
-/// Extract user ID from JWT payload JSON
-/// First tries to get user_id directly from claims, then falls back to database lookup
-fn extract_user_id_from_jwt_payload(payload_json: &str) -> Option<i64> {
-    let payload: serde_json::Value = serde_json::from_str(payload_json).ok()?;
-
-    // First try to get user_id directly from JWT claims
-    if let Some(user_id) = payload.get("user_id").and_then(|v| v.as_i64()) {
-        return Some(user_id);
-    }
-
-    // Fall back to database lookup by email (for backwards compatibility)
-    let email = payload.get("sub")?.as_str()?;
-    lookup_user_id_by_email(email)
 }
 
 /// Look up user ID by email from the database

@@ -137,19 +137,6 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bcrypt"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e65938ed058ef47d92cf8b346cc76ef48984572ade631927e9937b5ffc7662c7"
-dependencies = [
- "base64",
- "blowfish",
- "getrandom 0.2.16",
- "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "bcrypt"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a0f5948f30df5f43ac29d310b7476793be97c50787e6ef4a63d960a0d0be827"
@@ -701,9 +688,9 @@ dependencies = [
 name = "doo_ffi_auth"
 version = "0.1.0"
 dependencies = [
- "bcrypt 0.15.1",
+ "bcrypt",
  "doo_ffi_core",
- "jsonwebtoken 9.3.1",
+ "jsonwebtoken",
  "libc",
  "serde",
  "serde_json",
@@ -749,7 +736,7 @@ name = "doo_ffi_http"
 version = "0.1.0"
 dependencies = [
  "base64",
- "bcrypt 0.18.0",
+ "bcrypt",
  "chrono",
  "dashmap",
  "doo_ffi_core",
@@ -758,7 +745,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "jsonwebtoken 10.3.0",
+ "jsonwebtoken",
  "lazy_static",
  "libc",
  "libloading",
@@ -1379,21 +1366,6 @@ checksum = "8c942ebf8e95485ca0d52d97da7c5a2c387d0e7f0ba4c35e93bfcaee045955b3"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "jsonwebtoken"
-version = "9.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
-dependencies = [
- "base64",
- "js-sys",
- "pem",
- "ring",
- "serde",
- "serde_json",
- "simple_asn1",
 ]
 
 [[package]]

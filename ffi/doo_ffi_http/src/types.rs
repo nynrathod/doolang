@@ -37,18 +37,21 @@ pub struct DooResponse {
 }
 
 /// FFI Result type
+/// CRITICAL: Layout MUST be { i64, ptr, i32 } to match codegen and doo_ffi_core.
+/// The server reads results as doo_ffi_core::DooResult { i64 tag, *mut c_void data },
+/// so tag MUST be i64 — using i32 leaves uninitialized padding that corrupts the read.
 #[repr(C)]
 pub struct DooResult {
-    pub tag: i32,       // 0 = Ok, 1 = Err
+    pub tag: i64,       // 0 = Ok, 1 = Err — MUST be i64 to match codegen/core
     pub value: *mut c_void,
-    pub owner: u8,      // 0 = LLVM, 1 = FFI, 2 = Rust
+    pub owner: i32,     // 0 = LLVM, 1 = FFI, 2 = Rust — matches codegen i32
 }
 
 /// Owner constants
 pub mod owner {
-    pub const LLVM: u8 = 0;
-    pub const FFI: u8 = 1;
-    pub const RUST: u8 = 2;
+    pub const LLVM: i32 = 0;
+    pub const FFI: i32 = 1;
+    pub const RUST: i32 = 2;
 }
 
 /// CORS configuration

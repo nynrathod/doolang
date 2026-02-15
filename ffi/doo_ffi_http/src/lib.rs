@@ -1329,8 +1329,8 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
         }
     };
 
-    // Hash password using bcrypt
-    let password_hash = match bcrypt::hash(password, 8) {
+    // Hash password using bcrypt at production cost (DEFAULT_COST = 12)
+    let password_hash = match bcrypt::hash(password, bcrypt::DEFAULT_COST) {
         Ok(h) => h,
         Err(_) => return make_err_http(500, "Failed to hash password"),
     };
@@ -1672,6 +1672,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
 }
 
 /// Generate a JWT token for the given subject and user ID
+/// Uses JWT_SECRET from env — FAILS if not set (no insecure fallback)
 fn generate_jwt_token(sub: &str, user_id: i64) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde::{Deserialize, Serialize};
@@ -1683,9 +1684,39 @@ fn generate_jwt_token(sub: &str, user_id: i64) -> String {
         user_id: i64,
         exp: usize,
         iat: usize,
+        iss: String,
     }
 
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "test-secret".to_string());
+    // Use the shared secret from middleware (cached OnceLock, read once)
+    let secret = crate::middleware::get_jwt_secret();
+    if secret.is_empty() {
+        // In dev builds, allow a default for convenience but warn
+        #[cfg(debug_assertions)]
+        {
+            ffi_debug!("AUTH", "WARNING: JWT_SECRET not set, using dev-only default");
+            let dev_secret = "doo-dev-secret-do-not-use-in-prod-32b";
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as usize)
+                .unwrap_or(0);
+            let claims = Claims {
+                sub: sub.to_string(),
+                user_id,
+                exp: now + 86400,
+                iat: now,
+                iss: "doo".to_string(),
+            };
+            let key = EncodingKey::from_secret(dev_secret.as_bytes());
+            return encode(&Header::new(Algorithm::HS256), &claims, &key)
+                .unwrap_or_else(|_| "invalid-token".to_string());
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            ffi_debug!("AUTH", "JWT_SECRET environment variable not set");
+            return "invalid-token-no-secret".to_string();
+        }
+    }
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as usize)
@@ -1696,6 +1727,7 @@ fn generate_jwt_token(sub: &str, user_id: i64) -> String {
         user_id,
         exp: now + 86400, // 24 hours
         iat: now,
+        iss: "doo".to_string(),
     };
 
     let key = EncodingKey::from_secret(secret.as_bytes());
