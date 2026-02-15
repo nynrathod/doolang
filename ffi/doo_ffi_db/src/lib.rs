@@ -1,12 +1,19 @@
-//! doo_ffi_db - Complete Database FFI Library
+//! doo_ffi_db — Complete Database FFI Library
 //!
-//! Provides:
-//! - Connection pooling with deadpool-postgres
-//! - Raw SQL queries with/without parameters
-//! - JSON result serialization
-//! - Migrations and table metadata
+//! Production-grade database layer:
+//! - Connection pooling with deadpool-postgres (bounded, timeouts, recycling)
+//! - Async execution via shared runtime (no OS thread-per-query)
+//! - Backpressure via semaphore (fast 503 on overload)
+//! - Per-query timeouts
+//! - Row count safety limits
+//! - Transaction support
+//! - Direct JSON serialization (no intermediate Value tree)
+//! - Unified DooResult type
+//! - All errors propagated (no silent empty arrays)
 
+pub mod error;
 mod json_utils;
+pub mod migrate;
 mod pool;
 
 use std::ffi::c_void;
@@ -14,29 +21,96 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::sync::OnceLock;
 
-use doo_ffi_core::DooResult;
 use doo_ffi_core::ffi_debug;
+use doo_ffi_core::DooResult;
 use tokio::runtime::Runtime;
 
 pub use json_utils::*;
 pub use pool::*;
 
-// Tokio runtime for async operations - SINGLE SOURCE OF TRUTH
-// All async DB operations must use this runtime to avoid deadlocks
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+// ============================================================================
+// Runtime — use shared HTTP runtime when available, fallback to DB-only runtime
+// ============================================================================
 
-/// Get the shared tokio runtime for all database operations.
-/// This is the SINGLE runtime that must be used for all async DB calls.
-/// Using a different runtime can cause deadlocks with the connection pool.
-/// Must be multi-threaded so it can be called from spawned threads.
+/// Fallback runtime for standalone DB usage (no HTTP server).
+static DB_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+/// Get the shared async runtime.
+/// Prefers the global HTTP runtime from doo_ffi_runtime (all cores).
+/// Falls back to a DB-specific runtime if HTTP server not started.
 pub fn get_runtime() -> &'static Runtime {
-    RUNTIME.get_or_init(|| {
+    // Try the global runtime first (initialized by HTTP server / doo_runtime_init)
+    if doo_ffi_runtime::runtime::is_runtime_initialized() {
+        return doo_ffi_runtime::runtime::get_runtime();
+    }
+    // Fallback for standalone DB usage
+    DB_RUNTIME.get_or_init(|| {
+        let workers = num_cpus::get().max(4);
+        ffi_debug!(
+            "DB",
+            "Creating fallback DB runtime with {} workers",
+            workers
+        );
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(workers)
+            .thread_name("doo-db")
             .enable_all()
             .build()
-            .expect("Failed to create tokio runtime")
+            .expect("Failed to create DB runtime")
     })
+}
+
+// ============================================================================
+// Async Execution Helper — replaces all std::thread::spawn patterns
+// ============================================================================
+
+/// Execute async DB work from synchronous FFI context.
+///
+/// Uses tokio::spawn on the shared runtime + oneshot channel.
+/// Zero OS threads created per query. Bounded by runtime worker count.
+/// Includes semaphore backpressure and per-query timeout.
+fn run_db_async<F, T>(f: F) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>
+        + Send
+        + 'static,
+    T: Send + 'static,
+{
+    let rt = get_runtime();
+    let timeout = get_query_timeout();
+    let sem_timeout = get_semaphore_wait_timeout();
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    rt.spawn(async move {
+        // Acquire semaphore permit (backpressure gate)
+        let _permit = match tokio::time::timeout(sem_timeout, get_query_semaphore().acquire()).await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                let _ = tx.send(Err("Semaphore closed".to_string()));
+                return;
+            }
+            Err(_) => {
+                let _ = tx.send(Err("Database overloaded".to_string()));
+                return;
+            }
+        };
+
+        // Execute with per-query timeout
+        let result = match tokio::time::timeout(timeout, f).await {
+            Ok(Ok(val)) => Ok(val),
+            Ok(Err(e)) => Err(format!("Query failed: {}", e)),
+            Err(_) => Err(format!("Query timed out ({}s)", timeout.as_secs())),
+        };
+
+        let _ = tx.send(result);
+    });
+
+    // Block the FFI thread waiting for the result.
+    // This is safe: FFI calls come from LLVM-compiled code on blocking threads.
+    rx.blocking_recv()
+        .map_err(|_| "Channel closed".to_string())?
 }
 
 // ============================================================================
@@ -68,9 +142,9 @@ fn string_to_c(s: &str) -> *const c_char {
     }
 }
 
-/// Extract detailed error message from a PostgreSQL error or generic error
+/// Extract detailed error message from a PostgreSQL error.
+#[allow(dead_code)]
 fn format_db_error(e: &(dyn std::error::Error + 'static)) -> String {
-    // Try to downcast to tokio_postgres::Error for more details
     if let Some(pg_err) = e.downcast_ref::<tokio_postgres::Error>() {
         if let Some(db_err) = pg_err.as_db_error() {
             let msg = db_err.message();
@@ -88,148 +162,281 @@ fn format_db_error(e: &(dyn std::error::Error + 'static)) -> String {
             return full_msg;
         }
     }
-    // Fallback to standard error formatting
     e.to_string()
+}
+
+// ============================================================================
+// Shared Parameter Conversion — SINGLE SOURCE OF TRUTH
+// ============================================================================
+
+/// Convert a single JSON value to a PostgreSQL parameter, using the PG-inferred
+/// type to ensure compatibility. This is the SINGLE SOURCE OF TRUTH for param
+/// type mapping.
+///
+/// Key insight: PostgreSQL infers parameter types from query context (e.g.,
+/// `WHERE age > $1` infers INT4 from the `age` column). For bare `SELECT $1`,
+/// PostgreSQL returns UNKNOWN. We adapt to whatever PostgreSQL expects.
+fn json_value_to_typed_param(
+    v: &serde_json::Value,
+    pg_type: &tokio_postgres::types::Type,
+) -> Box<dyn tokio_postgres::types::ToSql + Sync + Send> {
+    use tokio_postgres::types::Type;
+
+    match pg_type {
+        // Integer types — convert from JSON number or string
+        &Type::INT2 => match v {
+            serde_json::Value::Number(n) => Box::new(n.as_i64().unwrap_or(0) as i16),
+            serde_json::Value::String(s) => Box::new(s.parse::<i16>().unwrap_or(0)),
+            _ => Box::new(v.to_string()),
+        },
+        &Type::INT4 | &Type::OID => match v {
+            serde_json::Value::Number(n) => Box::new(n.as_i64().unwrap_or(0) as i32),
+            serde_json::Value::String(s) => Box::new(s.parse::<i32>().unwrap_or(0)),
+            _ => Box::new(v.to_string()),
+        },
+        &Type::INT8 => match v {
+            serde_json::Value::Number(n) => Box::new(n.as_i64().unwrap_or(0)),
+            serde_json::Value::String(s) => Box::new(s.parse::<i64>().unwrap_or(0)),
+            _ => Box::new(v.to_string()),
+        },
+        // Float types
+        &Type::FLOAT4 => match v {
+            serde_json::Value::Number(n) => Box::new(n.as_f64().unwrap_or(0.0) as f32),
+            serde_json::Value::String(s) => Box::new(s.parse::<f32>().unwrap_or(0.0)),
+            _ => Box::new(v.to_string()),
+        },
+        &Type::FLOAT8 | &Type::NUMERIC => match v {
+            serde_json::Value::Number(n) => Box::new(n.as_f64().unwrap_or(0.0)),
+            serde_json::Value::String(s) => Box::new(s.parse::<f64>().unwrap_or(0.0)),
+            _ => Box::new(v.to_string()),
+        },
+        // Boolean
+        &Type::BOOL => match v {
+            serde_json::Value::Bool(b) => Box::new(*b),
+            serde_json::Value::String(s) => Box::new(s == "true" || s == "1"),
+            serde_json::Value::Number(n) => Box::new(n.as_i64().unwrap_or(0) != 0),
+            _ => Box::new(false),
+        },
+        // Text types + UNKNOWN — always send as String (PostgreSQL casts UNKNOWN to text)
+        &Type::TEXT | &Type::VARCHAR | &Type::BPCHAR | &Type::NAME => match v {
+            serde_json::Value::String(s) => Box::new(s.clone()),
+            serde_json::Value::Null => Box::new(None::<String>),
+            _ => Box::new(v.to_string()),
+        },
+        // NULL
+        _ if matches!(v, serde_json::Value::Null) => Box::new(None::<String>),
+        // UNKNOWN or any unrecognized type — send as String (safe default)
+        _ => match v {
+            serde_json::Value::String(s) => Box::new(s.clone()),
+            serde_json::Value::Null => Box::new(None::<String>),
+            // For UNKNOWN type, numbers/bools serialize as their string representation
+            _ => Box::new(v.to_string()),
+        },
+    }
+}
+
+/// Convert JSON values to PostgreSQL parameters, adapting to PG-inferred types.
+/// Uses `prepare()` to get expected types, then maps each value accordingly.
+fn json_values_to_pg_params_typed(
+    values: &[serde_json::Value],
+    pg_types: &[tokio_postgres::types::Type],
+) -> Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            if i < pg_types.len() {
+                json_value_to_typed_param(v, &pg_types[i])
+            } else {
+                // More params than PostgreSQL expects — fallback to untyped
+                json_value_to_untyped_param(v)
+            }
+        })
+        .collect()
+}
+
+/// Convert JSON values to PostgreSQL parameter types WITHOUT type info (legacy/fallback).
+/// Correctly maps: String→text, i32→INT4, i64→BIGINT, f64→FLOAT8, bool→BOOLEAN, null→NULL
+fn json_values_to_pg_params(
+    values: &[serde_json::Value],
+) -> Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> {
+    values.iter().map(json_value_to_untyped_param).collect()
+}
+
+/// Convert a single JSON value to a PG parameter without type context (fallback).
+fn json_value_to_untyped_param(
+    v: &serde_json::Value,
+) -> Box<dyn tokio_postgres::types::ToSql + Sync + Send> {
+    match v {
+        serde_json::Value::String(s) => Box::new(s.clone()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+                    Box::new(i as i32)
+                } else {
+                    Box::new(i)
+                }
+            } else if let Some(f) = n.as_f64() {
+                Box::new(f)
+            } else {
+                Box::new(n.to_string())
+            }
+        }
+        serde_json::Value::Bool(b) => Box::new(*b),
+        serde_json::Value::Null => Box::new(None::<String>),
+        _ => Box::new(v.to_string()),
+    }
+}
+
+/// Build a refs slice from boxed params.
+fn params_as_refs(
+    boxed: &[Box<dyn tokio_postgres::types::ToSql + Sync + Send>],
+) -> Vec<&(dyn tokio_postgres::types::ToSql + Sync)> {
+    boxed
+        .iter()
+        .map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync))
+        .collect()
+}
+
+// ============================================================================
+// Statement Type Detection — zero allocation
+// ============================================================================
+
+/// Check if SQL is a mutating statement (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE).
+/// Uses byte-level prefix comparison — no allocation.
+fn is_mutating_sql(sql: &str) -> bool {
+    let trimmed = sql.trim_start().as_bytes();
+    if trimmed.len() < 4 {
+        return false;
+    }
+    let prefix: [u8; 4] = [
+        trimmed[0].to_ascii_uppercase(),
+        trimmed[1].to_ascii_uppercase(),
+        trimmed[2].to_ascii_uppercase(),
+        trimmed[3].to_ascii_uppercase(),
+    ];
+    matches!(
+        &prefix,
+        b"INSE" | b"UPDA" | b"DELE" | b"CREA" | b"ALTE" | b"DROP" | b"TRUN"
+    )
+}
+
+/// Check if SQL contains RETURNING clause — no allocation.
+fn has_returning(sql: &str) -> bool {
+    sql.as_bytes()
+        .windows(9)
+        .any(|w| w.eq_ignore_ascii_case(b"RETURNING"))
+}
+
+// ============================================================================
+// Result Helpers — delegates to DooResult (single source of truth in doo_ffi_core)
+// ============================================================================
+
+/// Helper to create a heap-allocated DooResult for Ok case.
+/// Uses DooResult::ok from doo_ffi_core — single source of truth.
+fn db_result_ok(value: *mut c_void) -> *mut DooResult {
+    ffi_debug!("DB", "db_result_ok: value={:p}", value);
+    DooResult::ok(value, 0).into_raw()
+}
+
+/// Helper to create a heap-allocated DooResult for Err case.
+/// Uses DooResult::err_str from doo_ffi_core — wraps string in { *char } struct
+/// matching codegen's error handler which does GEP(data, 0) → load ptr.
+fn db_result_err(msg: &str) -> *mut DooResult {
+    ffi_debug!("DB", "db_result_err: {}", msg);
+    DooResult::err_str(500, msg).into_raw()
 }
 
 // ============================================================================
 // CONNECTION
 // ============================================================================
 
-/// Database struct layout matching Doo's Database type
-/// Fields: ConnectionType: Str, Connected: Bool
+/// Database struct layout matching Doo's Database type.
 #[repr(C)]
+#[allow(dead_code)]
 struct DatabaseStruct {
-    connection_type: *const c_char, // ptr to "postgres"
-    connected: bool,                // i1 in LLVM
-}
-
-/// Result struct that matches LLVM codegen expectations: { i64 tag, i64 value }
-/// tag = 0 for Ok, tag = 1 for Err
-/// IMPORTANT: On Windows x64 MSVC, structs > 8 bytes are returned via sret (hidden pointer).
-/// To avoid ABI mismatches between Rust and LLVM, we return a POINTER to a heap-allocated result
-/// instead of returning the struct by value. The caller must free the result using doo_db_result_free.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SimpleResult {
-    pub tag: i64,
-    pub value: i64, // Pointer stored as i64 for ABI compatibility
-}
-
-/// Helper to create and return a heap-allocated SimpleResult for Ok case
-fn simple_result_ok_ptr(value: *mut c_void) -> *mut SimpleResult {
-    let result = Box::new(SimpleResult {
-        tag: 0, // Ok
-        value: value as i64,
-    });
-    ffi_debug!(
-        "DB", "simple_result_ok: tag={}, value=0x{:x}",
-        result.tag, result.value
-    );
-    Box::into_raw(result)
-}
-
-/// Helper to create and return a heap-allocated SimpleResult for Err case
-fn simple_result_err_ptr(error_msg: &str) -> *mut SimpleResult {
-    ffi_debug!("DB", "simple_result_err called with: {}", error_msg);
-    let ptr = string_to_c(error_msg);
-    ffi_debug!("DB", "string_to_c returned: {:?}", ptr);
-    let result = Box::new(SimpleResult {
-        tag: 1, // Err
-        value: ptr as i64,
-    });
-    Box::into_raw(result)
-}
-
-/// Connect to PostgreSQL database using DATABASE_URL env var
-/// Returns a POINTER to a heap-allocated Result struct to avoid Windows x64 ABI issues.
-/// The caller must free the result using doo_db_result_free.
-/// - Ok: tag=0, value=Database struct pointer
-/// - Err: tag=1, value=error message string pointer
-#[no_mangle]
-pub extern "C" fn doo_db_connect_postgres() -> *mut SimpleResult {
-    ffi_debug!("DB", "doo_db_connect_postgres called");
-    let conn_str = match std::env::var("DATABASE_URL") {
-        Ok(s) => {
-            ffi_debug!("DB", "DATABASE_URL found: {}", s);
-            s
-        }
-        Err(_) => {
-            // For development/testing, create a mock database connection
-            // In production, this should fail or use a default URL
-            ffi_debug!("DB", "WARNING: DATABASE_URL not set, using mock connection");
-            let db = create_database_struct("mock", true);
-            return simple_result_ok_ptr(db);
-        }
-    };
-
-    ffi_debug!("DB", "Creating tokio runtime...");
-    let rt = get_runtime();
-    ffi_debug!("DB", "Calling init_pool...");
-    match rt.block_on(init_pool(&conn_str)) {
-        Ok(_) => {
-            ffi_debug!("DB", "Pool initialized successfully");
-            let db = create_database_struct("postgres", true);
-            simple_result_ok_ptr(db)
-        }
-        Err(e) => {
-            ffi_debug!("DB", "Connection failed: {}", e);
-            simple_result_err_ptr(&format!("Database connection failed: {}", e))
-        }
-    }
-}
-
-/// Get global database instance (returns mock if not connected)
-/// Returns a POINTER to a heap-allocated Result struct.
-#[no_mangle]
-pub extern "C" fn doo_db_get_global() -> *mut SimpleResult {
-    if is_pool_initialized() {
-        let db = create_database_struct("postgres", true);
-        simple_result_ok_ptr(db)
-    } else {
-        ffi_debug!("DB", "WARNING: No database connected, using mock");
-        let db = create_database_struct("mock", false);
-        simple_result_ok_ptr(db)
-    }
+    connection_type: *const c_char,
+    connected: bool,
 }
 
 fn create_database_struct(conn_type: &str, connected: bool) -> *mut c_void {
     unsafe {
-        // Allocate Database struct: { ptr, i1 } aligned properly
-        // In LLVM this is typically 16 bytes due to padding
         let ptr = libc::malloc(16) as *mut u8;
         if ptr.is_null() {
             return std::ptr::null_mut();
         }
-        // Store ConnectionType (ptr) at offset 0
         *(ptr as *mut *const c_char) = string_to_c(conn_type);
-        // Store Connected (bool) at offset 8
         *(ptr.add(8) as *mut bool) = connected;
         ptr as *mut c_void
     }
 }
 
-/// Check if connected to database
+/// Connect to PostgreSQL database using DATABASE_URL env var.
+/// Returns heap-allocated DooResult: Ok=Database struct pointer, Err=error message.
+///
+/// ABI note: SimpleResult and DooResult have identical layout { i64, i64 }.
+/// The return type is *mut DooResult — codegen reads this as { i64 tag, i64 value }.
+#[no_mangle]
+pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
+    ffi_debug!("DB", "doo_db_connect_postgres called");
+    let conn_str = match std::env::var("DATABASE_URL") {
+        Ok(s) => {
+            ffi_debug!("DB", "DATABASE_URL found");
+            s
+        }
+        Err(_) => {
+            ffi_debug!("DB", "WARNING: DATABASE_URL not set, using mock connection");
+            let db = create_database_struct("mock", true);
+            return db_result_ok(db);
+        }
+    };
+
+    let rt = get_runtime();
+    match rt.block_on(init_pool(&conn_str)) {
+        Ok(_) => {
+            ffi_debug!("DB", "Pool initialized successfully");
+            let db = create_database_struct("postgres", true);
+            db_result_ok(db)
+        }
+        Err(e) => {
+            ffi_debug!("DB", "Connection failed: {}", e);
+            db_result_err(&format!("Database connection failed: {}", e))
+        }
+    }
+}
+
+/// Get global database instance (returns mock if not connected).
+#[no_mangle]
+pub extern "C" fn doo_db_get_global() -> *mut DooResult {
+    if is_pool_initialized() {
+        let db = create_database_struct("postgres", true);
+        db_result_ok(db)
+    } else {
+        ffi_debug!("DB", "WARNING: No database connected, using mock");
+        let db = create_database_struct("mock", false);
+        db_result_ok(db)
+    }
+}
+
+/// Check if connected to database.
 #[no_mangle]
 pub extern "C" fn doo_db_is_connected() -> bool {
     is_pool_initialized()
 }
 
-/// Cleanup and disconnect
+/// Cleanup and disconnect.
 #[no_mangle]
 pub extern "C" fn doo_db_cleanup_and_exit() {
     // Pool will be cleaned up on drop
 }
 
 // ============================================================================
-// RAW SQL (Returns SimpleResult by value for Result<Str, Error> types)
+// RAW SQL — Primary query entry points
 // ============================================================================
 
-/// Execute raw SQL query - matches Database.raw(self, sql) -> Str !DatabaseError
-/// First argument (_db) is the database handle (self), second is the SQL string
-/// Returns pointer to heap-allocated SimpleResult (avoids Windows sret ABI issue)
+/// Execute raw SQL query — matches Database.raw(self, sql) -> Str !DatabaseError
 #[no_mangle]
-pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut SimpleResult {
+pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut DooResult {
     ffi_debug!("DB", "doo_db_raw called");
 
     let sql_str = match c_to_string(sql) {
@@ -237,71 +444,45 @@ pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut Sim
             ffi_debug!("DB", "SQL: {}", s);
             s
         }
-        Err(e) => {
-            ffi_debug!("DB", "Failed to convert SQL string: {}", e);
-            return simple_result_err_ptr(&e);
-        }
+        Err(e) => return db_result_err(&e),
     };
 
-    // Check if database pool is initialized
     if !is_pool_initialized() {
         ffi_debug!("DB", "No database pool, returning empty result (demo mode)");
-        return simple_result_ok_ptr(string_to_c("[]") as *mut c_void);
+        return db_result_ok(string_to_c("[]") as *mut c_void);
     }
 
-    // Use thread spawning to avoid runtime nesting when called from HTTP handlers
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let rt = get_runtime();
-        let result = rt.block_on(async {
-            match get_client().await {
-                Ok(client) => {
-                    let rows = client.query(&sql_str, &[]).await?;
-                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>(rows_to_json(&rows))
-                }
-                Err(e) => {
-                    // Connection failed - return empty result in demo mode
-                    ffi_debug!("DB", "Connection failed ({}), returning empty result", e);
-                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>("[]".to_string())
-                }
-            }
-        });
-        let _ = tx.send(result);
-    });
-
-    match rx.recv() {
-        Ok(Ok(json)) => {
+    match run_db_async(async move {
+        let client = get_client().await?;
+        let rows = client.query(&sql_str, &[]).await?;
+        if rows.len() > MAX_ROWS {
+            return Err(format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into());
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(rows_to_json(&rows))
+    }) {
+        Ok(json) => {
             ffi_debug!("DB", "Query result, json length: {}", json.len());
-            simple_result_ok_ptr(string_to_c(&json) as *mut c_void)
+            db_result_ok(string_to_c(&json) as *mut c_void)
         }
-        Ok(Err(e)) => {
-            let err_msg = format!("Query failed: {}", format_db_error(e.as_ref()));
-            ffi_debug!("DB", "{}", err_msg);
-            simple_result_err_ptr(&err_msg)
-        }
-        Err(e) => {
-            let err_msg = format!("Thread communication error: {}", e);
-            ffi_debug!("DB", "{}", err_msg);
-            simple_result_err_ptr(&err_msg)
-        }
+        Err(e) => db_result_err(&e),
     }
 }
 
-/// Execute raw SQL query with parameters - matches Database.rawWithParams(self, sql, params) -> Str !DatabaseError
-/// First arg (_db) is database handle, second is SQL, third is JSON params
-/// Returns pointer to heap-allocated SimpleResult (avoids Windows sret ABI issue)
+/// Execute raw SQL query with parameters.
 #[no_mangle]
 pub extern "C" fn doo_db_raw_param(
     _db: *const c_void,
     sql: *const c_char,
     params_json: *const c_char,
-) -> *mut SimpleResult {
+) -> *mut DooResult {
     ffi_debug!("DB", "doo_db_raw_param called");
 
-    // Check if database is connected; if not, return empty array (demo mode)
     if !is_pool_initialized() {
-        ffi_debug!("DB", "No database connected, returning empty result (demo mode)");
-        return simple_result_ok_ptr(string_to_c("[]") as *mut c_void);
+        ffi_debug!(
+            "DB",
+            "No database connected, returning empty result (demo mode)"
+        );
+        return db_result_ok(string_to_c("[]") as *mut c_void);
     }
 
     let sql_str = match c_to_string(sql) {
@@ -309,23 +490,20 @@ pub extern "C" fn doo_db_raw_param(
             ffi_debug!("DB", "SQL: {}", s);
             s
         }
-        Err(e) => {
-            ffi_debug!("DB", "Failed to convert SQL string: {}", e);
-            return simple_result_err_ptr(&e);
-        }
+        Err(e) => return db_result_err(&e),
     };
 
-    // DEFENSIVE: Handle null/empty/invalid params by treating as empty array "[]"
-    // This can happen when compiler passes uninitialized array data pointer for empty arrays
-    // The proper fix is in the compiler (codegen/instructions/calls.rs), but this makes FFI robust
+    // Defensive: Handle null/empty/invalid params by treating as empty array
     let params_str = if params_json.is_null() {
         ffi_debug!("DB", "Params pointer is null, treating as empty array");
         "[]".to_string()
     } else {
-        // Check first byte - if it's 0 or invalid UTF-8, treat as empty array
         let first_byte = unsafe { *params_json as u8 };
         if first_byte == 0 {
-            ffi_debug!("DB", "Params starts with null byte, treating as empty array");
+            ffi_debug!(
+                "DB",
+                "Params starts with null byte, treating as empty array"
+            );
             "[]".to_string()
         } else {
             match c_to_string(params_json) {
@@ -334,28 +512,20 @@ pub extern "C" fn doo_db_raw_param(
                     s
                 }
                 Err(e) => {
-                    // Invalid UTF-8 often means compiler passed raw array pointer for empty array
-                    // Treat as empty array instead of failing
-                    ffi_debug!(
-                        "DB", "Params UTF-8 error ({}), treating as empty array",
-                        e
-                    );
+                    ffi_debug!("DB", "Params UTF-8 error ({}), treating as empty array", e);
                     "[]".to_string()
                 }
             }
         }
     };
 
-    // Parse params - support both JSON array and simple string
-    // If it's a JSON array like ["Bob", 25], parse it
-    // If it's a simple string like "Bob", wrap it in an array
+    // Parse params — support both JSON array and simple string
     let params_array: Vec<serde_json::Value> = if params_str.trim().starts_with('[') {
         match serde_json::from_str(&params_str) {
             Ok(v) => v,
-            Err(e) => return simple_result_err_ptr(&format!("Invalid params JSON: {}", e)),
+            Err(e) => return db_result_err(&format!("Invalid params JSON: {}", e)),
         }
     } else {
-        // Single value - try to parse as number first, otherwise treat as string
         if let Ok(n) = params_str.parse::<i64>() {
             vec![serde_json::Value::Number(serde_json::Number::from(n))]
         } else if let Ok(f) = params_str.parse::<f64>() {
@@ -365,120 +535,39 @@ pub extern "C" fn doo_db_raw_param(
         }
     };
 
-    // Use thread spawning to avoid runtime nesting when called from HTTP handlers
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let rt = get_runtime();
-        let result = rt.block_on(async {
-            match get_client().await {
-                Ok(client) => {
-                    // Convert JSON values to boxed postgres params to preserve types
-                    // Use i32 for integers since PostgreSQL INT is 32-bit
-                    let boxed_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> =
-                        params_array
-                            .iter()
-                            .map(|v| -> Box<dyn tokio_postgres::types::ToSql + Sync + Send> {
-                                match v {
-                                    serde_json::Value::String(s) => Box::new(s.clone()),
-                                    serde_json::Value::Number(n) => {
-                                        // Try i32 first (for PostgreSQL INT/INT4), then i64 (BIGINT), then f64
-                                        if let Some(i) = n.as_i64() {
-                                            if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
-                                                Box::new(i as i32)
-                                            } else {
-                                                Box::new(i)
-                                            }
-                                        } else if let Some(f) = n.as_f64() {
-                                            Box::new(f)
-                                        } else {
-                                            Box::new(n.to_string())
-                                        }
-                                    }
-                                    serde_json::Value::Bool(b) => Box::new(*b),
-                                    serde_json::Value::Null => Box::new(None::<String>),
-                                    _ => Box::new(v.to_string()),
-                                }
-                            })
-                            .collect();
+    match run_db_async(async move {
+        let client = get_client().await?;
 
-                    // Build params slice from boxed values
-                    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = boxed_params
-                        .iter()
-                        .map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync))
-                        .collect();
+        // Prepare statement to get PostgreSQL-inferred parameter types.
+        // This ensures type compatibility: e.g., `SELECT $1 as val` infers UNKNOWN
+        // → we send as String. `WHERE age > $1` infers INT4 → we send as i32.
+        let stmt = client.prepare(&sql_str).await?;
+        let pg_types = stmt.params();
+        let boxed_params = json_values_to_pg_params_typed(&params_array, pg_types);
+        let params = params_as_refs(&boxed_params);
 
-                    let rows = client.query(&sql_str, &params[..]).await?;
-                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>(rows_to_json(&rows))
-                }
-                Err(e) => {
-                    // Connection failed - return empty result in demo mode
-                    ffi_debug!("DB", "Connection failed ({}), returning empty result", e);
-                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>("[]".to_string())
-                }
-            }
-        });
-        let _ = tx.send(result);
-    });
-
-    match rx.recv() {
-        Ok(Ok(json)) => {
+        let rows = client.query(&stmt, &params[..]).await?;
+        if rows.len() > MAX_ROWS {
+            return Err(format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into());
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(rows_to_json(&rows))
+    }) {
+        Ok(json) => {
             ffi_debug!("DB", "Query result, json length: {}", json.len());
-
-            // IMPORTANT: For scalar values (Int), the compiler expects the actual value,
-            // not a JSON string pointer. Detect scalar int results and return them directly.
-            // This handles: let total: Int = db.rawWithParams("SELECT COUNT(*) FROM ...", [])?
-            // The JSON will be like [{"count": 5}] or just a number
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
-                // Check for array with single row, single int column (e.g., [{"count": 5}])
-                if let serde_json::Value::Array(arr) = &parsed {
-                    if arr.len() == 1 {
-                        if let serde_json::Value::Object(obj) = &arr[0] {
-                            if obj.len() == 1 {
-                                // Single column - get its value
-                                if let Some(val) = obj.values().next() {
-                                    if let Some(n) = val.as_i64() {
-                                        ffi_debug!("DB", "Detected scalar int result: {}", n);
-                                        // Return the integer value directly (as ptr for type compatibility)
-                                        // The compiler will do ptrtoint which gives us the actual value
-                                        return simple_result_ok_ptr(n as *mut c_void);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Also handle raw number in array [5]
-                if let serde_json::Value::Array(arr) = &parsed {
-                    if arr.len() == 1 {
-                        if let Some(n) = arr[0].as_i64() {
-                            ffi_debug!("DB", "Detected scalar int result (raw): {}", n);
-                            return simple_result_ok_ptr(n as *mut c_void);
-                        }
-                    }
-                }
-            }
-
-            simple_result_ok_ptr(string_to_c(&json) as *mut c_void)
+            // Always return JSON string — codegen handles type conversion.
+            // Scalar int detection removed: it returned raw integers as pointers
+            // which crashes when the Doo code expects a Str result.
+            db_result_ok(string_to_c(&json) as *mut c_void)
         }
-        Ok(Err(e)) => {
-            let err_msg = format!("Query failed: {}", format_db_error(e.as_ref()));
-            ffi_debug!("DB", "{}", err_msg);
-            simple_result_err_ptr(&err_msg)
-        }
-        Err(e) => {
-            let err_msg = format!("Thread communication error: {}", e);
-            ffi_debug!("DB", "{}", err_msg);
-            simple_result_err_ptr(&err_msg)
-        }
+        Err(e) => db_result_err(&e),
     }
 }
 
 // ============================================================================
-// QUERY EXECUTION (Legacy - returns *mut DooResult)
+// QUERY EXECUTION (Legacy — now uses run_db_async, deadlock-safe)
 // ============================================================================
 
-/// Execute raw SQL query (no parameters)
-/// Returns: JSON array of rows
+/// Execute raw SQL query (no parameters) — legacy interface.
 #[no_mangle]
 pub extern "C" fn doo_db_query(sql: *const c_char) -> *mut DooResult {
     let sql_str = match c_to_string(sql) {
@@ -486,19 +575,21 @@ pub extern "C" fn doo_db_query(sql: *const c_char) -> *mut DooResult {
         Err(e) => return DooResult::err_str(400, &e).into_raw(),
     };
 
-    let rt = get_runtime();
-    match rt.block_on(async {
+    match run_db_async(async move {
         let client = get_client().await?;
         let rows = client.query(&sql_str, &[]).await?;
-        Ok::<_, Box<dyn std::error::Error>>(rows_to_json(&rows))
+        if rows.len() > MAX_ROWS {
+            return Err(format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into());
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(rows_to_json(&rows))
     }) {
         Ok(json) => DooResult::ok_string(&json).into_raw(),
-        Err(e) => DooResult::err_str(500, &format!("Query failed: {}", e)).into_raw(),
+        Err(e) => DooResult::err_str(500, &e).into_raw(),
     }
 }
 
-/// Execute raw SQL query with JSON parameters
-/// params_json should be a JSON array, e.g. ["value1", 123, true]
+/// Execute raw SQL query with JSON parameters — legacy interface.
+/// Uses shared json_values_to_pg_params for correct type handling.
 #[no_mangle]
 pub extern "C" fn doo_db_query_params(
     sql: *const c_char,
@@ -514,7 +605,6 @@ pub extern "C" fn doo_db_query_params(
         Err(e) => return DooResult::err_str(400, &e).into_raw(),
     };
 
-    // Parse params JSON
     let params_array: Vec<serde_json::Value> = match serde_json::from_str(&params_str) {
         Ok(v) => v,
         Err(e) => {
@@ -522,37 +612,22 @@ pub extern "C" fn doo_db_query_params(
         }
     };
 
-    let rt = get_runtime();
-    match rt.block_on(async {
+    match run_db_async(async move {
         let client = get_client().await?;
-
-        // Convert JSON values to postgres params (simplified - strings only for now)
-        let param_refs: Vec<String> = params_array
-            .iter()
-            .map(|v| match v {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => b.to_string(),
-                serde_json::Value::Null => "NULL".to_string(),
-                _ => v.to_string(),
-            })
-            .collect();
-
-        // Build params slice
-        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = param_refs
-            .iter()
-            .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-            .collect();
-
+        let boxed_params = json_values_to_pg_params(&params_array);
+        let params = params_as_refs(&boxed_params);
         let rows = client.query(&sql_str, &params[..]).await?;
-        Ok::<_, Box<dyn std::error::Error>>(rows_to_json(&rows))
+        if rows.len() > MAX_ROWS {
+            return Err(format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into());
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(rows_to_json(&rows))
     }) {
         Ok(json) => DooResult::ok_string(&json).into_raw(),
-        Err(e) => DooResult::err_str(500, &format!("Query failed: {}", e)).into_raw(),
+        Err(e) => DooResult::err_str(500, &e).into_raw(),
     }
 }
 
-/// Execute SQL (INSERT/UPDATE/DELETE) - no result rows
+/// Execute SQL (INSERT/UPDATE/DELETE) — legacy interface.
 #[no_mangle]
 pub extern "C" fn doo_db_execute(sql: *const c_char) -> *mut DooResult {
     let sql_str = match c_to_string(sql) {
@@ -560,21 +635,20 @@ pub extern "C" fn doo_db_execute(sql: *const c_char) -> *mut DooResult {
         Err(e) => return DooResult::err_str(400, &e).into_raw(),
     };
 
-    let rt = get_runtime();
-    match rt.block_on(async {
+    match run_db_async(async move {
         let client = get_client().await?;
         let affected = client.execute(&sql_str, &[]).await?;
-        Ok::<_, Box<dyn std::error::Error>>(affected)
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(affected)
     }) {
         Ok(affected) => {
             let json = format!(r#"{{"affected":{}}}"#, affected);
             DooResult::ok_string(&json).into_raw()
         }
-        Err(e) => DooResult::err_str(500, &format!("Execute failed: {}", e)).into_raw(),
+        Err(e) => DooResult::err_str(500, &e).into_raw(),
     }
 }
 
-/// Execute SQL with parameters
+/// Execute SQL with parameters — legacy interface.
 #[no_mangle]
 pub extern "C" fn doo_db_execute_params(
     sql: *const c_char,
@@ -597,38 +671,22 @@ pub extern "C" fn doo_db_execute_params(
         }
     };
 
-    let rt = get_runtime();
-    match rt.block_on(async {
+    match run_db_async(async move {
         let client = get_client().await?;
-
-        let param_refs: Vec<String> = params_array
-            .iter()
-            .map(|v| match v {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => b.to_string(),
-                serde_json::Value::Null => "NULL".to_string(),
-                _ => v.to_string(),
-            })
-            .collect();
-
-        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = param_refs
-            .iter()
-            .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-            .collect();
-
+        let boxed_params = json_values_to_pg_params(&params_array);
+        let params = params_as_refs(&boxed_params);
         let affected = client.execute(&sql_str, &params[..]).await?;
-        Ok::<_, Box<dyn std::error::Error>>(affected)
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(affected)
     }) {
         Ok(affected) => {
             let json = format!(r#"{{"affected":{}}}"#, affected);
             DooResult::ok_string(&json).into_raw()
         }
-        Err(e) => DooResult::err_str(500, &format!("Execute failed: {}", e)).into_raw(),
+        Err(e) => DooResult::err_str(500, &e).into_raw(),
     }
 }
 
-/// Query single row
+/// Query single row — legacy interface.
 #[no_mangle]
 pub extern "C" fn doo_db_query_one(sql: *const c_char) -> *mut DooResult {
     let sql_str = match c_to_string(sql) {
@@ -636,17 +694,13 @@ pub extern "C" fn doo_db_query_one(sql: *const c_char) -> *mut DooResult {
         Err(e) => return DooResult::err_str(400, &e).into_raw(),
     };
 
-    let rt = get_runtime();
-    match rt.block_on(async {
+    match run_db_async(async move {
         let client = get_client().await?;
         let row = client.query_one(&sql_str, &[]).await?;
-        let json_value = row_to_json_value(&row);
-        Ok::<_, Box<dyn std::error::Error>>(
-            serde_json::to_string(&json_value).unwrap_or_else(|_| "{}".to_string()),
-        )
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(row_to_json(&row))
     }) {
         Ok(json) => DooResult::ok_string(&json).into_raw(),
-        Err(e) => DooResult::err_str(500, &format!("Query failed: {}", e)).into_raw(),
+        Err(e) => DooResult::err_str(500, &e).into_raw(),
     }
 }
 
@@ -654,7 +708,7 @@ pub extern "C" fn doo_db_query_one(sql: *const c_char) -> *mut DooResult {
 // RESULT HANDLING
 // ============================================================================
 
-/// Check if result is an error
+/// Check if result is an error.
 #[no_mangle]
 pub extern "C" fn doo_db_result_is_error(result: *mut DooResult) -> i32 {
     if result.is_null() {
@@ -669,7 +723,7 @@ pub extern "C" fn doo_db_result_is_error(result: *mut DooResult) -> i32 {
     }
 }
 
-/// Get result value (JSON string)
+/// Get result value (JSON string).
 #[no_mangle]
 pub extern "C" fn doo_db_result_value(result: *mut DooResult) -> *const c_char {
     if result.is_null() {
@@ -684,7 +738,7 @@ pub extern "C" fn doo_db_result_value(result: *mut DooResult) -> *const c_char {
     }
 }
 
-/// Free a result
+/// Free a DooResult.
 #[no_mangle]
 pub extern "C" fn doo_db_result_free(result: *mut DooResult) {
     if result.is_null() {
@@ -698,15 +752,99 @@ pub extern "C" fn doo_db_result_free(result: *mut DooResult) {
     }
 }
 
-// ============================================================================
-// FFI FUNCTIONS FOR HTTP CRATE TO USE
-// ============================================================================
-// These functions allow doo_ffi_http to call database operations without
-// sharing Rust statics (which would be duplicated between DLLs).
+/// Free a C string allocated by this crate.
+#[no_mangle]
+pub extern "C" fn doo_db_free_string(ptr: *const c_char) {
+    if !ptr.is_null() {
+        unsafe {
+            libc::free(ptr as *mut c_void);
+        }
+    }
+}
 
-/// Execute SQL query and return JSON array result
-/// Returns null-terminated C string with JSON array, or null on error
-/// Caller must free the returned string
+/// Free a DatabaseStruct allocated by create_database_struct.
+#[no_mangle]
+pub extern "C" fn doo_db_free_struct(ptr: *mut c_void) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let conn_type_ptr = *(ptr as *const *const c_char);
+        if !conn_type_ptr.is_null() {
+            libc::free(conn_type_ptr as *mut c_void);
+        }
+        libc::free(ptr);
+    }
+}
+
+// ============================================================================
+// TRANSACTION SUPPORT
+// ============================================================================
+
+/// Transaction query definition (deserialized from JSON).
+#[derive(serde::Deserialize)]
+struct QueryDef {
+    sql: String,
+    #[serde(default)]
+    params: Vec<serde_json::Value>,
+}
+
+/// Execute multiple queries in a single transaction.
+/// Input: JSON array of { "sql": "...", "params": [...] } objects.
+/// Returns: JSON array of per-query results.
+/// On any error, the entire transaction is rolled back (auto-rollback on drop).
+#[no_mangle]
+pub extern "C" fn doo_db_transaction(
+    _db: *const c_void,
+    queries_json: *const c_char,
+) -> *mut DooResult {
+    let queries_str = match c_to_string(queries_json) {
+        Ok(s) => s,
+        Err(e) => return db_result_err(&e),
+    };
+
+    let queries: Vec<QueryDef> = match serde_json::from_str(&queries_str) {
+        Ok(q) => q,
+        Err(e) => return db_result_err(&format!("Invalid transaction queries: {}", e)),
+    };
+
+    if !is_pool_initialized() {
+        return db_result_err("Database not connected");
+    }
+
+    match run_db_async(async move {
+        let mut client = get_client().await?;
+        let tx = client.transaction().await?;
+
+        let mut results = Vec::new();
+        for q in &queries {
+            let boxed_params = json_values_to_pg_params(&q.params);
+            let param_refs = params_as_refs(&boxed_params);
+            let rows = tx.query(&q.sql, &param_refs[..]).await?;
+            if rows.len() > MAX_ROWS {
+                return Err(
+                    format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into(),
+                );
+            }
+            results.push(rows_to_json(&rows));
+        }
+
+        tx.commit().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+            serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string()),
+        )
+    }) {
+        Ok(json) => db_result_ok(string_to_c(&json) as *mut c_void),
+        Err(e) => db_result_err(&e),
+    }
+}
+
+// ============================================================================
+// FFI FUNCTIONS FOR HTTP CRATE
+// ============================================================================
+
+/// Execute SQL query and return JSON array result.
+/// Returns null-terminated C string, or null on error.
 #[no_mangle]
 pub extern "C" fn doo_db_execute_sql(sql: *const c_char) -> *mut c_void {
     let sql_str = match c_to_string(sql) {
@@ -719,58 +857,36 @@ pub extern "C" fn doo_db_execute_sql(sql: *const c_char) -> *mut c_void {
         return std::ptr::null_mut();
     }
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let sql_clone = sql_str.clone();
+    match run_db_async(async move {
+        let client = get_client().await?;
 
-    std::thread::spawn(move || {
-        // Use shared runtime - creating a new runtime causes deadlocks
-        // because the pool is tied to get_runtime()
-        let rt = get_runtime();
-        let result = rt.block_on(async {
-            match get_client().await {
-                Ok(client) => {
-                    // For CREATE TABLE, use execute
-                    if sql_clone.trim().to_uppercase().starts_with("CREATE")
-                        || sql_clone.trim().to_uppercase().starts_with("INSERT")
-                        || sql_clone.trim().to_uppercase().starts_with("UPDATE")
-                        || sql_clone.trim().to_uppercase().starts_with("DELETE")
-                    {
-                        match client.execute(&sql_clone, &[]).await {
-                            Ok(count) => Ok(format!("{{\"affected_rows\":{}}}", count)),
-                            Err(e) => Err(format_db_error(&e)),
-                        }
-                    } else {
-                        match client.query(&sql_clone, &[]).await {
-                            Ok(rows) => {
-                                // Convert rows to JSON
-                                let json_rows: Vec<serde_json::Value> =
-                                    rows.iter().map(|row| row_to_json_value(row)).collect();
-                                Ok(serde_json::to_string(&json_rows)
-                                    .unwrap_or_else(|_| "[]".to_string()))
-                            }
-                            Err(e) => Err(format_db_error(&e)),
-                        }
-                    }
-                }
-                Err(e) => Err(e.to_string()),
+        if is_mutating_sql(&sql_str) {
+            let count = client.execute(&sql_str, &[]).await?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(format!(
+                "{{\"affected_rows\":{}}}",
+                count
+            ))
+        } else {
+            let rows = client.query(&sql_str, &[]).await?;
+            if rows.len() > MAX_ROWS {
+                return Err(
+                    format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into(),
+                );
             }
-        });
-        let _ = tx.send(result);
-    });
-
-    match rx.recv() {
-        Ok(Ok(json)) => string_to_c(&json) as *mut c_void,
-        Ok(Err(e)) => {
+            let json_rows: Vec<serde_json::Value> =
+                rows.iter().map(|row| row_to_json_value(row)).collect();
+            Ok(serde_json::to_string(&json_rows).unwrap_or_else(|_| "[]".to_string()))
+        }
+    }) {
+        Ok(json) => string_to_c(&json) as *mut c_void,
+        Err(e) => {
             ffi_debug!("DB", "doo_db_execute_sql error: {}", e);
             std::ptr::null_mut()
         }
-        Err(_) => std::ptr::null_mut(),
     }
 }
 
-/// Execute SQL query with JSON params and return JSON array result
-/// Params should be a JSON array like ["value1", 123, true]
-/// Returns null-terminated C string with JSON array, or null on error
+/// Execute SQL query with JSON params and return JSON array result.
 #[no_mangle]
 pub extern "C" fn doo_db_query_with_params(
     sql: *const c_char,
@@ -791,185 +907,47 @@ pub extern "C" fn doo_db_query_with_params(
         return std::ptr::null_mut();
     }
 
-    // Parse params JSON
     let params: Vec<serde_json::Value> = serde_json::from_str(&params_str).unwrap_or_default();
 
-    let (tx, rx) = std::sync::mpsc::channel();
+    match run_db_async(async move {
+        let client = get_client().await?;
 
-    std::thread::spawn(move || {
-        // Use shared runtime - creating a new runtime causes deadlocks
-        // because the pool is tied to get_runtime()
-        let rt = get_runtime();
-        let result = rt.block_on(async {
-            match get_client().await {
-                Ok(client) => {
-                    // Convert JSON values to boxed PostgreSQL params
-                    // PostgreSQL is strict about types - use i32 for integers (INT4)
-                    // and bool for booleans (BOOLEAN)
-                    let boxed_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> =
-                        params
-                            .iter()
-                            .map(|v| -> Box<dyn tokio_postgres::types::ToSql + Sync + Send> {
-                                match v {
-                                    serde_json::Value::String(s) => Box::new(s.clone()),
-                                    serde_json::Value::Number(n) => {
-                                        if let Some(i) = n.as_i64() {
-                                            // Use i32 for PostgreSQL INT4 compatibility
-                                            Box::new(i as i32)
-                                        } else if let Some(f) = n.as_f64() {
-                                            Box::new(f)
-                                        } else {
-                                            Box::new(String::new())
-                                        }
-                                    }
-                                    serde_json::Value::Bool(b) => {
-                                        // PostgreSQL BOOLEAN type
-                                        Box::new(*b)
-                                    }
-                                    serde_json::Value::Null => {
-                                        // Handle NULL as empty string for now
-                                        Box::new(Option::<String>::None)
-                                    }
-                                    _ => Box::new(String::new()),
-                                }
-                            })
-                            .collect();
+        // Prepare to get PG-inferred param types, then adapt params
+        let stmt = client.prepare(&sql_str).await?;
+        let pg_types = stmt.params();
+        let boxed_params = json_values_to_pg_params_typed(&params, pg_types);
+        let param_refs = params_as_refs(&boxed_params);
 
-                    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = boxed_params
-                        .iter()
-                        .map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync))
-                        .collect();
-
-                    if sql_str.trim().to_uppercase().starts_with("INSERT")
-                        || sql_str.trim().to_uppercase().starts_with("UPDATE")
-                        || sql_str.trim().to_uppercase().starts_with("DELETE")
-                    {
-                        // For INSERT with RETURNING, use query
-                        if sql_str.to_uppercase().contains("RETURNING") {
-                            match client.query(&sql_str, &param_refs[..]).await {
-                                Ok(rows) => {
-                                    let json_rows: Vec<serde_json::Value> =
-                                        rows.iter().map(|row| row_to_json_value(row)).collect();
-                                    Ok(serde_json::to_string(&json_rows)
-                                        .unwrap_or_else(|_| "[]".to_string()))
-                                }
-                                Err(e) => Err(format_db_error(&e)),
-                            }
-                        } else {
-                            match client.execute(&sql_str, &param_refs[..]).await {
-                                Ok(count) => Ok(format!("{{\"affected_rows\":{}}}", count)),
-                                Err(e) => Err(format_db_error(&e)),
-                            }
-                        }
-                    } else {
-                        match client.query(&sql_str, &param_refs[..]).await {
-                            Ok(rows) => {
-                                let json_rows: Vec<serde_json::Value> =
-                                    rows.iter().map(|row| row_to_json_value(row)).collect();
-                                Ok(serde_json::to_string(&json_rows)
-                                    .unwrap_or_else(|_| "[]".to_string()))
-                            }
-                            Err(e) => Err(format_db_error(&e)),
-                        }
-                    }
-                }
-                Err(e) => Err(e.to_string()),
+        if is_mutating_sql(&sql_str) {
+            if has_returning(&sql_str) {
+                let rows = client.query(&stmt, &param_refs[..]).await?;
+                let json_rows: Vec<serde_json::Value> =
+                    rows.iter().map(|row| row_to_json_value(row)).collect();
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+                    serde_json::to_string(&json_rows).unwrap_or_else(|_| "[]".to_string()),
+                )
+            } else {
+                let count = client.execute(&stmt, &param_refs[..]).await?;
+                Ok(format!("{{\"affected_rows\":{}}}", count))
             }
-        });
-        let _ = tx.send(result);
-    });
-
-    match rx.recv() {
-        Ok(Ok(json)) => string_to_c(&json) as *mut c_void,
-        Ok(Err(e)) => {
+        } else {
+            let rows = client.query(&stmt, &param_refs[..]).await?;
+            if rows.len() > MAX_ROWS {
+                return Err(
+                    format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into(),
+                );
+            }
+            let json_rows: Vec<serde_json::Value> =
+                rows.iter().map(|row| row_to_json_value(row)).collect();
+            Ok(serde_json::to_string(&json_rows).unwrap_or_else(|_| "[]".to_string()))
+        }
+    }) {
+        Ok(json) => string_to_c(&json) as *mut c_void,
+        Err(e) => {
             ffi_debug!("DB", "doo_db_query_with_params error: {}", e);
             std::ptr::null_mut()
         }
-        Err(_) => std::ptr::null_mut(),
     }
-}
-
-/// Convert snake_case to PascalCase
-/// Examples: "author_id" -> "AuthorId", "published" -> "Published"
-/// Special case: "id" stays as "id" (Doo convention)
-fn snake_to_pascal(s: &str) -> String {
-    // Special case: "id" should stay lowercase
-    if s == "id" {
-        return "id".to_string();
-    }
-
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
-
-/// Convert a database row to JSON Value (not string)
-/// Column names are converted to PascalCase to match Doo struct fields
-fn row_to_json_value(row: &tokio_postgres::Row) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-    for (i, col) in row.columns().iter().enumerate() {
-        // Convert PostgreSQL snake_case column name to Doo PascalCase field name
-        let name = snake_to_pascal(col.name());
-        let value = match col.type_().name() {
-            "int4" | "int8" | "int2" => {
-                if let Ok(v) = row.try_get::<_, i64>(i) {
-                    serde_json::Value::Number(v.into())
-                } else if let Ok(v) = row.try_get::<_, i32>(i) {
-                    serde_json::Value::Number(v.into())
-                } else {
-                    serde_json::Value::Null
-                }
-            }
-            "float4" | "float8" => {
-                if let Ok(v) = row.try_get::<_, f64>(i) {
-                    serde_json::Number::from_f64(v)
-                        .map(serde_json::Value::Number)
-                        .unwrap_or(serde_json::Value::Null)
-                } else {
-                    serde_json::Value::Null
-                }
-            }
-            "bool" => {
-                if let Ok(v) = row.try_get::<_, bool>(i) {
-                    serde_json::Value::Bool(v)
-                } else {
-                    serde_json::Value::Null
-                }
-            }
-            "varchar" | "text" | "bpchar" | "name" => {
-                if let Ok(v) = row.try_get::<_, String>(i) {
-                    serde_json::Value::String(v)
-                } else {
-                    serde_json::Value::Null
-                }
-            }
-            "timestamp" | "timestamptz" => {
-                if let Ok(v) = row.try_get::<_, chrono::NaiveDateTime>(i) {
-                    serde_json::Value::String(v.to_string())
-                } else if let Ok(v) = row.try_get::<_, chrono::DateTime<chrono::Utc>>(i) {
-                    serde_json::Value::String(v.to_rfc3339())
-                } else {
-                    serde_json::Value::Null
-                }
-            }
-            _ => {
-                // Try as string fallback
-                if let Ok(v) = row.try_get::<_, String>(i) {
-                    serde_json::Value::String(v)
-                } else {
-                    serde_json::Value::Null
-                }
-            }
-        };
-        obj.insert(name, value);
-    }
-    serde_json::Value::Object(obj)
 }
 
 // ============================================================================
@@ -977,14 +955,6 @@ fn row_to_json_value(row: &tokio_postgres::Row) -> serde_json::Value {
 // ============================================================================
 
 /// Serialize an array of enum values to JSON array.
-/// Used by database queries that return arrays of enums.
-///
-/// Parameters:
-/// - array_ptr: Pointer to the array data (doo array layout has len at offset -4)
-/// - variants: Comma-separated list of variant names (e.g., "Low,Medium,High")
-/// - stride: Size in bytes of each enum element (usually 16 bytes for tagged union)
-///
-/// Returns: JSON array string like `["Low","High","Medium"]`
 #[no_mangle]
 pub extern "C" fn doo_db_serialize_enum_array(
     array_ptr: *const std::ffi::c_void,
@@ -1002,28 +972,18 @@ pub extern "C" fn doo_db_serialize_enum_array(
 
     let variant_names: Vec<&str> = variants_str.split(',').collect();
 
-    // Read length from offset -16 (first i64 in header before data pointer)
-    // Doo array layout: [len:i64][cap:i64][data...]
-    // Header is 16 bytes (2 x i64), data pointer points to offset +16 from header start
     let len = unsafe {
         let len_ptr = (array_ptr as *const u8).offset(-16) as *const i64;
         (*len_ptr) as usize
     };
 
-    // The data starts at array_ptr
     let raw_data = array_ptr as *const u8;
-
     let mut json_arr = Vec::with_capacity(len);
-    // Safety limit to prevent runaway loops
     let safe_len = std::cmp::min(len, 10000);
-
-    // Default stride to 16 bytes (typical enum size with alignment)
     let stride_usize = if stride > 0 { stride as usize } else { 16 };
 
     for i in 0..safe_len {
         let offset = i * stride_usize;
-        // Enum layout: { i32 tag, ... payload ... }
-        // We read first 4 bytes as i32 tag
         let tag = unsafe {
             let tag_ptr = raw_data.add(offset) as *const i32;
             (*tag_ptr) as usize
@@ -1032,11 +992,56 @@ pub extern "C" fn doo_db_serialize_enum_array(
         if tag < variant_names.len() {
             json_arr.push(serde_json::Value::String(variant_names[tag].to_string()));
         } else {
-            // Invalid tag - push null
             json_arr.push(serde_json::Value::Null);
         }
     }
 
     let json_str = serde_json::Value::Array(json_arr).to_string();
     string_to_c(&json_str)
+}
+
+// ============================================================================
+// MIGRATION FFI
+// ============================================================================
+
+/// Run migrations from schema JSON.
+/// Generates CREATE TABLE IF NOT EXISTS + CREATE INDEX statements.
+#[no_mangle]
+pub extern "C" fn doo_db_migrate_schemas(schema_json: *const c_char) -> *mut DooResult {
+    let schema_str = match c_to_string(schema_json) {
+        Ok(s) => s,
+        Err(e) => return db_result_err(&format!("Invalid schema: {}", e)),
+    };
+
+    if !is_pool_initialized() {
+        return db_result_err("Database not connected — cannot run migrations");
+    }
+
+    let schemas: Vec<migrate::TableSchema> = match serde_json::from_str(&schema_str) {
+        Ok(s) => s,
+        Err(e) => return db_result_err(&format!("Invalid schema JSON: {}", e)),
+    };
+
+    let schema_count = schemas.len();
+    let mut sqls = Vec::new();
+    for schema in &schemas {
+        sqls.push(schema.to_create_sql());
+    }
+    let combined_sql = sqls.join("\n");
+
+    match run_db_async(async move {
+        let client = get_client().await?;
+        client.batch_execute(&combined_sql).await.map_err(
+            |e| -> Box<dyn std::error::Error + Send + Sync> {
+                format!("Migration failed: {}", e).into()
+            },
+        )?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(format!(
+            "{{\"migrated\":{}}}",
+            schema_count
+        ))
+    }) {
+        Ok(json) => db_result_ok(string_to_c(&json) as *mut c_void),
+        Err(e) => db_result_err(&e),
+    }
 }

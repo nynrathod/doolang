@@ -1,38 +1,28 @@
 //! Database Errors
 //!
-//! Centralized database error codes.
+//! Centralized database error codes — single source of truth.
 
-use serde::{Deserialize, Serialize};
 use doo_ffi_core::Rfc7807Error;
+use serde::{Deserialize, Serialize};
 
 /// Database error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DbError {
-    /// Not connected
     NotConnected,
-    /// Connection failed
     ConnectionFailed,
-    /// Query failed
     QueryFailed,
-    /// Unique violation (23505)
     UniqueViolation,
-    /// Foreign key violation (23503)
     ForeignKeyViolation,
-    /// Not null violation (23502)
     NotNullViolation,
-    /// Check violation (23514)
     CheckViolation,
-    /// Invalid SQL
     InvalidSql,
-    /// Table not found
     TableNotFound,
-    /// Column not found
     ColumnNotFound,
-    /// Data type mismatch
     DataTypeMismatch,
-    /// Transaction failed
     TransactionFailed,
-    /// Internal error
+    QueryTimeout,
+    DatabaseOverloaded,
+    RowLimitExceeded,
     InternalError,
 }
 
@@ -52,6 +42,9 @@ impl DbError {
             Self::ColumnNotFound => 5010,
             Self::DataTypeMismatch => 5011,
             Self::TransactionFailed => 5012,
+            Self::QueryTimeout => 5013,
+            Self::DatabaseOverloaded => 5014,
+            Self::RowLimitExceeded => 5015,
             Self::InternalError => 5099,
         }
     }
@@ -71,12 +64,51 @@ impl DbError {
             Self::ColumnNotFound => "Column not found",
             Self::DataTypeMismatch => "Data type mismatch",
             Self::TransactionFailed => "Transaction failed",
+            Self::QueryTimeout => "Query timed out",
+            Self::DatabaseOverloaded => "Database overloaded",
+            Self::RowLimitExceeded => "Query returned too many rows",
             Self::InternalError => "Internal database error",
+        }
+    }
+
+    /// Map HTTP status code for this error.
+    pub fn http_status(&self) -> u16 {
+        match self {
+            Self::NotConnected | Self::ConnectionFailed => 503,
+            Self::QueryFailed | Self::InvalidSql => 400,
+            Self::UniqueViolation => 409,
+            Self::ForeignKeyViolation => 409,
+            Self::NotNullViolation | Self::CheckViolation => 400,
+            Self::TableNotFound | Self::ColumnNotFound => 404,
+            Self::DataTypeMismatch => 400,
+            Self::TransactionFailed => 500,
+            Self::QueryTimeout => 504,
+            Self::DatabaseOverloaded => 503,
+            Self::RowLimitExceeded => 400,
+            Self::InternalError => 500,
+        }
+    }
+
+    /// Map PostgreSQL SQLSTATE error code to DbError.
+    pub fn from_pg_code(code: &str) -> Self {
+        match code {
+            "23505" => Self::UniqueViolation,
+            "23503" => Self::ForeignKeyViolation,
+            "23502" => Self::NotNullViolation,
+            "23514" => Self::CheckViolation,
+            "42601" | "42000" => Self::InvalidSql,
+            "42P01" => Self::TableNotFound,
+            "42703" => Self::ColumnNotFound,
+            "42804" | "42846" => Self::DataTypeMismatch,
+            "40001" | "40P01" => Self::TransactionFailed,
+            "57014" => Self::QueryTimeout,
+            "08000" | "08003" | "08006" => Self::ConnectionFailed,
+            _ => Self::QueryFailed,
         }
     }
 
     /// Convert to RFC 7807 error.
     pub fn to_rfc7807(&self) -> Rfc7807Error {
-        Rfc7807Error::internal(self.message())
+        Rfc7807Error::new(self.http_status(), self.message())
     }
 }
