@@ -205,12 +205,26 @@ pub const DOO_AUTH_FREE_RESULT: &str = "doo_auth_free_result";
 // Doo File FFI (doo_ffi_file)
 // ============================================================================
 
+pub const DOO_FILE_INIT: &str = "doo_file_init";
 pub const DOO_FILE_READ: &str = "doo_file_read";
 pub const DOO_FILE_WRITE: &str = "doo_file_write";
 pub const DOO_FILE_APPEND: &str = "doo_file_append";
 pub const DOO_FILE_DELETE: &str = "doo_file_delete";
 pub const DOO_FILE_EXISTS: &str = "doo_file_exists";
 pub const DOO_FILE_METADATA: &str = "doo_file_metadata";
+pub const DOO_FILE_COPY: &str = "doo_file_copy";
+pub const DOO_FILE_MOVE: &str = "doo_file_move";
+pub const DOO_FILE_SIZE: &str = "doo_file_size";
+pub const DOO_FILE_READ_LINES: &str = "doo_file_read_lines";
+pub const DOO_FILE_MKDIR: &str = "doo_file_mkdir";
+pub const DOO_FILE_MKDIR_ALL: &str = "doo_file_mkdir_all";
+pub const DOO_FILE_RMDIR: &str = "doo_file_rmdir";
+pub const DOO_FILE_RMDIR_ALL: &str = "doo_file_rmdir_all";
+pub const DOO_FILE_LIST_DIR: &str = "doo_file_list_dir";
+pub const DOO_FILE_IS_FILE: &str = "doo_file_is_file";
+pub const DOO_FILE_IS_DIR: &str = "doo_file_is_dir";
+pub const DOO_FILE_MODIFIED_TIME: &str = "doo_file_modified_time";
+pub const DOO_FILE_FREE_RESULT: &str = "doo_file_free_result";
 
 // ============================================================================
 // Doo String FFI (UTF-8 Safe Operations)

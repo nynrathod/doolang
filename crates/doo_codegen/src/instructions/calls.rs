@@ -2641,12 +2641,26 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::DOO_JSON_PARSE => Some((&["ptr"], "ptr", false)),
 
         // File FFI
+        ffi_names::DOO_FILE_INIT => Some((&["ptr"], "ptr", false)),
         ffi_names::DOO_FILE_READ => Some((&["ptr"], "ptr", false)),
         ffi_names::DOO_FILE_WRITE => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_FILE_APPEND => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_FILE_DELETE => Some((&["ptr"], "ptr", false)),
         ffi_names::DOO_FILE_EXISTS => Some((&["ptr"], "i32", false)),
         ffi_names::DOO_FILE_METADATA => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_COPY => Some((&["ptr", "ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_MOVE => Some((&["ptr", "ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_SIZE => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_READ_LINES => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_MKDIR => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_MKDIR_ALL => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_RMDIR => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_RMDIR_ALL => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_LIST_DIR => Some((&["ptr"], "ptr", false)),
+        ffi_names::DOO_FILE_IS_FILE => Some((&["ptr"], "i32", false)),
+        ffi_names::DOO_FILE_IS_DIR => Some((&["ptr"], "i32", false)),
+        ffi_names::DOO_FILE_MODIFIED_TIME => Some((&["ptr"], "i64", false)),
+        ffi_names::DOO_FILE_FREE_RESULT => Some((&["ptr"], "void", false)),
 
         // HTTP FFI
         ffi_names::DOO_HTTP_SERVER_NEW => Some((&["ptr"], "ptr", false)),

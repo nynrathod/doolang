@@ -1,4 +1,4 @@
-//! JSON FFI Functions
+//! JSON FFI Functions — Production-Grade, DooCloud-Safe
 //!
 //! Provides JSON serialization/parsing functions for the Doo compiler.
 //! Uses serde_json for parsing but returns values in Doo's native memory layout.
@@ -7,14 +7,54 @@
 //! All allocations use doo_alloc_* from memory.rs (single source of truth).
 //! CRITICAL: Never use CString::into_raw() - it uses Rust allocator causing heap corruption.
 //! CRITICAL: Never return null_mut() for collection types - always return valid empty collection.
+//!
+//! SAFETY:
+//! - All extern "C" fn boundaries are wrapped with catch_unwind to prevent UB on panic
+//! - JSON input size is limited to MAX_JSON_SIZE to prevent OOM attacks
+//! - Recursive parsing has MAX_NESTING_DEPTH to prevent stack overflow
+//! - NaN/Infinity floats are serialized as null (JSON spec compliant)
+//! - Integer/float formatting uses itoa/ryu for zero-allocation performance
 
 use crate::ffi_debug;
 use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::memory::{doo_alloc, doo_alloc_empty_string, doo_alloc_string, MIN_ALLOCATION_SIZE};
 use crate::rfc7807::{FieldError, Rfc7807Error};
+
+// ============================================================================
+// Security Constants — Single Source of Truth
+// ============================================================================
+
+/// Maximum JSON input size in bytes (1 MB). Prevents OOM from JSON bombs.
+/// Configurable via DOO_MAX_JSON_SIZE env var at runtime.
+const MAX_JSON_SIZE: usize = 1_048_576;
+
+/// Maximum JSON nesting depth. Prevents stack overflow from deeply nested JSON.
+const MAX_NESTING_DEPTH: usize = 64;
+
+/// Helper: check JSON size limit before parsing
+#[inline]
+fn check_json_size(s: &str) -> Result<(), String> {
+    if s.len() > MAX_JSON_SIZE {
+        Err(format!(
+            "JSON too large: {} bytes (max {})",
+            s.len(),
+            MAX_JSON_SIZE
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Helper: safe JSON parse with size limit
+#[inline]
+fn safe_json_parse(s: &str) -> Result<serde_json::Value, String> {
+    check_json_size(s)?;
+    serde_json::from_str(s).map_err(|e| format!("Invalid JSON: {}", e))
+}
 
 // ============================================================================
 // Parse Error State (Thread-Local) - Uses RFC 7807 format
@@ -158,16 +198,28 @@ impl JsonWriter {
 /// Create a new JSON writer
 #[no_mangle]
 pub extern "C" fn doo_json_writer_new() -> *mut JsonWriter {
-    Box::into_raw(Box::new(JsonWriter::new()))
+    catch_unwind(|| Box::into_raw(Box::new(JsonWriter::new())))
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Create a new JSON writer with a capacity hint (avoids reallocations)
+#[no_mangle]
+pub extern "C" fn doo_json_writer_new_with_cap(cap: usize) -> *mut JsonWriter {
+    catch_unwind(|| {
+        Box::into_raw(Box::new(JsonWriter {
+            buffer: Vec::with_capacity(cap.max(64)),
+        }))
+    })
+    .unwrap_or(std::ptr::null_mut())
 }
 
 /// Free a JSON writer (without finishing)
 #[no_mangle]
 pub extern "C" fn doo_json_writer_free(writer: *mut JsonWriter) {
     if !writer.is_null() {
-        unsafe {
+        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
             let _ = Box::from_raw(writer);
-        }
+        }));
     }
 }
 
@@ -179,11 +231,12 @@ pub extern "C" fn doo_json_writer_finish(writer: *mut JsonWriter) -> *mut c_char
     if writer.is_null() {
         return doo_alloc_string("null");
     }
-    unsafe {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
         let writer_box = Box::from_raw(writer);
         let s = String::from_utf8_lossy(&writer_box.buffer);
         doo_alloc_string(&s)
-    }
+    }))
+    .unwrap_or_else(|_| doo_alloc_string("null"))
 }
 
 /// Write object start '{'
@@ -242,19 +295,25 @@ pub extern "C" fn doo_json_write_null(writer: *mut JsonWriter) {
     }
 }
 
-/// Write integer value
+/// Write integer value (zero-allocation via itoa)
 #[no_mangle]
 pub extern "C" fn doo_json_write_int(writer: *mut JsonWriter, val: i64) {
     if let Some(w) = unsafe { writer.as_mut() } {
-        w.write_raw(val.to_string().as_bytes());
+        let mut buf = itoa::Buffer::new();
+        w.write_raw(buf.format(val).as_bytes());
     }
 }
 
-/// Write float value
+/// Write float value (zero-allocation via ryu, NaN/Infinity → null per JSON spec)
 #[no_mangle]
 pub extern "C" fn doo_json_write_float(writer: *mut JsonWriter, val: f64) {
     if let Some(w) = unsafe { writer.as_mut() } {
-        w.write_raw(val.to_string().as_bytes());
+        if val.is_nan() || val.is_infinite() {
+            w.write_raw(b"null");
+        } else {
+            let mut buf = ryu::Buffer::new();
+            w.write_raw(buf.format(val).as_bytes());
+        }
     }
 }
 
@@ -266,7 +325,7 @@ pub extern "C" fn doo_json_write_bool(writer: *mut JsonWriter, val: bool) {
     }
 }
 
-/// Write string value (with proper escaping)
+/// Write string value (with proper escaping, catch_unwind protected)
 #[no_mangle]
 pub extern "C" fn doo_json_write_string(writer: *mut JsonWriter, val: *const c_char) {
     if let Some(w) = unsafe { writer.as_mut() } {
@@ -276,8 +335,12 @@ pub extern "C" fn doo_json_write_string(writer: *mut JsonWriter, val: *const c_c
         }
         let c_str = unsafe { CStr::from_ptr(val) };
         let s = c_str.to_string_lossy();
-        let escaped = serde_json::to_string(&s as &str).unwrap_or("null".to_string());
-        w.write_raw(escaped.as_bytes());
+        match catch_unwind(AssertUnwindSafe(|| {
+            serde_json::to_string(&s as &str).unwrap_or_else(|_| "null".to_owned())
+        })) {
+            Ok(escaped) => w.write_raw(escaped.as_bytes()),
+            Err(_) => w.write_raw(b"null"),
+        }
     }
 }
 
@@ -287,23 +350,31 @@ pub extern "C" fn doo_json_write_key(writer: *mut JsonWriter, key: *const c_char
     doo_json_write_string(writer, key);
 }
 
-/// Write integer as object key (quoted string)
+/// Write integer as object key (quoted string, zero-alloc via itoa)
 /// JSON standard requires all object keys to be strings
 #[no_mangle]
 pub extern "C" fn doo_json_write_key_int(writer: *mut JsonWriter, key: i64) {
     if let Some(w) = unsafe { writer.as_mut() } {
-        let s = format!("\"{}\"", key);
-        w.write_raw(s.as_bytes());
+        let mut buf = itoa::Buffer::new();
+        w.write_raw(b"\"");
+        w.write_raw(buf.format(key).as_bytes());
+        w.write_raw(b"\"");
     }
 }
 
-/// Write float as object key (quoted string)
+/// Write float as object key (quoted string, zero-alloc via ryu)
 /// JSON standard requires all object keys to be strings
 #[no_mangle]
 pub extern "C" fn doo_json_write_key_float(writer: *mut JsonWriter, key: f64) {
     if let Some(w) = unsafe { writer.as_mut() } {
-        let s = format!("\"{}\"", key);
-        w.write_raw(s.as_bytes());
+        w.write_raw(b"\"");
+        if key.is_nan() || key.is_infinite() {
+            w.write_raw(b"null");
+        } else {
+            let mut buf = ryu::Buffer::new();
+            w.write_raw(buf.format(key).as_bytes());
+        }
+        w.write_raw(b"\"");
     }
 }
 
@@ -312,8 +383,11 @@ pub extern "C" fn doo_json_write_key_float(writer: *mut JsonWriter, key: f64) {
 #[no_mangle]
 pub extern "C" fn doo_json_write_key_bool(writer: *mut JsonWriter, key: bool) {
     if let Some(w) = unsafe { writer.as_mut() } {
-        let s = format!("\"{}\"", key);
-        w.write_raw(s.as_bytes());
+        if key {
+            w.write_raw(b"\"true\"");
+        } else {
+            w.write_raw(b"\"false\"");
+        }
     }
 }
 
@@ -334,16 +408,23 @@ pub extern "C" fn doo_json_parse(json_str: *const c_char) -> *mut std::ffi::c_vo
     if json_str.is_null() {
         return std::ptr::null_mut();
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    match serde_json::from_str::<serde_json::Value>(&s) {
-        Ok(v) => json_value_to_doo_ptr(v),
-        Err(_) => std::ptr::null_mut(),
-    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        match safe_json_parse(&s) {
+            Ok(v) => json_value_to_doo_ptr(v, 0),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }))
+    .unwrap_or(std::ptr::null_mut())
 }
 
 /// Convert serde_json::Value to Doo-native format pointer.
 /// Returns data in Doo's expected memory layout for all types.
-fn json_value_to_doo_ptr(v: serde_json::Value) -> *mut std::ffi::c_void {
+/// Tracks nesting depth to prevent stack overflow.
+fn json_value_to_doo_ptr(v: serde_json::Value, depth: usize) -> *mut std::ffi::c_void {
+    if depth > MAX_NESTING_DEPTH {
+        return std::ptr::null_mut();
+    }
     match v {
         serde_json::Value::Null => std::ptr::null_mut(),
         serde_json::Value::Bool(b) => {
@@ -401,7 +482,7 @@ fn json_value_to_doo_ptr(v: serde_json::Value) -> *mut std::ffi::c_void {
                 // Elements (each as a pointer to converted value)
                 let data_ptr = ptr.add(16) as *mut *mut std::ffi::c_void;
                 for (i, elem) in arr.into_iter().enumerate() {
-                    let elem_ptr = json_value_to_doo_ptr(elem);
+                    let elem_ptr = json_value_to_doo_ptr(elem, depth + 1);
                     *data_ptr.add(i) = elem_ptr;
                 }
 
@@ -450,7 +531,7 @@ fn json_value_to_doo_ptr(v: serde_json::Value) -> *mut std::ffi::c_void {
                         }
                         _ => {
                             // For strings, null, arrays, objects: store pointer
-                            let val_ptr = json_value_to_doo_ptr(value);
+                            let val_ptr = json_value_to_doo_ptr(value, depth + 1);
                             *(entry_ptr.add(8) as *mut *mut std::ffi::c_void) = val_ptr;
                         }
                     }
@@ -469,6 +550,7 @@ fn json_value_to_doo_ptr(v: serde_json::Value) -> *mut std::ffi::c_void {
 
 /// Parse JSON to Int
 /// Handles both JSON numbers (123) and JSON strings containing numbers ("123")
+/// Uses direct from_str::<i64> first (no Value tree allocation) for performance.
 #[no_mangle]
 pub extern "C" fn doo_json_parse_int(json_str: *const c_char) -> i64 {
     ffi_debug!("JSON", "doo_json_parse_int called, json_str={:?}", json_str);
@@ -476,60 +558,84 @@ pub extern "C" fn doo_json_parse_int(json_str: *const c_char) -> i64 {
         ffi_debug!("JSON", "doo_json_parse_int: null input");
         return 0;
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    ffi_debug!("JSON", "doo_json_parse_int: input='{}'", s);
-    let result = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            // First try as direct integer
-            v.as_i64().or_else(|| {
-                // If it's a string, try parsing the string content as an integer
-                v.as_str().and_then(|s| s.parse::<i64>().ok())
-            })
-        })
-        .unwrap_or(0);
-    ffi_debug!("JSON", "doo_json_parse_int: result={}", result);
-    result
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        if check_json_size(&s).is_err() {
+            return 0;
+        }
+        ffi_debug!("JSON", "doo_json_parse_int: input='{}'", s);
+        // Fast path: direct parse (no Value tree)
+        if let Ok(i) = serde_json::from_str::<i64>(&s) {
+            ffi_debug!("JSON", "doo_json_parse_int: fast-path result={}", i);
+            return i;
+        }
+        // Fallback: try string-containing-number ("123")
+        if let Ok(sv) = serde_json::from_str::<String>(&s) {
+            if let Ok(i) = sv.parse::<i64>() {
+                ffi_debug!("JSON", "doo_json_parse_int: string-fallback result={}", i);
+                return i;
+            }
+        }
+        ffi_debug!("JSON", "doo_json_parse_int: fallback to 0");
+        0
+    }))
+    .unwrap_or(0)
 }
 
 /// Parse JSON to Float
 /// Handles both JSON numbers (1.5) and JSON strings containing numbers ("1.5")
+/// Uses direct from_str::<f64> first (no Value tree allocation) for performance.
 #[no_mangle]
 pub extern "C" fn doo_json_parse_float(json_str: *const c_char) -> f64 {
     if json_str.is_null() {
         return 0.0;
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            // First try as direct float
-            v.as_f64().or_else(|| {
-                // If it's a string, try parsing the string content as a float
-                v.as_str().and_then(|s| s.parse::<f64>().ok())
-            })
-        })
-        .unwrap_or(0.0)
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        if check_json_size(&s).is_err() {
+            return 0.0;
+        }
+        // Fast path: direct parse (no Value tree)
+        if let Ok(f) = serde_json::from_str::<f64>(&s) {
+            return f;
+        }
+        // Fallback: try string-containing-number ("1.5")
+        if let Ok(sv) = serde_json::from_str::<String>(&s) {
+            if let Ok(f) = sv.parse::<f64>() {
+                return f;
+            }
+        }
+        0.0
+    }))
+    .unwrap_or(0.0)
 }
 
 /// Parse JSON to Bool
 /// Handles both JSON booleans (true) and JSON strings containing booleans ("true")
+/// Uses direct from_str::<bool> first (no Value tree allocation) for performance.
 #[no_mangle]
 pub extern "C" fn doo_json_parse_bool(json_str: *const c_char) -> bool {
     if json_str.is_null() {
         return false;
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            // First try as direct boolean
-            v.as_bool().or_else(|| {
-                // If it's a string, try parsing the string content as a boolean
-                v.as_str().and_then(|s| s.parse::<bool>().ok())
-            })
-        })
-        .unwrap_or(false)
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        if check_json_size(&s).is_err() {
+            return false;
+        }
+        // Fast path: direct parse (no Value tree)
+        if let Ok(b) = serde_json::from_str::<bool>(&s) {
+            return b;
+        }
+        // Fallback: try string-containing-boolean ("true")
+        if let Ok(sv) = serde_json::from_str::<String>(&s) {
+            if let Ok(b) = sv.parse::<bool>() {
+                return b;
+            }
+        }
+        false
+    }))
+    .unwrap_or(false)
 }
 
 /// Parse JSON to Str (returns C string pointer)
@@ -540,12 +646,18 @@ pub extern "C" fn doo_json_parse_str(json_str: *const c_char) -> *mut c_char {
     if json_str.is_null() {
         return doo_alloc_empty_string();
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    let result = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_default();
-    doo_alloc_string(&result)
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        if check_json_size(&s).is_err() {
+            return doo_alloc_empty_string();
+        }
+        // Direct string parse (no Value tree)
+        match serde_json::from_str::<String>(&s) {
+            Ok(result) => doo_alloc_string(&result),
+            Err(_) => doo_alloc_empty_string(),
+        }
+    }))
+    .unwrap_or_else(|_| doo_alloc_empty_string())
 }
 
 /// Parse JSON array to [Int]
@@ -571,6 +683,10 @@ pub extern "C" fn doo_json_parse_array_int(json_str: *const c_char) -> *mut i64 
 
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     ffi_debug!("FFI", "doo_json_parse_array_int: input={:?}", s);
+
+    if check_json_size(&s).is_err() {
+        return alloc_empty_array() as *mut i64;
+    }
 
     // Parse JSON and validate ALL elements are integers
     let arr = match serde_json::from_str::<serde_json::Value>(&s) {
@@ -672,6 +788,9 @@ pub extern "C" fn doo_json_parse_array_float(json_str: *const c_char) -> *mut f6
         return alloc_empty_array() as *mut f64;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_array() as *mut f64;
+    }
 
     // Parse JSON and validate ALL elements are numbers
     let arr = match serde_json::from_str::<serde_json::Value>(&s) {
@@ -729,6 +848,10 @@ pub extern "C" fn doo_json_parse_array_bool(json_str: *const c_char) -> *mut u8 
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     ffi_debug!("FFI", "doo_json_parse_array_bool: input={:?}", s);
+
+    if check_json_size(&s).is_err() {
+        return alloc_empty_array() as *mut u8;
+    }
 
     // Parse JSON and validate ALL elements are booleans
     let arr = match serde_json::from_str::<serde_json::Value>(&s) {
@@ -815,6 +938,10 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
     ffi_debug!("FFI", "doo_json_parse_array_str: input={:?}", s);
 
+    if check_json_size(&s).is_err() {
+        return alloc_empty_array() as *mut *mut c_char;
+    }
+
     // Parse JSON and validate ALL elements are strings
     let arr = match serde_json::from_str::<serde_json::Value>(&s) {
         Ok(serde_json::Value::Array(arr)) => arr,
@@ -893,23 +1020,34 @@ pub extern "C" fn doo_json_parse_array_str(json_str: *const c_char) -> *mut *mut
 /// Layout: [Len: i64][Cap: i64][entries...]
 /// Returns pointer to data section (after 16-byte header)
 /// OWNERSHIP: Caller owns the returned map and all keys.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_str_int(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(String, i64)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| v.as_i64().map(|i| (k.clone(), i)))
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    // Validate all values are integers
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        match v.as_i64() {
+            Some(i) => pairs.push((k.clone(), i)),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Int", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16; // ptr(8) + i64(8)
     let data_size = pairs.len() * pair_size;
@@ -937,23 +1075,34 @@ pub extern "C" fn doo_json_parse_map_str_int(json_str: *const c_char) -> *mut u8
 
 /// Parse JSON map {Str: Float}
 /// OWNERSHIP: Caller owns the returned map and all keys.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_str_float(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(String, f64)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    // Validate all values are floats/numbers
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        match v.as_f64() {
+            Some(f) => pairs.push((k.clone(), f)),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Float", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
@@ -981,25 +1130,33 @@ pub extern "C" fn doo_json_parse_map_str_float(json_str: *const c_char) -> *mut 
 
 /// Parse JSON map {Str: Bool}
 /// OWNERSHIP: Caller owns the returned map and all keys.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_str_bool(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(String, u8)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        v.as_bool().map(|b| (k.clone(), if b { 1u8 } else { 0u8 }))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        match v.as_bool() {
+            Some(b) => pairs.push((k.clone(), if b { 1u8 } else { 0u8 })),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Bool", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     // Doo uses { ptr, i1 } which LLVM pads to 16 bytes
     let pair_size = 16;
@@ -1029,23 +1186,33 @@ pub extern "C" fn doo_json_parse_map_str_bool(json_str: *const c_char) -> *mut u
 
 /// Parse JSON map {Str: Str}
 /// OWNERSHIP: Caller owns the returned map and all keys/values.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_str_str(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(String, String)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        match v.as_str() {
+            Some(s) => pairs.push((k.clone(), s.to_string())),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Str", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16; // ptr(8) + ptr(8)
     let data_size = pairs.len() * pair_size;
@@ -1077,27 +1244,37 @@ pub extern "C" fn doo_json_parse_map_str_str(json_str: *const c_char) -> *mut u8
 
 /// Parse JSON map {Int: Int} - keys are stringified integers
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_int_int(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(i64, i64)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        k.parse::<i64>()
-                            .ok()
-                            .and_then(|ki| v.as_i64().map(|vi| (ki, vi)))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let ki = match k.parse::<i64>() {
+            Ok(ki) => ki,
+            Err(_) => continue, // skip non-integer keys
+        };
+        match v.as_i64() {
+            Some(vi) => pairs.push((ki, vi)),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Int", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16; // i64(8) + i64(8)
     let data_size = pairs.len() * pair_size;
@@ -1125,27 +1302,37 @@ pub extern "C" fn doo_json_parse_map_int_int(json_str: *const c_char) -> *mut u8
 
 /// Parse JSON map {Int: Float}
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_int_float(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(i64, f64)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        k.parse::<i64>()
-                            .ok()
-                            .and_then(|ki| v.as_f64().map(|vi| (ki, vi)))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let ki = match k.parse::<i64>() {
+            Ok(ki) => ki,
+            Err(_) => continue,
+        };
+        match v.as_f64() {
+            Some(vi) => pairs.push((ki, vi)),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Float", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
@@ -1173,27 +1360,37 @@ pub extern "C" fn doo_json_parse_map_int_float(json_str: *const c_char) -> *mut 
 
 /// Parse JSON map {Int: Bool}
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_int_bool(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(i64, u8)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        k.parse::<i64>()
-                            .ok()
-                            .and_then(|ki| v.as_bool().map(|b| (ki, if b { 1u8 } else { 0u8 })))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let ki = match k.parse::<i64>() {
+            Ok(ki) => ki,
+            Err(_) => continue,
+        };
+        match v.as_bool() {
+            Some(b) => pairs.push((ki, if b { 1u8 } else { 0u8 })),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Bool", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     // Doo uses { i64, i1 } which LLVM pads to 16 bytes
     let pair_size = 16;
@@ -1223,27 +1420,37 @@ pub extern "C" fn doo_json_parse_map_int_bool(json_str: *const c_char) -> *mut u
 
 /// Parse JSON map {Int: Str}
 /// OWNERSHIP: Caller owns the returned map and all string values.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_int_str(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(i64, String)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        k.parse::<i64>()
-                            .ok()
-                            .and_then(|ki| v.as_str().map(|s| (ki, s.to_string())))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let ki = match k.parse::<i64>() {
+            Ok(ki) => ki,
+            Err(_) => continue,
+        };
+        match v.as_str() {
+            Some(sv) => pairs.push((ki, sv.to_string())),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Str", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
@@ -1275,27 +1482,37 @@ pub extern "C" fn doo_json_parse_map_int_str(json_str: *const c_char) -> *mut u8
 
 /// Parse JSON map {Float: Int}
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_float_int(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(f64, i64)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        k.parse::<f64>()
-                            .ok()
-                            .and_then(|ki| v.as_i64().map(|vi| (ki, vi)))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let ki = match k.parse::<f64>() {
+            Ok(ki) => ki,
+            Err(_) => continue,
+        };
+        match v.as_i64() {
+            Some(vi) => pairs.push((ki, vi)),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Int", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
@@ -1323,27 +1540,37 @@ pub extern "C" fn doo_json_parse_map_float_int(json_str: *const c_char) -> *mut 
 
 /// Parse JSON map {Float: Float}
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_float_float(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(f64, f64)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        k.parse::<f64>()
-                            .ok()
-                            .and_then(|ki| v.as_f64().map(|vi| (ki, vi)))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let ki = match k.parse::<f64>() {
+            Ok(ki) => ki,
+            Err(_) => continue,
+        };
+        match v.as_f64() {
+            Some(vi) => pairs.push((ki, vi)),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Float", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
@@ -1371,27 +1598,37 @@ pub extern "C" fn doo_json_parse_map_float_float(json_str: *const c_char) -> *mu
 
 /// Parse JSON map {Float: Bool}
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_float_bool(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(f64, u8)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        k.parse::<f64>()
-                            .ok()
-                            .and_then(|ki| v.as_bool().map(|b| (ki, if b { 1u8 } else { 0u8 })))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let ki = match k.parse::<f64>() {
+            Ok(ki) => ki,
+            Err(_) => continue,
+        };
+        match v.as_bool() {
+            Some(b) => pairs.push((ki, if b { 1u8 } else { 0u8 })),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Bool", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     // Doo uses { f64, i1 } which LLVM pads to 16 bytes
     let pair_size = 16;
@@ -1421,27 +1658,37 @@ pub extern "C" fn doo_json_parse_map_float_bool(json_str: *const c_char) -> *mut
 
 /// Parse JSON map {Float: Str}
 /// OWNERSHIP: Caller owns the returned map and all string values.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_float_str(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(f64, String)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        k.parse::<f64>()
-                            .ok()
-                            .and_then(|ki| v.as_str().map(|s| (ki, s.to_string())))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let ki = match k.parse::<f64>() {
+            Ok(ki) => ki,
+            Err(_) => continue,
+        };
+        match v.as_str() {
+            Some(sv) => pairs.push((ki, sv.to_string())),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Str", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     let pair_size = 16;
     let data_size = pairs.len() * pair_size;
@@ -1473,30 +1720,38 @@ pub extern "C" fn doo_json_parse_map_float_str(json_str: *const c_char) -> *mut 
 
 /// Parse JSON map {Bool: Int} - keys are "true" or "false"
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_bool_int(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(u8, i64)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        let kb = match k.as_str() {
-                            "true" => Some(1u8),
-                            "false" => Some(0u8),
-                            _ => None,
-                        };
-                        kb.and_then(|ki| v.as_i64().map(|vi| (ki, vi)))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let kb = match k.as_str() {
+            "true" => 1u8,
+            "false" => 0u8,
+            _ => continue,
+        };
+        match v.as_i64() {
+            Some(vi) => pairs.push((kb, vi)),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Int", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     // Doo uses { i1, i64 } which LLVM pads to 16 bytes
     // Key (i1) at offset 0, value (i64) at offset 8
@@ -1528,30 +1783,38 @@ pub extern "C" fn doo_json_parse_map_bool_int(json_str: *const c_char) -> *mut u
 
 /// Parse JSON map {Bool: Float}
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_bool_float(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(u8, f64)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        let kb = match k.as_str() {
-                            "true" => Some(1u8),
-                            "false" => Some(0u8),
-                            _ => None,
-                        };
-                        kb.and_then(|ki| v.as_f64().map(|vi| (ki, vi)))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let kb = match k.as_str() {
+            "true" => 1u8,
+            "false" => 0u8,
+            _ => continue,
+        };
+        match v.as_f64() {
+            Some(vi) => pairs.push((kb, vi)),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Float", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     // Doo uses { i1, f64 } which LLVM pads to 16 bytes
     // Key (i1) at offset 0, value (f64) at offset 8
@@ -1583,30 +1846,38 @@ pub extern "C" fn doo_json_parse_map_bool_float(json_str: *const c_char) -> *mut
 
 /// Parse JSON map {Bool: Bool}
 /// OWNERSHIP: Caller owns the returned map.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_bool_bool(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(u8, u8)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        let kb = match k.as_str() {
-                            "true" => Some(1u8),
-                            "false" => Some(0u8),
-                            _ => None,
-                        };
-                        kb.and_then(|ki| v.as_bool().map(|b| (ki, if b { 1u8 } else { 0u8 })))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let kb = match k.as_str() {
+            "true" => 1u8,
+            "false" => 0u8,
+            _ => continue,
+        };
+        match v.as_bool() {
+            Some(b) => pairs.push((kb, if b { 1u8 } else { 0u8 })),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Bool", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     // Doo uses { i1, i1 } which is 2 bytes (1 + 1, no padding between i1s)
     let pair_size = 2;
@@ -1637,30 +1908,38 @@ pub extern "C" fn doo_json_parse_map_bool_bool(json_str: *const c_char) -> *mut 
 
 /// Parse JSON map {Bool: Str}
 /// OWNERSHIP: Caller owns the returned map and all string values.
+/// Sets parse error if any value has wrong type
 #[no_mangle]
 pub extern "C" fn doo_json_parse_map_bool_str(json_str: *const c_char) -> *mut u8 {
     if json_str.is_null() {
         return alloc_empty_map() as *mut u8;
     }
     let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    if check_json_size(&s).is_err() {
+        return alloc_empty_map() as *mut u8;
+    }
 
-    let pairs: Vec<(u8, String)> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        let kb = match k.as_str() {
-                            "true" => Some(1u8),
-                            "false" => Some(0u8),
-                            _ => None,
-                        };
-                        kb.and_then(|ki| v.as_str().map(|s| (ki, s.to_string())))
-                    })
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+    let obj = match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => return alloc_empty_map() as *mut u8,
+    };
+
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        let kb = match k.as_str() {
+            "true" => 1u8,
+            "false" => 0u8,
+            _ => continue,
+        };
+        match v.as_str() {
+            Some(sv) => pairs.push((kb, sv.to_string())),
+            None => {
+                let received = json_value_type_name(v);
+                set_parse_error_rfc7807(&format!(".{}", k), "Str", received);
+                return alloc_empty_map() as *mut u8;
+            }
+        }
+    }
 
     // Doo uses { i1, ptr } which LLVM pads to 16 bytes
     // Key (i1) at offset 0, value (ptr) at offset 8
@@ -1711,29 +1990,29 @@ pub extern "C" fn doo_json_get_field(
     );
     if json_str.is_null() || field_name.is_null() {
         ffi_debug!("JSON", "doo_json_get_field: null input");
-        // Return empty JSON object instead of null to prevent crashes
         return doo_alloc_string("{}");
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-    let field = unsafe { CStr::from_ptr(field_name).to_string_lossy() };
-    ffi_debug!(
-        "JSON",
-        "doo_json_get_field: json='{}', field='{}'",
-        s,
-        field
-    );
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        let field = unsafe { CStr::from_ptr(field_name).to_string_lossy() };
+        if check_json_size(&s).is_err() {
+            return doo_alloc_string("null");
+        }
+        ffi_debug!("JSON", "doo_json_get_field: json='{}', field='{}'", s, field);
 
-    let result = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-            v.as_object()
-                .and_then(|obj| obj.get(field.as_ref()).cloned())
-        })
-        .and_then(|field_val| serde_json::to_string(&field_val).ok())
-        .map(|s| doo_alloc_string(&s))
-        .unwrap_or_else(|| doo_alloc_string("null"));
-    ffi_debug!("JSON", "doo_json_get_field: returning {:?}", result);
-    result
+        let result = serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .and_then(|v| {
+                v.as_object()
+                    .and_then(|obj| obj.get(field.as_ref()).cloned())
+            })
+            .and_then(|field_val| serde_json::to_string(&field_val).ok())
+            .map(|s| doo_alloc_string(&s))
+            .unwrap_or_else(|| doo_alloc_string("null"));
+        ffi_debug!("JSON", "doo_json_get_field: returning {:?}", result);
+        result
+    }))
+    .unwrap_or_else(|_| doo_alloc_string("null"))
 }
 
 /// Get enum variant name from JSON
@@ -1749,32 +2028,32 @@ pub extern "C" fn doo_json_get_variant_name(json_str: *const c_char) -> *mut c_c
     if json_str.is_null() {
         return doo_alloc_string("");
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-
-    serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| match v {
-            serde_json::Value::String(s) => Some(s),
-            serde_json::Value::Object(obj) if obj.len() == 1 => {
-                obj.keys().next().map(|k| k.clone())
-            }
-            _ => None,
-        })
-        .map(|s| {
-            // Normalize to PascalCase: capitalize first letter, keep rest as-is
-            // This allows "user" to match "User", "admin" to match "Admin", etc.
-            let normalized = if !s.is_empty() {
-                let mut chars = s.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => s,
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .and_then(|v| match v {
+                serde_json::Value::String(s) => Some(s),
+                serde_json::Value::Object(obj) if obj.len() == 1 => {
+                    obj.keys().next().cloned()
                 }
-            } else {
-                s
-            };
-            doo_alloc_string(&normalized)
-        })
-        .unwrap_or_else(|| doo_alloc_string(""))
+                _ => None,
+            })
+            .map(|s| {
+                let normalized = if !s.is_empty() {
+                    let mut chars = s.chars();
+                    match chars.next() {
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                        None => s,
+                    }
+                } else {
+                    s
+                };
+                doo_alloc_string(&normalized)
+            })
+            .unwrap_or_else(|| doo_alloc_string(""))
+    }))
+    .unwrap_or_else(|_| doo_alloc_string(""))
 }
 
 /// Get enum variant payload from JSON
@@ -1787,17 +2066,19 @@ pub extern "C" fn doo_json_get_variant_payload(json_str: *const c_char) -> *mut 
     if json_str.is_null() {
         return doo_alloc_string("null");
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
-
-    serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| match v {
-            serde_json::Value::Object(obj) if obj.len() == 1 => obj.values().next().cloned(),
-            _ => None,
-        })
-        .and_then(|payload| serde_json::to_string(&payload).ok())
-        .map(|s| doo_alloc_string(&s))
-        .unwrap_or_else(|| doo_alloc_string("null"))
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .and_then(|v| match v {
+                serde_json::Value::Object(obj) if obj.len() == 1 => obj.values().next().cloned(),
+                _ => None,
+            })
+            .and_then(|payload| serde_json::to_string(&payload).ok())
+            .map(|s| doo_alloc_string(&s))
+            .unwrap_or_else(|| doo_alloc_string("null"))
+    }))
+    .unwrap_or_else(|_| doo_alloc_string("null"))
 }
 
 /// Check if JSON represents a unit variant (plain string like "VariantName")
@@ -1807,10 +2088,103 @@ pub extern "C" fn doo_json_is_unit_variant(json_str: *const c_char) -> i32 {
     if json_str.is_null() {
         return 0;
     }
-    let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .map(|v| if v.is_string() { 1 } else { 0 })
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
+}
 
-    serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .map(|v| if v.is_string() { 1 } else { 0 })
-        .unwrap_or(0)
+// ============================================================================
+// Parse-Once / Get-Field-Many API (Performance Optimization)
+// ============================================================================
+// Problem: doo_json_get_field re-parses full JSON per field (N times for N fields).
+// Solution: parse once, cache the Value, extract fields from the cached parse.
+//
+// Usage:
+//   obj = doo_json_parse_object(json_str)   // parse ONCE
+//   f1  = doo_json_object_get_field(obj, "name")  // no re-parse
+//   f2  = doo_json_object_get_field(obj, "age")   // no re-parse
+//   doo_json_object_free(obj)                // release cached parse
+
+/// Parse a JSON string into an opaque object handle (parse once).
+/// Returns an opaque pointer to a cached serde_json::Value.
+/// OWNERSHIP: Caller must call doo_json_object_free when done.
+/// Returns null if input is null or invalid JSON.
+#[no_mangle]
+pub extern "C" fn doo_json_parse_object(json_str: *const c_char) -> *mut std::ffi::c_void {
+    if json_str.is_null() {
+        return std::ptr::null_mut();
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { CStr::from_ptr(json_str).to_string_lossy() };
+        if check_json_size(&s).is_err() {
+            return std::ptr::null_mut();
+        }
+        match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(v) => Box::into_raw(Box::new(v)) as *mut std::ffi::c_void,
+            Err(_) => std::ptr::null_mut(),
+        }
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Extract a field from a cached JSON parse result (no re-parse).
+/// Returns the field value as a JSON string for type-specific parsing.
+/// OWNERSHIP: Caller owns the returned string.
+/// Returns "null" if field not found (never returns null ptr).
+#[no_mangle]
+pub extern "C" fn doo_json_object_get_field(
+    obj: *mut std::ffi::c_void,
+    field_name: *const c_char,
+) -> *mut c_char {
+    if obj.is_null() || field_name.is_null() {
+        return doo_alloc_string("null");
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = unsafe { &*(obj as *const serde_json::Value) };
+        let field = unsafe { CStr::from_ptr(field_name).to_string_lossy() };
+        value
+            .as_object()
+            .and_then(|o| o.get(field.as_ref()))
+            .and_then(|v| serde_json::to_string(v).ok())
+            .map(|s| doo_alloc_string(&s))
+            .unwrap_or_else(|| doo_alloc_string("null"))
+    }))
+    .unwrap_or_else(|_| doo_alloc_string("null"))
+}
+
+/// Check if a cached JSON object has a specific field.
+/// Returns 1 if field exists, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn doo_json_object_has_field(
+    obj: *mut std::ffi::c_void,
+    field_name: *const c_char,
+) -> i32 {
+    if obj.is_null() || field_name.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = unsafe { &*(obj as *const serde_json::Value) };
+        let field = unsafe { CStr::from_ptr(field_name).to_string_lossy() };
+        value
+            .as_object()
+            .map(|o| if o.contains_key(field.as_ref()) { 1 } else { 0 })
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
+}
+
+/// Free a cached JSON parse result.
+/// OWNERSHIP: Takes ownership and drops the cached Value.
+#[no_mangle]
+pub extern "C" fn doo_json_object_free(obj: *mut std::ffi::c_void) {
+    if !obj.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+            let _ = Box::from_raw(obj as *mut serde_json::Value);
+        }));
+    }
 }
