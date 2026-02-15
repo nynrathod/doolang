@@ -214,8 +214,9 @@ impl<'a> ErrorFlowChecker<'a> {
     fn check_expr(&mut self, expr: &HirExpr) {
         match &expr.kind {
             // Try operator (`?`) - check that we're in a function that returns Result
+            // Special case: `main()` is allowed to use `?` — MIR generates Panic on error
             HirExprKind::Try(inner) => {
-                if self.current_func_error_type.is_none() {
+                if self.current_func_error_type.is_none() && self.current_func_name != "main" {
                     self.errors.push(ErrorFlowError::new(
                         ErrorFlowErrorKind::TryInNonResultFunction {
                             func_name: self.current_func_name.clone(),
