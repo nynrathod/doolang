@@ -1,9 +1,9 @@
 //! HTTP FFI Types
 //! Centralized type definitions for FFI-compatible request/response handling.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::c_char;
-use std::collections::HashMap;
 
 /// Handler function pointer type - universal signature
 /// All handlers from Doo are compiled to this signature by the compiler
@@ -42,9 +42,9 @@ pub struct DooResponse {
 /// so tag MUST be i64 — using i32 leaves uninitialized padding that corrupts the read.
 #[repr(C)]
 pub struct DooResult {
-    pub tag: i64,       // 0 = Ok, 1 = Err — MUST be i64 to match codegen/core
+    pub tag: i64, // 0 = Ok, 1 = Err — MUST be i64 to match codegen/core
     pub value: *mut c_void,
-    pub owner: i32,     // 0 = LLVM, 1 = FFI, 2 = Rust — matches codegen i32
+    pub owner: i32, // 0 = LLVM, 1 = FFI, 2 = Rust — matches codegen i32
 }
 
 /// Owner constants
@@ -69,9 +69,13 @@ impl CorsConfig {
         Self {
             origins: vec!["*".to_string()],
             methods: vec!["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
-                .into_iter().map(String::from).collect(),
+                .into_iter()
+                .map(String::from)
+                .collect(),
             headers: vec!["Content-Type", "Authorization"]
-                .into_iter().map(String::from).collect(),
+                .into_iter()
+                .map(String::from)
+                .collect(),
             credentials: false,
             max_age: None,
         }
@@ -81,9 +85,9 @@ impl CorsConfig {
 /// Rate limit configuration
 #[derive(Clone)]
 pub struct RateLimitConfig {
-    pub max: u32,      // Max requests
-    pub window: u64,   // Window in seconds
-    pub per: String,   // "ip" or "user"
+    pub max: u32,    // Max requests
+    pub window: u64, // Window in seconds
+    pub per: String, // "ip" or "user"
 }
 
 impl Default for RateLimitConfig {

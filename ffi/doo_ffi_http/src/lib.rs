@@ -1412,7 +1412,8 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                             (response_data.as_object_mut(), user_row.as_object())
                         {
                             for (k, v) in row_obj {
-                                if k != "password" {
+                                // Exclude password field (case-insensitive) — never expose in response
+                                if !k.eq_ignore_ascii_case("password") {
                                     obj.insert(k.clone(), v.clone());
                                 }
                             }
@@ -1693,7 +1694,10 @@ fn generate_jwt_token(sub: &str, user_id: i64) -> String {
         // In dev builds, allow a default for convenience but warn
         #[cfg(debug_assertions)]
         {
-            ffi_debug!("AUTH", "WARNING: JWT_SECRET not set, using dev-only default");
+            ffi_debug!(
+                "AUTH",
+                "WARNING: JWT_SECRET not set, using dev-only default"
+            );
             let dev_secret = "doo-dev-secret-do-not-use-in-prod-32b";
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
