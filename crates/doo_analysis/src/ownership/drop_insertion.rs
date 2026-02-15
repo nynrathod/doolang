@@ -151,10 +151,15 @@ impl<'a> DropInserter<'a> {
                     self.find_last_uses(else_stmts);
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
                 self.scan_expr_for_uses(condition);
                 let saved_idx = self.current_idx;
                 self.find_last_uses(body);
+                self.find_last_uses(increment);
                 self.current_idx = saved_idx;
             }
             HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}

@@ -124,10 +124,15 @@ impl Lower {
                 }
             }
             HirStmtKind::While {
-                condition, body, ..
+                condition,
+                body,
+                increment,
             } => {
                 self.substitute_local_in_expr(condition, old_name, new_name);
                 for s in body {
+                    self.substitute_local_in_stmt(s, old_name, new_name);
+                }
+                for s in increment {
                     self.substitute_local_in_stmt(s, old_name, new_name);
                 }
             }
@@ -863,10 +868,7 @@ impl Lower {
             StmtKind::Block(stmts) => {
                 // Lower block as expression statement
                 let lowered: Vec<_> = stmts.iter().map(|s| self.lower_stmt(s)).collect();
-                if lowered.len() == 1 {
-                    return lowered.into_iter().next().unwrap();
-                }
-                // Represent as nested block via expression
+                // Always wrap in Block to preserve scope boundaries
                 HirStmtKind::Expr(HirExpr::new(
                     HirExprKind::Block {
                         stmts: lowered,
@@ -1168,9 +1170,7 @@ impl Lower {
                     .iter()
                     .map(|s| self.lower_stmt_typed(s, registry))
                     .collect();
-                if lowered.len() == 1 {
-                    return lowered.into_iter().next().unwrap();
-                }
+                // Always wrap in Block to preserve scope boundaries
                 HirStmtKind::Expr(HirExpr::new(
                     HirExprKind::Block {
                         stmts: lowered,
@@ -1675,9 +1675,7 @@ impl Lower {
             },
 
             // === Async & Concurrency ===
-            ExprKind::Await(inner) => {
-                HirExprKind::Await(Box::new(self.lower_expr(inner)))
-            }
+            ExprKind::Await(inner) => HirExprKind::Await(Box::new(self.lower_expr(inner))),
             ExprKind::GoSpawn { body } => HirExprKind::Spawn {
                 body: Box::new(self.lower_expr(body)),
             },
@@ -2065,7 +2063,10 @@ impl Lower {
                 body: Box::new(self.lower_expr_typed(body, registry)),
             },
             ExprKind::ScopeBlock { body } => HirExprKind::ScopeBlock {
-                stmts: body.iter().map(|s| self.lower_stmt_typed(s, registry)).collect(),
+                stmts: body
+                    .iter()
+                    .map(|s| self.lower_stmt_typed(s, registry))
+                    .collect(),
             },
 
             ExprKind::StringInterpolation(parts) => {
@@ -2269,6 +2270,7 @@ impl Lower {
             return HirStmtKind::While {
                 condition: HirExpr::new(HirExprKind::Const(ConstValue::Bool(true)), span),
                 body: body_stmts,
+                increment: vec![],
             };
         };
 
@@ -2328,7 +2330,7 @@ impl Lower {
         );
 
         // Append: __idx = __idx + 1
-        body_stmts.push(HirStmt::new(
+        let increment_stmt = HirStmt::new(
             HirStmtKind::Assign {
                 target: HirExpr::new(
                     HirExprKind::Local {
@@ -2351,7 +2353,7 @@ impl Lower {
                 ),
             },
             span,
-        ));
+        );
 
         // Condition: __idx < end (or __idx <= end for inclusive)
         let cmp_op = if inclusive {
@@ -2393,6 +2395,7 @@ impl Lower {
             HirStmtKind::While {
                 condition,
                 body: body_stmts,
+                increment: vec![increment_stmt],
             },
             span,
         );
@@ -2485,7 +2488,8 @@ impl Lower {
         body_stmts.insert(insert_pos, elem_extraction);
 
         // Append: __idx = __idx + 1
-        body_stmts.push(HirStmt::new(
+        // Append: __idx = __idx + 1
+        let increment_stmt = HirStmt::new(
             HirStmtKind::Assign {
                 target: HirExpr::new(
                     HirExprKind::Local {
@@ -2508,7 +2512,7 @@ impl Lower {
                 ),
             },
             span,
-        ));
+        );
 
         // Condition: __idx < __arr.len()
         let condition = HirExpr::new(
@@ -2569,6 +2573,7 @@ impl Lower {
             HirStmtKind::While {
                 condition,
                 body: body_stmts,
+                increment: vec![increment_stmt],
             },
             span,
         );
@@ -2687,7 +2692,7 @@ impl Lower {
         }
 
         // Append: __idx = __idx + 1
-        body_stmts.push(HirStmt::new(
+        let increment_stmt = HirStmt::new(
             HirStmtKind::Assign {
                 target: HirExpr::new(
                     HirExprKind::Local {
@@ -2710,7 +2715,7 @@ impl Lower {
                 ),
             },
             span,
-        ));
+        );
 
         // Condition: __idx < __keys.len()
         let condition = HirExpr::new(
@@ -2793,6 +2798,7 @@ impl Lower {
             HirStmtKind::While {
                 condition,
                 body: body_stmts,
+                increment: vec![increment_stmt],
             },
             span,
         );
@@ -2828,6 +2834,7 @@ impl Lower {
                     span,
                 ),
                 body: body_stmts,
+                increment: vec![],
             };
         };
 
@@ -2910,7 +2917,7 @@ impl Lower {
         );
 
         // Append: __idx = __idx + 1
-        body_stmts.push(HirStmt::new(
+        let increment_stmt = HirStmt::new(
             HirStmtKind::Assign {
                 target: HirExpr::with_type(
                     HirExprKind::Local {
@@ -2940,7 +2947,7 @@ impl Lower {
                 ),
             },
             span,
-        ));
+        );
 
         // Condition: __idx < end (or __idx <= end for inclusive)
         let cmp_op = if inclusive {
@@ -2980,6 +2987,7 @@ impl Lower {
             HirStmtKind::While {
                 condition,
                 body: body_stmts,
+                increment: vec![increment_stmt],
             },
             span,
         );
@@ -3121,7 +3129,7 @@ impl Lower {
         body_stmts.insert(insert_pos, elem_extraction);
 
         // Append: __idx = __idx + 1
-        body_stmts.push(HirStmt::new(
+        let increment_stmt = HirStmt::new(
             HirStmtKind::Assign {
                 target: HirExpr::with_type(
                     HirExprKind::Local {
@@ -3151,7 +3159,7 @@ impl Lower {
                 ),
             },
             span,
-        ));
+        );
 
         // Condition: __idx < __arr.len()
         // Create array reference with proper type for len() call
@@ -3227,6 +3235,7 @@ impl Lower {
             HirStmtKind::While {
                 condition,
                 body: body_stmts,
+                increment: vec![increment_stmt],
             },
             span,
         );
@@ -3363,7 +3372,7 @@ impl Lower {
         }
 
         // Append: __idx = __idx + 1
-        body_stmts.push(HirStmt::new(
+        let increment_stmt = HirStmt::new(
             HirStmtKind::Assign {
                 target: HirExpr::with_type(
                     HirExprKind::Local {
@@ -3393,7 +3402,7 @@ impl Lower {
                 ),
             },
             span,
-        ));
+        );
 
         // Condition: __idx < __keys.len()
         let condition = HirExpr::with_type(
@@ -3505,6 +3514,7 @@ impl Lower {
             HirStmtKind::While {
                 condition,
                 body: body_stmts,
+                increment: vec![increment_stmt],
             },
             span,
         );
@@ -3641,7 +3651,7 @@ impl Lower {
         }
 
         // Append: __idx = __idx + 1
-        body_stmts.push(HirStmt::new(
+        let increment_stmt = HirStmt::new(
             HirStmtKind::Assign {
                 target: HirExpr::with_type(
                     HirExprKind::Local {
@@ -3671,7 +3681,7 @@ impl Lower {
                 ),
             },
             span,
-        ));
+        );
 
         // Condition: __idx < __keys.len()
         let condition = HirExpr::with_type(
@@ -3784,6 +3794,7 @@ impl Lower {
             HirStmtKind::While {
                 condition,
                 body: body_stmts,
+                increment: vec![increment_stmt],
             },
             span,
         );
@@ -4600,7 +4611,10 @@ mod tests {
         let hir = parse_and_lower("fn test() { for _ { break } }");
         if let HirItem::Function(f) = &hir.items[0] {
             assert_eq!(f.body.len(), 1);
-            if let HirStmtKind::While { condition, body } = &f.body[0].kind {
+            if let HirStmtKind::While {
+                condition, body, ..
+            } = &f.body[0].kind
+            {
                 // Infinite loop has condition = true
                 assert!(matches!(
                     condition.kind,
@@ -4684,7 +4698,10 @@ mod tests {
                         assert!(*mutable);
                     }
                     // Third: while loop
-                    if let HirStmtKind::While { condition, body } = &stmts[2].kind {
+                    if let HirStmtKind::While {
+                        condition, body, ..
+                    } = &stmts[2].kind
+                    {
                         // Condition should be __idx < __arr.len()
                         if let HirExprKind::BinOp { op, .. } = &condition.kind {
                             assert_eq!(*op, HirBinOp::Lt);

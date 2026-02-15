@@ -573,6 +573,18 @@ impl<'ctx> CodegenContext<'ctx> {
         self.locals.get(name).map(|(ptr, _)| *ptr)
     }
 
+    /// Load a value from a local variable's alloca, bypassing the temp cache.
+    /// Returns None if no alloca exists for this name.
+    /// This is critical for cross-block values (match/if results) where the temp
+    /// in the HashMap was defined in a non-dominating block.
+    pub fn load_from_local(&self, name: &str) -> Option<BasicValueEnum<'ctx>> {
+        if let Some((ptr, ty)) = self.locals.get(name) {
+            self.builder.build_load(*ty, *ptr, name).ok()
+        } else {
+            None
+        }
+    }
+
     /// Get the LLVM type of a local variable.
     pub fn get_local_type(&self, name: &str) -> Option<BasicTypeEnum<'ctx>> {
         self.locals.get(name).map(|(_, ty)| *ty)
@@ -635,7 +647,67 @@ impl<'ctx> CodegenContext<'ctx> {
                     }
                 }
 
-                // No conversion possible - store as temp (shadows the local for this scope)
+                // No conversion possible - recreate alloca with correct type in entry block
+                // This handles match/if expression results where the alloca was created
+                // with a generic type (ptr) but the actual values are concrete (i64, f64, etc.)
+                // CRITICAL: Without this, cross-block values stored as temps cause
+                // "Instruction does not dominate all uses" LLVM verification errors
+                if let Some(current_bb) = self.builder.get_insert_block() {
+                    if let Some(func) = current_bb.get_parent() {
+                        if let Some(entry_bb) = func.get_first_basic_block() {
+                            // Position at the end of allocas in entry block
+                            // (before any non-alloca instructions)
+                            let insert_point = entry_bb.get_first_instruction();
+                            if let Some(first_instr) = insert_point {
+                                // Find the last alloca instruction
+                                let mut last_alloca = None;
+                                let mut instr = Some(first_instr);
+                                while let Some(i) = instr {
+                                    if i.get_opcode() == inkwell::values::InstructionOpcode::Alloca
+                                    {
+                                        last_alloca = Some(i);
+                                    } else {
+                                        break; // Allocas are always at the start
+                                    }
+                                    instr = i.get_next_instruction();
+                                }
+                                // Position after last alloca (or at start if no allocas)
+                                if let Some(la) = last_alloca {
+                                    if let Some(next) = la.get_next_instruction() {
+                                        self.builder.position_before(&next);
+                                    } else {
+                                        self.builder.position_at_end(entry_bb);
+                                    }
+                                } else {
+                                    self.builder.position_before(&first_instr);
+                                }
+                            } else {
+                                self.builder.position_at_end(entry_bb);
+                            }
+                            // Create new alloca with the correct type
+                            if let Ok(new_alloca) = self.builder.build_alloca(value_type, &name) {
+                                // Restore position to current block
+                                self.builder.position_at_end(current_bb);
+                                let _ = self.builder.build_store(new_alloca, value);
+                                self.locals.insert(name.clone(), (new_alloca, value_type));
+                                self.temps.remove(&name);
+                                if std::env::var("DOO_DEBUG").is_ok() {
+                                    doo_debug!(
+                                        "CODEGEN",
+                                        "set_local '{}': recreated alloca with correct type {:?}",
+                                        name,
+                                        value_type
+                                    );
+                                }
+                                return;
+                            }
+                            // Restore position if alloca creation failed
+                            self.builder.position_at_end(current_bb);
+                        }
+                    }
+                }
+
+                // Last resort - store as temp (shadows the local for this scope)
                 // get_value checks temps first, so this will be found before the alloca
                 if std::env::var("DOO_DEBUG").is_ok() {
                     doo_debug!(

@@ -357,9 +357,16 @@ impl<'a> ExhaustivenessChecker<'a> {
                     }
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
                 self.check_expr(condition);
                 for s in body {
+                    self.check_stmt(s);
+                }
+                for s in increment {
                     self.check_stmt(s);
                 }
             }

@@ -523,6 +523,12 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Phase 8: Verify module
     doo_debug!("DEBUG", "Verifying LLVM module...");
     if let Err(e) = module.verify() {
+        // Dump IR on verification failure for debugging
+        if opts.keep_ll {
+            let ll_file = format!("{}.ll", opts.output_name);
+            let ir_string = module.print_to_string();
+            let _ = fs::write(&ll_file, ir_string.to_string());
+        }
         return Err(format!("LLVM module verification failed: {}", e));
     }
     doo_debug!("DEBUG", "LLVM module verified");
@@ -796,7 +802,9 @@ fn link_object_file(
     let has_ws = mir_program.functions.iter().any(|f| {
         f.ffi
             .as_ref()
-            .map(|l| l.library == "doo_ffi_http" || l.library == "doo_ws" || l.library == "doo_http")
+            .map(|l| {
+                l.library == "doo_ffi_http" || l.library == "doo_ws" || l.library == "doo_http"
+            })
             .unwrap_or(false)
             && f.name.contains("ws")
     });

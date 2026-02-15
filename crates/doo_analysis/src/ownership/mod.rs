@@ -335,9 +335,16 @@ impl OwnershipAnalyzer {
                     }
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
                 self.count_uses_in_expr(condition);
                 for s in body {
+                    self.count_uses_in_stmt(s);
+                }
+                for s in increment {
                     self.count_uses_in_stmt(s);
                 }
             }
@@ -550,9 +557,16 @@ impl OwnershipAnalyzer {
                     }
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
                 self.analyze_expr(condition);
                 for s in body {
+                    self.analyze_stmt(s);
+                }
+                for s in increment {
                     self.analyze_stmt(s);
                 }
             }

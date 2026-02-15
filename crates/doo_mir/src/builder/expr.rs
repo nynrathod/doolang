@@ -1185,6 +1185,26 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 }
                 
                 let body_val = builder.build_expr(&arm.body);
+                // Infer type from first arm for the match result dest
+                if idx == 0 {
+                    let mut arm_type = builder.infer_operand_type(&body_val);
+                    // If type is still unknown but the HIR body has a type, use that
+                    if arm_type == builtin::ANY {
+                        if let Some(tid) = arm.body.type_id {
+                            arm_type = tid;
+                        }
+                    }
+                    // Fallback: use function return type (common for match-as-return-value)
+                    if arm_type == builtin::ANY {
+                        if let Some(f) = &builder.current_func {
+                            if let Some(ret_type) = f.return_type {
+                                arm_type = ret_type;
+                            }
+                        }
+                    }
+                    builder.set_temp_type(&dest, arm_type);
+                    builder.add_temp_local(&dest, arm_type);
+                }
                 builder.emit(
                     MirInstrKind::Assign {
                         dest: dest.clone(),
@@ -1195,6 +1215,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 builder.set_terminator(MirTerminator::Goto {
                     target: merge_label.clone(),
                 });
+            }
+
+            // If no arm set the type (e.g., all arms returned ANY), register as ANY
+            if builder.get_temp_type(&dest).is_none() {
+                builder.set_temp_type(&dest, builtin::ANY);
+                builder.add_temp_local(&dest, builtin::ANY);
             }
 
             builder.add_block(&merge_label);
@@ -1637,9 +1663,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 target: merge_label.clone(),
             });
 
-            // Err path: evaluate panic expression and abort
+            // Err path: print panic message and abort
             builder.add_block(&err_label);
-            let _ = builder.build_expr(message);
+            let msg_val = builder.build_expr(message);
+            builder.emit(
+                MirInstrKind::Panic { message: msg_val },
+                span,
+            );
             builder.set_terminator(MirTerminator::Unreachable);
 
             // Merge

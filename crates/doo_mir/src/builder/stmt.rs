@@ -490,25 +490,42 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             builder.add_block(&merge_label);
         }
 
-        HirStmtKind::While { condition, body } => {
+        HirStmtKind::While {
+            condition,
+            body,
+            increment,
+        } => {
             if std::env::var("DOO_DEBUG").is_ok() {
                 doo_debug!(
                     "MIR",
-                    "Building While loop with {} body statements",
-                    body.len()
+                    "Building While loop with {} body statements, {} increment statements",
+                    body.len(),
+                    increment.len()
                 );
             }
             let cond_label = builder.new_block_label("while_cond");
             let body_label = builder.new_block_label("while_body");
             let exit_label = builder.new_block_label("while_exit");
 
+            // If there are increment statements, create a separate block for them
+            // so that `continue` jumps to the increment (not back to cond directly)
+            let incr_label = if !increment.is_empty() {
+                Some(builder.new_block_label("while_incr"))
+            } else {
+                None
+            };
+
+            // The continue target is the increment block if it exists, otherwise the cond block
+            let continue_target = incr_label.as_ref().unwrap_or(&cond_label).clone();
+
             if std::env::var("DOO_DEBUG").is_ok() {
                 doo_debug!(
                     "MIR",
-                    "While labels: cond={}, body={}, exit={}",
+                    "While labels: cond={}, body={}, exit={}, continue_target={}",
                     cond_label,
                     body_label,
-                    exit_label
+                    exit_label,
+                    continue_target
                 );
             }
 
@@ -519,7 +536,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
             // Push loop labels for break/continue
             builder.break_targets.push(exit_label.clone());
-            builder.continue_targets.push(cond_label.clone());
+            builder.continue_targets.push(continue_target.clone());
 
             // Condition block
             builder.add_block(&cond_label);
@@ -535,9 +552,19 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             for stmt in body {
                 build_stmt(builder, stmt);
             }
-            // Only add Goto if the block doesn't already have a terminator
-            // (e.g., return inside the loop body)
-            builder.set_terminator_if_none(MirTerminator::Goto { target: cond_label });
+            // Jump to increment block (or cond if no increment)
+            builder.set_terminator_if_none(MirTerminator::Goto {
+                target: continue_target,
+            });
+
+            // Increment block (if any)
+            if let Some(incr_label) = incr_label {
+                builder.add_block(&incr_label);
+                for stmt in increment {
+                    build_stmt(builder, stmt);
+                }
+                builder.set_terminator_if_none(MirTerminator::Goto { target: cond_label });
+            }
 
             // Pop loop labels
             builder.break_targets.pop();

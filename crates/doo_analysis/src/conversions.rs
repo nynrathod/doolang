@@ -278,6 +278,12 @@ impl From<ErrorFlowError> for CompilerError {
                 e.span,
             )
             .with_suggestion(format!("declare: fn {}(...) -> T ! ErrType", func_name)),
+            ErrorFlowErrorKind::OkInNonResultFunction { func_name } => CompilerError::new(
+                ErrorCode::ErrWithoutErrorType,
+                format!("`Ok` used in '{}' without error type", func_name),
+                e.span,
+            )
+            .with_suggestion(format!("declare: fn {}(...) -> T ! ErrType", func_name)),
             ErrorFlowErrorKind::MissingOkPath { func_name } => CompilerError::new(
                 ErrorCode::MissingOkReturn,
                 format!("'{}' missing Ok return on some paths", func_name),

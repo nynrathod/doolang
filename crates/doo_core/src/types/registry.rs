@@ -10,9 +10,9 @@
 //! - **Interned**: Types are stored once, referenced by ID
 //! - **Extensible**: Easy to add new primitive or composite types
 
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 use crate::doo_debug;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ============================================================================
 // Type IDs
@@ -29,7 +29,7 @@ impl TypeId {
     pub const fn new(id: u32) -> Self {
         Self(id)
     }
-    
+
     /// Get the raw u32 value
     pub const fn raw(&self) -> u32 {
         self.0
@@ -64,7 +64,7 @@ impl std::ops::Add<u32> for TypeId {
 /// Reserved TypeIds for built-in types
 pub mod builtin {
     use super::TypeId;
-    
+
     pub const VOID: TypeId = TypeId(0);
     pub const BOOL: TypeId = TypeId(1);
     pub const INT: TypeId = TypeId(2);
@@ -72,7 +72,7 @@ pub mod builtin {
     pub const STR: TypeId = TypeId(4);
     pub const ANY: TypeId = TypeId(5);
     pub const ERROR: TypeId = TypeId(6);
-    
+
     // Reserved range for primitives: 0-99
     pub const PRIMITIVE_END: u32 = 99;
 }
@@ -151,12 +151,12 @@ impl TypeInfo {
             TypeKind::Void | TypeKind::Bool | TypeKind::Int | TypeKind::Float
         )
     }
-    
+
     /// Check if this type needs Drop cleanup
     pub fn needs_drop(&self) -> bool {
         !self.is_copy()
     }
-    
+
     /// Get size in bytes (for ABI)
     pub fn size_bytes(&self) -> usize {
         match &self.kind {
@@ -164,21 +164,21 @@ impl TypeInfo {
             TypeKind::Bool => 1,
             TypeKind::Int => 8,
             TypeKind::Float => 8,
-            TypeKind::Str => 16,     // ptr + len
-            TypeKind::Array { .. } => 24, // ptr + len + cap
-            TypeKind::Map { .. } => 8,    // ptr to hashmap
-            TypeKind::Optional { .. } => 16, // tag + value
-            TypeKind::Result { .. } => 24,   // tag + ok + err
-            TypeKind::Tuple { elements } => elements.len() * 8, // Simplified
+            TypeKind::Str => 16,                                 // ptr + len
+            TypeKind::Array { .. } => 24,                        // ptr + len + cap
+            TypeKind::Map { .. } => 8,                           // ptr to hashmap
+            TypeKind::Optional { .. } => 16,                     // tag + value
+            TypeKind::Result { .. } => 24,                       // tag + ok + err
+            TypeKind::Tuple { elements } => elements.len() * 8,  // Simplified
             TypeKind::Struct { fields, .. } => fields.len() * 8, // Simplified
-            TypeKind::Enum { .. } => 16, // tag + max payload
-            TypeKind::Function { .. } => 8, // function pointer
-            TypeKind::TypeRef { .. } => 8, // Will be resolved
-            TypeKind::Any => 16,   // tag + ptr
-            TypeKind::Error => 16, // ptr + len
+            TypeKind::Enum { .. } => 16,                         // tag + max payload
+            TypeKind::Function { .. } => 8,                      // function pointer
+            TypeKind::TypeRef { .. } => 8,                       // Will be resolved
+            TypeKind::Any => 16,                                 // tag + ptr
+            TypeKind::Error => 16,                               // ptr + len
         }
     }
-    
+
     /// Get LLVM type name
     pub fn llvm_type(&self) -> &'static str {
         match &self.kind {
@@ -225,7 +225,7 @@ impl TypeRegistry {
             name_to_id: HashMap::new(),
             next_id: TypeId(builtin::PRIMITIVE_END + 1),
         };
-        
+
         // Register built-in primitives
         registry.register_builtin(builtin::VOID, "Void", TypeKind::Void);
         registry.register_builtin(builtin::BOOL, "Bool", TypeKind::Bool);
@@ -234,10 +234,10 @@ impl TypeRegistry {
         registry.register_builtin(builtin::STR, "Str", TypeKind::Str);
         registry.register_builtin(builtin::ANY, "Any", TypeKind::Any);
         registry.register_builtin(builtin::ERROR, "Error", TypeKind::Error);
-        
+
         registry
     }
-    
+
     /// Register a built-in type with a specific ID
     fn register_builtin(&mut self, id: TypeId, name: &str, kind: TypeKind) {
         let info = TypeInfo {
@@ -248,26 +248,26 @@ impl TypeRegistry {
         self.types.insert(id, info);
         self.name_to_id.insert(name.to_string(), id);
     }
-    
+
     /// Register a new type and return its ID
     pub fn register(&mut self, name: &str, kind: TypeKind) -> TypeId {
         // Check if already registered
         if let Some(&id) = self.name_to_id.get(name) {
             return id;
         }
-        
+
         let id = self.next_id;
         self.next_id += 1;
-        
+
         let info = TypeInfo {
             id,
             kind,
             name: name.to_string(),
         };
-        
+
         self.types.insert(id, info);
         self.name_to_id.insert(name.to_string(), id);
-        
+
         id
     }
 
@@ -275,13 +275,24 @@ impl TypeRegistry {
         if let Some(&id) = self.name_to_id.get(name) {
             return id;
         }
-        self.register(name, TypeKind::TypeRef { name: name.to_string() })
+        self.register(
+            name,
+            TypeKind::TypeRef {
+                name: name.to_string(),
+            },
+        )
     }
 
     pub fn define_struct(&mut self, name: &str, fields: Vec<(String, TypeId, bool)>) -> TypeId {
         let id = self.declare_named(name);
         if std::env::var("DOO_DEBUG_TYPES").is_ok() {
-            doo_debug!("TYPES", "define_struct '{}' with id={:?}, fields={:?}", name, id, fields);
+            doo_debug!(
+                "TYPES",
+                "define_struct '{}' with id={:?}, fields={:?}",
+                name,
+                id,
+                fields
+            );
         }
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Struct {
@@ -296,7 +307,13 @@ impl TypeRegistry {
     pub fn define_enum(&mut self, name: &str, variants: Vec<(String, Option<TypeId>)>) -> TypeId {
         let id = self.declare_named(name);
         if std::env::var("DOO_DEBUG_TYPES").is_ok() {
-            doo_debug!("TYPES", "define_enum '{}' with id={:?}, variants={:?}", name, id, variants.iter().map(|(n, _)| n).collect::<Vec<_>>());
+            doo_debug!(
+                "TYPES",
+                "define_enum '{}' with id={:?}, variants={:?}",
+                name,
+                id,
+                variants.iter().map(|(n, _)| n).collect::<Vec<_>>()
+            );
         }
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Enum {
@@ -307,17 +324,30 @@ impl TypeRegistry {
         }
         id
     }
-    
+
     /// Register an array type
     pub fn register_array(&mut self, element: TypeId) -> TypeId {
-        let name = format!("[{}]", self.get(element).map(|t| &t.name).unwrap_or(&"?".to_string()));
+        let name = format!(
+            "[{}]",
+            self.get(element)
+                .map(|t| &t.name)
+                .unwrap_or(&"?".to_string())
+        );
         self.register(&name, TypeKind::Array { element })
     }
-    
+
     /// Register a map type
     pub fn register_map(&mut self, key: TypeId, value: TypeId) -> TypeId {
-        let key_name = self.get(key).map(|t| &t.name).unwrap_or(&"?".to_string()).clone();
-        let val_name = self.get(value).map(|t| &t.name).unwrap_or(&"?".to_string()).clone();
+        let key_name = self
+            .get(key)
+            .map(|t| &t.name)
+            .unwrap_or(&"?".to_string())
+            .clone();
+        let val_name = self
+            .get(value)
+            .map(|t| &t.name)
+            .unwrap_or(&"?".to_string())
+            .clone();
         let name = format!("Map<{}, {}>", key_name, val_name);
         self.register(&name, TypeKind::Map { key, value })
     }
@@ -325,7 +355,11 @@ impl TypeRegistry {
     pub fn register_tuple(&mut self, elements: Vec<TypeId>) -> TypeId {
         let parts: Vec<String> = elements
             .iter()
-            .map(|id| self.get(*id).map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string()))
+            .map(|id| {
+                self.get(*id)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| "?".to_string())
+            })
             .collect();
         let name = format!("({})", parts.join(", "));
         self.register(&name, TypeKind::Tuple { elements })
@@ -334,7 +368,11 @@ impl TypeRegistry {
     pub fn register_function(&mut self, params: Vec<TypeId>, returns: TypeId) -> TypeId {
         let params_s: Vec<String> = params
             .iter()
-            .map(|id| self.get(*id).map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string()))
+            .map(|id| {
+                self.get(*id)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| "?".to_string())
+            })
             .collect();
         let returns_s = self
             .get(returns)
@@ -343,73 +381,99 @@ impl TypeRegistry {
         let name = format!("({}) -> {}", params_s.join(", "), returns_s);
         self.register(&name, TypeKind::Function { params, returns })
     }
-    
+
     /// Register an optional type
     pub fn register_optional(&mut self, inner: TypeId) -> TypeId {
-        let name = format!("{}?", self.get(inner).map(|t| &t.name).unwrap_or(&"?".to_string()));
+        let name = format!(
+            "{}?",
+            self.get(inner).map(|t| &t.name).unwrap_or(&"?".to_string())
+        );
         self.register(&name, TypeKind::Optional { inner })
     }
-    
+
     /// Register a result type
     pub fn register_result(&mut self, ok: TypeId, err: TypeId) -> TypeId {
-        let ok_name = self.get(ok).map(|t| &t.name).unwrap_or(&"?".to_string()).clone();
-        let err_name = self.get(err).map(|t| &t.name).unwrap_or(&"?".to_string()).clone();
+        let ok_name = self
+            .get(ok)
+            .map(|t| &t.name)
+            .unwrap_or(&"?".to_string())
+            .clone();
+        let err_name = self
+            .get(err)
+            .map(|t| &t.name)
+            .unwrap_or(&"?".to_string())
+            .clone();
         let name = format!("{} ! {}", ok_name, err_name);
         self.register(&name, TypeKind::Result { ok, err })
     }
-    
+
     /// Register a struct type
     pub fn register_struct(&mut self, name: &str, fields: Vec<(String, TypeId, bool)>) -> TypeId {
-        self.register(name, TypeKind::Struct {
-            name: name.to_string(),
-            fields,
-        })
+        self.register(
+            name,
+            TypeKind::Struct {
+                name: name.to_string(),
+                fields,
+            },
+        )
     }
-    
+
     /// Register an enum type
     pub fn register_enum(&mut self, name: &str, variants: Vec<(String, Option<TypeId>)>) -> TypeId {
-        self.register(name, TypeKind::Enum {
-            name: name.to_string(),
-            variants,
-        })
+        self.register(
+            name,
+            TypeKind::Enum {
+                name: name.to_string(),
+                variants,
+            },
+        )
     }
-    
+
     /// Get type info by ID
     pub fn get(&self, id: TypeId) -> Option<&TypeInfo> {
         self.types.get(&id)
     }
-    
+
     /// Lookup type by name
     pub fn lookup(&self, name: &str) -> Option<TypeId> {
         self.name_to_id.get(name).copied()
     }
-    
+
     /// Get all registered type IDs
     pub fn all_type_ids(&self) -> impl Iterator<Item = TypeId> + '_ {
         self.types.keys().copied()
     }
-    
+
     /// Check if a type is Copy (bitwise copyable)
     pub fn is_copy(&self, id: TypeId) -> bool {
         self.get(id).map(|t| t.is_copy()).unwrap_or(false)
     }
-    
+
     /// Check if a type needs Drop
     pub fn needs_drop(&self, id: TypeId) -> bool {
         self.get(id).map(|t| t.needs_drop()).unwrap_or(true)
     }
-    
+
     /// Check type compatibility
     pub fn is_compatible(&self, actual: TypeId, expected: TypeId) -> bool {
         if actual == expected {
             return true;
         }
-        
+
         // Any is compatible with everything
         if actual == builtin::ANY || expected == builtin::ANY {
             return true;
         }
-        
+
+        // nil (VOID) is compatible with any Optional type
+        if actual == builtin::VOID {
+            if let Some(e) = self.get(expected) {
+                if matches!(e.kind, TypeKind::Optional { .. }) {
+                    return true;
+                }
+            }
+        }
+
         // Check structural compatibility
         match (self.get(actual), self.get(expected)) {
             (Some(a), Some(e)) => {
@@ -419,20 +483,34 @@ impl TypeRegistry {
                         self.is_compatible(*a_elem, *e_elem)
                     }
                     // Map covariance
-                    (TypeKind::Map { key: a_key, value: a_val }, TypeKind::Map { key: e_key, value: e_val }) => {
-                        self.is_compatible(*a_key, *e_key) && self.is_compatible(*a_val, *e_val)
-                    }
+                    (
+                        TypeKind::Map {
+                            key: a_key,
+                            value: a_val,
+                        },
+                        TypeKind::Map {
+                            key: e_key,
+                            value: e_val,
+                        },
+                    ) => self.is_compatible(*a_key, *e_key) && self.is_compatible(*a_val, *e_val),
                     // Optional covariance
-                    (TypeKind::Optional { inner: a_inner }, TypeKind::Optional { inner: e_inner }) => {
-                        self.is_compatible(*a_inner, *e_inner)
+                    (
+                        TypeKind::Optional { inner: a_inner },
+                        TypeKind::Optional { inner: e_inner },
+                    ) => self.is_compatible(*a_inner, *e_inner),
+                    // T is assignable to Optional<T>
+                    (_, TypeKind::Optional { inner: e_inner }) => {
+                        self.is_compatible(actual, *e_inner)
                     }
                     // TypeRef resolves to actual type
-                    (TypeKind::TypeRef { name }, _) => {
-                        self.lookup(name).map(|id| self.is_compatible(id, expected)).unwrap_or(false)
-                    }
-                    (_, TypeKind::TypeRef { name }) => {
-                        self.lookup(name).map(|id| self.is_compatible(actual, id)).unwrap_or(false)
-                    }
+                    (TypeKind::TypeRef { name }, _) => self
+                        .lookup(name)
+                        .map(|id| self.is_compatible(id, expected))
+                        .unwrap_or(false),
+                    (_, TypeKind::TypeRef { name }) => self
+                        .lookup(name)
+                        .map(|id| self.is_compatible(actual, id))
+                        .unwrap_or(false),
                     _ => false,
                 }
             }
@@ -458,11 +536,11 @@ mod tests {
     #[test]
     fn test_builtin_types() {
         let reg = TypeRegistry::new();
-        
+
         assert!(reg.get(builtin::INT).is_some());
         assert!(reg.get(builtin::STR).is_some());
         assert!(reg.get(builtin::BOOL).is_some());
-        
+
         assert_eq!(reg.lookup("Int"), Some(builtin::INT));
         assert_eq!(reg.lookup("Str"), Some(builtin::STR));
     }
@@ -470,7 +548,7 @@ mod tests {
     #[test]
     fn test_is_copy() {
         let reg = TypeRegistry::new();
-        
+
         assert!(reg.is_copy(builtin::INT));
         assert!(reg.is_copy(builtin::FLOAT));
         assert!(reg.is_copy(builtin::BOOL));
@@ -480,10 +558,10 @@ mod tests {
     #[test]
     fn test_register_array() {
         let mut reg = TypeRegistry::new();
-        
+
         let int_array = reg.register_array(builtin::INT);
         assert!(reg.get(int_array).is_some());
-        
+
         let info = reg.get(int_array).unwrap();
         assert!(matches!(info.kind, TypeKind::Array { element } if element == builtin::INT));
     }
@@ -491,12 +569,15 @@ mod tests {
     #[test]
     fn test_register_struct() {
         let mut reg = TypeRegistry::new();
-        
-        let user_id = reg.register_struct("User", vec![
-            ("id".to_string(), builtin::INT),
-            ("name".to_string(), builtin::STR),
-        ]);
-        
+
+        let user_id = reg.register_struct(
+            "User",
+            vec![
+                ("id".to_string(), builtin::INT),
+                ("name".to_string(), builtin::STR),
+            ],
+        );
+
         assert!(reg.get(user_id).is_some());
         assert_eq!(reg.lookup("User"), Some(user_id));
     }
@@ -504,7 +585,7 @@ mod tests {
     #[test]
     fn test_type_compatibility() {
         let reg = TypeRegistry::new();
-        
+
         assert!(reg.is_compatible(builtin::INT, builtin::INT));
         assert!(!reg.is_compatible(builtin::INT, builtin::STR));
         assert!(reg.is_compatible(builtin::INT, builtin::ANY)); // Any accepts all

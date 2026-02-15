@@ -98,9 +98,16 @@ pub trait HirVisitor {
                     }
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
                 self.visit_expr(condition);
                 for stmt in body {
+                    self.visit_stmt(stmt);
+                }
+                for stmt in increment {
                     self.visit_stmt(stmt);
                 }
             }
@@ -332,9 +339,16 @@ pub trait HirVisitorMut {
                     }
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
                 self.visit_expr_mut(condition);
                 for stmt in body {
+                    self.visit_stmt_mut(stmt);
+                }
+                for stmt in increment {
                     self.visit_stmt_mut(stmt);
                 }
             }

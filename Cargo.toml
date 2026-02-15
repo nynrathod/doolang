@@ -70,3 +70,4 @@ doo_hir = { path = "crates/doo_hir" }
 doo_analysis = { path = "crates/doo_analysis" }
 doo_mir = { path = "crates/doo_mir" }
 doo_codegen = { path = "crates/doo_codegen" }
+doo_driver = { path = "crates/doo_driver" }

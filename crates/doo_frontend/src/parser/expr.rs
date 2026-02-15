@@ -162,7 +162,9 @@ impl ParserExpr for Parser {
                 self.advance();
                 let body = parse_block(self, self.current_span())?;
                 Ok(Expr::new(
-                    ExprKind::GoSpawn { body: Box::new(body) },
+                    ExprKind::GoSpawn {
+                        body: Box::new(body),
+                    },
                     start.merge(&self.prev_span()),
                 ))
             }
@@ -653,6 +655,20 @@ fn parse_closure(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
         if parser.check(TokenKind::Bang) {
             parser.advance();
             error_type = Some(parser.parse_type_expr()?);
+        }
+        // After return type, expect `=>`
+        if parser.check(TokenKind::FatArrow) {
+            parser.advance();
+        } else {
+            return Err(CompilerError::new(
+                ErrorCode::UnexpectedToken,
+                format!(
+                    "Expected `=>` after return type in closure, got `{}`",
+                    parser.current().kind
+                ),
+                parser.current_span(),
+            )
+            .with_suggestion("use `(x) -> RetType => expr`"));
         }
     } else {
         return Err(CompilerError::new(

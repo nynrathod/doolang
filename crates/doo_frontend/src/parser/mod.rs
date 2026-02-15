@@ -19,7 +19,8 @@ pub use stmt::ParserStmt;
 pub use types::ParserTypes;
 
 /// Maximum expression recursion depth (stack overflow protection).
-const MAX_EXPR_DEPTH: u32 = 256;
+/// Kept conservative (128) for Windows 1MB default thread stack in debug builds.
+const MAX_EXPR_DEPTH: u32 = 128;
 
 /// Result type for parser operations.
 pub type ParseResult<T> = Result<T, CompilerError>;

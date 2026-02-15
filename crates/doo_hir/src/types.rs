@@ -234,9 +234,13 @@ pub enum HirExprKind {
     /// Await expression: `await expr`
     Await(Box<HirExpr>),
     /// Go spawn: `go { ... }`
-    Spawn { body: Box<HirExpr> },
+    Spawn {
+        body: Box<HirExpr>,
+    },
     /// Structured scope: `scope { ... }`
-    ScopeBlock { stmts: Vec<HirStmt> },
+    ScopeBlock {
+        stmts: Vec<HirStmt>,
+    },
 }
 
 /// Binary operators (simplified set).
@@ -338,6 +342,9 @@ pub enum HirStmtKind {
     While {
         condition: HirExpr,
         body: Vec<HirStmt>,
+        /// Optional increment statements (from for-range desugaring).
+        /// `continue` jumps to these before re-checking the condition.
+        increment: Vec<HirStmt>,
     },
 
     ManualErrorExtract {

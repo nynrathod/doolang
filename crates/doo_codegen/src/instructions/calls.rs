@@ -873,11 +873,32 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     ctx.set_temp(dest, is_ok.into());
                     Some(is_ok.into())
                 } else {
-                    // Not a Result type - treat as always Ok
-                    // This handles the case where ? is used on non-Result values
-                    let is_ok = ctx.const_bool(true);
-                    ctx.set_temp(dest, is_ok.into());
-                    Some(is_ok.into())
+                    // Not a Result type - check for Optional/nil
+                    // Optional values: nil = 0/null, non-nil = has value
+                    let is_ok: BasicValueEnum = if result_val.is_pointer_value() {
+                        BasicValueEnum::IntValue(
+                            ctx.builder
+                                .build_is_not_null(result_val.into_pointer_value(), "is_not_nil")
+                                .ok()?,
+                        )
+                    } else if result_val.is_int_value() {
+                        let int_val = result_val.into_int_value();
+                        BasicValueEnum::IntValue(
+                            ctx.builder
+                                .build_int_compare(
+                                    IntPredicate::NE,
+                                    int_val,
+                                    int_val.get_type().const_zero(),
+                                    "is_not_nil",
+                                )
+                                .ok()?,
+                        )
+                    } else {
+                        // Unknown type - assume always Ok
+                        BasicValueEnum::IntValue(ctx.const_bool(true))
+                    };
+                    ctx.set_temp(dest, is_ok);
+                    Some(is_ok)
                 }
             }
 

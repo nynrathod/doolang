@@ -13,8 +13,8 @@
 //! - HTTP: `@redirect`
 
 use doo_core::errors::codes::{CompilerError, ErrorCode};
-use doo_core::Span;
 use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
+use doo_core::Span;
 use doo_hir::{
     ConstValue, HirDecorator, HirExpr, HirExprKind, HirItem, HirProgram, HirStmt, HirStmtKind,
 };
@@ -73,46 +73,79 @@ impl DecoratorKind {
     fn rule(&self) -> DecoratorRule {
         match self {
             // Str-only, no args
-            Self::Email | Self::Url | Self::Hash | Self::Redirect =>
-                DecoratorRule { type_constraint: TypeConstraint::StrOnly, args: ArgRule::None },
+            Self::Email | Self::Url | Self::Hash | Self::Redirect => DecoratorRule {
+                type_constraint: TypeConstraint::StrOnly,
+                args: ArgRule::None,
+            },
             // Str-only, exactly 1 arg
-            Self::Pattern =>
-                DecoratorRule { type_constraint: TypeConstraint::StrOnly, args: ArgRule::Exactly(1) },
+            Self::Pattern => DecoratorRule {
+                type_constraint: TypeConstraint::StrOnly,
+                args: ArgRule::Exactly(1),
+            },
             // Int-only, no args
-            Self::AutoIncrement | Self::Auto =>
-                DecoratorRule { type_constraint: TypeConstraint::IntOnly, args: ArgRule::None },
+            Self::AutoIncrement | Self::Auto => DecoratorRule {
+                type_constraint: TypeConstraint::IntOnly,
+                args: ArgRule::None,
+            },
             // Int-only, exactly 1 arg
-            Self::Foreign =>
-                DecoratorRule { type_constraint: TypeConstraint::IntOnly, args: ArgRule::Exactly(1) },
+            Self::Foreign => DecoratorRule {
+                type_constraint: TypeConstraint::IntOnly,
+                args: ArgRule::Exactly(1),
+            },
             // Str/Int/Float, exactly 1 arg
-            Self::Min | Self::Max =>
-                DecoratorRule { type_constraint: TypeConstraint::StrOrNumeric, args: ArgRule::Exactly(1) },
+            Self::Min | Self::Max => DecoratorRule {
+                type_constraint: TypeConstraint::StrOrNumeric,
+                args: ArgRule::Exactly(1),
+            },
             // Any type, no args
-            Self::Unique | Self::Primary | Self::Optional
-            | Self::WriteOnly | Self::ReadOnly | Self::Internal =>
-                DecoratorRule { type_constraint: TypeConstraint::Any, args: ArgRule::None },
+            Self::Unique
+            | Self::Primary
+            | Self::Optional
+            | Self::WriteOnly
+            | Self::ReadOnly
+            | Self::Internal => DecoratorRule {
+                type_constraint: TypeConstraint::Any,
+                args: ArgRule::None,
+            },
             // Any type, exactly 1 arg
-            Self::Default =>
-                DecoratorRule { type_constraint: TypeConstraint::Any, args: ArgRule::Exactly(1) },
+            Self::Default => DecoratorRule {
+                type_constraint: TypeConstraint::Any,
+                args: ArgRule::Exactly(1),
+            },
             // Struct-level only
-            Self::AutoTimestamp =>
-                DecoratorRule { type_constraint: TypeConstraint::StructLevel, args: ArgRule::None },
+            Self::AutoTimestamp => DecoratorRule {
+                type_constraint: TypeConstraint::StructLevel,
+                args: ArgRule::None,
+            },
             // Unknown
-            Self::Unknown(_) =>
-                DecoratorRule { type_constraint: TypeConstraint::Any, args: ArgRule::Any },
+            Self::Unknown(_) => DecoratorRule {
+                type_constraint: TypeConstraint::Any,
+                args: ArgRule::Any,
+            },
         }
     }
 
     fn name(&self) -> &str {
         match self {
-            Self::Email => "email", Self::Url => "url", Self::Min => "min",
-            Self::Max => "max", Self::Foreign => "foreign", Self::Unique => "unique",
-            Self::Primary => "primary", Self::AutoIncrement => "autoIncrement",
-            Self::Auto => "auto", Self::Hash => "hash", Self::Optional => "optional",
-            Self::Default => "default", Self::Pattern => "pattern",
-            Self::WriteOnly => "writeOnly", Self::ReadOnly => "readOnly",
-            Self::Internal => "internal", Self::AutoTimestamp => "autoTimestamp",
-            Self::Redirect => "redirect", Self::Unknown(n) => n,
+            Self::Email => "email",
+            Self::Url => "url",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::Foreign => "foreign",
+            Self::Unique => "unique",
+            Self::Primary => "primary",
+            Self::AutoIncrement => "autoIncrement",
+            Self::Auto => "auto",
+            Self::Hash => "hash",
+            Self::Optional => "optional",
+            Self::Default => "default",
+            Self::Pattern => "pattern",
+            Self::WriteOnly => "writeOnly",
+            Self::ReadOnly => "readOnly",
+            Self::Internal => "internal",
+            Self::AutoTimestamp => "autoTimestamp",
+            Self::Redirect => "redirect",
+            Self::Unknown(n) => n,
         }
     }
 }
@@ -150,29 +183,103 @@ impl TypeConstraint {
 /// Decorator validation error.
 #[derive(Debug, Clone)]
 pub enum DecoratorError {
-    InvalidType { decorator: String, field: String, struct_name: String, expected: String, found: String },
-    InvalidArgs { decorator: String, field: String, message: String },
-    Unknown { decorator: String, field: String, struct_name: String },
-    Conflict { decorator1: String, decorator2: String, field: String, struct_name: String, reason: String },
-    InvalidOptional { decorator: String, field: String, struct_name: String, reason: String },
-    ValueViolation { decorator: String, field: String, struct_name: String, message: String },
+    InvalidType {
+        decorator: String,
+        field: String,
+        struct_name: String,
+        expected: String,
+        found: String,
+    },
+    InvalidArgs {
+        decorator: String,
+        field: String,
+        message: String,
+    },
+    Unknown {
+        decorator: String,
+        field: String,
+        struct_name: String,
+    },
+    Conflict {
+        decorator1: String,
+        decorator2: String,
+        field: String,
+        struct_name: String,
+        reason: String,
+    },
+    InvalidOptional {
+        decorator: String,
+        field: String,
+        struct_name: String,
+        reason: String,
+    },
+    ValueViolation {
+        decorator: String,
+        field: String,
+        struct_name: String,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for DecoratorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidType { decorator, field, struct_name, expected, found } =>
-                write!(f, "@{} on {}.{} requires type {}, found {}", decorator, struct_name, field, expected, found),
-            Self::InvalidArgs { decorator, field, message } =>
-                write!(f, "@{} on {}: {}", decorator, field, message),
-            Self::Unknown { decorator, field, struct_name } =>
-                write!(f, "Unknown decorator @{} on {}.{}", decorator, struct_name, field),
-            Self::Conflict { decorator1, decorator2, field, struct_name, reason } =>
-                write!(f, "@{} and @{} conflict on {}.{}: {}", decorator1, decorator2, struct_name, field, reason),
-            Self::InvalidOptional { decorator, field, struct_name, reason } =>
-                write!(f, "@{} on optional field {}.{}: {}", decorator, struct_name, field, reason),
-            Self::ValueViolation { decorator, field, struct_name, message } =>
-                write!(f, "@{} on {}.{}: {}", decorator, struct_name, field, message),
+            Self::InvalidType {
+                decorator,
+                field,
+                struct_name,
+                expected,
+                found,
+            } => write!(
+                f,
+                "@{} on {}.{} requires type {}, found {}",
+                decorator, struct_name, field, expected, found
+            ),
+            Self::InvalidArgs {
+                decorator,
+                field,
+                message,
+            } => write!(f, "@{} on {}: {}", decorator, field, message),
+            Self::Unknown {
+                decorator,
+                field,
+                struct_name,
+            } => write!(
+                f,
+                "Unknown decorator @{} on {}.{}",
+                decorator, struct_name, field
+            ),
+            Self::Conflict {
+                decorator1,
+                decorator2,
+                field,
+                struct_name,
+                reason,
+            } => write!(
+                f,
+                "@{} and @{} conflict on {}.{}: {}",
+                decorator1, decorator2, struct_name, field, reason
+            ),
+            Self::InvalidOptional {
+                decorator,
+                field,
+                struct_name,
+                reason,
+            } => write!(
+                f,
+                "@{} on optional field {}.{}: {}",
+                decorator, struct_name, field, reason
+            ),
+            Self::ValueViolation {
+                decorator,
+                field,
+                struct_name,
+                message,
+            } => write!(
+                f,
+                "@{} on {}.{}: {}",
+                decorator, struct_name, field, message
+            ),
         }
     }
 }
@@ -236,7 +343,9 @@ impl<'a> DecoratorValidator<'a> {
     }
 
     fn type_name(&self, id: TypeId) -> String {
-        self.type_registry.get(id).map(|t| t.name.clone())
+        self.type_registry
+            .get(id)
+            .map(|t| t.name.clone())
             .unwrap_or_else(|| format!("Type#{}", id.0))
     }
 
@@ -253,13 +362,19 @@ impl<'a> DecoratorValidator<'a> {
     // ── Single Decorator Validation (data-driven) ──────────────────────
 
     fn validate_decorator(
-        &self, dec: &HirDecorator, field_type: TypeId, field: &str, sname: &str,
+        &self,
+        dec: &HirDecorator,
+        field_type: TypeId,
+        field: &str,
+        sname: &str,
     ) -> Result<(), DecoratorError> {
         let kind = DecoratorKind::from_name(&dec.name);
 
         if let DecoratorKind::Unknown(ref n) = kind {
             return Err(DecoratorError::Unknown {
-                decorator: n.clone(), field: field.into(), struct_name: sname.into(),
+                decorator: n.clone(),
+                field: field.into(),
+                struct_name: sname.into(),
             });
         }
 
@@ -270,12 +385,15 @@ impl<'a> DecoratorValidator<'a> {
         if !self.check_type_constraint(&rule.type_constraint, field_type) {
             if matches!(rule.type_constraint, TypeConstraint::StructLevel) {
                 return Err(DecoratorError::InvalidArgs {
-                    decorator: dname, field: field.into(),
+                    decorator: dname,
+                    field: field.into(),
                     message: "is a struct-level decorator, not a field decorator".into(),
                 });
             }
             return Err(DecoratorError::InvalidType {
-                decorator: dname, field: field.into(), struct_name: sname.into(),
+                decorator: dname,
+                field: field.into(),
+                struct_name: sname.into(),
                 expected: rule.type_constraint.expected_str().into(),
                 found: self.type_name(field_type),
             });
@@ -283,15 +401,20 @@ impl<'a> DecoratorValidator<'a> {
 
         // Arg count
         match rule.args {
-            ArgRule::None if !dec.args.is_empty() =>
+            ArgRule::None if !dec.args.is_empty() => {
                 return Err(DecoratorError::InvalidArgs {
-                    decorator: dname, field: field.into(), message: "takes no arguments".into(),
-                }),
-            ArgRule::Exactly(n) if dec.args.len() != n =>
+                    decorator: dname,
+                    field: field.into(),
+                    message: "takes no arguments".into(),
+                })
+            }
+            ArgRule::Exactly(n) if dec.args.len() != n => {
                 return Err(DecoratorError::InvalidArgs {
-                    decorator: dname, field: field.into(),
+                    decorator: dname,
+                    field: field.into(),
                     message: format!("requires exactly {} argument(s)", n),
-                }),
+                })
+            }
             _ => {}
         }
 
@@ -301,37 +424,65 @@ impl<'a> DecoratorValidator<'a> {
     // ── Combination Conflicts ──────────────────────────────────────────
 
     fn validate_combinations(
-        &self, decorators: &[HirDecorator], is_optional: bool, field: &str, sname: &str,
+        &self,
+        decorators: &[HirDecorator],
+        is_optional: bool,
+        field: &str,
+        sname: &str,
     ) -> Vec<DecoratorError> {
-        let kinds: Vec<DecoratorKind> = decorators.iter().map(|d| DecoratorKind::from_name(&d.name)).collect();
+        let kinds: Vec<DecoratorKind> = decorators
+            .iter()
+            .map(|d| DecoratorKind::from_name(&d.name))
+            .collect();
         let has = |k: &DecoratorKind| kinds.contains(k);
         let has_auto = has(&DecoratorKind::Auto) || has(&DecoratorKind::AutoIncrement);
         let mut errs = Vec::new();
 
         // Conflict table: (condition, decorator1, decorator2, reason)
         let conflicts: &[(bool, &str, &str, &str)] = &[
-            (has(&DecoratorKind::Internal) && has(&DecoratorKind::WriteOnly),
-                "internal", "writeOnly", "@writeOnly requires field in request, but @internal excludes it"),
-            (has(&DecoratorKind::WriteOnly) && has(&DecoratorKind::ReadOnly),
-                "writeOnly", "readOnly", "field cannot be both request-only and response-only"),
-            (has_auto && has(&DecoratorKind::WriteOnly),
-                "auto", "writeOnly", "@auto fields are server-generated and cannot accept input"),
-            (has(&DecoratorKind::Redirect) && !has(&DecoratorKind::Url),
-                "redirect", "url", "@redirect requires @url on the same field"),
+            (
+                has(&DecoratorKind::Internal) && has(&DecoratorKind::WriteOnly),
+                "internal",
+                "writeOnly",
+                "@writeOnly requires field in request, but @internal excludes it",
+            ),
+            (
+                has(&DecoratorKind::WriteOnly) && has(&DecoratorKind::ReadOnly),
+                "writeOnly",
+                "readOnly",
+                "field cannot be both request-only and response-only",
+            ),
+            (
+                has_auto && has(&DecoratorKind::WriteOnly),
+                "auto",
+                "writeOnly",
+                "@auto fields are server-generated and cannot accept input",
+            ),
+            (
+                has(&DecoratorKind::Redirect) && !has(&DecoratorKind::Url),
+                "redirect",
+                "url",
+                "@redirect requires @url on the same field",
+            ),
         ];
 
         for (cond, d1, d2, reason) in conflicts {
             if *cond {
                 errs.push(DecoratorError::Conflict {
-                    decorator1: d1.to_string(), decorator2: d2.to_string(),
-                    field: field.into(), struct_name: sname.into(), reason: reason.to_string(),
+                    decorator1: d1.to_string(),
+                    decorator2: d2.to_string(),
+                    field: field.into(),
+                    struct_name: sname.into(),
+                    reason: reason.to_string(),
                 });
             }
         }
 
         if has(&DecoratorKind::Internal) && is_optional {
             errs.push(DecoratorError::InvalidOptional {
-                decorator: "internal".into(), field: field.into(), struct_name: sname.into(),
+                decorator: "internal".into(),
+                field: field.into(),
+                struct_name: sname.into(),
                 reason: "optional marker '?' is meaningless for internal fields".into(),
             });
         }
@@ -350,7 +501,10 @@ impl<'a> DecoratorValidator<'a> {
     }
 
     fn validate_const_value(
-        decorators: &[HirDecorator], value: &ConstValue, field: &str, sname: &str,
+        decorators: &[HirDecorator],
+        value: &ConstValue,
+        field: &str,
+        sname: &str,
     ) -> Vec<DecoratorError> {
         let mut errs = Vec::new();
         for dec in decorators {
@@ -359,8 +513,10 @@ impl<'a> DecoratorValidator<'a> {
                     if let ConstValue::Str(s) = value {
                         if !Self::is_valid_email(s) {
                             errs.push(DecoratorError::ValueViolation {
-                                decorator: "email".into(), field: field.into(), struct_name: sname.into(),
-                                message: format!("invalid email \"{}\"" , s),
+                                decorator: "email".into(),
+                                field: field.into(),
+                                struct_name: sname.into(),
+                                message: format!("invalid email \"{}\"", s),
                             });
                         }
                     }
@@ -369,14 +525,20 @@ impl<'a> DecoratorValidator<'a> {
                     if let ConstValue::Str(s) = value {
                         if !Self::is_valid_url(s) {
                             errs.push(DecoratorError::ValueViolation {
-                                decorator: "url".into(), field: field.into(), struct_name: sname.into(),
-                                message: format!("invalid URL \"{}\"" , s),
+                                decorator: "url".into(),
+                                field: field.into(),
+                                struct_name: sname.into(),
+                                message: format!("invalid URL \"{}\"", s),
                             });
                         }
                     }
                 }
-                DecoratorKind::Min => Self::check_min_max(dec, value, field, sname, true, &mut errs),
-                DecoratorKind::Max => Self::check_min_max(dec, value, field, sname, false, &mut errs),
+                DecoratorKind::Min => {
+                    Self::check_min_max(dec, value, field, sname, true, &mut errs)
+                }
+                DecoratorKind::Max => {
+                    Self::check_min_max(dec, value, field, sname, false, &mut errs)
+                }
                 _ => {}
             }
         }
@@ -385,16 +547,41 @@ impl<'a> DecoratorValidator<'a> {
 
     /// Shared min/max check — avoids duplicating logic for min vs max.
     fn check_min_max(
-        dec: &HirDecorator, value: &ConstValue, field: &str, sname: &str,
-        is_min: bool, errs: &mut Vec<DecoratorError>,
+        dec: &HirDecorator,
+        value: &ConstValue,
+        field: &str,
+        sname: &str,
+        is_min: bool,
+        errs: &mut Vec<DecoratorError>,
     ) {
-        let Some(limit) = Self::extract_numeric_arg(dec) else { return };
+        let Some(limit) = Self::extract_numeric_arg(dec) else {
+            return;
+        };
         let name = if is_min { "min" } else { "max" };
 
         let violation = match value {
-            ConstValue::Int(v) => if is_min { (*v as f64) < limit } else { (*v as f64) > limit },
-            ConstValue::Float(v) => if is_min { *v < limit } else { *v > limit },
-            ConstValue::Str(s) => { let l = s.len() as f64; if is_min { l < limit } else { l > limit } },
+            ConstValue::Int(v) => {
+                if is_min {
+                    (*v as f64) < limit
+                } else {
+                    (*v as f64) > limit
+                }
+            }
+            ConstValue::Float(v) => {
+                if is_min {
+                    *v < limit
+                } else {
+                    *v > limit
+                }
+            }
+            ConstValue::Str(s) => {
+                let l = s.len() as f64;
+                if is_min {
+                    l < limit
+                } else {
+                    l > limit
+                }
+            }
             _ => return,
         };
 
@@ -407,17 +594,25 @@ impl<'a> DecoratorValidator<'a> {
                 _ => unreachable!(),
             };
             errs.push(DecoratorError::ValueViolation {
-                decorator: name.into(), field: field.into(), struct_name: sname.into(), message: msg,
+                decorator: name.into(),
+                field: field.into(),
+                struct_name: sname.into(),
+                message: msg,
             });
         }
     }
 
     fn is_valid_email(s: &str) -> bool {
         let parts: Vec<&str> = s.splitn(2, '@').collect();
-        if parts.len() != 2 { return false; }
+        if parts.len() != 2 {
+            return false;
+        }
         let (local, domain) = (parts[0], parts[1]);
-        !local.is_empty() && !domain.is_empty()
-            && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+        !local.is_empty()
+            && !domain.is_empty()
+            && domain.contains('.')
+            && !domain.starts_with('.')
+            && !domain.ends_with('.')
     }
 
     fn is_valid_url(s: &str) -> bool {
@@ -435,8 +630,13 @@ impl<'a> DecoratorValidator<'a> {
             if let HirItem::Struct(s) = item {
                 let mut field_infos = Vec::new();
                 for field in &s.fields {
-                    field_infos.push(FieldInfo { name: field.name.clone(), decorators: field.decorators.clone() });
-                    if field.decorators.is_empty() { continue; }
+                    field_infos.push(FieldInfo {
+                        name: field.name.clone(),
+                        decorators: field.decorators.clone(),
+                    });
+                    if field.decorators.is_empty() {
+                        continue;
+                    }
 
                     let ftype = field.type_id.unwrap_or(builtin::ANY);
 
@@ -448,8 +648,17 @@ impl<'a> DecoratorValidator<'a> {
                     }
 
                     // Combination conflict checks
-                    let dec_span = field.decorators.first().map(|d| d.span).unwrap_or(field.span);
-                    for e in self.validate_combinations(&field.decorators, field.is_optional, &field.name, &s.name) {
+                    let dec_span = field
+                        .decorators
+                        .first()
+                        .map(|d| d.span)
+                        .unwrap_or(field.span);
+                    for e in self.validate_combinations(
+                        &field.decorators,
+                        field.is_optional,
+                        &field.name,
+                        &s.name,
+                    ) {
                         errors.push(to_compiler_error(&e, dec_span));
                     }
                 }
@@ -469,30 +678,55 @@ impl<'a> DecoratorValidator<'a> {
 
     // ── HIR Walker ─────────────────────────────────────────────────────
 
-    fn walk_stmts(stmts: &[HirStmt], defs: &HashMap<String, Vec<FieldInfo>>, errs: &mut Vec<CompilerError>) {
+    fn walk_stmts(
+        stmts: &[HirStmt],
+        defs: &HashMap<String, Vec<FieldInfo>>,
+        errs: &mut Vec<CompilerError>,
+    ) {
         for stmt in stmts {
             match &stmt.kind {
-                HirStmtKind::Let { value, .. } | HirStmtKind::Assign { value, .. }
+                HirStmtKind::Let { value, .. }
+                | HirStmtKind::Assign { value, .. }
                 | HirStmtKind::TupleLet { value, .. }
-                | HirStmtKind::ManualErrorExtract { expr: value, .. } =>
-                    Self::walk_expr(value, defs, errs),
+                | HirStmtKind::ManualErrorExtract { expr: value, .. } => {
+                    Self::walk_expr(value, defs, errs)
+                }
                 HirStmtKind::Expr(e) => Self::walk_expr(e, defs, errs),
-                HirStmtKind::Return(exprs) => { for e in exprs { Self::walk_expr(e, defs, errs); } }
-                HirStmtKind::If { condition, then_block, else_block } => {
+                HirStmtKind::Return(exprs) => {
+                    for e in exprs {
+                        Self::walk_expr(e, defs, errs);
+                    }
+                }
+                HirStmtKind::If {
+                    condition,
+                    then_block,
+                    else_block,
+                } => {
                     Self::walk_expr(condition, defs, errs);
                     Self::walk_stmts(then_block, defs, errs);
-                    if let Some(eb) = else_block { Self::walk_stmts(eb, defs, errs); }
+                    if let Some(eb) = else_block {
+                        Self::walk_stmts(eb, defs, errs);
+                    }
                 }
-                HirStmtKind::While { condition, body } => {
+                HirStmtKind::While {
+                    condition,
+                    body,
+                    increment,
+                } => {
                     Self::walk_expr(condition, defs, errs);
                     Self::walk_stmts(body, defs, errs);
+                    Self::walk_stmts(increment, defs, errs);
                 }
                 _ => {}
             }
         }
     }
 
-    fn walk_expr(expr: &HirExpr, defs: &HashMap<String, Vec<FieldInfo>>, errs: &mut Vec<CompilerError>) {
+    fn walk_expr(
+        expr: &HirExpr,
+        defs: &HashMap<String, Vec<FieldInfo>>,
+        errs: &mut Vec<CompilerError>,
+    ) {
         match &expr.kind {
             HirExprKind::Struct { name, fields } => {
                 if let Some(def_fields) = defs.get(name) {
@@ -500,7 +734,12 @@ impl<'a> DecoratorValidator<'a> {
                         if let Some(info) = def_fields.iter().find(|f| f.name == *fname) {
                             if !info.decorators.is_empty() {
                                 if let HirExprKind::Const(cv) = &fvalue.kind {
-                                    for e in Self::validate_const_value(&info.decorators, cv, fname, name) {
+                                    for e in Self::validate_const_value(
+                                        &info.decorators,
+                                        cv,
+                                        fname,
+                                        name,
+                                    ) {
                                         errs.push(to_compiler_error(&e, fvalue.span));
                                     }
                                 }
@@ -508,47 +747,93 @@ impl<'a> DecoratorValidator<'a> {
                         }
                     }
                 }
-                for (_, fv) in fields { Self::walk_expr(fv, defs, errs); }
+                for (_, fv) in fields {
+                    Self::walk_expr(fv, defs, errs);
+                }
             }
-            HirExprKind::Call { func, args } | HirExprKind::MethodCall { receiver: func, args, .. } => {
+            HirExprKind::Call { func, args }
+            | HirExprKind::MethodCall {
+                receiver: func,
+                args,
+                ..
+            } => {
                 Self::walk_expr(func, defs, errs);
-                for a in args { Self::walk_expr(a, defs, errs); }
+                for a in args {
+                    Self::walk_expr(a, defs, errs);
+                }
             }
-            HirExprKind::BinOp { lhs, rhs, .. } | HirExprKind::Index { object: lhs, index: rhs }
-            | HirExprKind::Range { start: lhs, end: rhs, .. }
-            | HirExprKind::UnwrapOrPanic { expr: lhs, message: rhs } => {
+            HirExprKind::BinOp { lhs, rhs, .. }
+            | HirExprKind::Index {
+                object: lhs,
+                index: rhs,
+            }
+            | HirExprKind::Range {
+                start: lhs,
+                end: rhs,
+                ..
+            }
+            | HirExprKind::UnwrapOrPanic {
+                expr: lhs,
+                message: rhs,
+            } => {
                 Self::walk_expr(lhs, defs, errs);
                 Self::walk_expr(rhs, defs, errs);
             }
-            HirExprKind::UnaryOp { operand: e, .. } | HirExprKind::Field { object: e, .. }
-            | HirExprKind::Ok(e) | HirExprKind::Err(e) | HirExprKind::Try(e)
-            | HirExprKind::Spread(e) | HirExprKind::Move(e) | HirExprKind::Clone(e)
-            | HirExprKind::Borrow { expr: e, .. } | HirExprKind::Cast { value: e, .. }
+            HirExprKind::UnaryOp { operand: e, .. }
+            | HirExprKind::Field { object: e, .. }
+            | HirExprKind::Ok(e)
+            | HirExprKind::Err(e)
+            | HirExprKind::Try(e)
+            | HirExprKind::Spread(e)
+            | HirExprKind::Move(e)
+            | HirExprKind::Clone(e)
+            | HirExprKind::Borrow { expr: e, .. }
+            | HirExprKind::Cast { value: e, .. }
             | HirExprKind::Closure { body: e, .. } => {
                 Self::walk_expr(e, defs, errs);
             }
-            HirExprKind::Array(els) | HirExprKind::Tuple(els)
+            HirExprKind::Array(els)
+            | HirExprKind::Tuple(els)
             | HirExprKind::RouteBlock { routes: els } => {
-                for e in els { Self::walk_expr(e, defs, errs); }
+                for e in els {
+                    Self::walk_expr(e, defs, errs);
+                }
             }
             HirExprKind::EnumVariant { payload, .. } => {
-                for p in payload { Self::walk_expr(p, defs, errs); }
+                for p in payload {
+                    Self::walk_expr(p, defs, errs);
+                }
             }
             HirExprKind::Map(pairs) => {
-                for (k, v) in pairs { Self::walk_expr(k, defs, errs); Self::walk_expr(v, defs, errs); }
+                for (k, v) in pairs {
+                    Self::walk_expr(k, defs, errs);
+                    Self::walk_expr(v, defs, errs);
+                }
             }
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 Self::walk_expr(condition, defs, errs);
                 Self::walk_expr(then_expr, defs, errs);
-                if let Some(e) = else_expr { Self::walk_expr(e, defs, errs); }
+                if let Some(e) = else_expr {
+                    Self::walk_expr(e, defs, errs);
+                }
             }
             HirExprKind::Block { stmts, expr } => {
                 Self::walk_stmts(stmts, defs, errs);
-                if let Some(e) = expr { Self::walk_expr(e, defs, errs); }
+                if let Some(e) = expr {
+                    Self::walk_expr(e, defs, errs);
+                }
             }
             HirExprKind::Match { values, arms } => {
-                for v in values { Self::walk_expr(v, defs, errs); }
-                for a in arms { Self::walk_expr(&a.body, defs, errs); }
+                for v in values {
+                    Self::walk_expr(v, defs, errs);
+                }
+                for a in arms {
+                    Self::walk_expr(&a.body, defs, errs);
+                }
             }
             _ => {}
         }
@@ -569,7 +854,10 @@ mod tests {
     fn test_decorator_kind_from_name() {
         assert_eq!(DecoratorKind::from_name("email"), DecoratorKind::Email);
         assert_eq!(DecoratorKind::from_name("min"), DecoratorKind::Min);
-        assert!(matches!(DecoratorKind::from_name("foo"), DecoratorKind::Unknown(_)));
+        assert!(matches!(
+            DecoratorKind::from_name("foo"),
+            DecoratorKind::Unknown(_)
+        ));
     }
 
     #[test]

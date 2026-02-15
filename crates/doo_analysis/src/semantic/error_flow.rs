@@ -60,6 +60,11 @@ pub enum ErrorFlowErrorKind {
         /// Name of the function.
         func_name: String,
     },
+    /// Using `Ok` in a function that doesn't have an error type.
+    OkInNonResultFunction {
+        /// Name of the function.
+        func_name: String,
+    },
     /// Missing Ok on some paths when function returns Result.
     MissingOkPath {
         /// Name of the function.
@@ -170,9 +175,16 @@ impl<'a> ErrorFlowChecker<'a> {
                     self.check_expr(expr);
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
                 self.check_expr(condition);
                 for stmt in body {
+                    self.check_stmt(stmt);
+                }
+                for stmt in increment {
                     self.check_stmt(stmt);
                 }
             }
@@ -202,10 +214,8 @@ impl<'a> ErrorFlowChecker<'a> {
     fn check_expr(&mut self, expr: &HirExpr) {
         match &expr.kind {
             // Try operator (`?`) - check that we're in a function that returns Result
-            // Special case: `main` function can use `?` without declaring error type
-            // (errors will panic at runtime)
             HirExprKind::Try(inner) => {
-                if self.current_func_error_type.is_none() && self.current_func_name != "main" {
+                if self.current_func_error_type.is_none() {
                     self.errors.push(ErrorFlowError::new(
                         ErrorFlowErrorKind::TryInNonResultFunction {
                             func_name: self.current_func_name.clone(),
@@ -238,8 +248,16 @@ impl<'a> ErrorFlowChecker<'a> {
                 self.check_expr(message);
             }
 
-            // Ok expression - just recurse
+            // Ok expression - check that we're in a function with error type
             HirExprKind::Ok(inner) => {
+                if self.current_func_error_type.is_none() {
+                    self.errors.push(ErrorFlowError::new(
+                        ErrorFlowErrorKind::OkInNonResultFunction {
+                            func_name: self.current_func_name.clone(),
+                        },
+                        expr.span,
+                    ));
+                }
                 self.check_expr(inner);
             }
 

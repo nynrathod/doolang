@@ -231,7 +231,11 @@ impl BorrowChecker {
                 }
             }
 
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
                 // Check condition in its own temporary scope
                 // Borrows from condition don't persist into loop body
                 self.enter_scope();
@@ -241,6 +245,9 @@ impl BorrowChecker {
                 // Enter scope for loop body
                 self.enter_scope();
                 for s in body {
+                    self.check_stmt(s);
+                }
+                for s in increment {
                     self.check_stmt(s);
                 }
                 self.exit_scope();
