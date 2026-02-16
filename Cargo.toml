@@ -10,6 +10,7 @@ members = [
 	"crates/doo_driver",
 	"crates/doo_diagnostics",
 	"ffi/doo_ffi_core",
+	"ffi/doo_ffi_json",
 	"ffi/doo_ffi_http",
 	"ffi/doo_ffi_db",
 	"ffi/doo_ffi_auth",

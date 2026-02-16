@@ -39,11 +39,14 @@ pub use handle::*;
 pub use helpers::*;
 pub use registry::*;
 
-use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic;
 
 use doo_ffi_core::ffi_debug;
+use doo_ffi_core::helpers::{
+    c_to_string_lossy as c_to_string, make_err as core_make_err, make_ok_string as make_ok_str,
+    make_ok_void, make_panic_err as core_make_panic_err,
+};
 use doo_ffi_core::memory::doo_alloc_string;
 use doo_ffi_core::result::DooResult;
 
@@ -69,52 +72,35 @@ pub(crate) fn ensure_runtime() -> &'static tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("Failed to create Tokio runtime for process module")
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "[FATAL] Failed to create Tokio runtime for process module: {}",
+                    e
+                );
+                std::process::exit(1);
+            })
     })
 }
 
 // ============================================================================
-// FFI Helper: C string conversion (single source of truth)
+// FFI Helpers — delegated to doo_ffi_core::helpers (single source of truth)
+// c_to_string (lossy), make_ok_void, make_ok_str, make_err, make_panic_err
+// all imported from doo_ffi_core::helpers above.
 // ============================================================================
-
-/// Convert C string pointer to Rust String. Null → empty string.
-fn c_to_string(ptr: *const c_char) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
-}
 
 /// Allocate a C string from a Rust &str (caller owns).
 fn string_to_c(s: &str) -> *const c_char {
     doo_alloc_string(s) as *const c_char
 }
 
-/// Create an Ok DooResult with no data.
-fn make_ok_void() -> *mut DooResult {
-    DooResult::ok_empty().into_raw()
-}
-
-/// Create an Ok DooResult with a string value.
-fn make_ok_str(s: &str) -> *mut DooResult {
-    DooResult::ok_string(s).into_raw()
-}
-
-/// Create an Err DooResult with a message.
+/// Wrap core make_err with default 500 status code.
 fn make_err(msg: &str) -> *mut DooResult {
-    DooResult::err_str(500, msg).into_raw()
+    core_make_err(500, msg)
 }
 
-/// Create an Err DooResult from a panic payload.
+/// Wrap core make_panic_err for process module.
 fn make_panic_err(payload: Box<dyn std::any::Any + Send>) -> *mut DooResult {
-    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-        format!("Process FFI panic: {}", s)
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        format!("Process FFI panic: {}", s)
-    } else {
-        "Process FFI panic: unknown error".to_string()
-    };
-    make_err(&msg)
+    core_make_panic_err("Process", payload)
 }
 
 // ============================================================================

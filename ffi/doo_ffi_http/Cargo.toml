@@ -17,8 +17,8 @@ serde_json = "1.0"
 libc = "0.2"
 chrono = "0.4"
 urlencoding = "2"
-lazy_static = "1.4"
 doo_ffi_core = { path = "../doo_ffi_core" }
+doo_ffi_json = { path = "../doo_ffi_json" }
 doo_ffi_runtime = { path = "../doo_ffi_runtime" }
 bcrypt = "0.18"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }

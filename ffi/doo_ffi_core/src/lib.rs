@@ -18,7 +18,7 @@ pub mod casts;
 pub mod constants;
 pub mod debug;
 pub mod errors;
-pub mod json;
+pub mod helpers;
 pub mod memory;
 pub mod result;
 pub mod rfc7807;
@@ -30,7 +30,10 @@ pub use casts::{
     doo_cast_str_to_int,
 };
 pub use errors::{AuthErrorCode, DbErrorCode};
-pub use json::*;
+pub use helpers::{
+    c_to_string, c_to_string_lossy, make_err, make_ok_bool, make_ok_int, make_ok_string,
+    make_ok_void, make_panic_err, safe_ffi, string_to_c,
+};
 pub use memory::{
     doo_alloc, doo_alloc_array, doo_alloc_empty_string, doo_alloc_map, doo_alloc_string,
     doo_clone_string, doo_free, doo_realloc, HEADER_SIZE,

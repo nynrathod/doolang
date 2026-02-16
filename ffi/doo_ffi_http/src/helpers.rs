@@ -2,13 +2,16 @@
 //! String conversion, memory allocation, and utility functions.
 //!
 //! Memory Management Strategy:
-//! - All allocations use Rust's Box when possible, converting to raw pointers at FFI boundary
+//! - ALL string allocations use doo_alloc_string (libc::malloc) from doo_ffi_core
+//! - NEVER use CString::into_raw() — it uses Rust's allocator, causing heap corruption
 //! - For C-compatible structs, we use repr(C) and Box::into_raw for ownership transfer
 //! - Caller receives ownership and is responsible for freeing via corresponding free functions
 
 use std::ffi::c_void;
-use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+
+// Re-export core helpers for use across this crate
+pub use doo_ffi_core::helpers::{c_to_string_lossy, safe_ffi};
 
 // ============================================================================
 // CONSTANTS (Single Source of Truth)
@@ -38,8 +41,7 @@ pub struct RawErrorResponse {
 
 impl RawErrorResponse {
     /// Create a new RawErrorResponse with proper ownership transfer
-    /// The strings are allocated with CString and leaked for C compatibility
-    /// Ownership transfers to the returned struct
+    /// All strings allocated via doo_alloc_string (libc::malloc) — NO CString!
     /// Body is automatically formatted as JSON if it's not already
     pub fn new(status: i32, body: &str) -> Self {
         // Format body as JSON if it's not already JSON
@@ -60,8 +62,8 @@ impl RawErrorResponse {
         Self {
             status,
             _padding: 0,
-            body: string_to_c(&json_body),
-            content_type: string_to_c(CONTENT_TYPE_JSON),
+            body: doo_ffi_core::helpers::string_to_c(&json_body),
+            content_type: doo_ffi_core::helpers::string_to_c(CONTENT_TYPE_JSON),
         }
     }
 
@@ -70,11 +72,6 @@ impl RawErrorResponse {
     pub fn into_raw(self) -> *mut c_void {
         Box::into_raw(Box::new(self)) as *mut c_void
     }
-}
-
-/// Convert HTTP status code to standard title (delegates to centralized source)
-fn status_to_title(status: i32) -> &'static str {
-    doo_ffi_core::title_for_status(status as u16)
 }
 
 /// Allocate and populate an error response struct
@@ -87,50 +84,45 @@ pub fn alloc_error_response(status: i32, body: &str) -> *mut c_void {
 
 /// Free an error response allocated by alloc_error_response
 /// Safety: ptr must have been allocated by alloc_error_response
+/// Strings freed via libc::free (matching doo_alloc_string allocation)
 #[no_mangle]
 pub unsafe extern "C" fn free_error_response(ptr: *mut c_void) {
     if ptr.is_null() {
         return;
     }
     let response = Box::from_raw(ptr as *mut RawErrorResponse);
-    // Free the strings
+    // Free strings allocated with doo_alloc_string (libc::malloc)
     if !response.body.is_null() {
-        let _ = CString::from_raw(response.body as *mut c_char);
+        doo_ffi_core::doo_free(response.body as *mut u8);
     }
     if !response.content_type.is_null() {
-        let _ = CString::from_raw(response.content_type as *mut c_char);
+        doo_ffi_core::doo_free(response.content_type as *mut u8);
     }
     // Box drops here, freeing the struct
 }
 
-/// Convert C string to Rust String (borrows, does not take ownership)
+/// Convert C string to Rust String (borrows, does not take ownership).
+/// Lossy: null → empty string, invalid UTF-8 → replacement chars.
+/// Delegates to centralized core helper.
 pub fn c_to_string(ptr: *const c_char) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    unsafe { CStr::from_ptr(ptr).to_string_lossy().to_string() }
+    doo_ffi_core::helpers::c_to_string_lossy(ptr)
 }
 
-/// Convert Rust string to C string
-/// Uses CString for proper memory management, leaks for FFI transfer
-/// Caller receives ownership and must free via CString::from_raw or libc::free
+/// Convert Rust string to C string.
+/// Uses doo_alloc_string (libc::malloc) — consistent allocator.
+/// Caller owns the returned pointer and must free via doo_free/libc::free.
+/// CRITICAL: NEVER use CString::into_raw() — allocator mismatch causes heap corruption.
 #[inline]
 pub fn string_to_c(s: &str) -> *const c_char {
-    match CString::new(s) {
-        Ok(cstr) => cstr.into_raw() as *const c_char,
-        Err(_) => {
-            // String contains null bytes, allocate empty string
-            CString::new("").unwrap().into_raw() as *const c_char
-        }
-    }
+    doo_ffi_core::helpers::string_to_c(s)
 }
 
-/// Free a string allocated by string_to_c
-/// Safety: ptr must have been allocated by string_to_c
+/// Free a string allocated by string_to_c (via doo_alloc_string → libc::malloc).
+/// Uses libc::free — matching the allocator used by doo_alloc_string.
 #[no_mangle]
 pub unsafe extern "C" fn free_c_string(ptr: *mut c_char) {
     if !ptr.is_null() {
-        let _ = CString::from_raw(ptr);
+        doo_ffi_core::doo_free(ptr as *mut u8);
     }
 }
 

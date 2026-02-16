@@ -15,14 +15,16 @@
 //! - NaN/Infinity floats are serialized as null (JSON spec compliant)
 //! - Integer/float formatting uses itoa/ryu for zero-allocation performance
 
-use crate::ffi_debug;
+use doo_ffi_core::ffi_debug;
 use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::memory::{doo_alloc, doo_alloc_empty_string, doo_alloc_string, MIN_ALLOCATION_SIZE};
-use crate::rfc7807::{FieldError, Rfc7807Error};
+use doo_ffi_core::memory::{
+    doo_alloc, doo_alloc_empty_string, doo_alloc_string, MIN_ALLOCATION_SIZE,
+};
+use doo_ffi_core::rfc7807::{FieldError, Rfc7807Error};
 
 // ============================================================================
 // Security Constants — Single Source of Truth
@@ -198,8 +200,7 @@ impl JsonWriter {
 /// Create a new JSON writer
 #[no_mangle]
 pub extern "C" fn doo_json_writer_new() -> *mut JsonWriter {
-    catch_unwind(|| Box::into_raw(Box::new(JsonWriter::new())))
-        .unwrap_or(std::ptr::null_mut())
+    catch_unwind(|| Box::into_raw(Box::new(JsonWriter::new()))).unwrap_or(std::ptr::null_mut())
 }
 
 /// Create a new JSON writer with a capacity hint (avoids reallocations)
@@ -1998,7 +1999,12 @@ pub extern "C" fn doo_json_get_field(
         if check_json_size(&s).is_err() {
             return doo_alloc_string("null");
         }
-        ffi_debug!("JSON", "doo_json_get_field: json='{}', field='{}'", s, field);
+        ffi_debug!(
+            "JSON",
+            "doo_json_get_field: json='{}', field='{}'",
+            s,
+            field
+        );
 
         let result = serde_json::from_str::<serde_json::Value>(&s)
             .ok()
@@ -2034,9 +2040,7 @@ pub extern "C" fn doo_json_get_variant_name(json_str: *const c_char) -> *mut c_c
             .ok()
             .and_then(|v| match v {
                 serde_json::Value::String(s) => Some(s),
-                serde_json::Value::Object(obj) if obj.len() == 1 => {
-                    obj.keys().next().cloned()
-                }
+                serde_json::Value::Object(obj) if obj.len() == 1 => obj.keys().next().cloned(),
                 _ => None,
             })
             .map(|s| {

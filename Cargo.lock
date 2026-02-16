@@ -700,10 +700,8 @@ dependencies = [
 name = "doo_ffi_core"
 version = "0.1.0"
 dependencies = [
- "itoa",
  "libc",
  "pretty_assertions",
- "ryu",
  "serde",
  "serde_json",
 ]
@@ -742,13 +740,13 @@ dependencies = [
  "chrono",
  "dashmap",
  "doo_ffi_core",
+ "doo_ffi_json",
  "doo_ffi_runtime",
  "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
  "jsonwebtoken",
- "lazy_static",
  "libc",
  "libloading",
  "matchit",
@@ -759,6 +757,18 @@ dependencies = [
  "tokio-tungstenite",
  "urlencoding",
  "uuid",
+]
+
+[[package]]
+name = "doo_ffi_json"
+version = "0.1.0"
+dependencies = [
+ "doo_ffi_core",
+ "itoa",
+ "libc",
+ "ryu",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

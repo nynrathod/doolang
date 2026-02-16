@@ -300,7 +300,7 @@ pub fn get_routes() -> &'static Mutex<RouteRegistry> {
 /// After this, `get_frozen_routes()` provides zero-cost access.
 pub fn freeze_routes() {
     let routes = get_routes();
-    let mut guard = routes.lock().unwrap();
+    let mut guard = routes.lock().unwrap_or_else(|e| e.into_inner());
     let registry = std::mem::replace(&mut *guard, RouteRegistry::new());
     let _ = FROZEN_ROUTES.set(registry);
 }

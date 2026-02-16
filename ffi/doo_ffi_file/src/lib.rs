@@ -19,7 +19,7 @@
 //! - DooResult allocated via libc::malloc in into_raw()
 //! - Consistent allocator: libc::malloc for alloc, libc::free for free
 
-use std::ffi::{c_void, CStr};
+use std::ffi::c_void;
 use std::fs;
 use std::io::Write;
 use std::os::raw::c_char;
@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::SystemTime;
 
+use doo_ffi_core::helpers::{c_to_string, make_ok_int, make_ok_string, make_ok_void, safe_ffi};
 use doo_ffi_core::{doo_alloc, doo_alloc_string, DooResult};
 
 // ============================================================================
@@ -284,22 +285,10 @@ fn resolve_safe_path_for_mkdir(user_path: &str) -> Result<PathBuf, String> {
 }
 
 // ============================================================================
-// Helper Functions - Single Source of Truth
+// Helper Functions
+// c_to_string, make_ok_string, make_ok_void, make_ok_int, safe_ffi
+// all imported from doo_ffi_core::helpers (single source of truth)
 // ============================================================================
-
-/// Convert C string pointer to Rust String
-#[inline]
-fn c_to_string(s: *const c_char) -> Result<String, String> {
-    if s.is_null() {
-        return Err("Null pointer provided".to_string());
-    }
-    unsafe {
-        CStr::from_ptr(s)
-            .to_str()
-            .map(|s| s.to_string())
-            .map_err(|e| format!("Invalid UTF-8: {}", e))
-    }
-}
 
 /// Allocate FileError struct with message
 #[inline]
@@ -312,21 +301,6 @@ fn alloc_file_error(message: &str) -> *mut DooFileError {
         (*err_ptr).message = doo_alloc_string(message);
         err_ptr
     }
-}
-
-#[inline]
-fn make_ok_string(s: &str) -> *mut DooResult {
-    DooResult::ok_string(s).into_raw()
-}
-
-#[inline]
-fn make_ok_void() -> *mut DooResult {
-    DooResult::ok_empty().into_raw()
-}
-
-#[inline]
-fn make_ok_int(n: i64) -> *mut DooResult {
-    DooResult::ok(n as *mut c_void, 0).into_raw()
 }
 
 #[inline]
@@ -367,17 +341,7 @@ fn to_timestamp(time: Result<SystemTime, std::io::Error>) -> i64 {
     }
 }
 
-/// Wrap FFI function body in catch_unwind for panic safety.
-#[inline]
-fn safe_ffi<F>(f: F) -> *mut DooResult
-where
-    F: std::panic::UnwindSafe + FnOnce() -> *mut DooResult,
-{
-    match std::panic::catch_unwind(f) {
-        Ok(result) => result,
-        Err(_) => make_err("Internal file error (panic)"),
-    }
-}
+// safe_ffi imported from doo_ffi_core::helpers (single source of truth)
 
 // ============================================================================
 // Platform-Specific Helpers
@@ -468,7 +432,7 @@ fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
 /// Initialize the file system sandbox.
 #[no_mangle]
 pub extern "C" fn doo_file_init(base_dir: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let dir_str = match c_to_string(base_dir) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -494,7 +458,7 @@ pub extern "C" fn doo_file_init(base_dir: *const c_char) -> *mut DooResult {
 /// Read entire file contents as string. Enforces file size limit.
 #[no_mangle]
 pub extern "C" fn doo_file_read(path: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -529,7 +493,7 @@ pub extern "C" fn doo_file_read(path: *const c_char) -> *mut DooResult {
 /// Write string content to file. Uses atomic write for data integrity.
 #[no_mangle]
 pub extern "C" fn doo_file_write(path: *const c_char, content: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -563,7 +527,7 @@ pub extern "C" fn doo_file_write(path: *const c_char, content: *const c_char) ->
 /// Append string content to file (creates if not exists).
 #[no_mangle]
 pub extern "C" fn doo_file_append(path: *const c_char, content: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -579,8 +543,8 @@ pub extern "C" fn doo_file_append(path: *const c_char, content: *const c_char) -
                 MAX_FILE_WRITE_SIZE
             ));
         }
-        let safe_path = resolve_safe_path(&path_str)
-            .or_else(|_| resolve_safe_path_for_create(&path_str));
+        let safe_path =
+            resolve_safe_path(&path_str).or_else(|_| resolve_safe_path_for_create(&path_str));
         let safe_path = match safe_path {
             Ok(p) => p,
             Err(e) => return make_err(&e),
@@ -599,7 +563,7 @@ pub extern "C" fn doo_file_append(path: *const c_char, content: *const c_char) -
 /// Delete a file.
 #[no_mangle]
 pub extern "C" fn doo_file_delete(path: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -622,7 +586,7 @@ pub extern "C" fn doo_file_delete(path: *const c_char) -> *mut DooResult {
 /// Copy a file from source to destination.
 #[no_mangle]
 pub extern "C" fn doo_file_copy(src: *const c_char, dst: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let src_str = match c_to_string(src) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -664,7 +628,10 @@ pub extern "C" fn doo_file_copy(src: *const c_char, dst: *const c_char) -> *mut 
                 }
                 make_ok_void()
             }
-            Err(e) => make_err(&format!("Failed to copy '{}' to '{}': {}", src_str, dst_str, e)),
+            Err(e) => make_err(&format!(
+                "Failed to copy '{}' to '{}': {}",
+                src_str, dst_str, e
+            )),
         }
     })
 }
@@ -672,7 +639,7 @@ pub extern "C" fn doo_file_copy(src: *const c_char, dst: *const c_char) -> *mut 
 /// Move/rename a file from source to destination.
 #[no_mangle]
 pub extern "C" fn doo_file_move(src: *const c_char, dst: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let src_str = match c_to_string(src) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -695,7 +662,10 @@ pub extern "C" fn doo_file_move(src: *const c_char, dst: *const c_char) -> *mut 
         };
         match fs::rename(&safe_src, &safe_dst) {
             Ok(_) => make_ok_void(),
-            Err(e) => make_err(&format!("Failed to move '{}' to '{}': {}", src_str, dst_str, e)),
+            Err(e) => make_err(&format!(
+                "Failed to move '{}' to '{}': {}",
+                src_str, dst_str, e
+            )),
         }
     })
 }
@@ -713,7 +683,7 @@ pub extern "C" fn doo_file_read_lines(path: *const c_char) -> *mut DooResult {
 /// Create directory (and parents). Restrictive permissions on Unix.
 #[no_mangle]
 pub extern "C" fn doo_file_mkdir(path: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -742,7 +712,7 @@ pub extern "C" fn doo_file_mkdir_all(path: *const c_char) -> *mut DooResult {
 /// Remove empty directory.
 #[no_mangle]
 pub extern "C" fn doo_file_rmdir(path: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -766,7 +736,7 @@ pub extern "C" fn doo_file_rmdir(path: *const c_char) -> *mut DooResult {
 /// Cannot delete the base directory itself.
 #[no_mangle]
 pub extern "C" fn doo_file_rmdir_all(path: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -786,7 +756,10 @@ pub extern "C" fn doo_file_rmdir_all(path: *const c_char) -> *mut DooResult {
         };
         match fs::remove_dir_all(&safe_path) {
             Ok(_) => make_ok_void(),
-            Err(e) => make_err(&format!("Failed to remove directory tree '{}': {}", path_str, e)),
+            Err(e) => make_err(&format!(
+                "Failed to remove directory tree '{}': {}",
+                path_str, e
+            )),
         }
     })
 }
@@ -794,7 +767,7 @@ pub extern "C" fn doo_file_rmdir_all(path: *const c_char) -> *mut DooResult {
 /// List directory contents (comma-separated). Limited to MAX_DIR_ENTRIES.
 #[no_mangle]
 pub extern "C" fn doo_file_list_dir(path: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -835,14 +808,21 @@ pub extern "C" fn doo_file_exists(path: *const c_char) -> i32 {
         };
         let safe_path = match resolve_safe_path(&path_str) {
             Ok(p) => p,
-            Err(_) => {
-                match resolve_safe_path_for_create(&path_str) {
-                    Ok(p) => { if p.exists() { return 1; } return 0; }
-                    Err(_) => return 0,
+            Err(_) => match resolve_safe_path_for_create(&path_str) {
+                Ok(p) => {
+                    if p.exists() {
+                        return 1;
+                    }
+                    return 0;
                 }
-            }
+                Err(_) => return 0,
+            },
         };
-        if safe_path.exists() { 1 } else { 0 }
+        if safe_path.exists() {
+            1
+        } else {
+            0
+        }
     })) {
         Ok(result) => result,
         Err(_) => 0,
@@ -852,7 +832,7 @@ pub extern "C" fn doo_file_exists(path: *const c_char) -> i32 {
 /// Get file size in bytes.
 #[no_mangle]
 pub extern "C" fn doo_file_size(path: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -872,7 +852,7 @@ pub extern "C" fn doo_file_size(path: *const c_char) -> *mut DooResult {
 /// Uses symlink_metadata for correct symlink detection.
 #[no_mangle]
 pub extern "C" fn doo_file_metadata(path: *const c_char) -> *mut DooResult {
-    safe_ffi(|| {
+    safe_ffi("File", || {
         let path_str = match c_to_string(path) {
             Ok(s) => s,
             Err(e) => return make_err(&e),
@@ -919,7 +899,11 @@ pub extern "C" fn doo_file_is_file(path: *const c_char) -> i32 {
             Ok(p) => p,
             Err(_) => return 0,
         };
-        if safe_path.is_file() { 1 } else { 0 }
+        if safe_path.is_file() {
+            1
+        } else {
+            0
+        }
     })) {
         Ok(result) => result,
         Err(_) => 0,
@@ -938,7 +922,11 @@ pub extern "C" fn doo_file_is_dir(path: *const c_char) -> i32 {
             Ok(p) => p,
             Err(_) => return 0,
         };
-        if safe_path.is_dir() { 1 } else { 0 }
+        if safe_path.is_dir() {
+            1
+        } else {
+            0
+        }
     })) {
         Ok(result) => result,
         Err(_) => 0,
@@ -1023,7 +1011,9 @@ mod tests {
         }
         let del_result = doo_file_delete(path.as_ptr());
         if !del_result.is_null() {
-            unsafe { doo_file_free_result(del_result); }
+            unsafe {
+                doo_file_free_result(del_result);
+            }
         }
     }
 
@@ -1032,7 +1022,9 @@ mod tests {
         let path = CString::new("test_metadata_sym.txt").unwrap();
         let content = CString::new("Metadata symlink test").unwrap();
         let write_result = doo_file_write(path.as_ptr(), content.as_ptr());
-        unsafe { doo_file_free_result(write_result); }
+        unsafe {
+            doo_file_free_result(write_result);
+        }
         let meta_result = doo_file_metadata(path.as_ptr());
         assert!(!meta_result.is_null());
         unsafe {
@@ -1046,7 +1038,9 @@ mod tests {
         }
         let del_result = doo_file_delete(path.as_ptr());
         if !del_result.is_null() {
-            unsafe { doo_file_free_result(del_result); }
+            unsafe {
+                doo_file_free_result(del_result);
+            }
         }
     }
 
@@ -1065,7 +1059,9 @@ mod tests {
         let dst = CString::new("test_move_dst.txt").unwrap();
         let content = CString::new("Move test").unwrap();
         let write_result = doo_file_write(src.as_ptr(), content.as_ptr());
-        unsafe { doo_file_free_result(write_result); }
+        unsafe {
+            doo_file_free_result(write_result);
+        }
         let move_result = doo_file_move(src.as_ptr(), dst.as_ptr());
         assert!(!move_result.is_null());
         unsafe {
@@ -1076,7 +1072,9 @@ mod tests {
         assert_eq!(doo_file_exists(dst.as_ptr()), 1);
         let del_result = doo_file_delete(dst.as_ptr());
         if !del_result.is_null() {
-            unsafe { doo_file_free_result(del_result); }
+            unsafe {
+                doo_file_free_result(del_result);
+            }
         }
     }
 

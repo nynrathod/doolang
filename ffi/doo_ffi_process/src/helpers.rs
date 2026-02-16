@@ -190,23 +190,27 @@ pub async fn run_command(cmd: &str, args: &[String]) -> Result<String, String> {
 }
 
 /// Run a command and return just stdout (trimmed).
+/// Returns stdout regardless of exit code — non-zero exit is normal program behavior
+/// (e.g., docker not running, grep no match). Only fails if the command cannot execute.
+/// If the command fails with non-zero exit AND stdout is empty, returns stderr instead
+/// so the caller always gets useful output.
 pub async fn run_command_stdout(cmd: &str, args: &[String]) -> Result<String, String> {
     let output = build_command(cmd, args)?
         .output()
         .await
         .map_err(|e| format!("Failed to execute '{}': {}", cmd, e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!(
-            "Command '{}' failed (exit {}): {}",
-            cmd,
-            output.status.code().unwrap_or(-1),
-            stderr.trim()
-        ));
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // If command failed and stdout is empty, return stderr as the output
+    // so the caller gets useful diagnostic info
+    if stdout.is_empty() && !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            return Ok(security::truncate_output(&stderr));
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok(security::truncate_output(&stdout))
 }
 

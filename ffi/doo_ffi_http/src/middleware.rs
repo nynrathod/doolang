@@ -238,7 +238,9 @@ pub extern "C" fn ratelimit_middleware_handler(
         return next(req);
     }
 
-    let config_guard = get_ratelimit_config().lock().unwrap();
+    let config_guard = get_ratelimit_config()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let config = match config_guard.as_ref() {
         Some(c) => c.clone(),
         None => return next(req), // No rate limit configured
@@ -259,7 +261,9 @@ pub extern "C" fn ratelimit_middleware_handler(
         }
     };
 
-    let mut state = get_ratelimit_state().lock().unwrap();
+    let mut state = get_ratelimit_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
 
     let entry = state.entry(client_id).or_insert(RateLimitEntry {
@@ -315,24 +319,12 @@ fn make_err_response(status: i32, message: &str) -> *mut DooResult {
         if result.is_null() {
             return std::ptr::null_mut();
         }
-        (*result).tag = 1; // Error
-        (*result).value = error_response;
-        (*result).owner = owner::FFI;
+        std::ptr::write(result, DooResult::err(status as u16, error_response, 0));
         result
     }
 }
 
 fn make_cors_preflight_response() -> *mut DooResult {
     // Return 204 No Content with CORS headers
-    // In actual implementation this would set response headers
-    unsafe {
-        let result = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
-        if result.is_null() {
-            return std::ptr::null_mut();
-        }
-        (*result).tag = 0;
-        (*result).value = std::ptr::null_mut();
-        (*result).owner = owner::FFI;
-        result
-    }
+    DooResult::ok_empty().into_raw()
 }

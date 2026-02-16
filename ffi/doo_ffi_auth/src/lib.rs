@@ -18,12 +18,12 @@
 
 mod error;
 
-use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bcrypt::{hash, verify, DEFAULT_COST};
+use doo_ffi_core::helpers::c_to_string;
 use doo_ffi_core::{AuthErrorCode, DooResult};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -116,56 +116,30 @@ fn ensure_keys() -> Result<&'static (EncodingKey, DecodingKey), &'static str> {
 }
 
 // ============================================================================
-// STRING HELPERS
+// STRING HELPERS — delegated to doo_ffi_core::helpers (single source of truth)
+// c_to_string imported from doo_ffi_core::helpers
 // ============================================================================
-
-fn c_to_string(s: *const c_char) -> Result<String, String> {
-    if s.is_null() {
-        return Err("Null pointer".to_string());
-    }
-    unsafe {
-        CStr::from_ptr(s)
-            .to_str()
-            .map(|s| s.to_string())
-            .map_err(|e| format!("Invalid UTF-8: {}", e))
-    }
-}
 
 // ============================================================================
 // RESULT HELPERS — Consistent libc::malloc allocation (no Box mismatch)
 // ============================================================================
 
 /// Create an Ok result with a string value.
-/// Uses libc::malloc consistently (no Box::into_raw mismatch).
+/// Uses doo_ffi_core::helpers (single source of truth).
 fn make_ok_string(s: &str) -> *mut DooResult {
-    unsafe {
-        let result = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
-        if result.is_null() {
-            return std::ptr::null_mut();
-        }
-        let str_ptr = doo_ffi_core::doo_alloc_string(s) as *mut std::ffi::c_void;
-        std::ptr::write(result, DooResult::ok(str_ptr, s.len() as u32));
-        result
-    }
+    doo_ffi_core::helpers::make_ok_string(s)
 }
 
 /// Create an Ok result with a boolean value.
-/// Uses libc::malloc consistently.
+/// Uses doo_ffi_core::helpers (single source of truth).
 fn make_ok_bool(b: bool) -> *mut DooResult {
-    unsafe {
-        let ptr = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
-        if ptr.is_null() {
-            return std::ptr::null_mut();
-        }
-        std::ptr::write(ptr, DooResult::ok((b as i32) as *mut std::ffi::c_void, 0));
-        ptr
-    }
+    doo_ffi_core::helpers::make_ok_bool(b)
 }
 
 /// Create an Err result.
-/// Uses libc::malloc consistently via DooResult::err_str + into_raw.
+/// Uses doo_ffi_core::helpers (single source of truth).
 fn make_err(code: AuthErrorCode, message: &str) -> *mut DooResult {
-    DooResult::err_str(code as u16, message).into_raw()
+    doo_ffi_core::helpers::make_err(code as u16, message)
 }
 
 // ============================================================================

@@ -23,6 +23,7 @@
 //! - `block_in_place` used for nested block_on safety
 //! - `CancellationToken` for cooperative shutdown signaling
 
+use doo_ffi_core::helpers::{make_err, make_ok_string, make_ok_void};
 use doo_ffi_core::DooResult;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -74,7 +75,10 @@ fn build_runtime() -> Runtime {
         // Higher values trade latency for throughput — wrong tradeoff for APIs.
         .enable_all()
         .build()
-        .expect("Failed to create Tokio runtime")
+        .unwrap_or_else(|e| {
+            eprintln!("[FATAL] Failed to create Tokio runtime: {}", e);
+            std::process::exit(1);
+        })
 }
 
 /// Get a reference to the global runtime.
@@ -141,7 +145,7 @@ pub extern "C" fn doo_runtime_block_on(func: extern "C" fn() -> *mut DooResult) 
     }));
     match result {
         Ok(ptr) => ptr,
-        Err(_) => make_err_result("runtime block_on panicked"),
+        Err(_) => make_err(500, "runtime block_on panicked"),
     }
 }
 
@@ -214,22 +218,21 @@ pub extern "C" fn doo_runtime_is_async_context() -> i32 {
 }
 
 // ============================================================================
-// Helper: Create DooResult — matches { i64 tag, *mut c_void data } layout
+// Helper: DooResult — delegated to doo_ffi_core::helpers (single source of truth)
+// make_ok_void, make_ok_string, make_err imported above.
 // ============================================================================
 
-/// Create a success DooResult with no value.
+/// Alias for backward compatibility:
 pub fn make_ok_result() -> *mut DooResult {
-    DooResult::ok_empty().into_raw()
+    make_ok_void()
 }
 
-/// Create a success DooResult with a string value.
 pub fn make_ok_string_result(s: &str) -> *mut DooResult {
-    DooResult::ok_string(s).into_raw()
+    make_ok_string(s)
 }
 
-/// Create an error DooResult with a message.
 pub fn make_err_result(msg: &str) -> *mut DooResult {
-    DooResult::err_str(0, msg).into_raw()
+    make_err(0, msg)
 }
 
 /// Helper: run an async block on the runtime, handling nested contexts

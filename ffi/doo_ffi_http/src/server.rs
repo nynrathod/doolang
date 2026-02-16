@@ -24,7 +24,6 @@ use crate::router::{freeze_routes, get_frozen_routes};
 use crate::types::*;
 use doo_ffi_core::ffi_debug;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::net::SocketAddr;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -420,7 +419,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // ========================================================================
     // Execute middleware chain + handler
     // ========================================================================
-    doo_ffi_core::doo_json_clear_parse_error();
+    doo_ffi_json::doo_json_clear_parse_error();
 
     let response = {
         ffi_debug!("SERVER", "About to execute handler for {} {}", method, path);
@@ -432,11 +431,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         );
 
         // Check for JSON parse errors (type mismatches in arrays, etc.)
-        if doo_ffi_core::doo_json_has_parse_error() {
-            let status = doo_ffi_core::doo_json_get_parse_error_status();
-            let error_json_ptr = doo_ffi_core::doo_json_get_parse_error_json();
+        if doo_ffi_json::doo_json_has_parse_error() {
+            let status = doo_ffi_json::doo_json_get_parse_error_status();
+            let error_json_ptr = doo_ffi_json::doo_json_get_parse_error_json();
             let body = c_to_string(error_json_ptr as *const i8);
-            doo_ffi_core::doo_json_clear_parse_error();
+            doo_ffi_json::doo_json_clear_parse_error();
             build_response(status, &body)
         } else {
             unsafe {
@@ -498,32 +497,33 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 }
 
 /// Free all memory owned by a DooRequest.
-/// CString fields freed via CString::from_raw, HashMap fields via Box::from_raw.
+/// String fields freed via doo_free (matching doo_alloc_string allocation).
+/// HashMap fields freed via Box::from_raw.
 /// DooRequest struct freed via libc::free (allocated with libc::malloc).
 unsafe fn free_doo_request(req: *mut DooRequest) {
     if req.is_null() {
         return;
     }
-    // Free CString fields (allocated via string_to_c → CString::into_raw)
+    // Free string fields (allocated via string_to_c → doo_alloc_string → libc::malloc)
     if !(*req).method.is_null() {
-        let _ = CString::from_raw((*req).method as *mut c_char);
+        doo_ffi_core::doo_free((*req).method as *mut u8);
     }
     if !(*req).path.is_null() {
-        let _ = CString::from_raw((*req).path as *mut c_char);
+        doo_ffi_core::doo_free((*req).path as *mut u8);
     }
     if !(*req).body.is_null() {
-        let _ = CString::from_raw((*req).body as *mut c_char);
+        doo_ffi_core::doo_free((*req).body as *mut u8);
     }
     if !(*req).user_id.is_null() {
-        let _ = CString::from_raw((*req).user_id as *mut c_char);
+        doo_ffi_core::doo_free((*req).user_id as *mut u8);
     }
     // Free Box<HashMap> fields
     if !(*req).headers.is_null() {
         let _ = Box::from_raw((*req).headers as *mut HashMap<String, String>);
     }
-    // Params is a CString (via string_to_c), cast to *mut c_void
+    // Params is a string (via string_to_c → doo_alloc_string), cast to *mut c_void
     if !(*req).params.is_null() {
-        let _ = CString::from_raw((*req).params as *mut c_char);
+        doo_ffi_core::doo_free((*req).params as *mut u8);
     }
     // Query is a Box<HashMap>
     if !(*req).query.is_null() {

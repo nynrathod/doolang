@@ -779,6 +779,10 @@ fn link_object_file(
     // Always include core runtime library (new naming: doo_ffi_core)
     ffi_libs.insert("doo_ffi_core".to_string());
 
+    // Always include JSON library — JSON serialization is a codegen builtin
+    // used by virtually every program (print, HTTP responses, logging, etc.)
+    ffi_libs.insert("doo_ffi_json".to_string());
+
     // Detect HTTP usage
     let has_http = mir_program.functions.iter().any(|f| {
         f.ffi

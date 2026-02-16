@@ -1,0 +1,24 @@
+[package]
+name = "doo_ffi_json"
+version = "0.1.0"
+edition = "2021"
+description = "JSON FFI functions for Doo — parse, serialize, writer"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Core types and memory allocation
+doo_ffi_core = { path = "../doo_ffi_core" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Zero-alloc number formatting (blazing fast JSON writes)
+itoa = "1.0.17"
+ryu = "1.0.23"
+
+# C interop
+libc = "0.2"
