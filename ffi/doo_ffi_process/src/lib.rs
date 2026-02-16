@@ -44,8 +44,8 @@ use std::panic;
 
 use doo_ffi_core::ffi_debug;
 use doo_ffi_core::helpers::{
-    c_to_string_lossy, make_err as core_make_err, make_ok_string as make_ok_str,
-    make_ok_void, make_panic_err as core_make_panic_err,
+    c_to_string_lossy, make_err as core_make_err, make_ok_string as make_ok_str, make_ok_void,
+    make_panic_err as core_make_panic_err,
 };
 use doo_ffi_core::memory::doo_alloc_string;
 use doo_ffi_core::result::DooResult;
@@ -73,7 +73,10 @@ pub(crate) fn ensure_runtime() -> &'static tokio::runtime::Runtime {
             .enable_all()
             .build()
             .unwrap_or_else(|e| {
-                doo_ffi_core::ffi_fatal!("Failed to create Tokio runtime for process module: {}", e);
+                doo_ffi_core::ffi_fatal!(
+                    "Failed to create Tokio runtime for process module: {}",
+                    e
+                );
                 std::process::exit(1);
             })
     })

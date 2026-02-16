@@ -440,6 +440,16 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                     None => continue,
                 };
 
+                // Skip fields with @readOnly or @internal decorators — they are not accepted from requests
+                if let Some(decorators) = field_obj.get("decorators").and_then(|v| v.as_array()) {
+                    if decorators.iter().any(|d| {
+                        d.as_str()
+                            .map_or(false, |s| s == "readOnly" || s == "internal")
+                    }) {
+                        continue;
+                    }
+                }
+
                 // Build full field path for error messages
                 let full_field_name = if field_prefix.is_empty() {
                     field_name.to_string()

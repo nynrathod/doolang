@@ -105,6 +105,11 @@ pub(super) fn emit_handler_metadata_registration<'ctx>(
     for type_id in param_type_ids {
         emit_struct_metadata_if_needed(ctx, type_id);
     }
+
+    // Also register return type struct metadata (for @internal/@writeOnly response filtering)
+    if let Some(ret_type_id) = ctx.get_function_return_type(handler_name) {
+        emit_struct_metadata_if_needed(ctx, ret_type_id);
+    }
 }
 
 /// Emit struct/enum metadata registration for auth/crud calls.
@@ -389,6 +394,7 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
         type_id: TypeId,
         struct_layouts: &mut HashMap<String, serde_json::Value>,
         enum_variants: &mut HashMap<String, Vec<String>>,
+        field_decorators_map: &rustc_hash::FxHashMap<String, Vec<(String, Vec<String>)>>,
     ) {
         if let Some(type_info) = registry.get(type_id) {
             match &type_info.kind {
@@ -400,6 +406,9 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
 
                     let mut field_list: Vec<serde_json::Value> = Vec::new();
                     let mut current_offset: u64 = 0;
+
+                    // Look up decorators for this struct from the MIR-populated map
+                    let struct_decorators = field_decorators_map.get(name.as_str());
 
                     for (field_name, field_type_id, _) in fields {
                         let field_type_name = type_id_to_string_inner(registry, *field_type_id);
@@ -429,10 +438,20 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                             current_offset = ((current_offset / field_align) + 1) * field_align;
                         }
 
+                        // Look up decorators for this field (single source of truth from MIR)
+                        let decorators: Vec<String> = struct_decorators
+                            .and_then(|fds| {
+                                fds.iter()
+                                    .find(|(n, _)| n == field_name)
+                                    .map(|(_, decs)| decs.clone())
+                            })
+                            .unwrap_or_default();
+
                         field_list.push(serde_json::json!({
                             "name": field_name,
                             "type": field_type_name,
-                            "offset": current_offset
+                            "offset": current_offset,
+                            "decorators": decorators
                         }));
 
                         // Move offset past this field
@@ -444,6 +463,7 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                             *field_type_id,
                             struct_layouts,
                             enum_variants,
+                            field_decorators_map,
                         );
                         collect_enums_from_type(registry, *field_type_id, enum_variants);
                     }
@@ -455,14 +475,14 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                     );
                 }
                 TypeKind::Array { element } => {
-                    collect_struct_layout(registry, *element, struct_layouts, enum_variants);
+                    collect_struct_layout(registry, *element, struct_layouts, enum_variants, field_decorators_map);
                 }
                 TypeKind::Optional { inner } => {
-                    collect_struct_layout(registry, *inner, struct_layouts, enum_variants);
+                    collect_struct_layout(registry, *inner, struct_layouts, enum_variants, field_decorators_map);
                 }
                 TypeKind::Map { key, value } => {
-                    collect_struct_layout(registry, *key, struct_layouts, enum_variants);
-                    collect_struct_layout(registry, *value, struct_layouts, enum_variants);
+                    collect_struct_layout(registry, *key, struct_layouts, enum_variants, field_decorators_map);
+                    collect_struct_layout(registry, *value, struct_layouts, enum_variants, field_decorators_map);
                 }
                 _ => {}
             }
@@ -477,6 +497,7 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                 *type_id,
                 &mut struct_layouts,
                 &mut enum_variants,
+                &ctx.struct_field_decorators,
             );
 
             // Get type name from type registry
@@ -499,6 +520,7 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
             ret_type_id,
             &mut struct_layouts,
             &mut enum_variants,
+            &ctx.struct_field_decorators,
         );
         return_type = type_id_to_string_inner(&ctx.type_registry, ret_type_id);
     }

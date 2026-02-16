@@ -258,8 +258,14 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         if return_type.starts_with('[') && return_type.ends_with(']') {
             // Try to read as a C string first - if it's valid JSON, pass through
             if let Some(json_str) = try_read_as_json_string(struct_ptr) {
-                // It's already a valid JSON string, return it directly
-                return string_to_c(&json_str);
+                // Filter out @writeOnly/@internal fields from db.raw() results
+                let elem_type = &return_type[1..return_type.len() - 1];
+                let filtered = filter_response_json_by_layout(
+                    &json_str,
+                    elem_type,
+                    &metadata.struct_layouts,
+                );
+                return string_to_c(&filtered);
             }
             // Otherwise, fall through to struct serialization (for actual in-memory arrays)
         }
@@ -271,8 +277,76 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
             &metadata.struct_layouts,
         );
 
-        string_to_c(&json.to_string())
+        // For single struct returns, the decorator filtering is already done in
+        // serialize_struct_recursive. For db.raw() single objects, apply layout filter.
+        let json_string = json.to_string();
+        string_to_c(&json_string)
     })
+}
+
+/// Filter a JSON string by removing fields with @writeOnly or @internal decorators.
+/// Uses the struct layout from handler metadata to determine which fields to strip.
+/// Works for both JSON objects and arrays of objects.
+pub(crate) fn filter_response_json_by_layout(
+    json_str: &str,
+    struct_name: &str,
+    struct_layouts: &HashMap<String, serde_json::Value>,
+) -> String {
+    // Get the list of fields to exclude from the struct layout
+    let fields_to_exclude: Vec<String> = struct_layouts
+        .get(struct_name)
+        .and_then(|layout| layout.get("fields"))
+        .and_then(|f| f.as_array())
+        .map(|fields| {
+            fields
+                .iter()
+                .filter_map(|field| {
+                    let obj = field.as_object()?;
+                    let name = obj.get("name")?.as_str()?;
+                    let decorators = obj.get("decorators")?.as_array()?;
+                    if decorators.iter().any(|d| {
+                        d.as_str()
+                            .map_or(false, |s| s == "writeOnly" || s == "internal")
+                    }) {
+                        Some(name.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // No fields to exclude — return as-is
+    if fields_to_exclude.is_empty() {
+        return json_str.to_string();
+    }
+
+    // Parse, filter, re-serialize
+    match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(mut value) => {
+            strip_fields_recursive(&mut value, &fields_to_exclude);
+            value.to_string()
+        }
+        Err(_) => json_str.to_string(), // Can't parse — return as-is
+    }
+}
+
+/// Recursively strip excluded fields from a JSON value (object or array of objects).
+fn strip_fields_recursive(value: &mut serde_json::Value, fields_to_exclude: &[String]) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for field in fields_to_exclude {
+                map.remove(field);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                strip_fields_recursive(item, fields_to_exclude);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Try to read a pointer as a JSON string. Returns Some(json) if successful, None otherwise.
@@ -344,6 +418,16 @@ pub(crate) fn serialize_struct_recursive(
             Some(n) => n,
             None => continue,
         };
+
+        // Skip fields with @writeOnly or @internal decorators — they must not appear in responses
+        if let Some(decorators) = field_obj.get("decorators").and_then(|v| v.as_array()) {
+            if decorators.iter().any(|d| {
+                d.as_str()
+                    .map_or(false, |s| s == "writeOnly" || s == "internal")
+            }) {
+                continue;
+            }
+        }
 
         let field_type = match field_obj
             .get("type")
