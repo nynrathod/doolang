@@ -21,13 +21,15 @@ pub mod builtins;
 pub mod context;
 pub mod instructions;
 pub mod layout;
+pub mod linker;
 pub mod memory;
 pub mod optimize;
 pub mod types;
 pub mod utils;
 
 pub use builder::CodegenBuilder;
-pub use context::{CodegenContext, CrossModuleResolver, ExternalFunction, LinkError, ModuleLinker};
+pub use context::{CodegenContext, ExternalFunction};
+pub use linker::{CrossModuleResolver, LinkError, ModuleLinker};
 pub use optimize::{
     optimize_module, optimize_module_default, optimize_module_none, optimize_module_size,
     optimize_module_with_config, OptLevel, OptimizationConfig,

@@ -119,21 +119,40 @@ pub static MAP_METHODS: &[MethodDef] = &[
 ];
 
 // =============================================================================
-// Int Methods (1 method)
+// Int Methods
 // =============================================================================
 pub static INT_METHODS: &[MethodDef] = &[
     MethodDef { name: "toChar", params: &[], return_type: "Str", mutates: false },
+    MethodDef { name: "toString", params: &[], return_type: "Str", mutates: false },
+    MethodDef { name: "abs", params: &[], return_type: "Int", mutates: false },
+    MethodDef { name: "min", params: &["Int"], return_type: "Int", mutates: false },
+    MethodDef { name: "max", params: &["Int"], return_type: "Int", mutates: false },
+    MethodDef { name: "clamp", params: &["Int", "Int"], return_type: "Int", mutates: false },
 ];
 
 // =============================================================================
-// Float Methods (0 methods currently)
+// Float Methods
 // =============================================================================
-pub static FLOAT_METHODS: &[MethodDef] = &[];
+pub static FLOAT_METHODS: &[MethodDef] = &[
+    MethodDef { name: "toString", params: &[], return_type: "Str", mutates: false },
+    MethodDef { name: "abs", params: &[], return_type: "Float", mutates: false },
+    MethodDef { name: "floor", params: &[], return_type: "Int", mutates: false },
+    MethodDef { name: "ceil", params: &[], return_type: "Int", mutates: false },
+    MethodDef { name: "round", params: &[], return_type: "Int", mutates: false },
+    MethodDef { name: "isNaN", params: &[], return_type: "Bool", mutates: false },
+    MethodDef { name: "isInfinite", params: &[], return_type: "Bool", mutates: false },
+    MethodDef { name: "min", params: &["Float"], return_type: "Float", mutates: false },
+    MethodDef { name: "max", params: &["Float"], return_type: "Float", mutates: false },
+    MethodDef { name: "sqrt", params: &[], return_type: "Float", mutates: false },
+    MethodDef { name: "pow", params: &["Float"], return_type: "Float", mutates: false },
+];
 
 // =============================================================================
-// Bool Methods (0 methods currently)
+// Bool Methods
 // =============================================================================
-pub static BOOL_METHODS: &[MethodDef] = &[];
+pub static BOOL_METHODS: &[MethodDef] = &[
+    MethodDef { name: "toString", params: &[], return_type: "Str", mutates: false },
+];
 
 #[cfg(test)]
 mod tests {

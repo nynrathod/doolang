@@ -36,6 +36,7 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
+use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
@@ -68,7 +69,8 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                 // The `func` should refer to an existing LLVM function
                 // Captures are not yet implemented (legacy doesn't use them either)
 
-                let Some(func_val) = ctx.get_function(func) else {
+                let func_str = resolve(*func);
+                let Some(func_val) = ctx.get_function(&func_str) else {
                     // If function not found, return null pointer as fallback
                     // This allows compilation to proceed even if closure generation is incomplete
                     let null_ptr = ctx
@@ -76,7 +78,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                         .i8_type()
                         .ptr_type(inkwell::AddressSpace::default())
                         .const_null();
-                    ctx.set_temp(dest, null_ptr.into());
+                    ctx.set_temp(&resolve(*dest), null_ptr.into());
                     return Some(null_ptr.into());
                 };
 
@@ -172,7 +174,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                     .ok()?;
                 ctx.builder.build_store(env_slot, env_ptr_i8).ok()?;
 
-                ctx.set_temp(dest, closure_ptr.into());
+                ctx.set_temp(&resolve(*dest), closure_ptr.into());
                 Some(closure_ptr.into())
             }
 
@@ -264,7 +266,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                 let result = call_site.try_as_basic_value().basic()?;
 
                 if let Some(dest_name) = dest {
-                    ctx.set_temp(dest_name, result);
+                    ctx.set_temp(&resolve(*dest_name), result);
                 }
 
                 Some(result)
@@ -292,19 +294,21 @@ fn operand_to_value<'ctx>(
             }
         }
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
+            let name_str = resolve(*name);
             // First try to get as a value (local variable, temp, etc.)
-            if let Some(val) = ctx.get_value(name) {
+            if let Some(val) = ctx.get_value(&name_str) {
                 return Some(val);
             }
             // Fall back to function reference - convert function to pointer value
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None
         }
         MirOperand::FuncRef(name) => {
+            let name_str = resolve(*name);
             // FuncRef is an explicit function reference - convert to pointer
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None
@@ -382,8 +386,8 @@ mod tests {
 
         let closure_create = MirInstr {
             kind: MirInstrKind::ClosureCreate {
-                dest: "temp_0".to_string(),
-                func: "closure_fn".to_string(),
+                dest: doo_mir::sym::sym("temp_0"),
+                func: doo_mir::sym::sym("closure_fn"),
                 captures: vec![],
             },
             span: Span::default(),
@@ -392,8 +396,8 @@ mod tests {
 
         let closure_call = MirInstr {
             kind: MirInstrKind::ClosureCall {
-                dest: Some("result".to_string()),
-                closure: MirOperand::Temp("temp_0".to_string()),
+                dest: Some(doo_mir::sym::sym("result")),
+                closure: MirOperand::Temp(doo_mir::sym::sym("temp_0")),
                 args: vec![],
             },
             span: Span::default(),
@@ -403,7 +407,7 @@ mod tests {
         // Should not handle non-closure instructions
         let assign = MirInstr {
             kind: MirInstrKind::Assign {
-                dest: "x".to_string(),
+                dest: doo_mir::sym::sym("x"),
                 value: MirOperand::Const(doo_mir::MirConst::Int(42)),
             },
             span: Span::default(),

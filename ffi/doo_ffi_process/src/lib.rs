@@ -44,7 +44,7 @@ use std::panic;
 
 use doo_ffi_core::ffi_debug;
 use doo_ffi_core::helpers::{
-    c_to_string_lossy as c_to_string, make_err as core_make_err, make_ok_string as make_ok_str,
+    c_to_string_lossy, make_err as core_make_err, make_ok_string as make_ok_str,
     make_ok_void, make_panic_err as core_make_panic_err,
 };
 use doo_ffi_core::memory::doo_alloc_string;
@@ -73,10 +73,7 @@ pub(crate) fn ensure_runtime() -> &'static tokio::runtime::Runtime {
             .enable_all()
             .build()
             .unwrap_or_else(|e| {
-                eprintln!(
-                    "[FATAL] Failed to create Tokio runtime for process module: {}",
-                    e
-                );
+                doo_ffi_core::ffi_fatal!("Failed to create Tokio runtime for process module: {}", e);
                 std::process::exit(1);
             })
     })
@@ -93,9 +90,9 @@ fn string_to_c(s: &str) -> *const c_char {
     doo_alloc_string(s) as *const c_char
 }
 
-/// Wrap core make_err with default 500 status code.
+/// Wrap core make_err with default 500 status code — uses RFC 7807.
 fn make_err(msg: &str) -> *mut DooResult {
-    core_make_err(500, msg)
+    doo_ffi_core::helpers::make_err_rfc7807(500, msg)
 }
 
 /// Wrap core make_panic_err for process module.
@@ -119,8 +116,8 @@ fn make_panic_err(payload: Box<dyn std::any::Any + Send>) -> *mut DooResult {
 #[no_mangle]
 pub extern "C" fn doo_process_run(cmd: *const c_char, args_json: *const c_char) -> *mut DooResult {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let cmd_str = c_to_string(cmd);
-        let args_str = c_to_string(args_json);
+        let cmd_str = c_to_string_lossy(cmd);
+        let args_str = c_to_string_lossy(args_json);
 
         ffi_debug!("PROCESS", "run({}, {})", cmd_str, args_str);
 
@@ -165,8 +162,8 @@ pub extern "C" fn doo_process_spawn(
     args_json: *const c_char,
 ) -> *mut DooResult {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let cmd_str = c_to_string(cmd);
-        let args_str = c_to_string(args_json);
+        let cmd_str = c_to_string_lossy(cmd);
+        let args_str = c_to_string_lossy(args_json);
 
         ffi_debug!("PROCESS", "spawn({}, {})", cmd_str, args_str);
 
@@ -204,7 +201,7 @@ pub extern "C" fn doo_process_spawn(
 #[no_mangle]
 pub extern "C" fn doo_process_kill(handle_ptr: *const c_char) -> *mut DooResult {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let handle_id = c_to_string(handle_ptr);
+        let handle_id = c_to_string_lossy(handle_ptr);
         ffi_debug!("PROCESS", "kill({})", handle_id);
 
         match get_registry().kill_process(&handle_id) {
@@ -231,7 +228,7 @@ pub extern "C" fn doo_process_kill(handle_ptr: *const c_char) -> *mut DooResult 
 #[no_mangle]
 pub extern "C" fn doo_process_status(handle_ptr: *const c_char) -> *mut DooResult {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let handle_id = c_to_string(handle_ptr);
+        let handle_id = c_to_string_lossy(handle_ptr);
         ffi_debug!("PROCESS", "status({})", handle_id);
 
         match get_registry().get_status(&handle_id) {
@@ -259,7 +256,7 @@ pub extern "C" fn doo_process_status(handle_ptr: *const c_char) -> *mut DooResul
 #[no_mangle]
 pub extern "C" fn doo_process_wait_output(handle_ptr: *const c_char) -> *mut DooResult {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let handle_id = c_to_string(handle_ptr);
+        let handle_id = c_to_string_lossy(handle_ptr);
         ffi_debug!("PROCESS", "waitForOutput({})", handle_id);
 
         let rt = ensure_runtime();
@@ -291,7 +288,7 @@ pub extern "C" fn doo_process_wait_output(handle_ptr: *const c_char) -> *mut Doo
 #[no_mangle]
 pub extern "C" fn doo_process_is_running(handle_ptr: *const c_char) -> i64 {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let handle_id = c_to_string(handle_ptr);
+        let handle_id = c_to_string_lossy(handle_ptr);
         if get_registry().is_running(&handle_id) {
             1i64
         } else {
@@ -320,8 +317,8 @@ pub extern "C" fn doo_process_output(
     args_json: *const c_char,
 ) -> *mut DooResult {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let cmd_str = c_to_string(cmd);
-        let args_str = c_to_string(args_json);
+        let cmd_str = c_to_string_lossy(cmd);
+        let args_str = c_to_string_lossy(args_json);
 
         ffi_debug!("PROCESS", "output({}, {})", cmd_str, args_str);
 
@@ -358,7 +355,7 @@ pub extern "C" fn doo_process_output(
 #[no_mangle]
 pub extern "C" fn doo_process_read_stdout(handle_ptr: *const c_char) -> *mut DooResult {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let handle_id = c_to_string(handle_ptr);
+        let handle_id = c_to_string_lossy(handle_ptr);
         ffi_debug!("PROCESS", "readStdout({})", handle_id);
 
         match get_registry().read_stdout(&handle_id) {
@@ -380,7 +377,7 @@ pub extern "C" fn doo_process_read_stdout(handle_ptr: *const c_char) -> *mut Doo
 #[no_mangle]
 pub extern "C" fn doo_process_read_stderr(handle_ptr: *const c_char) -> *mut DooResult {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let handle_id = c_to_string(handle_ptr);
+        let handle_id = c_to_string_lossy(handle_ptr);
         ffi_debug!("PROCESS", "readStderr({})", handle_id);
 
         match get_registry().read_stderr(&handle_id) {

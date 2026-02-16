@@ -1,6 +1,7 @@
 //! Statement building for MIR
 
 use super::MirBuilder;
+use crate::sym::{resolve, sym, Sym};
 use crate::{LocalDef, MirInstrKind, MirOperand, MirTerminator};
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind};
@@ -40,16 +41,17 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 builder.container_kinds.insert(name.clone(), kind);
             }
 
+            let name_sym = sym(name);
             if let Some(f) = &mut builder.current_func {
                 // Check if already registered - if so, update the type if different
                 // This handles cases like payload bindings reusing variable names
-                if let Some(existing) = f.locals.iter_mut().find(|l| l.name == *name) {
+                if let Some(existing) = f.locals.iter_mut().find(|l| l.name == name_sym) {
                     // Update to the new type (let binding takes precedence)
                     existing.type_id = var_type_id;
                     existing.mutable = *mutable;
                 } else {
                     f.locals.push(LocalDef {
-                        name: name.clone(),
+                        name: name_sym,
                         type_id: var_type_id,
                         mutable: *mutable,
                     });
@@ -58,11 +60,11 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
             // Also track the type in temp_types for method call type resolution
             // This allows db.raw() to know that 'db' is of type Database
-            builder.set_temp_type(name, var_type_id);
+            builder.set_temp_type(name_sym, var_type_id);
 
             builder.emit(
                 MirInstrKind::Assign {
-                    dest: name.clone(),
+                    dest: name_sym,
                     value: val_operand,
                 },
                 span,
@@ -101,13 +103,14 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             if is_result_call && names.len() >= 2 {
                 // Result type with tuple destructuring: last name is error variable
                 // Split names into ok_names and error_name
-                let (ok_names, error_name) = if names.len() == 2 {
+                let (ok_names, error_name): (Vec<Sym>, Sym) = if names.len() == 2 {
                     // Simple case: let ok, err = ...
-                    (vec![names[0].clone()], names[1].clone())
+                    (vec![sym(&names[0])], sym(&names[1]))
                 } else {
                     // Multi-value Ok: let a, b, err = ... (last is error)
-                    let ok_names: Vec<String> = names[..names.len() - 1].to_vec();
-                    let error_name = names[names.len() - 1].clone();
+                    let ok_names: Vec<Sym> =
+                        names[..names.len() - 1].iter().map(|n| sym(n)).collect();
+                    let error_name = sym(&names[names.len() - 1]);
                     (ok_names, error_name)
                 };
 
@@ -135,11 +138,11 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 };
 
                 // Register ok variables as locals
-                for ok_name in &ok_names {
+                for &ok_name in &ok_names {
                     if let Some(f) = &mut builder.current_func {
-                        if !f.locals.iter().any(|l| l.name == *ok_name) {
+                        if !f.locals.iter().any(|l| l.name == ok_name) {
                             f.locals.push(LocalDef {
-                                name: ok_name.clone(),
+                                name: ok_name,
                                 type_id: ok_type,
                                 mutable: *mutable,
                             });
@@ -148,11 +151,11 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 }
 
                 // Register error variable as local
-                if error_name != "_" {
+                if error_name != sym("_") {
                     if let Some(f) = &mut builder.current_func {
                         if !f.locals.iter().any(|l| l.name == error_name) {
                             f.locals.push(LocalDef {
-                                name: error_name.clone(),
+                                name: error_name,
                                 type_id: err_type,
                                 mutable: *mutable,
                             });
@@ -185,7 +188,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             // Get the value type - first from HIR, then from temp_types if it was a call
             let value_type = value.type_id.or_else(|| {
                 if let MirOperand::Temp(ref temp_name) = tuple_operand {
-                    builder.get_temp_type(temp_name)
+                    builder.get_temp_type(*temp_name)
                 } else {
                     None
                 }
@@ -211,12 +214,12 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
             // Create a temp to hold the tuple if it's not already a local
             let tuple_temp = match &tuple_operand {
-                MirOperand::Local(name) => name.clone(),
+                MirOperand::Local(name) => *name,
                 _ => {
                     let temp = builder.new_temp();
                     builder.emit(
                         MirInstrKind::Assign {
-                            dest: temp.clone(),
+                            dest: temp,
                             value: tuple_operand.clone(),
                         },
                         span,
@@ -230,11 +233,12 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 // Get the type for this element from computed element_types
                 let elem_type = element_types.get(i).copied().unwrap_or(builtin::ANY);
 
+                let name_sym = sym(name);
                 // Register the local variable
                 if let Some(f) = &mut builder.current_func {
-                    if !f.locals.iter().any(|l| l.name == *name) {
+                    if !f.locals.iter().any(|l| l.name == name_sym) {
                         f.locals.push(LocalDef {
-                            name: name.clone(),
+                            name: name_sym,
                             type_id: elem_type,
                             mutable: *mutable,
                         });
@@ -245,8 +249,8 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 let extract_temp = builder.new_temp();
                 builder.emit(
                     MirInstrKind::TupleGet {
-                        dest: extract_temp.clone(),
-                        tuple: MirOperand::Local(tuple_temp.clone()),
+                        dest: extract_temp,
+                        tuple: MirOperand::Local(tuple_temp),
                         index: i,
                         tuple_type,
                     },
@@ -255,7 +259,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
                 builder.emit(
                     MirInstrKind::Assign {
-                        dest: name.clone(),
+                        dest: name_sym,
                         value: MirOperand::Local(extract_temp),
                     },
                     span,
@@ -272,7 +276,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 HirExprKind::Local { name } => {
                     builder.emit(
                         MirInstrKind::Assign {
-                            dest: name.clone(),
+                            dest: sym(name),
                             value: val_operand,
                         },
                         span,
@@ -284,7 +288,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                     builder.emit(
                         MirInstrKind::FieldSet {
                             object: obj_operand,
-                            field: field.clone(),
+                            field: sym(field),
                             value: val_operand,
                         },
                         span,
@@ -361,7 +365,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                             builder.emit(
                                 MirInstrKind::FieldSet {
                                     object: obj_operand,
-                                    field: field.clone(),
+                                    field: sym(field),
                                     value: array_operand,
                                 },
                                 span,
@@ -428,14 +432,14 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
         HirStmtKind::Break => {
             // Break jumps to the loop exit block
-            if let Some(exit_label) = builder.break_targets.last().cloned() {
+            if let Some(&exit_label) = builder.break_targets.last() {
                 builder.set_terminator(MirTerminator::Goto { target: exit_label });
             }
         }
 
         HirStmtKind::Continue => {
             // Continue jumps to the loop condition/header block
-            if let Some(continue_label) = builder.continue_targets.last().cloned() {
+            if let Some(&continue_label) = builder.continue_targets.last() {
                 builder.set_terminator(MirTerminator::Goto {
                     target: continue_label,
                 });
@@ -455,39 +459,39 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
             builder.set_terminator(MirTerminator::Branch {
                 cond: cond_val,
-                then_block: then_label.clone(),
+                then_block: then_label,
                 else_block: if else_block.is_some() {
-                    else_label.clone()
+                    else_label
                 } else {
-                    merge_label.clone()
+                    merge_label
                 },
             });
 
             // Then block
-            builder.add_block(&then_label);
+            builder.add_block(then_label);
             for stmt in then_block {
                 build_stmt(builder, stmt);
             }
             // Only add Goto if the block doesn't already have a terminator
             // (e.g., Ok/Err expressions implicitly return)
             builder.set_terminator_if_none(MirTerminator::Goto {
-                target: merge_label.clone(),
+                target: merge_label,
             });
 
             // Else block
             if let Some(else_stmts) = else_block {
-                builder.add_block(&else_label);
+                builder.add_block(else_label);
                 for stmt in else_stmts {
                     build_stmt(builder, stmt);
                 }
                 // Only add Goto if the block doesn't already have a terminator
                 builder.set_terminator_if_none(MirTerminator::Goto {
-                    target: merge_label.clone(),
+                    target: merge_label,
                 });
             }
 
             // Merge block
-            builder.add_block(&merge_label);
+            builder.add_block(merge_label);
         }
 
         HirStmtKind::While {
@@ -495,7 +499,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             body,
             increment,
         } => {
-            if std::env::var("DOO_DEBUG").is_ok() {
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                 doo_debug!(
                     "MIR",
                     "Building While loop with {} body statements, {} increment statements",
@@ -516,39 +520,37 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             };
 
             // The continue target is the increment block if it exists, otherwise the cond block
-            let continue_target = incr_label.as_ref().unwrap_or(&cond_label).clone();
+            let continue_target = incr_label.unwrap_or(cond_label);
 
-            if std::env::var("DOO_DEBUG").is_ok() {
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                 doo_debug!(
                     "MIR",
                     "While labels: cond={}, body={}, exit={}, continue_target={}",
-                    cond_label,
-                    body_label,
-                    exit_label,
-                    continue_target
+                    resolve(cond_label),
+                    resolve(body_label),
+                    resolve(exit_label),
+                    resolve(continue_target)
                 );
             }
 
             // Jump to condition
-            builder.set_terminator(MirTerminator::Goto {
-                target: cond_label.clone(),
-            });
+            builder.set_terminator(MirTerminator::Goto { target: cond_label });
 
             // Push loop labels for break/continue
-            builder.break_targets.push(exit_label.clone());
-            builder.continue_targets.push(continue_target.clone());
+            builder.break_targets.push(exit_label);
+            builder.continue_targets.push(continue_target);
 
             // Condition block
-            builder.add_block(&cond_label);
+            builder.add_block(cond_label);
             let cond_val = builder.build_expr(condition);
             builder.set_terminator(MirTerminator::Branch {
                 cond: cond_val,
-                then_block: body_label.clone(),
-                else_block: exit_label.clone(),
+                then_block: body_label,
+                else_block: exit_label,
             });
 
             // Body block
-            builder.add_block(&body_label);
+            builder.add_block(body_label);
             for stmt in body {
                 build_stmt(builder, stmt);
             }
@@ -559,7 +561,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
 
             // Increment block (if any)
             if let Some(incr_label) = incr_label {
-                builder.add_block(&incr_label);
+                builder.add_block(incr_label);
                 for stmt in increment {
                     build_stmt(builder, stmt);
                 }
@@ -571,18 +573,13 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             builder.continue_targets.pop();
 
             // Exit block
-            builder.add_block(&exit_label);
+            builder.add_block(exit_label);
         }
 
         HirStmtKind::Drop { name } => {
             // Drop is a no-op at MIR level for now (could emit Drop instruction later)
             let span = builder.convert_span(stmt.span);
-            builder.emit(
-                MirInstrKind::Drop {
-                    value: name.clone(),
-                },
-                span,
-            );
+            builder.emit(MirInstrKind::Drop { value: sym(name) }, span);
         }
 
         HirStmtKind::ManualErrorExtract {
@@ -619,21 +616,23 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             };
 
             // Register error variable type so codegen knows it's a struct
+            let error_name_sym = sym(error_name);
             if error_name != "_" {
-                builder.set_temp_type(error_name, err_type);
+                builder.set_temp_type(error_name_sym, err_type);
             }
             // Register ok variable types
-            for ok_name in ok_names {
-                if ok_name != "_" {
-                    builder.set_temp_type(&ok_name, ok_type);
+            let ok_names_sym: Vec<Sym> = ok_names.iter().map(|n| sym(n)).collect();
+            for &ok_name in &ok_names_sym {
+                if ok_name != sym("_") {
+                    builder.set_temp_type(ok_name, ok_type);
                 }
             }
 
             // Emit ManualErrorExtract instruction
             builder.emit(
                 MirInstrKind::ManualErrorExtract {
-                    ok_names: ok_names.clone(),
-                    error_name: error_name.clone(),
+                    ok_names: ok_names_sym,
+                    error_name: error_name_sym,
                     result: src,
                     ok_type,
                     err_type,

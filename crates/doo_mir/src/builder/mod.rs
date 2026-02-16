@@ -8,6 +8,7 @@ pub mod pattern;
 pub mod stmt;
 
 use doo_analysis::{Decision, OwnershipResults};
+use doo_core::constants::ffi_names::derive_ffi_symbol;
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind, TypeRegistry};
 use doo_core::Span as CoreSpan;
@@ -18,6 +19,7 @@ use doo_hir::{
 
 use rustc_hash::FxHashMap;
 
+use crate::sym::{Sym, sym, resolve};
 use crate::types::*;
 
 /// FFI function information extracted from @extern decorator.
@@ -29,27 +31,6 @@ pub struct FfiFunctionInfo {
     pub library: String,
     /// The FFI symbol name (e.g., "doo_http_server_new")
     pub symbol: String,
-}
-
-/// Derive FFI symbol from library and function name.
-///
-/// Examples:
-/// - ("doo_http", "Server.new") -> "doo_http_server_new"
-/// - ("doo_http", "Server.get") -> "doo_http_server_get"
-/// - ("doo_db", "Query.exec") -> "doo_db_query_exec"
-fn derive_ffi_symbol(library: &str, func_name: &str) -> String {
-    // Split function name by '.' for methods
-    let parts: Vec<&str> = func_name.split('.').collect();
-
-    if parts.len() == 2 {
-        // Method: Server.get -> {library}_server_get
-        let type_name = parts[0].to_lowercase();
-        let method_name = parts[1].to_lowercase();
-        format!("{}_{}", library, format!("{}_{}", type_name, method_name))
-    } else {
-        // Plain function: myFunc -> {library}_myfunc
-        format!("{}_{}", library, func_name.to_lowercase())
-    }
 }
 
 /// HIR to MIR builder.
@@ -67,15 +48,15 @@ pub struct MirBuilder<'a> {
     pub(crate) container_kinds: FxHashMap<String, ContainerKind>,
 
     /// Stack of break target labels for loop control flow.
-    pub(crate) break_targets: Vec<String>,
+    pub(crate) break_targets: Vec<Sym>,
     /// Stack of continue target labels for loop control flow.
-    pub(crate) continue_targets: Vec<String>,
+    pub(crate) continue_targets: Vec<Sym>,
 
     /// Ownership analysis results (decisions for each variable use).
     pub ownership_results: Option<OwnershipResults>,
 
     /// Temporary variable types for type propagation.
-    pub(crate) temp_types: FxHashMap<String, CoreTypeId>,
+    pub(crate) temp_types: FxHashMap<Sym, CoreTypeId>,
 
     /// Function return types for type propagation during Call expression building.
     pub(crate) function_return_types: FxHashMap<String, CoreTypeId>,
@@ -115,7 +96,7 @@ pub struct MirBuilder<'a> {
 
     /// Stack of active scope variable names.
     /// When non-empty, `go { ... }` emits ScopeSpawn instead of Spawn.
-    pub(crate) scope_stack: Vec<String>,
+    pub(crate) scope_stack: Vec<Sym>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,7 +185,7 @@ impl<'a> MirBuilder<'a> {
                     // Store the Result type components
                     self.function_result_types
                         .insert(f.name.clone(), (return_type, error_type));
-                    if std::env::var("DOO_DEBUG").is_ok() {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                         doo_debug!(
                             "MIR",
                             "Registered Result function: {} (ok={:?}, err={:?})",
@@ -236,7 +217,7 @@ impl<'a> MirBuilder<'a> {
 
                 // Extract FFI info from @extern decorator (SINGLE SOURCE OF TRUTH)
                 if let Some(ffi_info) = self.extract_ffi_info(&f.decorators, &f.name) {
-                    if std::env::var("DOO_DEBUG").is_ok() {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                         doo_debug!(
                             "MIR",
                             "Registered FFI function: {} -> lib={} sym={}",
@@ -257,7 +238,7 @@ impl<'a> MirBuilder<'a> {
                         if !simple_name.is_empty() {
                             self.function_aliases
                                 .insert(simple_name.to_string(), f.name.clone());
-                            if std::env::var("DOO_DEBUG").is_ok() {
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                                 doo_debug!(
                                     "MIR",
                                     "Registered function alias: {} -> {}",
@@ -279,12 +260,12 @@ impl<'a> MirBuilder<'a> {
                 }
                 HirItem::Struct(s) => {
                     let mir_struct = StructDef {
-                        name: s.name.clone(),
+                        name: sym(&s.name),
                         fields: s
                             .fields
                             .iter()
                             .map(|f| FieldDef {
-                                name: f.name.clone(),
+                                name: sym(&f.name),
                                 type_id: f.type_id.unwrap_or(builtin::ANY),
                                 optional: f.is_optional,
                                 decorators: f
@@ -292,7 +273,7 @@ impl<'a> MirBuilder<'a> {
                                     .iter()
                                     .map(|d| {
                                         crate::types::Decorator {
-                                            name: d.name.clone(),
+                                            name: sym(&d.name),
                                             args: d
                                                 .args
                                                 .iter()
@@ -326,28 +307,28 @@ impl<'a> MirBuilder<'a> {
                             .decorators
                             .iter()
                             .map(|d| crate::types::Decorator {
-                                name: d.name.clone(),
+                                name: sym(&d.name),
                                 args: Vec::new(),
                             })
                             .collect(),
                     };
-                    program.structs.insert(s.name.clone(), mir_struct);
+                    program.structs.insert(sym(&s.name), mir_struct);
                 }
                 HirItem::Enum(e) => {
                     let mir_enum = EnumDef {
-                        name: e.name.clone(),
+                        name: sym(&e.name),
                         variants: e
                             .variants
                             .iter()
                             .enumerate()
                             .map(|(i, v)| VariantDef {
-                                name: v.name.clone(),
+                                name: sym(&v.name),
                                 index: i as u32,
                                 payload_type: v.payload,
                             })
                             .collect(),
                     };
-                    program.enums.insert(e.name.clone(), mir_enum);
+                    program.enums.insert(sym(&e.name), mir_enum);
                 }
                 HirItem::Import(_) => {
                     // Imports handled elsewhere
@@ -386,7 +367,7 @@ impl<'a> MirBuilder<'a> {
         self.block_counter = 0;
 
         // Create new closure function
-        let mut func = MirFunction::new(name.to_string());
+        let mut func = MirFunction::new(sym(name));
         func.is_closure = true; // Mark as closure for special codegen handling
 
         // Keep original param types for proper MIR body codegen
@@ -395,14 +376,14 @@ impl<'a> MirBuilder<'a> {
         func.params = params
             .iter()
             .map(|(pname, ptype)| ParamDef {
-                name: pname.clone(),
+                name: sym(pname),
                 type_id: ptype.unwrap_or(builtin::INT),
             })
             .collect();
         // Don't set return_type yet - we'll infer it from the body expression
 
         // Create entry block
-        func.blocks.push(MirBlock::new("entry".to_string()));
+        func.blocks.push(MirBlock::new(sym("entry")));
         self.current_func = Some(func);
         self.current_block = 0;
 
@@ -410,7 +391,7 @@ impl<'a> MirBuilder<'a> {
         for (pname, ptype) in params {
             if let Some(f) = &mut self.current_func {
                 f.locals.push(LocalDef {
-                    name: pname.clone(),
+                    name: sym(pname),
                     type_id: ptype.unwrap_or(builtin::INT),
                     mutable: false,
                 });
@@ -419,10 +400,10 @@ impl<'a> MirBuilder<'a> {
 
         // Register captured variables as locals (populated from env struct at codegen)
         if let Some(f) = &mut self.current_func {
-            f.captures = captures.to_vec();
+            f.captures = captures.iter().map(|c| sym(c)).collect();
             for cap_name in captures {
                 f.locals.push(LocalDef {
-                    name: cap_name.clone(),
+                    name: sym(cap_name),
                     type_id: builtin::INT, // captures are i64 values
                     mutable: true,         // may be assigned inside the body
                 });
@@ -530,12 +511,12 @@ impl<'a> MirBuilder<'a> {
         self.block_counter = 0;
         self.container_kinds.clear();
 
-        let mut func = MirFunction::new(hir.name.clone());
+        let mut func = MirFunction::new(sym(&hir.name));
         func.params = hir
             .params
             .iter()
             .map(|p| ParamDef {
-                name: p.name.clone(),
+                name: sym(&p.name),
                 type_id: p.type_id.unwrap_or(builtin::ANY),
             })
             .collect();
@@ -546,13 +527,13 @@ impl<'a> MirBuilder<'a> {
         // Set FFI linkage info if this is an FFI function
         if let Some(ffi_info) = self.ffi_functions.get(&hir.name) {
             func.ffi = Some(FfiLinkage {
-                library: ffi_info.library.clone(),
-                symbol: Some(ffi_info.symbol.clone()),
+                library: sym(&ffi_info.library),
+                symbol: Some(sym(&ffi_info.symbol)),
             });
         }
 
         // Create entry block
-        func.blocks.push(MirBlock::new("entry".to_string()));
+        func.blocks.push(MirBlock::new(sym("entry")));
         self.current_func = Some(func);
         self.current_block = 0;
 
@@ -560,7 +541,7 @@ impl<'a> MirBuilder<'a> {
         for param in &hir.params {
             if let Some(f) = &mut self.current_func {
                 f.locals.push(LocalDef {
-                    name: param.name.clone(),
+                    name: sym(&param.name),
                     type_id: param.type_id.unwrap_or(builtin::ANY),
                     mutable: false,
                 });
@@ -625,7 +606,7 @@ impl<'a> MirBuilder<'a> {
                         // `-> ! E` function: return Ok(void) wrapped as Result
                         let void_val = MirOperand::Const(MirConst::Int(0)); // void placeholder
                         block.instructions.push(MirInstr::new(MirInstrKind::WrapOk {
-                            dest: dest.clone(),
+                            dest,
                             value: void_val,
                         }));
                         block.terminator = MirTerminator::Return {
@@ -709,15 +690,15 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
-    pub(crate) fn add_block(&mut self, label: &str) {
+    pub(crate) fn add_block(&mut self, label: Sym) {
         if let Some(f) = &mut self.current_func {
-            f.blocks.push(MirBlock::new(label.to_string()));
+            f.blocks.push(MirBlock::new(label));
             self.current_block = f.blocks.len() - 1;
         }
     }
 
-    pub(crate) fn new_temp(&mut self) -> String {
-        let name = format!("_t{}", self.temp_counter);
+    pub(crate) fn new_temp(&mut self) -> Sym {
+        let name = sym(&format!("_t{}", self.temp_counter));
         self.temp_counter += 1;
         name
     }
@@ -725,12 +706,12 @@ impl<'a> MirBuilder<'a> {
     /// Add a temporary variable to func.locals so codegen can access its type.
     /// This is needed for temps that hold intermediate values (like if-expr results)
     /// which need proper LLVM types during alloca creation.
-    pub(crate) fn add_temp_local(&mut self, name: &str, type_id: CoreTypeId) {
+    pub(crate) fn add_temp_local(&mut self, name: Sym, type_id: CoreTypeId) {
         if let Some(f) = &mut self.current_func {
             // Only add if not already present
             if !f.locals.iter().any(|l| l.name == name) {
                 f.locals.push(LocalDef {
-                    name: name.to_string(),
+                    name,
                     type_id,
                     mutable: false,
                 });
@@ -738,8 +719,8 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
-    pub(crate) fn new_block_label(&mut self, prefix: &str) -> String {
-        let label = format!("{}_{}", prefix, self.block_counter);
+    pub(crate) fn new_block_label(&mut self, prefix: &str) -> Sym {
+        let label = sym(&format!("{}_{}", prefix, self.block_counter));
         self.block_counter += 1;
         label
     }
@@ -775,9 +756,14 @@ impl<'a> MirBuilder<'a> {
             HirBinOp::Gt => BinaryOp::Gt,
             HirBinOp::LtEq => BinaryOp::Le,
             HirBinOp::GtEq => BinaryOp::Ge,
+            // `In` is handled specially in expr.rs via MapHas/ArrayContains;
+            // this fallback should never be reached in practice.
             HirBinOp::In => BinaryOp::Eq,
             HirBinOp::And => BinaryOp::And,
             HirBinOp::Or => BinaryOp::Or,
+            // BitAnd/BitOr map to logical And/Or which is correct for booleans
+            // (LLVM build_and/build_or are bitwise ops; for i1 values, bitwise == logical).
+            // TODO: Add dedicated MIR BitAnd/BitOr variants when integer bitwise ops are needed.
             HirBinOp::BitAnd => BinaryOp::And,
             HirBinOp::BitOr => BinaryOp::Or,
         }
@@ -898,9 +884,10 @@ impl<'a> MirBuilder<'a> {
 
     /// Look up the type of a local variable by name.
     pub(crate) fn get_local_type(&self, name: &str) -> Option<CoreTypeId> {
+        let s = sym(name);
         self.current_func
             .as_ref()
-            .and_then(|f| f.locals.iter().find(|l| l.name == name).map(|l| l.type_id))
+            .and_then(|f| f.locals.iter().find(|l| l.name == s).map(|l| l.type_id))
     }
 
     /// Recursively infer the type of an HIR expression.
@@ -1113,13 +1100,13 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// Set the type of a temporary variable.
-    pub(crate) fn set_temp_type(&mut self, name: &str, type_id: CoreTypeId) {
-        self.temp_types.insert(name.to_string(), type_id);
+    pub(crate) fn set_temp_type(&mut self, name: Sym, type_id: CoreTypeId) {
+        self.temp_types.insert(name, type_id);
     }
 
     /// Get the type of a temporary variable.
-    pub(crate) fn get_temp_type(&self, name: &str) -> Option<CoreTypeId> {
-        self.temp_types.get(name).copied()
+    pub(crate) fn get_temp_type(&self, name: Sym) -> Option<CoreTypeId> {
+        self.temp_types.get(&name).copied()
     }
 
     /// Infer type from a MirOperand.
@@ -1135,14 +1122,18 @@ impl<'a> MirBuilder<'a> {
             },
             MirOperand::Temp(name) => {
                 // Check if we have a recorded type for this temp
-                self.get_temp_type(name).unwrap_or(builtin::ANY)
+                self.get_temp_type(*name).unwrap_or(builtin::ANY)
             }
             MirOperand::Local(name) => {
                 // Check temp_types FIRST to handle shadowed bindings correctly.
                 // When a match binding shadows a local with a different type,
                 // we register the binding's type in temp_types, which takes precedence.
-                self.get_temp_type(name)
-                    .or_else(|| self.get_local_type(name))
+                self.get_temp_type(*name)
+                    .or_else(|| {
+                        self.current_func.as_ref().and_then(|f| {
+                            f.locals.iter().find(|l| l.name == *name).map(|l| l.type_id)
+                        })
+                    })
                     .unwrap_or(builtin::ANY)
             }
             MirOperand::Global(_) => builtin::ANY,

@@ -80,6 +80,9 @@ pub const PRINTF: &str = "printf";
 pub const SNPRINTF: &str = "snprintf";
 pub const PUTCHAR: &str = "putchar";
 pub const PUTS: &str = "puts";
+pub const SPRINTF: &str = "sprintf";
+pub const EXIT: &str = "exit";
+pub const FFLUSH: &str = "fflush";
 
 // ============================================================================
 // Doo Core Runtime Functions
@@ -88,6 +91,9 @@ pub const PUTS: &str = "puts";
 pub const DOO_ALLOC: &str = "doo_alloc";
 pub const DOO_FREE: &str = "doo_free";
 pub const DOO_REALLOC: &str = "doo_realloc";
+pub const DOO_CLONE: &str = "doo_clone";
+pub const DOO_MEMCPY: &str = "doo_memcpy";
+pub const DOO_ZERO: &str = "doo_zero";
 
 // ============================================================================
 // Doo JSON FFI (doo_ffi_json)
@@ -163,16 +169,67 @@ pub const DOO_HTTP_GROUP: &str = "doo_http_group";
 pub const DOO_HTTP_CORS: &str = "doo_http_cors";
 pub const DOO_HTTP_RATE_LIMIT: &str = "doo_http_rate_limit";
 
+// HTTP Method Routes (verb-based registration)
+pub const DOO_HTTP_GET: &str = "doo_http_get";
+pub const DOO_HTTP_POST: &str = "doo_http_post";
+pub const DOO_HTTP_PUT: &str = "doo_http_put";
+pub const DOO_HTTP_DELETE: &str = "doo_http_delete";
+pub const DOO_HTTP_PATCH: &str = "doo_http_patch";
+
+// HTTP Method Routes with function pointer
+pub const DOO_HTTP_GET_FN: &str = "doo_http_get_fn";
+pub const DOO_HTTP_POST_FN: &str = "doo_http_post_fn";
+pub const DOO_HTTP_PUT_FN: &str = "doo_http_put_fn";
+pub const DOO_HTTP_DELETE_FN: &str = "doo_http_delete_fn";
+pub const DOO_HTTP_PATCH_FN: &str = "doo_http_patch_fn";
+
+// HTTP Method Routes with middleware
+pub const DOO_HTTP_GET_WITH_MIDDLEWARE: &str = "doo_http_get_with_middleware";
+pub const DOO_HTTP_POST_WITH_MIDDLEWARE: &str = "doo_http_post_with_middleware";
+pub const DOO_HTTP_PUT_WITH_MIDDLEWARE: &str = "doo_http_put_with_middleware";
+pub const DOO_HTTP_DELETE_WITH_MIDDLEWARE: &str = "doo_http_delete_with_middleware";
+pub const DOO_HTTP_PATCH_WITH_MIDDLEWARE: &str = "doo_http_patch_with_middleware";
+
+// HTTP Misc
+pub const DOO_HTTP_USE: &str = "doo_http_use";
+pub const DOO_HTTP_LISTEN: &str = "doo_http_listen";
+pub const DOO_HTTP_CORS_CUSTOM: &str = "doo_http_cors_custom";
+pub const DOO_HTTP_RATELIMIT_CUSTOM: &str = "doo_http_ratelimit_custom";
+pub const DOO_HTTP_NEXT_CALL: &str = "doo_http_next_call";
+pub const DOO_HTTP_AUTH: &str = "doo_http_auth";
+pub const DOO_HTTP_CRUD: &str = "doo_http_crud";
+pub const DOO_HTTP_JWT: &str = "doo_http_jwt";
+pub const DOO_HTTP_PARSE_JSON: &str = "doo_http_parse_json";
+pub const DOO_HTTP_TO_JSON: &str = "doo_http_to_json";
+pub const DOO_HTTP_REGISTER_MIDDLEWARE: &str = "doo_http_register_middleware";
+pub const DOO_HTTP_REGISTER_HANDLER_WITH_METADATA: &str = "doo_http_register_handler_with_metadata";
+pub const DOO_HTTP_REGISTER_STRUCT_METADATA: &str = "doo_http_register_struct_metadata";
+pub const DOO_HTTP_REGISTER_ENUM_METADATA: &str = "doo_http_register_enum_metadata";
+
 // Request/Response
 pub const DOO_HTTP_REQ_GET_HEADER: &str = "doo_http_req_get_header";
 pub const DOO_HTTP_REQ_GET_BODY: &str = "doo_http_req_get_body";
 pub const DOO_HTTP_REQ_GET_PARAM: &str = "doo_http_req_get_param";
 pub const DOO_HTTP_REQ_GET_QUERY: &str = "doo_http_req_get_query";
 
+// Request shorthands (aliases used in get_ffi_signature)
+pub const DOO_HTTP_REQ_QUERY: &str = "doo_http_req_query";
+pub const DOO_HTTP_REQ_PARAM: &str = "doo_http_req_param";
+pub const DOO_HTTP_REQ_HEADER: &str = "doo_http_req_header";
+
 pub const DOO_HTTP_RES_SET_STATUS: &str = "doo_http_res_set_status";
 pub const DOO_HTTP_RES_SET_HEADER: &str = "doo_http_res_set_header";
 pub const DOO_HTTP_RES_SET_BODY: &str = "doo_http_res_set_body";
 pub const DOO_HTTP_RES_JSON: &str = "doo_http_res_json";
+
+// HTTP Serialization Helpers (doohttp_ prefix — compiled into codegen wrappers)
+pub const DOOHTTP_POPULATE_STRUCT_FROM_REQUEST: &str = "doohttp_populate_struct_from_request";
+pub const DOOHTTP_LAST_ERROR_STATUS: &str = "doohttp_last_error_status";
+pub const DOOHTTP_LAST_ERROR_JSON: &str = "doohttp_last_error_json";
+pub const DOOHTTP_ERROR_VARIANT_TO_STATUS: &str = "doohttp_error_variant_to_status";
+pub const DOOHTTP_BUILD_RFC7807_ERROR: &str = "doohttp_build_rfc7807_error";
+pub const DOOHTTP_SERIALIZE_STRUCT_TO_JSON: &str = "doohttp_serialize_struct_to_json";
+pub const DOOHTTP_FORMAT_ERROR_AS_JSON: &str = "doohttp_format_error_as_json";
 
 // ============================================================================
 // Doo Database FFI (doo_ffi_db)
@@ -190,6 +247,10 @@ pub const DOO_DB_QUERY: &str = "doo_db_query";
 pub const DOO_DB_EXISTS: &str = "doo_db_exists";
 pub const DOO_DB_RESULT_FREE: &str = "doo_db_result_free";
 pub const DOO_DB_SERIALIZE_ENUM_ARRAY: &str = "doo_db_serialize_enum_array";
+pub const DOO_DB_CONNECT_POSTGRES: &str = "doo_db_connect_postgres";
+pub const DOO_DB_GET_GLOBAL: &str = "doo_db_get_global";
+pub const DOO_DB_RAW_PARAM: &str = "doo_db_raw_param";
+pub const DOO_DB_FREE_STRING: &str = "doo_db_free_string";
 
 // ============================================================================
 // Doo Auth FFI (doo_ffi_auth)
@@ -200,6 +261,9 @@ pub const DOO_AUTH_VERIFY_PASSWORD: &str = "doo_auth_verify_password";
 pub const DOO_AUTH_SIGN_TOKEN: &str = "doo_auth_sign_token";
 pub const DOO_AUTH_VERIFY_TOKEN: &str = "doo_auth_verify_token";
 pub const DOO_AUTH_FREE_RESULT: &str = "doo_auth_free_result";
+pub const DOO_AUTH_SIGN: &str = "doo_auth_sign";
+pub const DOO_AUTH_VERIFY: &str = "doo_auth_verify";
+pub const DOO_AUTH_FREE_STRING: &str = "doo_auth_free_string";
 
 // ============================================================================
 // Doo File FFI (doo_ffi_file)
@@ -283,12 +347,34 @@ pub const DOO_ARRAY_PUSH: &str = "doo_array_push";
 pub const DOO_ARRAY_FREE: &str = "doo_array_free";
 
 pub const DOO_MAP_CREATE: &str = "doo_map_create";
+pub const DOO_MAP_NEW: &str = "doo_map_new";
 pub const DOO_MAP_SET: &str = "doo_map_set";
 pub const DOO_MAP_GET: &str = "doo_map_get";
 pub const DOO_MAP_FREE: &str = "doo_map_free";
+pub const DOO_MAP_SET_STR_ARRAY: &str = "doo_map_set_str_array";
 
 pub const DOO_STRING_CREATE: &str = "doo_string_create";
 pub const DOO_STRING_FREE: &str = "doo_string_free";
+
+// ============================================================================
+// Doo Async/Runtime FFI (doo_ffi_runtime)
+// ============================================================================
+
+pub const DOO_RUNTIME_INIT: &str = "doo_runtime_init";
+pub const DOO_RUNTIME_BLOCK_ON: &str = "doo_runtime_block_on";
+pub const DOO_SPAWN: &str = "doo_spawn";
+pub const DOO_SPAWN_DETACH: &str = "doo_spawn_detach";
+pub const DOO_SPAWN_BLOCKING: &str = "doo_spawn_blocking";
+pub const DOO_TASK_AWAIT: &str = "doo_task_await";
+pub const DOO_TASK_CANCEL: &str = "doo_task_cancel";
+pub const DOO_TASK_FREE: &str = "doo_task_free";
+pub const DOO_SCOPE_CREATE: &str = "doo_scope_create";
+pub const DOO_SCOPE_SPAWN: &str = "doo_scope_spawn";
+pub const DOO_SCOPE_WAIT: &str = "doo_scope_wait";
+pub const DOO_SCOPE_FREE: &str = "doo_scope_free";
+pub const DOO_SLEEP: &str = "doo_sleep";
+pub const DOO_SLEEP_ASYNC: &str = "doo_sleep_async";
+pub const DOO_TIMEOUT: &str = "doo_timeout";
 
 // ============================================================================
 // Self-Returning Method Names - Single Source of Truth
@@ -406,3 +492,36 @@ pub const DOO_PROCESS_READ_STDERR: &str = "doo_process_read_stderr";
 // Lifecycle
 pub const DOO_PROCESS_SHUTDOWN: &str = "doo_process_shutdown";
 pub const DOO_PROCESS_ACTIVE_COUNT: &str = "doo_process_active_count";
+
+// ============================================================================
+// FFI Symbol Derivation — Single Source of Truth
+// ============================================================================
+
+/// Derive an FFI symbol name from a library name and function name.
+///
+/// This is the **single source of truth** for FFI symbol naming.
+/// Used by both MIR builder and codegen to generate consistent symbol names.
+///
+/// # Examples
+///
+/// ```
+/// use doo_core::constants::ffi_names::derive_ffi_symbol;
+/// assert_eq!(derive_ffi_symbol("doo_http", "Server.new"), "doo_http_server_new");
+/// assert_eq!(derive_ffi_symbol("doo_http", "Server.get"), "doo_http_server_get");
+/// assert_eq!(derive_ffi_symbol("doo_db", "Query.exec"), "doo_db_query_exec");
+/// assert_eq!(derive_ffi_symbol("doo_http", "myFunc"), "doo_http_myfunc");
+/// ```
+pub fn derive_ffi_symbol(library: &str, func_name: &str) -> String {
+    // Split function name by '.' for methods
+    let parts: Vec<&str> = func_name.split('.').collect();
+
+    if parts.len() == 2 {
+        // Method: Server.get -> {library}_server_get
+        let type_name = parts[0].to_lowercase();
+        let method_name = parts[1].to_lowercase();
+        format!("{}_{}_{}", library, type_name, method_name)
+    } else {
+        // Plain function: myFunc -> {library}_myfunc
+        format!("{}_{}", library, func_name.to_lowercase())
+    }
+}

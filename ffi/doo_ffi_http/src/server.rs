@@ -25,7 +25,6 @@ use crate::types::*;
 use doo_ffi_core::ffi_debug;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -137,8 +136,8 @@ fn execute_middleware_at_index(
     current_mw(req, middleware_next)
 }
 
-/// Thread-local context for middleware chain execution.
-/// Uses raw pointer + length instead of owned Vec to avoid allocation.
+// Thread-local context for middleware chain execution.
+// Uses raw pointer + length instead of owned Vec to avoid allocation.
 thread_local! {
     static MIDDLEWARE_CONTEXT: std::cell::RefCell<MiddlewareContext> =
         std::cell::RefCell::new(MiddlewareContext::default());
@@ -307,7 +306,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         crate::ws::upgrade::handle_ws_connection(ws_stream, &path_clone).await;
                     }
                     Err(e) => {
-                        eprintln!("[Doo] WebSocket upgrade failed for {}: {}", path_clone, e);
+                        doo_ffi_core::ffi_fatal!("WebSocket upgrade failed for {}: {}", path_clone, e);
                     }
                 }
             });
@@ -671,7 +670,7 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
         let ws_routes = crate::ws::get_ws_registry().count();
 
         // Print banner (suppressible via DOO_NO_BANNER=1)
-        let no_banner = std::env::var("DOO_NO_BANNER").map(|v| v == "1").unwrap_or(false);
+        let no_banner = std::env::var(doo_ffi_core::constants::ENV_DOO_NO_BANNER).map(|v| v == "1").unwrap_or(false);
         if !no_banner {
             println!("\x1b[36m  ____              ");
             println!(" |  _ \\  ___   ___  ");

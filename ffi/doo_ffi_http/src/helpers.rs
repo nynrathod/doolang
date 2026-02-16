@@ -140,7 +140,7 @@ pub fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Thread-local storage for current request path (for RFC 7807 instance field)
+// Thread-local storage for current request path (for RFC 7807 instance field)
 thread_local! {
     static CURRENT_REQUEST_PATH: std::cell::RefCell<String> = std::cell::RefCell::new("/".to_string());
     static LAST_ERROR_STATUS: std::cell::Cell<i32> = std::cell::Cell::new(0);

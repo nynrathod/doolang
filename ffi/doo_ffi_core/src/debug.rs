@@ -30,7 +30,7 @@ static DEBUG_ENABLED: OnceLock<bool> = OnceLock::new();
 #[inline]
 pub fn is_enabled() -> bool {
     *DEBUG_ENABLED.get_or_init(|| {
-        cfg!(debug_assertions) || std::env::var("DOO_DEBUG").is_ok()
+        cfg!(debug_assertions) || std::env::var(crate::constants::ENV_DOO_DEBUG).is_ok()
     })
 }
 
@@ -52,5 +52,23 @@ macro_rules! ffi_debug {
         if $crate::debug::is_enabled() {
             eprintln!("[{}] ({}:{}) {}", $component, file!(), line!(), format_args!($($arg)*));
         }
+    };
+}
+
+/// Fatal error macro — always prints regardless of debug mode.
+///
+/// Use for unrecoverable errors that must always be visible.
+/// Consistent format: `[FATAL] (file:line) message`
+///
+/// # Examples
+///
+/// ```ignore
+/// use doo_ffi_core::ffi_fatal;
+/// ffi_fatal!("Failed to create Tokio runtime: {}", err);
+/// ```
+#[macro_export]
+macro_rules! ffi_fatal {
+    ($($arg:tt)*) => {
+        eprintln!("[FATAL] ({}:{}) {}", file!(), line!(), format_args!($($arg)*));
     };
 }

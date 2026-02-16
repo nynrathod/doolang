@@ -9,6 +9,7 @@
 //! 3. Drop Optimization - Batch adjacent drops, remove redundant drops
 
 use crate::types::*;
+use crate::sym::Sym;
 
 /// Optimization pass trait.
 pub trait MirPass {
@@ -34,6 +35,8 @@ impl OptimizationPipeline {
     pub fn default_pipeline() -> Self {
         let mut pipeline = Self::new();
         pipeline.add_pass(Box::new(ConstantFolding));
+        pipeline.add_pass(Box::new(ConstantPropagation));
+        pipeline.add_pass(Box::new(CopyPropagation));
         pipeline.add_pass(Box::new(DeadCodeElimination));
         pipeline.add_pass(Box::new(DropOptimization));
         pipeline
@@ -108,7 +111,7 @@ impl ConstantFolding {
             MirInstrKind::BinaryOp { dest, op, lhs, rhs } => {
                 if let (MirOperand::Const(lc), MirOperand::Const(rc)) = (lhs, rhs) {
                     if let Some(result) = self.fold_binop(*op, lc, rc) {
-                        let dest = dest.clone();
+                        let dest = *dest;
                         instr.kind = MirInstrKind::Assign {
                             dest,
                             value: MirOperand::Const(result),
@@ -120,7 +123,7 @@ impl ConstantFolding {
             MirInstrKind::UnaryOp { dest, op, operand } => {
                 if let MirOperand::Const(c) = operand {
                     if let Some(result) = self.fold_unaryop(*op, c) {
-                        let dest = dest.clone();
+                        let dest = *dest;
                         instr.kind = MirInstrKind::Assign {
                             dest,
                             value: MirOperand::Const(result),
@@ -197,8 +200,14 @@ impl ConstantFolding {
 /// Dead code elimination pass.
 ///
 /// Removes:
-/// - Assignments where result is never used
-/// - Unreachable blocks
+/// - Assignments where result is never used (no side effects)
+/// - Pure computations whose results are unused
+///
+/// Preserves:
+/// - Calls (may have side effects)
+/// - Drops (memory management)
+/// - Stores/sets (mutations)
+/// - All instructions without a destination (inherently side-effectful)
 pub struct DeadCodeElimination;
 
 impl MirPass for DeadCodeElimination {
@@ -206,9 +215,113 @@ impl MirPass for DeadCodeElimination {
         "dead_code_elimination"
     }
 
-    fn run(&mut self, _program: &mut MirProgram) -> bool {
-        // Simplified DCE - full implementation would track used values
-        false
+    fn run(&mut self, program: &mut MirProgram) -> bool {
+        use rustc_hash::FxHashSet;
+
+        let mut changed = false;
+
+        for func in &mut program.functions {
+            // Pass 1: Collect all used operand names across all blocks
+            let mut used_names: FxHashSet<Sym> = FxHashSet::default();
+
+            for block in &func.blocks {
+                // Collect names from terminators
+                match &block.terminator {
+                    MirTerminator::Return { values } => {
+                        for op in values {
+                            Self::collect_operand_names(op, &mut used_names);
+                        }
+                    }
+                    MirTerminator::Branch { cond, .. } => {
+                        Self::collect_operand_names(cond, &mut used_names);
+                    }
+                    MirTerminator::Switch { value, .. } => {
+                        Self::collect_operand_names(value, &mut used_names);
+                    }
+                    _ => {}
+                }
+
+                // Collect names from instruction operands
+                for instr in &block.instructions {
+                    for op in instr.operands() {
+                        Self::collect_operand_names(op, &mut used_names);
+                    }
+                }
+            }
+
+            // Pass 2: Remove pure instructions whose destination is unused
+            for block in &mut func.blocks {
+                let before_len = block.instructions.len();
+
+                block.instructions.retain(|instr| {
+                    // Keep all side-effectful instructions regardless
+                    if Self::has_side_effects(instr) {
+                        return true;
+                    }
+
+                    // If instruction has a destination, check if it's used
+                    if let Some(dest) = instr.destination() {
+                        if !used_names.contains(dest) {
+                            return false; // Dead: destination never read
+                        }
+                    }
+
+                    true
+                });
+
+                if block.instructions.len() != before_len {
+                    changed = true;
+                }
+            }
+        }
+
+        changed
+    }
+}
+
+impl DeadCodeElimination {
+    /// Collect variable names referenced by an operand.
+    fn collect_operand_names(op: &MirOperand, names: &mut rustc_hash::FxHashSet<Sym>) {
+        match op {
+            MirOperand::Local(n) | MirOperand::Temp(n) | MirOperand::Global(n) => {
+                names.insert(*n);
+            }
+            MirOperand::FuncRef(n) => {
+                names.insert(*n);
+            }
+            MirOperand::Const(_) => {}
+        }
+    }
+
+    /// Check if an instruction has side effects (must be preserved even if unused).
+    fn has_side_effects(instr: &MirInstr) -> bool {
+        matches!(
+            &instr.kind,
+            // Function calls may have side effects
+            MirInstrKind::Call { .. }
+            | MirInstrKind::MethodCall { .. }
+            | MirInstrKind::FfiCall { .. }
+            | MirInstrKind::ClosureCall { .. }
+            // Memory management
+            | MirInstrKind::Drop { .. }
+            // Mutation operations
+            | MirInstrKind::ArraySet { .. }
+            | MirInstrKind::ArrayPush { .. }
+            | MirInstrKind::ArrayExtend { .. }
+            | MirInstrKind::MapSet { .. }
+            | MirInstrKind::FieldSet { .. }
+            // Print and I/O
+            | MirInstrKind::Print { .. }
+            // Async operations
+            | MirInstrKind::Spawn { .. }
+            | MirInstrKind::Await { .. }
+            | MirInstrKind::ScopeCreate { .. }
+            | MirInstrKind::ScopeSpawn { .. }
+            | MirInstrKind::ScopeWait { .. }
+            // Result wrapping (often part of error flow)  
+            | MirInstrKind::WrapOk { .. }
+            | MirInstrKind::WrapErr { .. }
+        )
     }
 }
 
@@ -235,15 +348,15 @@ impl MirPass for DropOptimization {
         for func in &mut program.functions {
             for block in &mut func.blocks {
                 // Remove consecutive duplicate drops
-                let mut prev_drop: Option<String> = None;
+                let mut prev_drop: Option<Sym> = None;
                 let before = block.instructions.len();
                 
                 block.instructions.retain(|instr| {
                     if let MirInstrKind::Drop { value } = &instr.kind {
-                        if Some(value.clone()) == prev_drop {
+                        if Some(*value) == prev_drop {
                             return false; // Remove duplicate
                         }
-                        prev_drop = Some(value.clone());
+                        prev_drop = Some(*value);
                     } else {
                         prev_drop = None;
                     }
@@ -252,6 +365,184 @@ impl MirPass for DropOptimization {
 
                 if block.instructions.len() != before {
                     changed = true;
+                }
+            }
+        }
+
+        changed
+    }
+}
+
+// ============================================================================
+// Constant Propagation
+// ============================================================================
+
+/// Constant propagation pass.
+///
+/// When a variable is assigned a constant value, replace all subsequent
+/// uses of that variable with the constant (within the same block).
+pub struct ConstantPropagation;
+
+impl MirPass for ConstantPropagation {
+    fn name(&self) -> &'static str {
+        "constant_propagation"
+    }
+
+    fn run(&mut self, program: &mut MirProgram) -> bool {
+        use rustc_hash::FxHashMap;
+
+        let mut changed = false;
+
+        for func in &mut program.functions {
+            for block in &mut func.blocks {
+                // Track known constant values: variable -> constant
+                let mut known: FxHashMap<Sym, MirConst> = FxHashMap::default();
+
+                for instr in &mut block.instructions {
+                    // Replace operands with known constants
+                    let operand_replacements: Vec<(Sym, MirConst)> = instr
+                        .operands()
+                        .iter()
+                        .filter_map(|op| {
+                            if let MirOperand::Local(name) | MirOperand::Temp(name) = op {
+                                known.get(name).map(|c| (*name, c.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    if !operand_replacements.is_empty() {
+                        Self::replace_operands(instr, &operand_replacements);
+                        changed = true;
+                    }
+
+                    // Track new constant assignments
+                    if let MirInstrKind::Assign {
+                        dest,
+                        value: MirOperand::Const(c),
+                    } = &instr.kind
+                    {
+                        known.insert(*dest, c.clone());
+                    }
+
+                    // If a tracked variable is reassigned, invalidate it
+                    if let Some(dest) = instr.destination() {
+                        if !matches!(
+                            &instr.kind,
+                            MirInstrKind::Assign {
+                                value: MirOperand::Const(_),
+                                ..
+                            }
+                        ) {
+                            known.remove(dest);
+                        }
+                    }
+                }
+            }
+        }
+
+        changed
+    }
+}
+
+impl ConstantPropagation {
+    /// Replace operands in an instruction with known constant values.
+    fn replace_operands(instr: &mut MirInstr, replacements: &[(Sym, MirConst)]) {
+        for (name, constant) in replacements {
+            Self::replace_operand_in_kind(&mut instr.kind, *name, constant);
+        }
+    }
+
+    fn replace_operand_in_kind(kind: &mut MirInstrKind, name: Sym, constant: &MirConst) {
+        match kind {
+            MirInstrKind::BinaryOp { lhs, rhs, .. } => {
+                Self::maybe_replace(lhs, name, constant);
+                Self::maybe_replace(rhs, name, constant);
+            }
+            MirInstrKind::UnaryOp { operand, .. } => {
+                Self::maybe_replace(operand, name, constant);
+            }
+            MirInstrKind::Assign { value, .. } => {
+                Self::maybe_replace(value, name, constant);
+            }
+            MirInstrKind::Move { src, .. } => {
+                Self::maybe_replace(src, name, constant);
+            }
+            MirInstrKind::Copy { src, .. } => {
+                Self::maybe_replace(src, name, constant);
+            }
+            _ => {} // Other instruction kinds are left as-is
+        }
+    }
+
+    fn maybe_replace(op: &mut MirOperand, name: Sym, constant: &MirConst) {
+        match op {
+            MirOperand::Local(n) | MirOperand::Temp(n) if *n == name => {
+                *op = MirOperand::Const(constant.clone());
+            }
+            _ => {}
+        }
+    }
+}
+
+// ============================================================================
+// Copy Propagation
+// ============================================================================
+
+/// Copy propagation pass.
+///
+/// When a variable is a direct copy of another variable (`x = y`), replace
+/// subsequent uses of `x` with `y` (within the same block).
+pub struct CopyPropagation;
+
+impl MirPass for CopyPropagation {
+    fn name(&self) -> &'static str {
+        "copy_propagation"
+    }
+
+    fn run(&mut self, program: &mut MirProgram) -> bool {
+        use rustc_hash::FxHashMap;
+
+        let mut changed = false;
+
+        for func in &mut program.functions {
+            for block in &mut func.blocks {
+                // Track copy chains: x = y means copies[x] = y
+                let mut copies: FxHashMap<Sym, Sym> = FxHashMap::default();
+
+                for instr in &mut block.instructions {
+                    // Track simple copies: Assign { dest, value: Local/Temp }
+                    if let MirInstrKind::Assign {
+                        dest,
+                        value: MirOperand::Local(src) | MirOperand::Temp(src),
+                    } = &instr.kind
+                    {
+                        // Follow the chain: if src is also a copy, use the root
+                        let root = copies.get(src).copied().unwrap_or(*src);
+                        copies.insert(*dest, root);
+                        continue;
+                    }
+
+                    // Also track Move/Copy instructions
+                    if let MirInstrKind::Move {
+                        dest,
+                        src: MirOperand::Local(src) | MirOperand::Temp(src),
+                    }
+                    | MirInstrKind::Copy {
+                        dest,
+                        src: MirOperand::Local(src) | MirOperand::Temp(src),
+                    } = &instr.kind
+                    {
+                        let root = copies.get(src).copied().unwrap_or(*src);
+                        copies.insert(*dest, root);
+                        continue;
+                    }
+
+                    // If a tracked dest is reassigned by other means, invalidate
+                    if let Some(dest) = instr.destination() {
+                        copies.remove(dest);
+                    }
                 }
             }
         }
@@ -300,6 +591,6 @@ mod tests {
     #[test]
     fn test_pipeline_creation() {
         let pipeline = OptimizationPipeline::default_pipeline();
-        assert_eq!(pipeline.passes.len(), 3);
+        assert_eq!(pipeline.passes.len(), 5);
     }
 }

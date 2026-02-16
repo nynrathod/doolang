@@ -5,6 +5,7 @@
 use crate::context::CodegenContext;
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId, TypeKind};
+use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirOperand};
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, IntValue};
@@ -17,25 +18,27 @@ pub fn operand_to_value<'ctx>(
 ) -> Option<BasicValueEnum<'ctx>> {
     match operand {
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
+            let name_str = resolve(*name);
             // First try to get as a value (local variable, temp, etc.)
-            if let Some(val) = ctx.get_value(name.as_str()) {
+            if let Some(val) = ctx.get_value(&name_str) {
                 return Some(val);
             }
             // Fall back to function reference - convert function to pointer value
             // This handles cases like passing `getUserHandler` as a callback argument
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None
         }
         MirOperand::FuncRef(name) => {
+            let name_str = resolve(*name);
             // Explicit function reference - return function as pointer value
             // Used when passing functions to FFI (e.g., app.get("/users", getUserHandler))
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             // Try mangled name for methods
-            if let Some(func) = ctx.get_function(&format!("_{}", name)) {
+            if let Some(func) = ctx.get_function(&format!("_{}", name_str)) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None

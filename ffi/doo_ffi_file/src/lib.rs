@@ -321,13 +321,7 @@ fn make_ok_metadata(meta: DooFileMetadata) -> *mut DooResult {
 
 #[inline]
 fn make_err(message: &str) -> *mut DooResult {
-    let err_ptr = alloc_file_error(message);
-    DooResult::err(
-        500,
-        err_ptr as *mut c_void,
-        std::mem::size_of::<DooFileError>() as u32,
-    )
-    .into_raw()
+    doo_ffi_core::helpers::make_err_rfc7807(500, message)
 }
 
 #[inline]

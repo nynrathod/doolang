@@ -37,22 +37,22 @@ impl Interner {
 
     /// Intern a string, returning its ID.
     pub fn intern(&self, s: &str) -> InternedStr {
-        self.inner.write().unwrap().get_or_intern(s)
+        self.inner.write().expect("FATAL: string interner RwLock poisoned during write").get_or_intern(s)
     }
 
     /// Get the string for an interned ID.
     pub fn resolve(&self, sym: InternedStr) -> Option<String> {
-        self.inner.read().unwrap().resolve(sym).map(|s| s.to_string())
+        self.inner.read().expect("FATAL: string interner RwLock poisoned during read").resolve(sym).map(|s| s.to_string())
     }
 
     /// Check if a string is already interned.
     pub fn get(&self, s: &str) -> Option<InternedStr> {
-        self.inner.read().unwrap().get(s)
+        self.inner.read().expect("FATAL: string interner RwLock poisoned during read").get(s)
     }
 
     /// Get the number of interned strings.
     pub fn len(&self) -> usize {
-        self.inner.read().unwrap().len()
+        self.inner.read().expect("FATAL: string interner RwLock poisoned during read").len()
     }
 
     /// Check if empty.

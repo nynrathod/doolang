@@ -20,6 +20,7 @@ use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
 use doo_core::types::TypeId;
+use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
@@ -68,12 +69,12 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
                 enum_name,
                 variant,
                 payload,
-            } => emit_enum_create(ctx, dest, enum_name, variant, payload.as_ref()),
+            } => emit_enum_create(ctx, &resolve(*dest), &resolve(*enum_name), &resolve(*variant), payload.as_ref()),
 
             // ==================================================================
             // EnumTag - Extract tag from enum (simple version)
             // ==================================================================
-            MirInstrKind::EnumTag { dest, value } => emit_enum_tag(ctx, dest, value),
+            MirInstrKind::EnumTag { dest, value } => emit_enum_tag(ctx, &resolve(*dest), value),
 
             // ==================================================================
             // EnumGetTag - Extract tag from enum with type info
@@ -84,7 +85,7 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
                 enum_name: _,
             } => {
                 // Same implementation as EnumTag - enum_name available for future optimizations
-                emit_enum_tag(ctx, dest, value)
+                emit_enum_tag(ctx, &resolve(*dest), value)
             }
 
             // ==================================================================
@@ -95,7 +96,7 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
                 tag,
                 variant_name,
                 enum_name,
-            } => emit_enum_tag_equals(ctx, dest, tag, variant_name, enum_name),
+            } => emit_enum_tag_equals(ctx, &resolve(*dest), tag, &resolve(*variant_name), &resolve(*enum_name)),
 
             // ==================================================================
             // EnumPayload - Extract payload (simple version, no type info)
@@ -106,7 +107,7 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
                 variant,
             } => {
                 // Extract payload pointer - variant name available for type lookup
-                emit_enum_payload(ctx, dest, value, None, Some(variant))
+                emit_enum_payload(ctx, &resolve(*dest), value, None, Some(&resolve(*variant)))
             }
 
             // ==================================================================
@@ -121,7 +122,7 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
             } => {
                 // Extract and dereference payload using type info
                 // Pass index for tuple payload element extraction
-                emit_enum_get_payload(ctx, dest, value, enum_name, variant_name, *index)
+                emit_enum_get_payload(ctx, &resolve(*dest), value, &resolve(*enum_name), &resolve(*variant_name), *index)
             }
 
             _ => None,
@@ -277,7 +278,7 @@ fn emit_enum_tag<'ctx>(
     let enum_val = operand_to_value(ctx, value)?;
     let enum_type = get_enum_type(ctx);
 
-    if std::env::var("DOO_DEBUG").is_ok() {
+    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
         doo_debug!("CODEGEN", "emit_enum_tag: dest={}, enum_val={:?}",
             dest, enum_val
         );
@@ -392,12 +393,14 @@ fn emit_enum_payload<'ctx>(
                                type_id: Option<TypeId>|
      -> BasicValueEnum<'ctx> {
         // If we don't have type info or the payload is not a pointer, return as-is
-        if type_id.is_none() || !payload_ptr.is_pointer_value() {
+        let Some(type_id) = type_id else {
+            return payload_ptr;
+        };
+        if !payload_ptr.is_pointer_value() {
             return payload_ptr;
         }
 
         let ptr = payload_ptr.into_pointer_value();
-        let type_id = type_id.unwrap();
 
         // Check if this is a pointer type (Str, Array, Map, Struct, etc.)
         // For pointer types, the payload IS the value - don't dereference
@@ -723,19 +726,21 @@ fn operand_to_value<'ctx>(
     match operand {
         MirOperand::Const(c) => Some(const_to_value(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
+            let name_str = resolve(*name);
             // First try to get as a value (local variable, temp, etc.)
-            if let Some(val) = ctx.get_value(name) {
+            if let Some(val) = ctx.get_value(&name_str) {
                 return Some(val);
             }
             // Fall back to function reference - convert function to pointer value
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None
         }
         MirOperand::FuncRef(name) => {
+            let name_str = resolve(*name);
             // FuncRef is an explicit function reference - convert to pointer
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None

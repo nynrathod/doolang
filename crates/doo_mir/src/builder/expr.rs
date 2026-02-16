@@ -1,5 +1,6 @@
 use super::{ContainerKind, Decision, MirBuilder, LocalDef};
 use crate::{BinaryOp, MirConst, MirInstrKind, MirOperand, MirTerminator};
+use crate::sym::{Sym, sym, resolve};
 use doo_core::{
     constants::ffi_names,
     doo_debug,
@@ -55,8 +56,8 @@ fn build_method_call_with_type(
         .map(|(arg, op)| {
             arg.type_id
                 .or_else(|| match op {
-                    MirOperand::Temp(name) => builder.get_temp_type(name),
-                    MirOperand::Local(name) => builder.get_local_type(name),
+                    MirOperand::Temp(name) => builder.get_temp_type(*name),
+                    MirOperand::Local(name) => builder.get_local_type(&resolve(*name)),
                     _ => None,
                 })
                 .unwrap_or(builtin::ANY)
@@ -67,15 +68,15 @@ fn build_method_call_with_type(
     // Use expected_type if provided, otherwise fall back to expr.type_id
     let return_type = expected_type.or(expr.type_id);
     if let Some(rt) = return_type {
-        builder.set_temp_type(&dest, rt);
+        builder.set_temp_type(dest, rt);
     }
 
     builder.emit(
         MirInstrKind::MethodCall {
-            dest: Some(dest.clone()),
+            dest: Some(dest),
             receiver: recv,
             receiver_type,
-            method: method.to_string(),
+            method: sym(method),
             args: arg_ops,
             arg_types,
             return_type,
@@ -89,7 +90,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
     let span = builder.convert_span(expr.span);
 
     // DEBUG: Track what kind of expressions are being processed
-    let is_add_func = builder.current_func.as_ref().map(|f| f.name.contains("add")).unwrap_or(false);
+    let is_add_func = builder.current_func.as_ref().map(|f| resolve(f.name).contains("add")).unwrap_or(false);
     if is_add_func {
         doo_debug!("MIR", "build_expr: Processing {:?} in add function", expr.kind);
     }
@@ -100,13 +101,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         HirExprKind::Local { name } => {
             // Built-in modules (JSON, Math, File, etc.) are treated as globals, not locals
             if ffi_names::is_builtin_module(name) {
-                return MirOperand::Global(name.clone());
+                return MirOperand::Global(sym(name));
             }
             
             // Check if this is a function reference (not a variable)
             // Function references are used when passing functions to FFI (e.g., handlers)
             if builder.is_function_name(name) {
-                return MirOperand::FuncRef(name.clone());
+                return MirOperand::FuncRef(sym(name));
             }
 
             // Check if this is a type name (struct or enum) used as a value
@@ -125,18 +126,18 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // CRITICAL: Check temp_types FIRST to handle shadowed bindings correctly.
                 // When a match binding shadows a local with a different type, we register
                 // the binding's type in temp_types, which should take precedence.
-                let propagated_type = builder.get_temp_type(name)
+                let propagated_type = builder.get_temp_type(sym(name))
                     .or_else(|| builder.get_local_type(name));
                 if let Some(ty) = propagated_type {
-                    builder.set_temp_type(&dest, ty);
+                    builder.set_temp_type(dest, ty);
                 }
 
                 match decision {
                     Decision::Move => {
                         builder.emit(
                             MirInstrKind::Move {
-                                dest: dest.clone(),
-                                src: MirOperand::Local(name.clone()),
+                                dest,
+                                src: MirOperand::Local(sym(name)),
                             },
                             span,
                         );
@@ -145,8 +146,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     Decision::Copy => {
                         builder.emit(
                             MirInstrKind::Copy {
-                                dest: dest.clone(),
-                                src: MirOperand::Local(name.clone()),
+                                dest,
+                                src: MirOperand::Local(sym(name)),
                             },
                             span,
                         );
@@ -155,8 +156,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     Decision::Clone => {
                         builder.emit(
                             MirInstrKind::Clone {
-                                dest: dest.clone(),
-                                src: MirOperand::Local(name.clone()),
+                                dest,
+                                src: MirOperand::Local(sym(name)),
                             },
                             span,
                         );
@@ -165,8 +166,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     Decision::Borrow { mutable } => {
                         builder.emit(
                             MirInstrKind::Borrow {
-                                dest: dest.clone(),
-                                src: name.clone(),
+                                dest,
+                                src: sym(name),
                                 mutable,
                             },
                             span,
@@ -176,11 +177,11 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 }
             } else {
                 // No ownership decision available - default to direct reference
-                MirOperand::Local(name.clone())
+                MirOperand::Local(sym(name))
             }
         }
 
-        HirExprKind::Global { name } => MirOperand::Global(name.clone()),
+        HirExprKind::Global { name } => MirOperand::Global(sym(name)),
 
         HirExprKind::BinOp { op, lhs, rhs } => {
             if *op == HirBinOp::In {
@@ -199,7 +200,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                             .unwrap_or((builtin::ANY, builtin::ANY));
                         builder.emit(
                             MirInstrKind::MapHas {
-                                dest: dest.clone(),
+                                dest,
                                 map: container,
                                 key: value,
                                 key_type,
@@ -215,7 +216,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                             .unwrap_or(builtin::ANY);
                         builder.emit(
                             MirInstrKind::ArrayContains {
-                                dest: dest.clone(),
+                                dest,
                                 array: container,
                                 value,
                                 elem_type,
@@ -256,12 +257,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     }
                 });
                 if let Some(tid) = type_id {
-                    builder.set_temp_type(&dest, tid);
+                    builder.set_temp_type(dest, tid);
                 }
                 
                 builder.emit(
                     MirInstrKind::BinaryOp {
-                        dest: dest.clone(),
+                        dest,
                         op: builder.binop_to_mir(*op),
                         lhs: l,
                         rhs: r,
@@ -279,12 +280,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Propagate type information from the expression or operand
             // For Neg, the result type is the same as the operand type
             if let Some(type_id) = expr.type_id.or(operand.type_id) {
-                builder.set_temp_type(&dest, type_id);
+                builder.set_temp_type(dest, type_id);
             }
             
             builder.emit(
                 MirInstrKind::UnaryOp {
-                    dest: dest.clone(),
+                    dest,
                     op: builder.unaryop_to_mir(*op),
                     operand: inner,
                 },
@@ -344,7 +345,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let value_type = args[0].type_id.unwrap_or(builtin::ANY);
                 builder.emit(
                     MirInstrKind::TypeOf {
-                        dest: dest.clone(),
+                        dest,
                         value: arg_ops.into_iter().next().unwrap(),
                         value_type,
                     },
@@ -356,9 +357,9 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let dest = builder.new_temp();
                 builder.emit(
                     MirInstrKind::FfiCall {
-                        dest: Some(dest.clone()),
-                        lib: ffi_info.library.clone(),
-                        symbol: ffi_info.symbol.clone(),
+                        dest: Some(dest),
+                        lib: sym(&ffi_info.library),
+                        symbol: sym(&ffi_info.symbol),
                         args: arg_ops,
                     },
                     span,
@@ -366,7 +367,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
                 // Record the return type of the call for type propagation
                 if let Some(return_type) = builder.get_function_return_type(&func_name) {
-                    builder.set_temp_type(&dest, return_type);
+                    builder.set_temp_type(dest, return_type);
                 }
 
                 MirOperand::Temp(dest)
@@ -374,8 +375,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let dest = builder.new_temp();
                 builder.emit(
                     MirInstrKind::Call {
-                        dest: Some(dest.clone()),
-                        func: resolved_func_name.clone(),
+                        dest: Some(dest),
+                        func: sym(&resolved_func_name),
                         args: arg_ops,
                     },
                     span,
@@ -384,7 +385,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Record the return type of the call for type propagation
                 // This is critical for tuple returns and other complex types
                 if let Some(return_type) = builder.get_function_return_type(&func_name) {
-                    builder.set_temp_type(&dest, return_type);
+                    builder.set_temp_type(dest, return_type);
                 }
 
                 MirOperand::Temp(dest)
@@ -462,7 +463,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     let dest = builder.new_temp();
                     builder.emit(
                         MirInstrKind::MapHas {
-                            dest: dest.clone(),
+                            dest,
                             map: recv,
                             key,
                             key_type,
@@ -488,7 +489,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     let dest = builder.new_temp();
                     builder.emit(
                         MirInstrKind::ArrayContains {
-                            dest: dest.clone(),
+                            dest,
                             array: recv,
                             value: needle,
                             elem_type,
@@ -508,7 +509,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // We need the receiver built before we can determine its type for FFI lookup
             let recv = if is_module_receiver {
                 if let HirExprKind::Local { name } = &receiver.kind {
-                    MirOperand::Global(name.clone())
+                    MirOperand::Global(sym(name))
                 } else {
                     builder.build_expr(receiver)
                 }
@@ -528,8 +529,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     // This is CRITICAL for method chaining like .use(...).use(...)
                     // where the receiver is a temp from a previous call
                     match &recv {
-                        MirOperand::Temp(name) => builder.get_temp_type(name),
-                        MirOperand::Local(name) => builder.get_local_type(name),
+                        MirOperand::Temp(name) => builder.get_temp_type(*name),
+                        MirOperand::Local(name) => builder.get_local_type(&resolve(*name)),
                         _ => None,
                     }
                 })
@@ -567,8 +568,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         .or_else(|| {
                             // If HIR didn't have type, check the built operand
                             match op {
-                                MirOperand::Temp(name) => builder.get_temp_type(name),
-                                MirOperand::Local(name) => builder.get_local_type(name),
+                                MirOperand::Temp(name) => builder.get_temp_type(*name),
+                                MirOperand::Local(name) => builder.get_local_type(&resolve(*name)),
                                 _ => None,
                             }
                         })
@@ -614,7 +615,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 None
             });
             if let Some(rt) = return_type {
-                builder.set_temp_type(&dest, rt);
+                builder.set_temp_type(dest, rt);
             }
 
             // Check if this method is an FFI function
@@ -654,9 +655,9 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 
                 builder.emit(
                     MirInstrKind::FfiCall {
-                        dest: Some(dest.clone()),
-                        lib: ffi.library.clone(),
-                        symbol: ffi.symbol.clone(),
+                        dest: Some(dest),
+                        lib: sym(&ffi.library),
+                        symbol: sym(&ffi.symbol),
                         args: ffi_args,
                     },
                     span,
@@ -664,10 +665,10 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             } else {
                 builder.emit(
                     MirInstrKind::MethodCall {
-                        dest: Some(dest.clone()),
+                        dest: Some(dest),
                         receiver: recv.clone(),
                         receiver_type,
-                        method: method.clone(),
+                        method: sym(method),
                         args: arg_ops,
                         arg_types,
                         return_type,
@@ -687,14 +688,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     // build_expr may emit Clone instructions which would create a copy.
                     // FieldSet must target the ORIGINAL struct to update its field correctly.
                     let obj_operand = match &object.kind {
-                        HirExprKind::Local { name } => MirOperand::Local(name.clone()),
+                        HirExprKind::Local { name } => MirOperand::Local(sym(name)),
                         _ => builder.build_expr(object),
                     };
                     builder.emit(
                         MirInstrKind::FieldSet {
                             object: obj_operand,
-                            field: field.clone(),
-                            value: MirOperand::Temp(dest.clone()),
+                            field: sym(field),
+                            value: MirOperand::Temp(dest),
                         },
                         span,
                     );
@@ -718,15 +719,15 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             });
             if let Some(struct_type) = object_type {
                 if let Some(field_type) = builder.struct_field_type(struct_type, field) {
-                    builder.set_temp_type(&dest, field_type);
+                    builder.set_temp_type(dest, field_type);
                 }
             }
 
             builder.emit(
                 MirInstrKind::FieldGet {
-                    dest: dest.clone(),
+                    dest,
                     object: obj,
-                    field: field.clone(),
+                    field: sym(field),
                 },
                 span,
             );
@@ -765,7 +766,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     let end_temp = builder.new_temp();
                     builder.emit(
                         MirInstrKind::BinaryOp {
-                            dest: end_temp.clone(),
+                            dest: end_temp,
                             op: BinaryOp::Add,
                             lhs: end_val,
                             rhs: MirOperand::Const(MirConst::Int(1)),
@@ -783,7 +784,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
                 builder.emit(
                     MirInstrKind::ArraySlice {
-                        dest: dest.clone(),
+                        dest,
                         array: obj,
                         start: start_val,
                         end: final_end,
@@ -794,7 +795,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
                 // Record the temp type as the same array type (slice produces same type)
                 if let Some(arr_type) = container_type {
-                    builder.set_temp_type(&dest, arr_type);
+                    builder.set_temp_type(dest, arr_type);
                 }
 
                 return MirOperand::Temp(dest);
@@ -811,7 +812,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         .unwrap_or((builtin::ANY, builtin::ANY));
                     builder.emit(
                         MirInstrKind::MapGet {
-                            dest: dest.clone(),
+                            dest,
                             map: obj,
                             key: idx,
                             key_type,
@@ -820,7 +821,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         span,
                     );
                     // Record value type for the dest temp
-                    builder.set_temp_type(&dest, val_type);
+                    builder.set_temp_type(dest, val_type);
                 }
                 Some(ContainerKind::Array) | None => {
                     let elem_type = container_type
@@ -828,7 +829,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         .unwrap_or(builtin::ANY);
                     builder.emit(
                         MirInstrKind::ArrayGet {
-                            dest: dest.clone(),
+                            dest,
                             array: obj,
                             index: idx,
                             elem_type,
@@ -836,7 +837,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         span,
                     );
                     // Record element type for the dest temp
-                    builder.set_temp_type(&dest, elem_type);
+                    builder.set_temp_type(dest, elem_type);
                 }
             }
             MirOperand::Temp(dest)
@@ -883,7 +884,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Initialize empty array
                 builder.emit(
                     MirInstrKind::ArrayCreate {
-                        dest: dest.clone(),
+                        dest,
                         elements: Vec::new(),
                         elem_type,
                     },
@@ -896,7 +897,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         let val = builder.build_expr(inner);
                         builder.emit(
                             MirInstrKind::ArrayExtend {
-                                array: MirOperand::Temp(dest.clone()),
+                                array: MirOperand::Temp(dest),
                                 other: val,
                                 elem_type,
                             },
@@ -906,7 +907,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         let val = builder.build_expr(e);
                         builder.emit(
                             MirInstrKind::ArrayPush {
-                                array: MirOperand::Temp(dest.clone()),
+                                array: MirOperand::Temp(dest),
                                 value: val,
                             },
                             span,
@@ -917,7 +918,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let elems: Vec<_> = elements.iter().map(|e| builder.build_expr(e)).collect();
                 builder.emit(
                     MirInstrKind::ArrayCreate {
-                        dest: dest.clone(),
+                        dest,
                         elements: elems,
                         elem_type,
                     },
@@ -926,7 +927,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             }
             // Propagate array type to temp for type inference in later operations
             if let Some(array_type) = expr.type_id {
-                builder.set_temp_type(&dest, array_type);
+                builder.set_temp_type(dest, array_type);
             }
             MirOperand::Temp(dest)
         }
@@ -944,7 +945,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 .unwrap_or((builtin::ANY, builtin::ANY));
             builder.emit(
                 MirInstrKind::MapCreate {
-                    dest: dest.clone(),
+                    dest,
                     entries: ents,
                     key_type,
                     val_type,
@@ -953,7 +954,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             );
             // Propagate map type to temp for type inference in later operations
             if let Some(map_type) = expr.type_id {
-                builder.set_temp_type(&dest, map_type);
+                builder.set_temp_type(dest, map_type);
             }
             MirOperand::Temp(dest)
         }
@@ -963,7 +964,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::TupleCreate {
-                    dest: dest.clone(),
+                    dest,
                     elements: elems,
                 },
                 span,
@@ -974,13 +975,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         HirExprKind::Struct { name, fields } => {
             let field_ops: Vec<_> = fields
                 .iter()
-                .map(|(n, v)| (n.clone(), builder.build_expr(v)))
+                .map(|(n, v)| (sym(n), builder.build_expr(v)))
                 .collect();
             let dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::StructCreate {
-                    dest: dest.clone(),
-                    struct_name: name.clone(),
+                    dest,
+                    struct_name: sym(name),
                     fields: field_ops,
                 },
                 span,
@@ -1003,9 +1004,9 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 
                 builder.emit(
                     MirInstrKind::FfiCall {
-                        dest: Some(dest.clone()),
-                        lib: ffi_info.library.clone(),
-                        symbol: ffi_info.symbol.clone(),
+                        dest: Some(dest),
+                        lib: sym(&ffi_info.library),
+                        symbol: sym(&ffi_info.symbol),
                         args,
                     },
                     span,
@@ -1013,7 +1014,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 
                 // Set the return type of the temp based on the associated type
                 if let Some(type_id) = builder.type_registry.lookup(enum_name) {
-                    builder.set_temp_type(&dest, type_id);
+                    builder.set_temp_type(dest, type_id);
                 }
                 
                 return MirOperand::Temp(dest);
@@ -1029,7 +1030,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let tuple_dest = builder.new_temp();
                 builder.emit(
                     MirInstrKind::TupleCreate {
-                        dest: tuple_dest.clone(),
+                        dest: tuple_dest,
                         elements: ops,
                     },
                     span,
@@ -1040,9 +1041,9 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::EnumCreate {
-                    dest: dest.clone(),
-                    enum_name: enum_name.clone(),
-                    variant: variant.clone(),
+                    dest,
+                    enum_name: sym(enum_name),
+                    variant: sym(variant),
                     payload: payload_op,
                 },
                 span,
@@ -1051,7 +1052,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Register the enum type for the temp so that type inference works correctly
             // This ensures variables assigned from enum creation get the right type
             if let Some(enum_type_id) = builder.type_registry.lookup(enum_name) {
-                builder.set_temp_type(&dest, enum_type_id);
+                builder.set_temp_type(dest, enum_type_id);
             }
             
             MirOperand::Temp(dest)
@@ -1063,7 +1064,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let dest = builder.new_temp();
             let merge_label = builder.new_block_label("match_merge");
 
-            let mut next_label: Option<String> = None;
+            let mut next_label: Option<Sym> = None;
             for (idx, arm) in arms.iter().enumerate() {
                 let is_last = idx + 1 == arms.len();
                 let arm_label = builder.new_block_label("match_arm");
@@ -1071,7 +1072,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 if idx == 0 {
                     // current block continues
                 } else if let Some(label) = next_label.take() {
-                    builder.add_block(&label);
+                    builder.add_block(label);
                 }
 
                 if !is_last {
@@ -1079,17 +1080,17 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     let cond = builder.build_match_condition(&scrutinees, &arm.pattern, span);
                     builder.set_terminator(MirTerminator::Branch {
                         cond,
-                        then_block: arm_label.clone(),
-                        else_block: next.clone(),
+                        then_block: arm_label,
+                        else_block: next,
                     });
                     next_label = Some(next);
                 } else {
                     builder.set_terminator(MirTerminator::Goto {
-                        target: arm_label.clone(),
+                        target: arm_label,
                     });
                 }
 
-                builder.add_block(&arm_label);
+                builder.add_block(arm_label);
                 
                 // Extract payload bindings INSIDE the arm block (after we know the pattern matched)
                 // This ensures SSA values are defined in the correct basic block
@@ -1119,29 +1120,29 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                 // Check if this binding name already exists with a DIFFERENT type
                                 // If so, we need to use a unique internal name to avoid type conflicts
                                 let (actual_dest, need_new_local) = if let Some(f) = &builder.current_func {
-                                    if let Some(existing) = f.locals.iter().find(|l| l.name == *binding) {
+                                    if let Some(existing) = f.locals.iter().find(|l| l.name == sym(binding)) {
                                         if existing.type_id != binding_type {
                                             // Type conflict - use a unique temp name internally
                                             // but store the value so the original binding still works
                                             (builder.new_temp(), true)
                                         } else {
                                             // Same type - use the existing local
-                                            (binding.clone(), false)
+                                            (sym(binding), false)
                                         }
                                     } else {
                                         // New binding - create it
-                                        (binding.clone(), true)
+                                        (sym(binding), true)
                                     }
                                 } else {
-                                    (binding.clone(), true)
+                                    (sym(binding), true)
                                 };
                                 
                                 builder.emit(
                                     MirInstrKind::EnumGetPayload {
-                                        dest: actual_dest.clone(),
+                                        dest: actual_dest,
                                         value: scrutinees[0].clone(),
-                                        variant_name: variant.clone(),
-                                        enum_name: enum_name.clone(),
+                                        variant_name: sym(variant),
+                                        enum_name: sym(enum_name),
                                         index: i as u32,
                                     },
                                     span,
@@ -1153,7 +1154,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                         // Only add if not already present
                                         if !f.locals.iter().any(|l| l.name == actual_dest) {
                                             f.locals.push(LocalDef {
-                                                name: actual_dest.clone(),
+                                                name: actual_dest,
                                                 type_id: binding_type,
                                                 mutable: false,
                                             });
@@ -1166,14 +1167,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                 // CRITICAL: Also register the binding's type as a temp type
                                 // so that infer_operand_type finds the correct (shadowed) type
                                 // instead of the original local's type.
-                                if actual_dest != *binding {
+                                if actual_dest != sym(binding) {
                                     // Register the correct type for the binding name
                                     // This shadows the original local's type for this scope
-                                    builder.set_temp_type(binding, binding_type);
+                                    builder.set_temp_type(sym(binding), binding_type);
                                     
                                     builder.emit(
                                         MirInstrKind::Assign {
-                                            dest: binding.clone(),
+                                            dest: sym(binding),
                                             value: MirOperand::Temp(actual_dest),
                                         },
                                         span,
@@ -1202,28 +1203,28 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                             }
                         }
                     }
-                    builder.set_temp_type(&dest, arm_type);
-                    builder.add_temp_local(&dest, arm_type);
+                    builder.set_temp_type(dest, arm_type);
+                    builder.add_temp_local(dest, arm_type);
                 }
                 builder.emit(
                     MirInstrKind::Assign {
-                        dest: dest.clone(),
+                        dest,
                         value: body_val,
                     },
                     span,
                 );
                 builder.set_terminator(MirTerminator::Goto {
-                    target: merge_label.clone(),
+                    target: merge_label,
                 });
             }
 
             // If no arm set the type (e.g., all arms returned ANY), register as ANY
-            if builder.get_temp_type(&dest).is_none() {
-                builder.set_temp_type(&dest, builtin::ANY);
-                builder.add_temp_local(&dest, builtin::ANY);
+            if builder.get_temp_type(dest).is_none() {
+                builder.set_temp_type(dest, builtin::ANY);
+                builder.add_temp_local(dest, builtin::ANY);
             }
 
-            builder.add_block(&merge_label);
+            builder.add_block(merge_label);
             MirOperand::Temp(dest)
         }
 
@@ -1241,34 +1242,34 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
             builder.set_terminator(MirTerminator::Branch {
                 cond,
-                then_block: then_label.clone(),
-                else_block: else_label.clone(),
+                then_block: then_label,
+                else_block: else_label,
             });
 
             // Then
-            builder.add_block(&then_label);
+            builder.add_block(then_label);
             let then_val = builder.build_expr(then_expr);
             // Infer type from then branch
             let then_type = builder.infer_operand_type(&then_val);
             builder.emit(
                 MirInstrKind::Assign {
-                    dest: dest.clone(),
+                    dest,
                     value: then_val,
                 },
                 span,
             );
             builder.set_terminator(MirTerminator::Goto {
-                target: merge_label.clone(),
+                target: merge_label,
             });
 
             // Else
-            builder.add_block(&else_label);
+            builder.add_block(else_label);
             let else_type = if let Some(else_e) = else_expr {
                 let else_val = builder.build_expr(else_e);
                 let else_type = builder.infer_operand_type(&else_val);
                 builder.emit(
                     MirInstrKind::Assign {
-                        dest: dest.clone(),
+                        dest,
                         value: else_val,
                     },
                     span,
@@ -1277,7 +1278,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             } else {
                 builder.emit(
                     MirInstrKind::Assign {
-                        dest: dest.clone(),
+                        dest,
                         value: MirOperand::Const(MirConst::Nil),
                     },
                     span,
@@ -1285,7 +1286,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 builtin::ANY
             };
             builder.set_terminator(MirTerminator::Goto {
-                target: merge_label.clone(),
+                target: merge_label,
             });
 
             // Set temp type for dest - prefer then_type if concrete, else use else_type
@@ -1294,12 +1295,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             } else {
                 else_type
             };
-            builder.set_temp_type(&dest, result_type);
+            builder.set_temp_type(dest, result_type);
             
             // Also add to locals so codegen can find the type
-            builder.add_temp_local(&dest, result_type);
+            builder.add_temp_local(dest, result_type);
 
-            builder.add_block(&merge_label);
+            builder.add_block(merge_label);
             MirOperand::Temp(dest)
         }
 
@@ -1327,13 +1328,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::StructCreate {
-                    dest: dest.clone(),
-                    struct_name: "Range".to_string(),
+                    dest,
+                    struct_name: sym("Range"),
                     fields: vec![
-                        ("start".to_string(), s),
-                        ("end".to_string(), e),
+                        (sym("start"), s),
+                        (sym("end"), e),
                         (
-                            "inclusive".to_string(),
+                            sym("inclusive"),
                             MirOperand::Const(MirConst::Bool(*inclusive)),
                         ),
                     ],
@@ -1351,7 +1352,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let dest = builder.new_temp();
                 builder.emit(
                     MirInstrKind::WrapOk {
-                        dest: dest.clone(),
+                        dest,
                         value: val,
                     },
                     span,
@@ -1370,7 +1371,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::WrapErr {
-                    dest: dest.clone(),
+                    dest,
                     value: val,
                 },
                 span,
@@ -1385,7 +1386,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // If not, just return the value as-is (no unwrapping needed)
             let value_type = inner.type_id.or_else(|| {
                 if let MirOperand::Temp(ref temp_name) = val {
-                    builder.get_temp_type(temp_name)
+                    builder.get_temp_type(*temp_name)
                 } else {
                     None
                 }
@@ -1405,7 +1406,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     if let Some(name) = func_name {
                         let resolved_name = builder.resolve_function_name(name);
                         let found = builder.function_result_types.contains_key(&resolved_name);
-                        if std::env::var("DOO_DEBUG").is_ok() {
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!("MIR", "Try: Call '{}' resolved to '{}', is_result={}", name, resolved_name, found);
                         }
                         found
@@ -1426,7 +1427,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         } else {
                             // Variable name - need to look up its type
                             // First try the temp type registry for variables
-                            builder.get_temp_type(name)
+                            builder.get_temp_type(sym(name))
                                 .and_then(|tid| builder.type_registry.get(tid))
                                 .and_then(|info| {
                                     if let TypeKind::Struct { name: type_name, .. } = &info.kind {
@@ -1464,26 +1465,26 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     if let Some(ref type_name) = receiver_type_name {
                         let mangled_name = format!("_method_{}_{}", type_name, method);
                         let found = builder.function_result_types.contains_key(&mangled_name);
-                        if std::env::var("DOO_DEBUG").is_ok() {
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!("MIR", "Try: MethodCall '{}.{}' -> '{}', is_result={}", type_name, method, mangled_name, found);
                         }
                         found
                     } else {
-                        if std::env::var("DOO_DEBUG").is_ok() {
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!("MIR", "Try: MethodCall method='{}' - no receiver type found", method);
                         }
                         false
                     }
                 }
                 _ => {
-                    if std::env::var("DOO_DEBUG").is_ok() {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                         doo_debug!("MIR", "Try: Unknown inner expr kind {:?}", std::mem::discriminant(&inner.kind));
                     }
                     false
                 },
             };
             
-            if std::env::var("DOO_DEBUG").is_ok() {
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                 doo_debug!("MIR", "Try: is_result_type={}", is_result_type);
             }
             
@@ -1500,13 +1501,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             
             // Track the unwrapped type for downstream code
             if let Some(type_id) = expected_type {
-                builder.set_temp_type(&dest, type_id);
+                builder.set_temp_type(dest, type_id);
             }
 
             // Check if Ok
             builder.emit(
                 MirInstrKind::IsOk {
-                    dest: is_ok_dest.clone(),
+                    dest: is_ok_dest,
                     value: val.clone(),
                 },
                 span,
@@ -1520,33 +1521,33 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Branch based on is_ok
             builder.set_terminator(MirTerminator::Branch {
                 cond: MirOperand::Temp(is_ok_dest),
-                then_block: ok_label.clone(),
-                else_block: err_label.clone(),
+                then_block: ok_label,
+                else_block: err_label,
             });
 
             // Ok path: unwrap and continue
-            builder.add_block(&ok_label);
+            builder.add_block(ok_label);
             builder.emit(
                 MirInstrKind::UnwrapOk {
-                    dest: dest.clone(),
+                    dest,
                     value: val.clone(),
                     expected_type,
                 },
                 span,
             );
-            builder.set_terminator(MirTerminator::Goto { target: cont_label.clone() });
+            builder.set_terminator(MirTerminator::Goto { target: cont_label });
 
             // Err path: propagate error (return the Result as-is)
             // For functions with error types, this should return early
             // For main or functions without error types, this becomes a panic
-            builder.add_block(&err_label);
+            builder.add_block(err_label);
             
             if builder.get_current_function_error_type().is_some() {
                 // Function has an error type - propagate the error
                 let err_dest = builder.new_temp();
                 builder.emit(
                     MirInstrKind::UnwrapErr {
-                        dest: err_dest.clone(),
+                        dest: err_dest,
                         value: val,
                     },
                     span,
@@ -1555,7 +1556,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let wrapped_err = builder.new_temp();
                 builder.emit(
                     MirInstrKind::WrapErr {
-                        dest: wrapped_err.clone(),
+                        dest: wrapped_err,
                         value: MirOperand::Temp(err_dest),
                     },
                     span,
@@ -1569,7 +1570,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let err_dest = builder.new_temp();
                 builder.emit(
                     MirInstrKind::UnwrapErr {
-                        dest: err_dest.clone(),
+                        dest: err_dest,
                         value: val,
                     },
                     span,
@@ -1585,7 +1586,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             }
 
             // Continue block for ok path
-            builder.add_block(&cont_label);
+            builder.add_block(cont_label);
 
             MirOperand::Temp(dest)
         }
@@ -1598,7 +1599,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let is_ok_dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::IsOk {
-                    dest: is_ok_dest.clone(),
+                    dest: is_ok_dest,
                     value: result_val.clone(),
                 },
                 span,
@@ -1610,8 +1611,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
             builder.set_terminator(MirTerminator::Branch {
                 cond: MirOperand::Temp(is_ok_dest),
-                then_block: ok_label.clone(),
-                else_block: err_label.clone(),
+                then_block: ok_label,
+                else_block: err_label,
             });
 
             let dest = builder.new_temp();
@@ -1644,10 +1645,10 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             });
 
             // Ok path: unwrap and continue
-            builder.add_block(&ok_label);
+            builder.add_block(ok_label);
             builder.emit(
                 MirInstrKind::UnwrapOk {
-                    dest: dest.clone(),
+                    dest,
                     value: result_val.clone(),
                     expected_type: ok_type,
                 },
@@ -1656,15 +1657,15 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             
             // Set the temp type for proper type inference
             if let Some(type_id) = ok_type {
-                builder.set_temp_type(&dest, type_id);
+                builder.set_temp_type(dest, type_id);
             }
             
             builder.set_terminator(MirTerminator::Goto {
-                target: merge_label.clone(),
+                target: merge_label,
             });
 
             // Err path: print panic message and abort
-            builder.add_block(&err_label);
+            builder.add_block(err_label);
             let msg_val = builder.build_expr(message);
             builder.emit(
                 MirInstrKind::Panic { message: msg_val },
@@ -1673,7 +1674,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             builder.set_terminator(MirTerminator::Unreachable);
 
             // Merge
-            builder.add_block(&merge_label);
+            builder.add_block(merge_label);
 
             MirOperand::Temp(dest)
         }
@@ -1687,14 +1688,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             
             builder.emit(
                 MirInstrKind::Clone {
-                    dest: dest.clone(),
+                    dest,
                     src: val,
                 },
                 span,
             );
             
             // Set the temp type for proper type tracking
-            builder.set_temp_type(&dest, inner_type);
+            builder.set_temp_type(dest, inner_type);
             
             MirOperand::Temp(dest)
         }
@@ -1721,7 +1722,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Set the closure's function type on the temp if HIR provided it
             // This enables proper type inference for lambda methods like map/filter/reduce
             if let Some(func_type) = expr.type_id {
-                builder.set_temp_type(&dest, func_type);
+                builder.set_temp_type(dest, func_type);
             }
             // If HIR didn't provide type, the body type might still be set
             // Store closure info for later type lookup
@@ -1730,8 +1731,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             
             builder.emit(
                 MirInstrKind::ClosureCreate {
-                    dest: dest.clone(),
-                    func: closure_name,
+                    dest,
+                    func: sym(&closure_name),
                     captures: Vec::new(), // TODO: capture analysis
                 },
                 span,
@@ -1756,7 +1757,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let span = builder.convert_span(expr.span);
             builder.emit(
                 MirInstrKind::ArrayCreate {
-                    dest: dest.clone(),
+                    dest,
                     elements,
                     elem_type: doo_core::types::builtin::ANY,
                 },
@@ -1772,7 +1773,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let span = builder.convert_span(expr.span);
             builder.emit(
                 MirInstrKind::Cast {
-                    dest: dest.clone(),
+                    dest,
                     value: val,
                     to_type: *to_type,
                 },
@@ -1798,7 +1799,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     let span = builder.convert_span(expr.span);
                     builder.emit(
                         MirInstrKind::Await {
-                            dest: dest.clone(),
+                            dest,
                             handle,
                         },
                         span,
@@ -1825,7 +1826,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Build capture operands from the outer scope
             let capture_operands: Vec<MirOperand> = captures
                 .iter()
-                .map(|name| MirOperand::Local(name.clone()))
+                .map(|name| MirOperand::Local(sym(name)))
                 .collect();
 
             // If we're inside a scope, emit ScopeSpawn (tracked by scope_stack)
@@ -1833,7 +1834,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 builder.emit(
                     MirInstrKind::ScopeSpawn {
                         scope: MirOperand::Temp(scope_var),
-                        func: closure_name,
+                        func: sym(&closure_name),
                         captures: capture_operands,
                     },
                     span,
@@ -1842,7 +1843,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let dest = builder.new_temp();
                 builder.emit(
                     MirInstrKind::Assign {
-                        dest: dest.clone(),
+                        dest,
                         value: MirOperand::Const(crate::types::MirConst::Int(0)),
                     },
                     span,
@@ -1853,8 +1854,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let dest = builder.new_temp();
                 builder.emit(
                     MirInstrKind::Spawn {
-                        dest: dest.clone(),
-                        func: closure_name,
+                        dest,
+                        func: sym(&closure_name),
                         captures: capture_operands,
                     },
                     span,
@@ -1868,12 +1869,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let span = builder.convert_span(expr.span);
             builder.emit(
                 MirInstrKind::ScopeCreate {
-                    dest: scope_dest.clone(),
+                    dest: scope_dest,
                 },
                 span,
             );
             // Push scope onto stack so inner `go { }` emits ScopeSpawn
-            builder.scope_stack.push(scope_dest.clone());
+            builder.scope_stack.push(scope_dest);
             // Build all statements inside the scope
             for s in stmts {
                 builder.build_stmt(s);
@@ -1884,7 +1885,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let result_dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::ScopeWait {
-                    dest: result_dest.clone(),
+                    dest: result_dest,
                     scope: MirOperand::Temp(scope_dest),
                 },
                 span,

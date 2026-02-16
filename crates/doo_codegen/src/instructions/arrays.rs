@@ -13,6 +13,7 @@ use crate::utils::{emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
 use doo_core::types::TypeKind;
+use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
@@ -125,12 +126,12 @@ fn emit_bounds_check<'ctx>(
         .ok()?;
 
     // Get or declare exit function
-    let exit_fn = ctx.module.get_function("exit").unwrap_or_else(|| {
+    let exit_fn = ctx.module.get_function(ffi_names::EXIT).unwrap_or_else(|| {
         let exit_type = ctx
             .context
             .void_type()
             .fn_type(&[ctx.i32_type().into()], false);
-        ctx.module.add_function("exit", exit_type, None)
+        ctx.module.add_function(ffi_names::EXIT, exit_type, None)
     });
 
     ctx.builder
@@ -175,16 +176,16 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 elements,
                 elem_type,
             } => {
-                if std::env::var("DOO_DEBUG").is_ok() {
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!("CODEGEN", "ArrayCreate: {} with {} elements",
-                        dest,
+                        resolve(*dest),
                         elements.len()
                     );
                 }
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
                 let len_i32 = ctx.i32_type().const_int(elements.len() as u64, false);
                 let data_ptr = alloc_with_header(ctx, len_i32, elem_llvm_ty, "arr");
-                if data_ptr.is_none() && std::env::var("DOO_DEBUG").is_ok() {
+                if data_ptr.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!("CODEGEN", "ArrayCreate: alloc_with_header failed!");
                     return None;
                 }
@@ -202,7 +203,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 for (i, elem) in elements.iter().enumerate() {
                     // Extract temp name for tracking
                     if let MirOperand::Temp(name) = elem {
-                        element_temp_names.push(name.clone());
+                        element_temp_names.push(resolve(*name));
                     }
 
                     let Some(val) = operand_to_value(ctx, elem) else {
@@ -217,15 +218,15 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                     ctx.builder.build_store(elem_ptr, val).ok();
                 }
 
-                ctx.set_temp(dest, data_ptr.into());
+                ctx.set_temp(&resolve(*dest), data_ptr.into());
 
                 // Track array element type for enum serialization in FFI calls
-                ctx.array_element_types.insert(dest.to_string(), *elem_type);
+                ctx.array_element_types.insert(resolve(*dest), *elem_type);
 
                 // Track element temp names for mixed-type arrays
                 if !element_temp_names.is_empty() {
                     ctx.array_element_temps
-                        .insert(dest.to_string(), element_temp_names);
+                        .insert(resolve(*dest), element_temp_names);
                 }
 
                 Some(data_ptr.into())
@@ -262,15 +263,15 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                         .build_gep(elem_llvm_ty, base, &[idx_i64], "elem_ptr")
                 }
                 .ok()?;
-                let val = ctx.builder.build_load(elem_llvm_ty, elem_ptr, dest).ok()?;
-                ctx.set_temp(dest, val);
+                let val = ctx.builder.build_load(elem_llvm_ty, elem_ptr, &resolve(*dest)).ok()?;
+                ctx.set_temp(&resolve(*dest), val);
                 // Set the type for the temp so Clone knows the correct element type
-                ctx.set_variable_type(dest, *elem_type);
+                ctx.set_variable_type(&resolve(*dest), *elem_type);
 
                 // CRITICAL: If element type is a struct, propagate struct type info
                 // This enables chained field access like user.name where user comes from array
                 if let Some(struct_name) = ctx.get_struct_name_from_type_id(*elem_type) {
-                    ctx.set_temp_struct_type(dest, &struct_name);
+                    ctx.set_temp_struct_type(&resolve(*dest), &struct_name);
                 }
 
                 Some(val)
@@ -320,7 +321,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 let arr_ptr = arr.into_pointer_value();
                 // arr_ptr is a DATA pointer, use the _from_data variant
                 let len_i64 = get_array_length_from_data(ctx, arr_ptr)?;
-                ctx.set_temp(dest, len_i64.into());
+                ctx.set_temp(&resolve(*dest), len_i64.into());
                 Some(len_i64.into())
             }
 
@@ -422,9 +423,9 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 ctx.builder.position_at_end(end_bb);
                 let res = ctx
                     .builder
-                    .build_load(ctx.bool_type(), res_alloca, dest)
+                    .build_load(ctx.bool_type(), res_alloca, &resolve(*dest))
                     .ok()?;
-                ctx.set_temp(dest, res);
+                ctx.set_temp(&resolve(*dest), res);
                 Some(res)
             }
 
@@ -469,8 +470,8 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 // Store updated pointer back to 'array' operand location if it's a local/temp
                 if let MirOperand::Local(name) | MirOperand::Temp(name) = array {
-                    ctx.set_temp(name, new_data.into()); // Update SSA value mapping
-                    if let Some(local_ptr) = ctx.get_local(name) {
+                    ctx.set_temp(&resolve(*name), new_data.into()); // Update SSA value mapping
+                    if let Some(local_ptr) = ctx.get_local(&resolve(*name)) {
                         ctx.builder.build_store(local_ptr, new_data).ok();
                     }
                 }
@@ -522,8 +523,8 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 let new_data = realloc_array_capacity(ctx, arr1, new_len_i32, pair_size)?;
 
                 if let MirOperand::Local(name) | MirOperand::Temp(name) = array {
-                    ctx.set_temp(name, new_data.into());
-                    if let Some(local_ptr) = ctx.get_local(name) {
+                    ctx.set_temp(&resolve(*name), new_data.into());
+                    if let Some(local_ptr) = ctx.get_local(&resolve(*name)) {
                         ctx.builder.build_store(local_ptr, new_data).ok();
                     }
                 }
@@ -621,7 +622,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                     .build_memcpy(dest_base, 1, src_ptr, 1, copy_bytes)
                     .ok()?;
 
-                ctx.set_temp(dest, new_data.into());
+                ctx.set_temp(&resolve(*dest), new_data.into());
                 Some(new_data.into())
             }
             _ => None,

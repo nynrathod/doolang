@@ -2,6 +2,7 @@ use doo_hir::{HirMatchPattern};
 use crate::{MirInstrKind, MirOperand, MirConst, BinaryOp};
 use super::MirBuilder;
 use crate::types::{Span, LocalDef};
+use crate::sym::sym;
 use doo_core::types::builtin;
 
 pub fn build_match_condition(
@@ -35,7 +36,7 @@ pub fn build_value_pattern_condition(
             let dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::BinaryOp {
-                    dest: dest.clone(),
+                    dest,
                     op: BinaryOp::Eq,
                     lhs: scrutinees[0].clone(),
                     rhs: lit,
@@ -54,9 +55,9 @@ pub fn build_value_pattern_condition(
             let tag_dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::EnumGetTag {
-                    dest: tag_dest.clone(),
+                    dest: tag_dest,
                     value: scrutinees[0].clone(),
-                    enum_name: enum_name.clone(),
+                    enum_name: sym(enum_name),
                 },
                 span,
             );
@@ -65,10 +66,10 @@ pub fn build_value_pattern_condition(
             let cmp_dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::EnumTagEquals {
-                    dest: cmp_dest.clone(),
+                    dest: cmp_dest,
                     tag: MirOperand::Temp(tag_dest),
-                    variant_name: variant.clone(),
-                    enum_name: enum_name.clone(),
+                    variant_name: sym(variant),
+                    enum_name: sym(enum_name),
                 },
                 span,
             );
@@ -87,9 +88,9 @@ pub fn build_value_pattern_condition(
             let tag_dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::EnumGetTag {
-                    dest: tag_dest.clone(),
+                    dest: tag_dest,
                     value: scrutinees[0].clone(),
-                    enum_name: enum_name.clone(),
+                    enum_name: sym(enum_name),
                 },
                 span,
             );
@@ -98,10 +99,10 @@ pub fn build_value_pattern_condition(
             let cmp_dest = builder.new_temp();
             builder.emit(
                 MirInstrKind::EnumTagEquals {
-                    dest: cmp_dest.clone(),
+                    dest: cmp_dest,
                     tag: MirOperand::Temp(tag_dest),
-                    variant_name: variant.clone(),
-                    enum_name: enum_name.clone(),
+                    variant_name: sym(variant),
+                    enum_name: sym(enum_name),
                 },
                 span,
             );
@@ -122,7 +123,7 @@ pub fn build_value_pattern_condition(
                         let dest = builder.new_temp();
                         builder.emit(
                             MirInstrKind::BinaryOp {
-                                dest: dest.clone(),
+                                dest,
                                 op: BinaryOp::Eq,
                                 lhs: s,
                                 rhs: lit,
@@ -138,7 +139,7 @@ pub fn build_value_pattern_condition(
                     let dest = builder.new_temp();
                     builder.emit(
                         MirInstrKind::BinaryOp {
-                            dest: dest.clone(),
+                            dest,
                             op: BinaryOp::And,
                             lhs: prev,
                             rhs: eq,

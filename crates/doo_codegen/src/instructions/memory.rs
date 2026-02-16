@@ -4,6 +4,7 @@
 
 use doo_core::constants::ffi_names;
 use doo_core::types::TypeKind;
+use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 
@@ -36,100 +37,105 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
             MirInstrKind::Move { dest, src } => {
                 // Move is a simple copy at LLVM level (ownership is compile-time)
                 let val = operand_to_value(ctx, src)?;
+                let dest_str = resolve(*dest);
                 // Propagate struct type association if present
                 if let Some(src_name) = get_operand_name(src) {
                     // First try temp_struct_type
-                    let struct_name = ctx.get_temp_struct_type(src_name).cloned().or_else(|| {
+                    let struct_name = ctx.get_temp_struct_type(&src_name).cloned().or_else(|| {
                         // Fallback: try variable_type -> TypeKind::Struct
-                        ctx.get_variable_type(src_name)
+                        ctx.get_variable_type(&src_name)
                             .and_then(|tid| ctx.get_struct_name_from_type_id(tid))
                     });
                     if let Some(name) = struct_name {
-                        ctx.set_temp_struct_type(dest, &name);
+                        ctx.set_temp_struct_type(&dest_str, &name);
                     }
                     // Propagate variable type from source to dest
-                    if let Some(src_type) = ctx.get_variable_type(src_name) {
-                        ctx.set_variable_type(dest, src_type);
+                    if let Some(src_type) = ctx.get_variable_type(&src_name) {
+                        ctx.set_variable_type(&dest_str, src_type);
                     }
                     // Propagate array element types from temp to local for map/filter/slice results
                     // Critical for correct printing of float/int arrays returned from lambda methods
-                    if let Some(&elem_type) = ctx.array_element_types.get(src_name) {
-                        ctx.array_element_types.insert(dest.clone(), elem_type);
+                    if let Some(&elem_type) = ctx.array_element_types.get(&src_name) {
+                        ctx.array_element_types.insert(dest_str.clone(), elem_type);
                     }
                 }
-                ctx.set_local(dest.clone(), val);
+                ctx.set_local(dest_str, val);
                 Some(val)
             }
             MirInstrKind::Copy { dest, src } => {
                 // Copy is also a simple copy at LLVM level
                 let val = operand_to_value(ctx, src)?;
+                let dest_str = resolve(*dest);
                 // Propagate struct type association if present
                 if let Some(src_name) = get_operand_name(src) {
                     // First try temp_struct_type (most specific)
-                    let struct_name = ctx.get_temp_struct_type(src_name).cloned().or_else(|| {
+                    let struct_name = ctx.get_temp_struct_type(&src_name).cloned().or_else(|| {
                         // Fallback: try inferring from variable_type
-                        ctx.get_variable_type(src_name)
+                        ctx.get_variable_type(&src_name)
                             .and_then(|tid| ctx.get_struct_name_from_type_id(tid))
                     });
                     if let Some(name) = struct_name {
-                        ctx.set_temp_struct_type(dest, &name);
+                        ctx.set_temp_struct_type(&dest_str, &name);
                     }
                     // Propagate variable type from source to dest
-                    if let Some(src_type) = ctx.get_variable_type(src_name) {
-                        ctx.set_variable_type(dest, src_type);
+                    if let Some(src_type) = ctx.get_variable_type(&src_name) {
+                        ctx.set_variable_type(&dest_str, src_type);
                     }
                     // Propagate array element types from temp to local for map/filter/slice results
                     // Critical for correct printing of float/int arrays returned from lambda methods
-                    if let Some(&elem_type) = ctx.array_element_types.get(src_name) {
-                        ctx.array_element_types.insert(dest.clone(), elem_type);
+                    if let Some(&elem_type) = ctx.array_element_types.get(&src_name) {
+                        ctx.array_element_types.insert(dest_str.clone(), elem_type);
                     }
                 }
-                ctx.set_local(dest.clone(), val);
+                ctx.set_local(dest_str, val);
                 Some(val)
             }
             MirInstrKind::Clone { dest, src } => {
                 // Deep clone based on type
-                emit_deep_clone(ctx, dest, src)
+                emit_deep_clone(ctx, &resolve(*dest), src)
             }
             MirInstrKind::Assign { dest, value } => {
                 let val = operand_to_value(ctx, value)?;
+                let dest_str = resolve(*dest);
                 // Propagate struct type association if present
                 if let Some(src_name) = get_operand_name(value) {
                     // First try temp_struct_type (most specific)
-                    let struct_name = ctx.get_temp_struct_type(src_name).cloned().or_else(|| {
+                    let struct_name = ctx.get_temp_struct_type(&src_name).cloned().or_else(|| {
                         // Fallback: try inferring from variable_type
-                        ctx.get_variable_type(src_name)
+                        ctx.get_variable_type(&src_name)
                             .and_then(|tid| ctx.get_struct_name_from_type_id(tid))
                     });
                     if let Some(name) = struct_name {
-                        ctx.set_temp_struct_type(dest, &name);
+                        ctx.set_temp_struct_type(&dest_str, &name);
                     }
                     // Also propagate the variable type from source to dest
                     // This ensures that when a temp with known type is assigned to a local,
                     // the local gets the correct type for subsequent Clone operations
-                    if let Some(src_type) = ctx.get_variable_type(src_name) {
-                        ctx.set_variable_type(dest, src_type);
+                    if let Some(src_type) = ctx.get_variable_type(&src_name) {
+                        ctx.set_variable_type(&dest_str, src_type);
                     }
                     // Propagate array element types from temp to local for map/filter/slice results
                     // Critical for correct printing of float/int arrays returned from lambda methods
-                    if let Some(&elem_type) = ctx.array_element_types.get(src_name) {
-                        ctx.array_element_types.insert(dest.clone(), elem_type);
+                    if let Some(&elem_type) = ctx.array_element_types.get(&src_name) {
+                        ctx.array_element_types.insert(dest_str.clone(), elem_type);
                     }
                 }
-                ctx.set_local(dest.clone(), val);
+                ctx.set_local(dest_str, val);
                 Some(val)
             }
             MirInstrKind::Drop { value } => {
                 // Actual cleanup based on type
-                emit_drop(ctx, value);
+                emit_drop(ctx, &resolve(*value));
                 None
             }
             MirInstrKind::Borrow { dest, src, .. } => {
                 // Borrow at LLVM level is just getting the value
-                let val = ctx.get_value(src.as_str())?;
-                ctx.set_local(dest.clone(), val);
+                let src_str = resolve(*src);
+                let dest_str = resolve(*dest);
+                let val = ctx.get_value(&src_str)?;
+                ctx.set_local(dest_str.clone(), val);
                 // Track borrow origin so mutating operations can store back
-                ctx.set_borrow_origin(dest, src);
+                ctx.set_borrow_origin(&dest_str, &src_str);
                 Some(val)
             }
             _ => None,
@@ -142,13 +148,13 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
 // ============================================================================
 
 /// Get the variable name from a MirOperand.
-fn get_operand_name(operand: &MirOperand) -> Option<&str> {
+fn get_operand_name(operand: &MirOperand) -> Option<String> {
     match operand {
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
-            Some(name.as_str())
+            Some(resolve(*name))
         }
         MirOperand::Const(_) => None,
-        MirOperand::FuncRef(name) => Some(name.as_str()),
+        MirOperand::FuncRef(name) => Some(resolve(*name)),
     }
 }
 
@@ -161,7 +167,7 @@ fn emit_deep_clone<'ctx>(
     let val = operand_to_value(ctx, src)?;
 
     // Try to get the TypeId for the source variable
-    let type_id = get_operand_name(src).and_then(|name| ctx.get_variable_type(name));
+    let type_id = get_operand_name(src).and_then(|name| ctx.get_variable_type(&name));
 
     // Get the TypeKind if we have a TypeId
     // CRITICAL: Resolve TypeRef to the actual type to handle imported types correctly
@@ -178,7 +184,7 @@ fn emit_deep_clone<'ctx>(
 
     // Also check if source has a struct type association to propagate
     let src_struct_type =
-        get_operand_name(src).and_then(|name| ctx.get_temp_struct_type(name).cloned());
+        get_operand_name(src).and_then(|name| ctx.get_temp_struct_type(&name).cloned());
 
     // Dispatch based on type
     let cloned = match &type_kind {
@@ -398,22 +404,27 @@ fn clone_struct<'ctx>(
     // Get or create struct type
     let struct_type = ctx.lookup_struct_type(struct_name)?;
 
-    // Calculate struct size using LLVM's size_of() for correct padding.
-    // The fallback uses fields.len() * 8 (pointer-sized fields) as a conservative estimate,
-    // but we also ensure a minimum of 8 bytes to prevent zero-size allocations.
-    // SAFETY: If LLVM can determine the size at compile time, we use that exact value.
-    // If not, the fallback may over-allocate (safe) but never under-allocate.
-    let struct_size = struct_type
-        .size_of()
-        .map(|v| v.get_zero_extended_constant().unwrap_or_else(|| {
-            // LLVM knows the type but can't give us a constant — use field count * 8
-            // This is safe because each field is at most pointer-sized (8 bytes on 64-bit)
-            std::cmp::max(fields.len() as u64 * 8, 8)
-        }))
-        .unwrap_or_else(|| {
-            // LLVM doesn't know the type at all — use field count * 8 with minimum
-            std::cmp::max(fields.len() as u64 * 8, 8)
-        });
+    // CRITICAL: Use LLVM's size_of() IntValue DIRECTLY as malloc argument.
+    // DO NOT extract via get_zero_extended_constant() — it fails on ConstantExpr
+    // (sizeof returns ConstantExpr, not ConstantInt), causing fallback to
+    // fields.len() * 8 which is WRONG when fields contain enums (16 bytes, not 8).
+    // This was the root cause of heap buffer overflow crashes in JSON tests.
+    let struct_size_val = struct_type.size_of().unwrap_or_else(|| {
+        // Fallback: compute size accounting for enum fields (16 bytes each)
+        let mut offset: u64 = 0;
+        for (_, type_id) in fields.iter() {
+            let field_size = match ctx.get_type_kind(*type_id) {
+                Some(doo_core::types::TypeKind::Enum { .. }) => 16, // { i32, ptr }
+                _ => 8,  // Int, Float, Bool, Str(ptr), Array(ptr), Map(ptr), Struct(ptr)
+            };
+            // Align to 8 bytes
+            offset = (offset + 7) & !7;
+            offset += field_size;
+        }
+        // Pad to 8-byte alignment and ensure minimum 16 bytes
+        let padded = ((offset + 7) & !7).max(16);
+        i64_type.const_int(padded, false)
+    });
 
     // Get or declare malloc
     let malloc_fn = ctx
@@ -439,12 +450,12 @@ fn clone_struct<'ctx>(
     // Clone block: do the actual cloning
     ctx.builder.position_at_end(clone_block);
 
-    // Allocate new struct
+    // Allocate new struct using LLVM-computed size
     let dst_ptr = ctx
         .builder
         .build_call(
             malloc_fn,
-            &[i64_type.const_int(struct_size.max(16), false).into()], // min 16 bytes
+            &[struct_size_val.into()],
             "clone_struct",
         )
         .ok()?
@@ -1364,6 +1375,7 @@ fn drop_optional<'ctx>(
 mod tests {
     use super::*;
     use doo_core::types::TypeRegistry;
+    use doo_mir::sym::sym;
     use doo_mir::Span;
     use inkwell::context::Context;
     use std::sync::Arc;
@@ -1375,7 +1387,7 @@ mod tests {
         // Should handle Move
         let move_instr = MirInstr {
             kind: MirInstrKind::Move {
-                dest: "x".to_string(),
+                dest: sym("x"),
                 src: MirOperand::Const(doo_mir::MirConst::Int(42)),
             },
             span: Span::default(),
@@ -1385,7 +1397,7 @@ mod tests {
         // Should handle Copy
         let copy_instr = MirInstr {
             kind: MirInstrKind::Copy {
-                dest: "x".to_string(),
+                dest: sym("x"),
                 src: MirOperand::Const(doo_mir::MirConst::Int(42)),
             },
             span: Span::default(),
@@ -1395,7 +1407,7 @@ mod tests {
         // Should handle Clone
         let clone_instr = MirInstr {
             kind: MirInstrKind::Clone {
-                dest: "x".to_string(),
+                dest: sym("x"),
                 src: MirOperand::Const(doo_mir::MirConst::Int(42)),
             },
             span: Span::default(),
@@ -1405,7 +1417,7 @@ mod tests {
         // Should handle Drop
         let drop_instr = MirInstr {
             kind: MirInstrKind::Drop {
-                value: "x".to_string(),
+                value: sym("x"),
             },
             span: Span::default(),
         };
@@ -1414,7 +1426,7 @@ mod tests {
         // Should handle Assign
         let assign_instr = MirInstr {
             kind: MirInstrKind::Assign {
-                dest: "x".to_string(),
+                dest: sym("x"),
                 value: MirOperand::Const(doo_mir::MirConst::Int(42)),
             },
             span: Span::default(),
@@ -1424,8 +1436,8 @@ mod tests {
         // Should handle Borrow
         let borrow_instr = MirInstr {
             kind: MirInstrKind::Borrow {
-                dest: "ref_x".to_string(),
-                src: "x".to_string(),
+                dest: sym("ref_x"),
+                src: sym("x"),
                 mutable: false,
             },
             span: Span::default(),
@@ -1435,7 +1447,7 @@ mod tests {
         // Should NOT handle other instructions (e.g., BinaryOp)
         let binary_op = MirInstr {
             kind: MirInstrKind::BinaryOp {
-                dest: "y".to_string(),
+                dest: sym("y"),
                 op: doo_mir::BinaryOp::Add,
                 lhs: MirOperand::Const(doo_mir::MirConst::Int(1)),
                 rhs: MirOperand::Const(doo_mir::MirConst::Int(2)),
@@ -1462,7 +1474,7 @@ mod tests {
         // Test Move with integer constant
         let move_instr = MirInstr {
             kind: MirInstrKind::Move {
-                dest: "x".to_string(),
+                dest: sym("x"),
                 src: MirOperand::Const(doo_mir::MirConst::Int(42)),
             },
             span: Span::default(),
@@ -1490,7 +1502,7 @@ mod tests {
         // Test Copy with float constant
         let copy_instr = MirInstr {
             kind: MirInstrKind::Copy {
-                dest: "y".to_string(),
+                dest: sym("y"),
                 src: MirOperand::Const(doo_mir::MirConst::Float(3.14)),
             },
             span: Span::default(),
@@ -1518,7 +1530,7 @@ mod tests {
         // Test Clone with string constant - should generate clone code
         let clone_instr = MirInstr {
             kind: MirInstrKind::Clone {
-                dest: "cloned_str".to_string(),
+                dest: sym("cloned_str"),
                 src: MirOperand::Const(doo_mir::MirConst::Str("hello".to_string())),
             },
             span: Span::default(),
@@ -1547,7 +1559,7 @@ mod tests {
         // Test Drop on non-existent variable - should not panic
         let drop_instr = MirInstr {
             kind: MirInstrKind::Drop {
-                value: "nonexistent".to_string(),
+                value: sym("nonexistent"),
             },
             span: Span::default(),
         };
@@ -1559,16 +1571,16 @@ mod tests {
     #[test]
     fn test_get_operand_name() {
         // Test Local
-        let local = MirOperand::Local("local_var".to_string());
-        assert_eq!(get_operand_name(&local), Some("local_var"));
+        let local = MirOperand::Local(sym("local_var"));
+        assert_eq!(get_operand_name(&local), Some("local_var".to_string()));
 
         // Test Temp
-        let temp = MirOperand::Temp("temp_0".to_string());
-        assert_eq!(get_operand_name(&temp), Some("temp_0"));
+        let temp = MirOperand::Temp(sym("temp_0"));
+        assert_eq!(get_operand_name(&temp), Some("temp_0".to_string()));
 
         // Test Global
-        let global = MirOperand::Global("global_var".to_string());
-        assert_eq!(get_operand_name(&global), Some("global_var"));
+        let global = MirOperand::Global(sym("global_var"));
+        assert_eq!(get_operand_name(&global), Some("global_var".to_string()));
 
         // Test Const - should return None
         let const_val = MirOperand::Const(doo_mir::MirConst::Int(42));

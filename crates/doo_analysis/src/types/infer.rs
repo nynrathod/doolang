@@ -323,7 +323,7 @@ impl TypeInference {
                                         // Field is private - report error
                                         // For now, we'll still return the type but the codegen/semantic 
                                         // analysis should catch this. We could add an error here later.
-                                        if std::env::var("DOO_DEBUG").is_ok() {
+                                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                                             doo_debug!("VISIBILITY", "Warning: Accessing private field '{}' on struct '{}'", field, struct_name);
                                         }
                                     }
@@ -553,13 +553,8 @@ impl TypeInference {
         match op {
             // Arithmetic - preserve numeric type
             HirBinOp::Add | HirBinOp::Sub | HirBinOp::Mul | HirBinOp::Div | HirBinOp::Mod => {
-                // String concatenation (both strings)
-                if lhs == builtin::STR && rhs == builtin::STR {
-                    return builtin::STR;
-                }
-                // String + Non-String or Non-String + String -> String (interpolation)
-                // This allows things like "value: " + 42 to produce "value: 42"
-                if lhs == builtin::STR || rhs == builtin::STR {
+                // String concatenation: Str + anything → Str (auto-coerce rhs)
+                if lhs == builtin::STR {
                     return builtin::STR;
                 }
                 // Float if either operand is Float

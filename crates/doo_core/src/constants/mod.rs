@@ -3,6 +3,7 @@
 //! All constants used across the compiler crates are centralized here.
 
 pub mod ffi_names;
+pub mod env_vars;
 
 // Re-export for convenience
 pub use ffi_names::*;

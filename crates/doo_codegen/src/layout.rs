@@ -22,6 +22,7 @@
 //! ```
 
 use crate::context::CodegenContext;
+use doo_core::constants::ffi_names;
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 use inkwell::IntPredicate;
@@ -516,8 +517,8 @@ fn emit_allocation_overflow_abort<'ctx>(ctx: &mut CodegenContext<'ctx>, message:
     let printf_type = ctx.context.i32_type().fn_type(&[ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).into()], true);
     let printf = ctx
         .module
-        .get_function("printf")
-        .unwrap_or_else(|| ctx.module.add_function("printf", printf_type, None));
+        .get_function(ffi_names::PRINTF)
+        .unwrap_or_else(|| ctx.module.add_function(ffi_names::PRINTF, printf_type, None));
 
     let error_msg = ctx.const_string(&format!("fatal: {}\n", message));
     let _ = ctx
@@ -528,8 +529,8 @@ fn emit_allocation_overflow_abort<'ctx>(ctx: &mut CodegenContext<'ctx>, message:
     let fflush_type = ctx.context.i32_type().fn_type(&[ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).into()], false);
     let fflush = ctx
         .module
-        .get_function("fflush")
-        .unwrap_or_else(|| ctx.module.add_function("fflush", fflush_type, None));
+        .get_function(ffi_names::FFLUSH)
+        .unwrap_or_else(|| ctx.module.add_function(ffi_names::FFLUSH, fflush_type, None));
     let null_ptr = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).const_null();
     let _ = ctx.builder.build_call(fflush, &[null_ptr.into()], "flush");
 
@@ -540,8 +541,8 @@ fn emit_allocation_overflow_abort<'ctx>(ctx: &mut CodegenContext<'ctx>, message:
         .fn_type(&[ctx.context.i32_type().into()], false);
     let exit_fn = ctx
         .module
-        .get_function("exit")
-        .unwrap_or_else(|| ctx.module.add_function("exit", exit_type, None));
+        .get_function(ffi_names::EXIT)
+        .unwrap_or_else(|| ctx.module.add_function(ffi_names::EXIT, exit_type, None));
     let exit_code = ctx.context.i32_type().const_int(1, false);
     let _ = ctx
         .builder

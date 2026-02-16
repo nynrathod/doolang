@@ -206,7 +206,7 @@ pub fn run_command_with_compiler(
         keep_ll,
         keep_obj: false,
         check_only: false,
-        show_warnings: std::env::var("DOO_SHOW_WARNINGS").is_ok(),
+        show_warnings: std::env::var(doo_core::constants::env_vars::DOO_SHOW_WARNINGS).is_ok(),
     };
 
     let compile_start = std::time::Instant::now();
@@ -365,7 +365,7 @@ pub fn check_command(path: PathBuf) -> i32 {
         keep_ll: false,
         keep_obj: false,
         check_only: true,
-        show_warnings: std::env::var("DOO_SHOW_WARNINGS").is_ok(),
+        show_warnings: std::env::var(doo_core::constants::env_vars::DOO_SHOW_WARNINGS).is_ok(),
     };
 
     match compile_project(opts) {

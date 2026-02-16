@@ -60,7 +60,7 @@ pub async fn handle_ws_connection<S>(
     ffi_debug!("WS", "New connection: {} on {}", conn_id, path);
 
     // Create send channel with backpressure
-    let queue_size = get_ws_config().read().unwrap().send_queue_size;
+    let queue_size = get_ws_config().read().unwrap_or_else(|e| e.into_inner()).send_queue_size;
     let (tx, rx) = mpsc::channel::<WsSendMessage>(queue_size);
 
     // Create cancellation watch channel for this connection's tasks
@@ -131,7 +131,7 @@ async fn read_loop<S>(
 ) where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
-    let max_size = get_ws_config().read().unwrap().max_message_size;
+    let max_size = get_ws_config().read().unwrap_or_else(|e| e.into_inner()).max_message_size;
 
     loop {
         tokio::select! {
@@ -257,7 +257,7 @@ async fn heartbeat_loop(
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
     conn_id: &str,
 ) {
-    let interval_secs = get_ws_config().read().unwrap().heartbeat_interval_secs;
+    let interval_secs = get_ws_config().read().unwrap_or_else(|e| e.into_inner()).heartbeat_interval_secs;
     let interval = Duration::from_secs(interval_secs);
 
     loop {

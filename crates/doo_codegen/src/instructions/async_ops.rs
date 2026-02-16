@@ -15,6 +15,8 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::utils::operand_to_value;
+use doo_core::constants::ffi_names;
+use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind};
 use inkwell::module::Linkage;
 use inkwell::values::BasicValueEnum;
@@ -91,7 +93,7 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                     .ok()?;
 
                 if let Some(result_ptr) = call_site.try_as_basic_value().basic() {
-                    ctx.set_temp(dest, result_ptr);
+                    ctx.set_temp(&resolve(*dest), result_ptr);
                     Some(result_ptr)
                 } else {
                     None
@@ -108,7 +110,7 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                 captures,
             } => {
                 // Get the function value for the closure/function to spawn
-                let func_val = ctx.get_function(func)?;
+                let func_val = ctx.get_function(&resolve(*func))?;
                 let func_ptr = func_val.as_global_value().as_pointer_value();
 
                 // Pack captures into env struct (or null if none)
@@ -121,7 +123,7 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                     .ok()?;
 
                 if let Some(handle_ptr) = call_site.try_as_basic_value().basic() {
-                    ctx.set_temp(dest, handle_ptr);
+                    ctx.set_temp(&resolve(*dest), handle_ptr);
                     Some(handle_ptr)
                 } else {
                     None
@@ -140,7 +142,7 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                     .ok()?;
 
                 if let Some(scope_ptr) = call_site.try_as_basic_value().basic() {
-                    ctx.set_temp(dest, scope_ptr);
+                    ctx.set_temp(&resolve(*dest), scope_ptr);
                     Some(scope_ptr)
                 } else {
                     None
@@ -174,7 +176,7 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                 };
 
                 // Get the function value for the closure to spawn in scope
-                let func_val = ctx.get_function(func)?;
+                let func_val = ctx.get_function(&resolve(*func))?;
                 let func_ptr = func_val.as_global_value().as_pointer_value();
 
                 // Pack captures into env struct (or null if none)
@@ -223,7 +225,7 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                     .ok()?;
 
                 if let Some(result_ptr) = call_site.try_as_basic_value().basic() {
-                    ctx.set_temp(dest, result_ptr);
+                    ctx.set_temp(&resolve(*dest), result_ptr);
                     Some(result_ptr)
                 } else {
                     None
@@ -245,7 +247,7 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
 fn get_or_declare_doo_task_await<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_task_await";
+    const NAME: &str = ffi_names::DOO_TASK_AWAIT;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -259,7 +261,7 @@ fn get_or_declare_doo_task_await<'ctx>(
 fn get_or_declare_doo_spawn<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_spawn";
+    const NAME: &str = ffi_names::DOO_SPAWN;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -273,7 +275,7 @@ fn get_or_declare_doo_spawn<'ctx>(
 fn get_or_declare_doo_scope_create<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_scope_create";
+    const NAME: &str = ffi_names::DOO_SCOPE_CREATE;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -287,7 +289,7 @@ fn get_or_declare_doo_scope_create<'ctx>(
 fn get_or_declare_doo_scope_spawn<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_scope_spawn";
+    const NAME: &str = ffi_names::DOO_SCOPE_SPAWN;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -302,7 +304,7 @@ fn get_or_declare_doo_scope_spawn<'ctx>(
 fn get_or_declare_doo_scope_wait<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_scope_wait";
+    const NAME: &str = ffi_names::DOO_SCOPE_WAIT;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -316,7 +318,7 @@ fn get_or_declare_doo_scope_wait<'ctx>(
 pub fn get_or_declare_doo_runtime_init<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_runtime_init";
+    const NAME: &str = ffi_names::DOO_RUNTIME_INIT;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -330,7 +332,7 @@ pub fn get_or_declare_doo_runtime_init<'ctx>(
 pub fn get_or_declare_doo_runtime_block_on<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_runtime_block_on";
+    const NAME: &str = ffi_names::DOO_RUNTIME_BLOCK_ON;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -344,7 +346,7 @@ pub fn get_or_declare_doo_runtime_block_on<'ctx>(
 pub fn get_or_declare_doo_sleep<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_sleep";
+    const NAME: &str = ffi_names::DOO_SLEEP;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -359,7 +361,7 @@ pub fn get_or_declare_doo_sleep<'ctx>(
 pub fn get_or_declare_doo_sleep_async<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_sleep_async";
+    const NAME: &str = ffi_names::DOO_SLEEP_ASYNC;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -374,7 +376,7 @@ pub fn get_or_declare_doo_sleep_async<'ctx>(
 pub fn get_or_declare_doo_timeout<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_timeout";
+    const NAME: &str = ffi_names::DOO_TIMEOUT;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -389,7 +391,7 @@ pub fn get_or_declare_doo_timeout<'ctx>(
 pub fn get_or_declare_doo_spawn_detach<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_spawn_detach";
+    const NAME: &str = ffi_names::DOO_SPAWN_DETACH;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -404,7 +406,7 @@ pub fn get_or_declare_doo_spawn_detach<'ctx>(
 pub fn get_or_declare_doo_task_cancel<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_task_cancel";
+    const NAME: &str = ffi_names::DOO_TASK_CANCEL;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -419,7 +421,7 @@ pub fn get_or_declare_doo_task_cancel<'ctx>(
 pub fn get_or_declare_doo_task_free<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_task_free";
+    const NAME: &str = ffi_names::DOO_TASK_FREE;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -434,7 +436,7 @@ pub fn get_or_declare_doo_task_free<'ctx>(
 pub fn get_or_declare_doo_scope_free<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_scope_free";
+    const NAME: &str = ffi_names::DOO_SCOPE_FREE;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -449,7 +451,7 @@ pub fn get_or_declare_doo_scope_free<'ctx>(
 pub fn get_or_declare_doo_spawn_blocking<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
 ) -> inkwell::values::FunctionValue<'ctx> {
-    const NAME: &str = "doo_spawn_blocking";
+    const NAME: &str = ffi_names::DOO_SPAWN_BLOCKING;
     if let Some(f) = ctx.module.get_function(NAME) {
         return f;
     }
@@ -496,12 +498,12 @@ fn build_env_pack<'ctx>(
     // Store POINTER to each captured variable's alloca (reference capture)
     for (i, cap) in captures.iter().enumerate() {
         let cap_name = match cap {
-            doo_mir::MirOperand::Local(n) | doo_mir::MirOperand::Temp(n) => n.as_str(),
+            doo_mir::MirOperand::Local(n) | doo_mir::MirOperand::Temp(n) => resolve(*n),
             _ => continue,
         };
 
         // Get the alloca pointer for this variable in the OUTER scope
-        let alloca_ptr = match ctx.get_local(cap_name) {
+        let alloca_ptr = match ctx.get_local(&cap_name) {
             Some(ptr) => ptr,
             None => continue,
         };
@@ -591,24 +593,24 @@ pub fn emit_env_unpack<'ctx>(
 
 /// `malloc(size: i64) -> ptr`
 fn get_or_declare_malloc<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::FunctionValue<'ctx> {
-    if let Some(f) = ctx.module.get_function("malloc") {
+    if let Some(f) = ctx.module.get_function(ffi_names::MALLOC) {
         return f;
     }
     let ptr_ty = ctx.ptr_type();
     let i64_ty = ctx.context.i64_type();
     let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
     ctx.module
-        .add_function("malloc", fn_ty, Some(Linkage::External))
+        .add_function(ffi_names::MALLOC, fn_ty, Some(Linkage::External))
 }
 
 /// `free(ptr: ptr)` — void return
 fn get_or_declare_free<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::FunctionValue<'ctx> {
-    if let Some(f) = ctx.module.get_function("free") {
+    if let Some(f) = ctx.module.get_function(ffi_names::FREE) {
         return f;
     }
     let ptr_ty = ctx.ptr_type();
     let void_ty = ctx.context.void_type();
     let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
     ctx.module
-        .add_function("free", fn_ty, Some(Linkage::External))
+        .add_function(ffi_names::FREE, fn_ty, Some(Linkage::External))
 }

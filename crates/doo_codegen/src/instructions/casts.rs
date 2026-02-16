@@ -5,6 +5,7 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use doo_core::types::builtin;
+use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 
@@ -211,7 +212,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                 };
 
                 if let Some(res) = result {
-                    ctx.set_temp(dest, res);
+                    ctx.set_temp(&resolve(*dest), res);
                     Some(res)
                 } else {
                     None
@@ -231,19 +232,21 @@ fn operand_to_value<'ctx>(
     match operand {
         MirOperand::Const(c) => Some(const_to_value(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
+            let name_str = resolve(*name);
             // First try to get as a value (local variable, temp, etc.)
-            if let Some(val) = ctx.get_value(name) {
+            if let Some(val) = ctx.get_value(&name_str) {
                 return Some(val);
             }
             // Fall back to function reference - convert function to pointer value
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None
         }
         MirOperand::FuncRef(name) => {
+            let name_str = resolve(*name);
             // FuncRef is an explicit function reference - convert to pointer
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None

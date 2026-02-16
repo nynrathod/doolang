@@ -22,6 +22,7 @@
 //! **NO IncRef/DecRef** - the compiler decides ownership at analysis time.
 
 use std::collections::HashMap;
+use crate::sym::{Sym, sym, resolve};
 
 use doo_core::doo_debug;
 use doo_core::types::TypeId;
@@ -50,17 +51,17 @@ pub struct MirProgram {
     /// Global constants and initializers
     pub globals: Vec<MirGlobal>,
     /// Struct metadata: name -> field definitions
-    pub structs: HashMap<String, StructDef>,
+    pub structs: HashMap<Sym, StructDef>,
     /// Enum metadata: name -> variant definitions  
-    pub enums: HashMap<String, EnumDef>,
+    pub enums: HashMap<Sym, EnumDef>,
     /// Entry point function name (usually "main")
-    pub entry_point: Option<String>,
+    pub entry_point: Option<Sym>,
 }
 
 /// Global constant or variable
 #[derive(Debug, Clone)]
 pub struct MirGlobal {
-    pub name: String,
+    pub name: Sym,
     pub type_id: TypeId,
     pub value: Option<MirConst>,
 }
@@ -68,7 +69,7 @@ pub struct MirGlobal {
 /// Struct definition metadata
 #[derive(Debug, Clone)]
 pub struct StructDef {
-    pub name: String,
+    pub name: Sym,
     pub fields: Vec<FieldDef>,
     pub decorators: Vec<Decorator>,
 }
@@ -76,7 +77,7 @@ pub struct StructDef {
 /// Field definition with decorators
 #[derive(Debug, Clone)]
 pub struct FieldDef {
-    pub name: String,
+    pub name: Sym,
     pub type_id: TypeId,
     pub optional: bool,
     pub decorators: Vec<Decorator>,
@@ -86,14 +87,14 @@ pub struct FieldDef {
 /// Enum definition metadata
 #[derive(Debug, Clone)]
 pub struct EnumDef {
-    pub name: String,
+    pub name: Sym,
     pub variants: Vec<VariantDef>,
 }
 
 /// Enum variant definition
 #[derive(Debug, Clone)]
 pub struct VariantDef {
-    pub name: String,
+    pub name: Sym,
     pub index: u32,
     pub payload_type: Option<TypeId>,
 }
@@ -101,7 +102,7 @@ pub struct VariantDef {
 /// Decorator on struct/field
 #[derive(Debug, Clone)]
 pub struct Decorator {
-    pub name: String,
+    pub name: Sym,
     pub args: Vec<String>,
 }
 
@@ -134,7 +135,7 @@ impl MirProgram {
                         ) || matches!(
                             &i.kind,
                             MirInstrKind::FfiCall { symbol, .. }
-                                if symbol.starts_with("doo_process_")
+                                if resolve(*symbol).starts_with("doo_process_")
                         )
                     })
                 })
@@ -145,11 +146,11 @@ impl MirProgram {
     pub fn validate(&self) -> Result<(), MirError> {
         for func in &self.functions {
             if let Err(e) = func.validate() {
-                if std::env::var("DOO_DEBUG").is_ok() {
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!(
                         "MIR",
                         "Validation failed in function '{}': {}",
-                        func.name,
+                        resolve(func.name),
                         e
                     );
                     doo_debug!(
@@ -184,7 +185,7 @@ impl Default for MirProgram {
 #[derive(Debug, Clone)]
 pub struct MirFunction {
     /// Function name
-    pub name: String,
+    pub name: Sym,
     /// Parameter definitions
     pub params: Vec<ParamDef>,
     /// Return type (None = void)
@@ -204,20 +205,20 @@ pub struct MirFunction {
     /// Whether this is an async function
     pub is_async: bool,
     /// Captured variable names from outer scope (for spawn/closure env unpacking)
-    pub captures: Vec<String>,
+    pub captures: Vec<Sym>,
 }
 
 /// Parameter definition
 #[derive(Debug, Clone)]
 pub struct ParamDef {
-    pub name: String,
+    pub name: Sym,
     pub type_id: TypeId,
 }
 
 /// Local variable definition
 #[derive(Debug, Clone)]
 pub struct LocalDef {
-    pub name: String,
+    pub name: Sym,
     pub type_id: TypeId,
     pub mutable: bool,
 }
@@ -225,12 +226,12 @@ pub struct LocalDef {
 /// FFI linkage information
 #[derive(Debug, Clone)]
 pub struct FfiLinkage {
-    pub library: String,
-    pub symbol: Option<String>,
+    pub library: Sym,
+    pub symbol: Option<Sym>,
 }
 
 impl MirFunction {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: Sym) -> Self {
         Self {
             name,
             params: Vec::new(),
@@ -248,17 +249,17 @@ impl MirFunction {
 
     /// Validate function's CFG and value definitions
     pub fn validate(&self) -> Result<(), MirError> {
-        // Collect all defined values
-        let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Collect all defined values (Sym is Copy, so HashSet<Sym> is cheap)
+        let mut defined: std::collections::HashSet<Sym> = std::collections::HashSet::new();
 
         // Parameters are pre-defined
         for param in &self.params {
-            defined.insert(param.name.clone());
+            defined.insert(param.name);
         }
 
         // Locals are pre-defined (including variables defined by ManualErrorExtract, etc.)
         for local in &self.locals {
-            defined.insert(local.name.clone());
+            defined.insert(local.name);
         }
 
         // Check each block
@@ -267,31 +268,31 @@ impl MirFunction {
                 // Check operands are defined
                 for operand in instr.operands() {
                     if let MirOperand::Local(name) | MirOperand::Temp(name) = operand {
-                        if !defined.contains(name) && !name.starts_with('@') {
+                        if !defined.contains(name) && !resolve(*name).starts_with('@') {
                             return Err(MirError::UndefinedValue {
-                                name: name.clone(),
-                                block: block.label.clone(),
+                                name: *name,
+                                block: block.label,
                             });
                         }
                     }
                 }
 
-                // Check Borrow and Drop sources which use String instead of MirOperand
+                // Check Borrow and Drop sources which use Sym instead of MirOperand
                 // These are special cases that operands() doesn't return
                 match &instr.kind {
                     MirInstrKind::Borrow { src, .. } => {
-                        if !defined.contains(src) && !src.starts_with('@') {
+                        if !defined.contains(src) && !resolve(*src).starts_with('@') {
                             return Err(MirError::UndefinedValue {
-                                name: src.clone(),
-                                block: block.label.clone(),
+                                name: *src,
+                                block: block.label,
                             });
                         }
                     }
                     MirInstrKind::Drop { value } => {
-                        if !defined.contains(value) && !value.starts_with('@') {
+                        if !defined.contains(value) && !resolve(*value).starts_with('@') {
                             return Err(MirError::UndefinedValue {
-                                name: value.clone(),
-                                block: block.label.clone(),
+                                name: *value,
+                                block: block.label,
                             });
                         }
                     }
@@ -300,7 +301,7 @@ impl MirFunction {
 
                 // Add defined value
                 if let Some(dest) = instr.destination() {
-                    defined.insert(dest.clone());
+                    defined.insert(*dest);
                 }
             }
         }
@@ -317,7 +318,7 @@ impl MirFunction {
 #[derive(Debug, Clone)]
 pub struct MirBlock {
     /// Unique label
-    pub label: String,
+    pub label: Sym,
     /// Instructions (no terminators)
     pub instructions: Vec<MirInstr>,
     /// Block terminator
@@ -325,7 +326,7 @@ pub struct MirBlock {
 }
 
 impl MirBlock {
-    pub fn new(label: String) -> Self {
+    pub fn new(label: Sym) -> Self {
         Self {
             label,
             instructions: Vec::new(),
@@ -344,18 +345,18 @@ pub enum MirTerminator {
     /// Return from function
     Return { values: Vec<MirOperand> },
     /// Unconditional branch
-    Goto { target: String },
+    Goto { target: Sym },
     /// Conditional branch
     Branch {
         cond: MirOperand,
-        then_block: String,
-        else_block: String,
+        then_block: Sym,
+        else_block: Sym,
     },
     /// Multi-way branch (switch/match)
     Switch {
         value: MirOperand,
-        cases: Vec<(i64, String)>,
-        default: String,
+        cases: Vec<(i64, Sym)>,
+        default: Sym,
     },
     /// Unreachable (for dead code)
     Unreachable,
@@ -371,13 +372,13 @@ pub enum MirOperand {
     /// Constant value
     Const(MirConst),
     /// Local variable or parameter
-    Local(String),
+    Local(Sym),
     /// Temporary value (SSA)
-    Temp(String),
+    Temp(Sym),
     /// Global reference
-    Global(String),
+    Global(Sym),
     /// Function reference (for passing functions as values to FFI)
-    FuncRef(String),
+    FuncRef(Sym),
 }
 
 /// Constant values in MIR.
@@ -407,21 +408,21 @@ pub enum MirInstrKind {
     // Ownership Operations (NEW - replaces RC)
     // ========================================================================
     /// Move value to destination (zero-cost, transfers ownership)
-    Move { dest: String, src: MirOperand },
+    Move { dest: Sym, src: MirOperand },
 
     /// Copy value (for primitives or explicit Copy types)
-    Copy { dest: String, src: MirOperand },
+    Copy { dest: Sym, src: MirOperand },
 
     /// Clone value (deep copy for non-Copy types)
-    Clone { dest: String, src: MirOperand },
+    Clone { dest: Sym, src: MirOperand },
 
     /// Drop value (cleanup, inserted by analysis)
-    Drop { value: String },
+    Drop { value: Sym },
 
     /// Borrow value (create reference for function call)
     Borrow {
-        dest: String,
-        src: String,
+        dest: Sym,
+        src: Sym,
         mutable: bool,
     },
 
@@ -429,14 +430,14 @@ pub enum MirInstrKind {
     // Assignment
     // ========================================================================
     /// Assign constant or operand to local
-    Assign { dest: String, value: MirOperand },
+    Assign { dest: Sym, value: MirOperand },
 
     // ========================================================================
     // Arithmetic & Logic
     // ========================================================================
     /// Binary operation
     BinaryOp {
-        dest: String,
+        dest: Sym,
         op: BinaryOp,
         lhs: MirOperand,
         rhs: MirOperand,
@@ -444,7 +445,7 @@ pub enum MirInstrKind {
 
     /// Unary operation
     UnaryOp {
-        dest: String,
+        dest: Sym,
         op: UnaryOp,
         operand: MirOperand,
     },
@@ -454,14 +455,14 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Create array
     ArrayCreate {
-        dest: String,
+        dest: Sym,
         elements: Vec<MirOperand>,
         elem_type: TypeId,
     },
 
     /// Get array element
     ArrayGet {
-        dest: String,
+        dest: Sym,
         array: MirOperand,
         index: MirOperand,
         elem_type: TypeId,
@@ -476,11 +477,11 @@ pub enum MirInstrKind {
     },
 
     /// Get array length
-    ArrayLen { dest: String, array: MirOperand },
+    ArrayLen { dest: Sym, array: MirOperand },
 
     /// Check if array contains value
     ArrayContains {
-        dest: String,
+        dest: Sym,
         array: MirOperand,
         value: MirOperand,
         elem_type: TypeId,
@@ -501,7 +502,7 @@ pub enum MirInstrKind {
 
     /// Slice array
     ArraySlice {
-        dest: String,
+        dest: Sym,
         array: MirOperand,
         start: MirOperand,
         end: MirOperand,
@@ -510,7 +511,7 @@ pub enum MirInstrKind {
 
     /// Create map
     MapCreate {
-        dest: String,
+        dest: Sym,
         entries: Vec<(MirOperand, MirOperand)>,
         key_type: TypeId,
         val_type: TypeId,
@@ -518,7 +519,7 @@ pub enum MirInstrKind {
 
     /// Get map value
     MapGet {
-        dest: String,
+        dest: Sym,
         map: MirOperand,
         key: MirOperand,
         key_type: TypeId,
@@ -536,7 +537,7 @@ pub enum MirInstrKind {
 
     /// Check if map contains key
     MapHas {
-        dest: String,
+        dest: Sym,
         map: MirOperand,
         key: MirOperand,
         key_type: TypeId,
@@ -548,22 +549,22 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Create struct instance
     StructCreate {
-        dest: String,
-        struct_name: String,
-        fields: Vec<(String, MirOperand)>,
+        dest: Sym,
+        struct_name: Sym,
+        fields: Vec<(Sym, MirOperand)>,
     },
 
     /// Get struct field
     FieldGet {
-        dest: String,
+        dest: Sym,
         object: MirOperand,
-        field: String,
+        field: Sym,
     },
 
     /// Set struct field
     FieldSet {
         object: MirOperand,
-        field: String,
+        field: Sym,
         value: MirOperand,
     },
 
@@ -572,43 +573,43 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Create enum variant
     EnumCreate {
-        dest: String,
-        enum_name: String,
-        variant: String,
+        dest: Sym,
+        enum_name: Sym,
+        variant: Sym,
         payload: Option<MirOperand>,
     },
 
     /// Get enum discriminant (tag)
-    EnumTag { dest: String, value: MirOperand },
+    EnumTag { dest: Sym, value: MirOperand },
 
     /// Get enum discriminant (tag) with enum name for type lookup
     EnumGetTag {
-        dest: String,
+        dest: Sym,
         value: MirOperand,
-        enum_name: String,
+        enum_name: Sym,
     },
 
     /// Compare enum tag with expected variant
     EnumTagEquals {
-        dest: String,
+        dest: Sym,
         tag: MirOperand,
-        variant_name: String,
-        enum_name: String,
+        variant_name: Sym,
+        enum_name: Sym,
     },
 
     /// Extract enum payload
     EnumPayload {
-        dest: String,
+        dest: Sym,
         value: MirOperand,
-        variant: String,
+        variant: Sym,
     },
 
     /// Extract enum payload with index (for ADT pattern matching)
     EnumGetPayload {
-        dest: String,
+        dest: Sym,
         value: MirOperand,
-        variant_name: String,
-        enum_name: String,
+        variant_name: Sym,
+        enum_name: Sym,
         index: u32,
     },
 
@@ -617,13 +618,13 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Create tuple
     TupleCreate {
-        dest: String,
+        dest: Sym,
         elements: Vec<MirOperand>,
     },
 
     /// Extract tuple element
     TupleGet {
-        dest: String,
+        dest: Sym,
         tuple: MirOperand,
         index: usize,
         /// TypeId of the tuple (so codegen can look up element types)
@@ -635,17 +636,17 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Function call
     Call {
-        dest: Option<String>,
-        func: String,
+        dest: Option<Sym>,
+        func: Sym,
         args: Vec<MirOperand>,
     },
 
     /// Method call
     MethodCall {
-        dest: Option<String>,
+        dest: Option<Sym>,
         receiver: MirOperand,
         receiver_type: TypeId,
-        method: String,
+        method: Sym,
         args: Vec<MirOperand>,
         arg_types: Vec<TypeId>,
         /// Return type of the method call (for JSON.parse and similar)
@@ -654,9 +655,9 @@ pub enum MirInstrKind {
 
     /// FFI call
     FfiCall {
-        dest: Option<String>,
-        lib: String,
-        symbol: String,
+        dest: Option<Sym>,
+        lib: Sym,
+        symbol: Sym,
         args: Vec<MirOperand>,
     },
 
@@ -665,14 +666,14 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Create closure
     ClosureCreate {
-        dest: String,
-        func: String,
+        dest: Sym,
+        func: Sym,
         captures: Vec<MirOperand>,
     },
 
     /// Call closure
     ClosureCall {
-        dest: Option<String>,
+        dest: Option<Sym>,
         closure: MirOperand,
         args: Vec<MirOperand>,
     },
@@ -681,29 +682,29 @@ pub enum MirInstrKind {
     // Result/Error Handling
     // ========================================================================
     /// Wrap value in Ok
-    WrapOk { dest: String, value: MirOperand },
+    WrapOk { dest: Sym, value: MirOperand },
 
     /// Wrap value in Err
-    WrapErr { dest: String, value: MirOperand },
+    WrapErr { dest: Sym, value: MirOperand },
 
     /// Check if result is Ok
-    IsOk { dest: String, value: MirOperand },
+    IsOk { dest: Sym, value: MirOperand },
 
     /// Unwrap Ok value (with expected type for proper conversion)
     UnwrapOk {
-        dest: String,
+        dest: Sym,
         value: MirOperand,
         expected_type: Option<TypeId>,
     },
 
     /// Unwrap Err value
-    UnwrapErr { dest: String, value: MirOperand },
+    UnwrapErr { dest: Sym, value: MirOperand },
 
     /// Extract Ok and Error values from Result (manual error handling)
     /// let a, b, err = expr;
     ManualErrorExtract {
-        ok_names: Vec<String>, // Names for Ok values (single or tuple)
-        error_name: String,    // Name for error variable (or "_" to ignore)
+        ok_names: Vec<Sym>, // Names for Ok values (single or tuple)
+        error_name: Sym,    // Name for error variable (or "_" to ignore)
         result: MirOperand,    // Result to extract from
         ok_type: TypeId,       // Type of the Ok value
         err_type: TypeId,      // Type of the Error value
@@ -714,7 +715,7 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Type cast
     Cast {
-        dest: String,
+        dest: Sym,
         value: MirOperand,
         to_type: TypeId,
     },
@@ -735,7 +736,7 @@ pub enum MirInstrKind {
     // ========================================================================
     /// Get runtime type name as string
     TypeOf {
-        dest: String,
+        dest: Sym,
         value: MirOperand,
         value_type: TypeId,
     },
@@ -752,23 +753,23 @@ pub enum MirInstrKind {
     /// Sleep for N milliseconds: `sleep(ms)` — blocking
     Sleep { ms: MirOperand },
     /// Await a task handle: `await handle` → result
-    Await { dest: String, handle: MirOperand },
+    Await { dest: Sym, handle: MirOperand },
     /// Spawn a task: `go { body }` → task handle
     Spawn {
-        dest: String,
-        func: String,
+        dest: Sym,
+        func: Sym,
         captures: Vec<MirOperand>,
     },
     /// Create an empty scope: `scope {` → scope handle
-    ScopeCreate { dest: String },
+    ScopeCreate { dest: Sym },
     /// Spawn a task into a scope: `go { body }` inside scope
     ScopeSpawn {
         scope: MirOperand,
-        func: String,
+        func: Sym,
         captures: Vec<MirOperand>,
     },
     /// Wait for all scope tasks to finish: `}` of scope → result
-    ScopeWait { dest: String, scope: MirOperand },
+    ScopeWait { dest: Sym, scope: MirOperand },
 }
 
 /// Binary operators
@@ -905,7 +906,7 @@ impl MirInstr {
     }
 
     /// Get destination (defined value) if any
-    pub fn destination(&self) -> Option<&String> {
+    pub fn destination(&self) -> Option<&Sym> {
         match &self.kind {
             MirInstrKind::Move { dest, .. }
             | MirInstrKind::Copy { dest, .. }
@@ -957,22 +958,22 @@ impl MirInstr {
 /// MIR validation errors
 #[derive(Debug, Clone)]
 pub enum MirError {
-    UndefinedValue { name: String, block: String },
+    UndefinedValue { name: Sym, block: Sym },
     TypeMismatch { expected: TypeId, found: TypeId },
-    InvalidTerminator { block: String },
+    InvalidTerminator { block: Sym },
 }
 
 impl std::fmt::Display for MirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UndefinedValue { name, block } => {
-                write!(f, "undefined value '{}' in block '{}'", name, block)
+                write!(f, "undefined value '{}' in block '{}'", resolve(*name), resolve(*block))
             }
             Self::TypeMismatch { expected, found } => {
                 write!(f, "type mismatch: expected {}, found {}", expected, found)
             }
             Self::InvalidTerminator { block } => {
-                write!(f, "invalid terminator in block '{}'", block)
+                write!(f, "invalid terminator in block '{}'", resolve(*block))
             }
         }
     }
@@ -993,21 +994,21 @@ mod tests {
     fn test_pure_ownership_instructions() {
         // Move - transfers ownership
         let move_instr = MirInstr::new(MirInstrKind::Move {
-            dest: "%1".to_string(),
-            src: MirOperand::Local("x".to_string()),
+            dest: sym("%1"),
+            src: MirOperand::Local(sym("x")),
         });
-        assert_eq!(move_instr.destination(), Some(&"%1".to_string()));
+        assert_eq!(move_instr.destination(), Some(&sym("%1")));
 
         // Clone - deep copy
         let clone_instr = MirInstr::new(MirInstrKind::Clone {
-            dest: "%2".to_string(),
-            src: MirOperand::Local("y".to_string()),
+            dest: sym("%2"),
+            src: MirOperand::Local(sym("y")),
         });
-        assert_eq!(clone_instr.destination(), Some(&"%2".to_string()));
+        assert_eq!(clone_instr.destination(), Some(&sym("%2")));
 
         // Drop - cleanup
         let drop_instr = MirInstr::new(MirInstrKind::Drop {
-            value: "z".to_string(),
+            value: sym("z"),
         });
         assert_eq!(drop_instr.destination(), None);
     }
@@ -1063,23 +1064,23 @@ mod tests {
 
     #[test]
     fn test_function_validation() {
-        let mut func = MirFunction::new("test".to_string());
+        let mut func = MirFunction::new(sym("test"));
         func.params.push(ParamDef {
-            name: "x".to_string(),
+            name: sym("x"),
             type_id: TypeId(100),
         });
 
-        let mut block = MirBlock::new("entry".to_string());
+        let mut block = MirBlock::new(sym("entry"));
         block
             .instructions
             .push(MirInstr::new(MirInstrKind::BinaryOp {
-                dest: "%1".to_string(),
+                dest: sym("%1"),
                 op: BinaryOp::Add,
-                lhs: MirOperand::Local("x".to_string()),
+                lhs: MirOperand::Local(sym("x")),
                 rhs: MirOperand::Const(MirConst::Int(1)),
             }));
         block.terminator = MirTerminator::Return {
-            values: vec![MirOperand::Temp("%1".to_string())],
+            values: vec![MirOperand::Temp(sym("%1"))],
         };
         func.blocks.push(block);
 

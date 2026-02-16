@@ -6,6 +6,7 @@
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::AddressSpace;
+use doo_core::constants::ffi_names;
 
 /// Memory manager for ownership-based memory.
 pub struct MemoryManager {
@@ -30,31 +31,31 @@ impl MemoryManager {
         
         // doo_alloc: (size: i64) -> ptr
         let alloc_type = ptr_type.fn_type(&[i64_type.into()], false);
-        module.add_function("doo_alloc", alloc_type, None);
+        module.add_function(ffi_names::DOO_ALLOC, alloc_type, None);
 
         // doo_realloc: (ptr, new_size: i64) -> ptr
         let realloc_type = ptr_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
-        module.add_function("doo_realloc", realloc_type, None);
+        module.add_function(ffi_names::DOO_REALLOC, realloc_type, None);
 
         // doo_free: (ptr) -> void
         let free_type = void_type.fn_type(&[ptr_type.into()], false);
-        module.add_function("doo_free", free_type, None);
+        module.add_function(ffi_names::DOO_FREE, free_type, None);
 
         // doo_clone: (ptr, size: i64) -> ptr
         let clone_type = ptr_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
-        module.add_function("doo_clone", clone_type, None);
+        module.add_function(ffi_names::DOO_CLONE, clone_type, None);
 
         // doo_memcpy: (dest, src, size: i64) -> void
         let memcpy_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into(), i64_type.into()], false);
-        module.add_function("doo_memcpy", memcpy_type, None);
+        module.add_function(ffi_names::DOO_MEMCPY, memcpy_type, None);
 
         // doo_zero: (ptr, size: i64) -> void
         let zero_type = void_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
-        module.add_function("doo_zero", zero_type, None);
+        module.add_function(ffi_names::DOO_ZERO, zero_type, None);
 
         // printf for debugging
         let printf_type = context.i32_type().fn_type(&[ptr_type.into()], true);
-        module.add_function("printf", printf_type, None);
+        module.add_function(ffi_names::PRINTF, printf_type, None);
     }
 }
 
@@ -64,28 +65,3 @@ impl Default for MemoryManager {
     }
 }
 
-/// Ownership decision for a value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OwnershipDecision {
-    /// Move: transfer ownership (zero cost)
-    Move,
-    /// Copy: bitwise copy (for primitives)
-    Copy,
-    /// Clone: deep copy (for non-primitives with future uses)
-    Clone,
-    /// Borrow: create reference (for function args)
-    Borrow { mutable: bool },
-}
-
-impl OwnershipDecision {
-    /// Get the decision based on type and usage.
-    pub fn decide(is_primitive: bool, future_uses: usize) -> Self {
-        if future_uses == 0 {
-            Self::Move
-        } else if is_primitive {
-            Self::Copy
-        } else {
-            Self::Clone
-        }
-    }
-}

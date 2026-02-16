@@ -72,7 +72,7 @@ app
 
 // Shared .env content for all templates
 pub const ENV_CONTENT: &str = r#"# Database connection
-DATABASE_URL=postgresql://postgres:admin@localhost:5432/doo_test
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD_HERE@localhost:5432/doo_test
 
 # Authentication
 JWT_SECRET=your-secret-key-change-in-production

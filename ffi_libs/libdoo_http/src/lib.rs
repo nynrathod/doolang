@@ -3197,8 +3197,10 @@ pub extern "C" fn doo_http_listen(server_ptr: *const std::ffi::c_void) -> *mut D
                 }
             };
 
-            println!("[Doo] << accepted {}", remote_addr);
-            let _ = std::io::stdout().flush();
+            if doo_runtime::debug::is_debug_enabled() {
+                println!("[Doo] << accepted {}", remote_addr);
+                let _ = std::io::stdout().flush();
+            }
 
             tokio::task::spawn_local(async move {
                 let io = TokioIo::new(stream);

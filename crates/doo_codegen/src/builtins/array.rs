@@ -1596,7 +1596,7 @@ fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx
 }
 
 fn get_or_declare_snprintf<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-    ctx.module.get_function("snprintf").unwrap_or_else(|| {
+    ctx.module.get_function(ffi_names::SNPRINTF).unwrap_or_else(|| {
         let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let i64_type = ctx.context.i64_type();
         // snprintf(char *str, size_t size, const char *format, ...)
@@ -1604,7 +1604,7 @@ fn get_or_declare_snprintf<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'c
             .context
             .i32_type()
             .fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], true);
-        ctx.module.add_function("snprintf", fn_type, None)
+        ctx.module.add_function(ffi_names::SNPRINTF, fn_type, None)
     })
 }
 

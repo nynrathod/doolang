@@ -76,7 +76,7 @@ fn build_runtime() -> Runtime {
         .enable_all()
         .build()
         .unwrap_or_else(|e| {
-            eprintln!("[FATAL] Failed to create Tokio runtime: {}", e);
+            doo_ffi_core::ffi_fatal!("Failed to create Tokio runtime: {}", e);
             std::process::exit(1);
         })
 }

@@ -12,7 +12,9 @@
 pub mod types;
 pub mod builder;
 pub mod optimize;
+pub mod sym;
 
+pub use sym::Sym;
 pub use types::{
     // Program structure
     MirProgram, MirFunction, MirBlock, MirGlobal,

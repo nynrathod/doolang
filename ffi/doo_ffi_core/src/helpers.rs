@@ -102,6 +102,14 @@ pub fn make_err(code: u16, message: &str) -> *mut DooResult {
     DooResult::err_str(code, message).into_raw()
 }
 
+/// Create an Err `DooResult` with an RFC 7807 JSON body.
+/// The error string is formatted as RFC 7807 JSON, then wrapped in `{ *char }`.
+#[inline]
+pub fn make_err_rfc7807(status: u16, detail: &str) -> *mut DooResult {
+    let json = crate::Rfc7807Error::new(status, detail).to_json();
+    DooResult::err_str(status, &json).into_raw()
+}
+
 /// Create an Err `DooResult` from a panic payload.
 /// Extracts a human-readable message from the `Box<dyn Any + Send>`.
 #[inline]

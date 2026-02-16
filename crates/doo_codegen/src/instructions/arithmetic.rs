@@ -6,6 +6,7 @@ use super::InstructionHandler;
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
+use doo_mir::sym::resolve;
 use doo_mir::{BinaryOp, MirConst, MirInstr, MirInstrKind, MirOperand, UnaryOp};
 use inkwell::values::BasicValueEnum;
 use inkwell::FloatPredicate;
@@ -29,18 +30,18 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
     ) -> Option<BasicValueEnum<'ctx>> {
         match &instr.kind {
             MirInstrKind::BinaryOp { dest, op, lhs, rhs } => {
-                if std::env::var("DOO_DEBUG").is_ok() {
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!(
                         "CODEGEN",
                         "BinaryOp: {} = {:?} {:?} {:?}",
-                        dest,
+                        resolve(*dest),
                         lhs,
                         op,
                         rhs
                     );
                 }
                 let lhs_val = operand_to_value(ctx, lhs);
-                if lhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
+                if lhs_val.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!(
                         "CODEGEN",
                         "BinaryOp: lhs operand_to_value failed for {:?}",
@@ -51,7 +52,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
                 let lhs_val = lhs_val?;
 
                 let rhs_val = operand_to_value(ctx, rhs);
-                if rhs_val.is_none() && std::env::var("DOO_DEBUG").is_ok() {
+                if rhs_val.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!(
                         "CODEGEN",
                         "BinaryOp: rhs operand_to_value failed for {:?}",
@@ -62,7 +63,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
                 let rhs_val = rhs_val?;
 
                 let result = emit_binop(ctx, *op, lhs_val, rhs_val);
-                if result.is_none() && std::env::var("DOO_DEBUG").is_ok() {
+                if result.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!(
                         "CODEGEN",
                         "BinaryOp: emit_binop failed for {:?} {:?} {:?}",
@@ -73,14 +74,14 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
                     return None;
                 }
                 let result = result?;
-                ctx.set_temp(dest, result);
+                ctx.set_temp(&resolve(*dest), result);
                 Some(result)
             }
 
             MirInstrKind::UnaryOp { dest, op, operand } => {
                 let val = operand_to_value(ctx, operand)?;
                 let result = emit_unaryop(ctx, *op, val)?;
-                ctx.set_temp(dest, result);
+                ctx.set_temp(&resolve(*dest), result);
                 Some(result)
             }
 
@@ -97,19 +98,21 @@ fn operand_to_value<'ctx>(
     match operand {
         MirOperand::Const(c) => Some(const_to_value(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
+            let name_str = resolve(*name);
             // First try to get as a value (local variable, temp, etc.)
-            if let Some(val) = ctx.get_value(name) {
+            if let Some(val) = ctx.get_value(&name_str) {
                 return Some(val);
             }
             // Fall back to function reference - convert function to pointer value
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None
         }
         MirOperand::FuncRef(name) => {
+            let name_str = resolve(*name);
             // FuncRef is an explicit function reference - convert to pointer
-            if let Some(func) = ctx.get_function(name) {
+            if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None
@@ -194,7 +197,7 @@ fn emit_binop<'ctx>(
         let rhs_ptr = rhs.into_pointer_value();
 
         // Debug: show which block we're emitting to
-        if std::env::var("DOO_DEBUG").is_ok() {
+        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
             if let Some(bb) = ctx.builder.get_insert_block() {
                 doo_debug!(
                     "CODEGEN",

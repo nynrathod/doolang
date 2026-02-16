@@ -35,7 +35,7 @@ pub const MAX_ROWS: usize = 10_000;
 /// Get the query concurrency semaphore.
 pub fn get_query_semaphore() -> &'static tokio::sync::Semaphore {
     QUERY_SEMAPHORE.get_or_init(|| {
-        let limit = std::env::var("DATABASE_MAX_QUERIES")
+        let limit = std::env::var(doo_ffi_core::constants::ENV_DATABASE_MAX_QUERIES)
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(200);
@@ -46,7 +46,7 @@ pub fn get_query_semaphore() -> &'static tokio::sync::Semaphore {
 
 /// Get per-query timeout duration from env or default.
 pub fn get_query_timeout() -> Duration {
-    let secs = std::env::var("DATABASE_QUERY_TIMEOUT_SECS")
+    let secs = std::env::var(doo_ffi_core::constants::ENV_DATABASE_QUERY_TIMEOUT_SECS)
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_QUERY_TIMEOUT_SECS);
@@ -55,7 +55,7 @@ pub fn get_query_timeout() -> Duration {
 
 /// Get semaphore wait timeout from env or default.
 pub fn get_semaphore_wait_timeout() -> Duration {
-    let ms = std::env::var("DATABASE_SEMAPHORE_WAIT_MS")
+    let ms = std::env::var(doo_ffi_core::constants::ENV_DATABASE_SEMAPHORE_WAIT_MS)
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_SEMAPHORE_WAIT_MS);
@@ -100,7 +100,7 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
 
     // Production pool configuration
     let cpu_count = num_cpus::get();
-    let pool_size = std::env::var("DATABASE_POOL_SIZE")
+    let pool_size = std::env::var(doo_ffi_core::constants::ENV_DATABASE_POOL_SIZE)
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or((cpu_count * 2).min(32).max(4));

@@ -35,6 +35,34 @@ pub const DOO_JWT_FUNC_NAME: &str = "Jwt";
 pub const BUILTIN_MIDDLEWARES: &[&str] = &[MIDDLEWARE_JWT, MIDDLEWARE_CORS, MIDDLEWARE_RATELIMIT];
 
 // ============================================================================
+// ENVIRONMENT VARIABLE NAMES — SINGLE SOURCE OF TRUTH
+// ============================================================================
+
+/// Master debug flag — enables debug output across all FFI crates.
+pub const ENV_DOO_DEBUG: &str = "DOO_DEBUG";
+
+/// Suppresses the HTTP server startup banner.
+pub const ENV_DOO_NO_BANNER: &str = "DOO_NO_BANNER";
+
+/// JWT secret key for token signing/verification.
+pub const ENV_JWT_SECRET: &str = "JWT_SECRET";
+
+/// PostgreSQL connection URL.
+pub const ENV_DATABASE_URL: &str = "DATABASE_URL";
+
+/// Maximum concurrent database queries (semaphore permits).
+pub const ENV_DATABASE_MAX_QUERIES: &str = "DATABASE_MAX_QUERIES";
+
+/// Database query timeout in seconds.
+pub const ENV_DATABASE_QUERY_TIMEOUT_SECS: &str = "DATABASE_QUERY_TIMEOUT_SECS";
+
+/// Database semaphore acquisition timeout in milliseconds.
+pub const ENV_DATABASE_SEMAPHORE_WAIT_MS: &str = "DATABASE_SEMAPHORE_WAIT_MS";
+
+/// Database connection pool size.
+pub const ENV_DATABASE_POOL_SIZE: &str = "DATABASE_POOL_SIZE";
+
+// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 

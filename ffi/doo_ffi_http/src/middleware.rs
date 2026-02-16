@@ -73,7 +73,7 @@ pub fn get_ratelimit_state() -> &'static Mutex<HashMap<String, RateLimitEntry>> 
 /// Returns empty string if JWT_SECRET is not set.
 pub fn get_jwt_secret() -> &'static str {
     JWT_SECRET
-        .get_or_init(|| std::env::var("JWT_SECRET").unwrap_or_default())
+        .get_or_init(|| std::env::var(doo_ffi_core::constants::ENV_JWT_SECRET).unwrap_or_default())
         .as_str()
 }
 
@@ -219,9 +219,7 @@ fn lookup_user_id_by_email(email: &str) -> Option<i64> {
     let result_str = c_to_string(result_ptr as *const c_char);
 
     // CRITICAL: Free the DB result pointer to prevent leak on every JWT-authenticated request
-    unsafe {
-        doo_ffi_core::doo_free(result_ptr as *mut u8);
-    }
+    doo_ffi_core::doo_free(result_ptr as *mut u8);
 
     let result: serde_json::Value = serde_json::from_str(&result_str).ok()?;
 

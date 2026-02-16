@@ -30,7 +30,7 @@ static DEBUG_ENABLED: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
 pub fn init(enabled: bool) {
     let should_enable = cfg!(debug_assertions)
         || enabled
-        || std::env::var("DOO_DEBUG").is_ok();
+        || std::env::var(crate::constants::env_vars::DOO_DEBUG).is_ok();
     DEBUG_ENABLED.store(should_enable, Ordering::Relaxed);
 }
 
@@ -61,5 +61,23 @@ macro_rules! doo_debug {
         if $crate::debug::is_enabled() {
             eprintln!("[{}] ({}:{}) {}", $component, file!(), line!(), format_args!($($arg)*));
         }
+    };
+}
+
+/// Fatal error macro — always prints regardless of debug mode.
+///
+/// Use for unrecoverable errors that must always be visible.
+/// Consistent format: `[FATAL] (file:line) message`
+///
+/// # Examples
+///
+/// ```ignore
+/// use doo_core::doo_fatal;
+/// doo_fatal!("Failed to create runtime: {}", err);
+/// ```
+#[macro_export]
+macro_rules! doo_fatal {
+    ($($arg:tt)*) => {
+        eprintln!("[FATAL] ({}:{}) {}", file!(), line!(), format_args!($($arg)*));
     };
 }

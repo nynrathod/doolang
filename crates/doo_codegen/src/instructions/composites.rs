@@ -5,8 +5,10 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::utils::operand_to_value;
+use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeKind};
+use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 
@@ -15,9 +17,9 @@ pub struct CompositeHandler;
 
 impl CompositeHandler {
     /// Extract variable name from MirOperand for struct type lookup.
-    fn get_operand_name(operand: &MirOperand) -> Option<&str> {
+    fn get_operand_name(operand: &MirOperand) -> Option<String> {
         match operand {
-            MirOperand::Local(name) | MirOperand::Temp(name) => Some(name.as_str()),
+            MirOperand::Local(name) | MirOperand::Temp(name) => Some(resolve(*name)),
             _ => None,
         }
     }
@@ -59,15 +61,18 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         ctx.module
                             .add_function(doo_core::constants::ffi_names::MALLOC, fn_ty, None)
                     });
-                let tuple_size = tuple_type
+                let tuple_size_val = tuple_type
                     .size_of()
-                    .map(|v| v.get_zero_extended_constant().unwrap_or(64))
-                    .unwrap_or((elements.len() * 8) as u64);
+                    .unwrap_or_else(|| {
+                        // Fallback: tuples are simpler — sum of 8-byte fields
+                        let size = ((elements.len() as u64) * 8).max(16);
+                        i64_type.const_int(size, false)
+                    });
                 let heap_ptr = ctx
                     .builder
                     .build_call(
                         malloc_fn,
-                        &[i64_type.const_int(tuple_size.max(16), false).into()],
+                        &[tuple_size_val.into()],
                         "tuple_alloc",
                     )
                     .ok()?
@@ -88,7 +93,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     }
                 }
 
-                ctx.set_temp(dest, heap_ptr.into());
+                ctx.set_temp(&resolve(*dest), heap_ptr.into());
                 Some(heap_ptr.into())
             }
 
@@ -98,6 +103,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 index,
                 tuple_type,
             } => {
+                let dest_str = resolve(*dest);
                 if let Some(tup) = operand_to_value(ctx, tuple) {
                     let tup: inkwell::values::BasicValueEnum = tup;
                     if tup.is_pointer_value() {
@@ -128,26 +134,18 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             let elem_llvm = ctx.get_llvm_type(elem_ids[*index]);
                             (tuple_struct, elem_llvm)
                         } else {
-                            // CRITICAL FIX: When tuple_type is not available, use the dest variable's
-                            // known type from variable_types (populated from func.locals in builder.rs).
-                            // This is the single source of truth for variable types.
-                            // Fallback to i64 only if dest type is also unknown.
-                            let dest_type_id = ctx.get_variable_type(dest);
+                            let dest_type_id = ctx.get_variable_type(&dest_str);
                             let elem_llvm = match dest_type_id {
                                 Some(tid) => ctx.get_llvm_type(tid),
                                 None => ctx.i64_type().into(),
                             };
-                            // For the tuple struct type without full type info, use ptr for each element
-                            // since most complex types (structs, arrays, etc.) are passed as pointers.
-                            // This is a conservative estimate that won't cause type mismatches.
-                            let num_elements = (*index + 1).max(2); // At least 2 elements
+                            let num_elements = (*index + 1).max(2);
                             let element_types: Vec<inkwell::types::BasicTypeEnum> = (0
                                 ..num_elements)
                                 .map(|i| {
                                     if i == *index {
                                         elem_llvm
                                     } else {
-                                        // Other elements: use ptr as conservative default
                                         ctx.ptr_type().into()
                                     }
                                 })
@@ -160,19 +158,15 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             ctx.builder
                                 .build_struct_gep(tuple_ty, ptr, *index as u32, "field")
                         {
-                            if let Ok(val) = ctx.builder.build_load(elem_type, field_ptr, dest) {
-                                ctx.set_temp(dest, val);
+                            if let Ok(val) = ctx.builder.build_load(elem_type, field_ptr, &dest_str) {
+                                ctx.set_temp(&dest_str, val);
 
-                                // CRITICAL: Propagate struct type association for nested struct access.
-                                // If dest is a struct type (or TypeRef to struct), register it so
-                                // FieldGet/FieldSet work correctly. Must resolve TypeRef to get actual struct name.
-                                if let Some(tid) = ctx.get_variable_type(dest) {
+                                if let Some(tid) = ctx.get_variable_type(&dest_str) {
                                     if let Some(kind) = ctx.get_type_kind(tid) {
                                         match kind {
                                             TypeKind::Struct { name, .. } => {
-                                                ctx.set_temp_struct_type(dest, &name);
+                                                ctx.set_temp_struct_type(&dest_str, &name);
                                             }
-                                            // CRITICAL: Resolve TypeRef to the actual struct type
                                             TypeKind::TypeRef { name: ref_name } => {
                                                 if let Some(resolved_tid) =
                                                     ctx.type_registry.lookup(&ref_name)
@@ -180,16 +174,15 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                     if let Some(TypeKind::Struct { name, .. }) =
                                                         ctx.get_type_kind(resolved_tid)
                                                     {
-                                                        ctx.set_temp_struct_type(dest, &name);
+                                                        ctx.set_temp_struct_type(&dest_str, &name);
                                                     }
                                                 }
                                             }
-                                            // For Optional<Struct> or Optional<TypeRef>, extract inner type
                                             TypeKind::Optional { inner } => {
                                                 if let Some(inner_kind) = ctx.get_type_kind(inner) {
                                                     match inner_kind {
                                                         TypeKind::Struct { name, .. } => {
-                                                            ctx.set_temp_struct_type(dest, &name);
+                                                            ctx.set_temp_struct_type(&dest_str, &name);
                                                         }
                                                         TypeKind::TypeRef { name: ref_name } => {
                                                             if let Some(resolved_tid) =
@@ -202,7 +195,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                                     ctx.get_type_kind(resolved_tid)
                                                                 {
                                                                     ctx.set_temp_struct_type(
-                                                                        dest, &name,
+                                                                        &dest_str, &name,
                                                                     );
                                                                 }
                                                             }
@@ -233,24 +226,24 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 // instead of a raw struct. This ensures proper interop with FFI functions
                 // that expect HashMap<String, String> (e.g., cors/ratelimit config).
                 // This is the single source of truth for object-literal-to-map conversion.
-                if struct_name == "__anon" {
+                if resolve(*struct_name) == "__anon" {
                     let ptr_type = ctx.ptr_type();
                     let i64_type = ctx.context.i64_type();
 
                     // Get or declare doo_map_new, doo_map_set, doo_map_set_str_array
-                    let map_new_fn = ctx.module.get_function("doo_map_new").unwrap_or_else(|| {
+                    let map_new_fn = ctx.module.get_function(ffi_names::DOO_MAP_NEW).unwrap_or_else(|| {
                         let fn_ty = ptr_type.fn_type(&[], false);
-                        ctx.module.add_function("doo_map_new", fn_ty, None)
+                        ctx.module.add_function(ffi_names::DOO_MAP_NEW, fn_ty, None)
                     });
-                    let map_set_fn = ctx.module.get_function("doo_map_set").unwrap_or_else(|| {
+                    let map_set_fn = ctx.module.get_function(ffi_names::DOO_MAP_SET).unwrap_or_else(|| {
                         let void_ty = ctx.context.void_type();
                         let fn_ty = void_ty
                             .fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
-                        ctx.module.add_function("doo_map_set", fn_ty, None)
+                        ctx.module.add_function(ffi_names::DOO_MAP_SET, fn_ty, None)
                     });
                     let map_set_arr_fn = ctx
                         .module
-                        .get_function("doo_map_set_str_array")
+                        .get_function(ffi_names::DOO_MAP_SET_STR_ARRAY)
                         .unwrap_or_else(|| {
                             let void_ty = ctx.context.void_type();
                             let fn_ty = void_ty.fn_type(
@@ -258,14 +251,14 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                 false,
                             );
                             ctx.module
-                                .add_function("doo_map_set_str_array", fn_ty, None)
+                                .add_function(ffi_names::DOO_MAP_SET_STR_ARRAY, fn_ty, None)
                         });
 
                     // Get or declare sprintf for int/bool to string conversion
-                    let sprintf_fn = ctx.module.get_function("sprintf").unwrap_or_else(|| {
+                    let sprintf_fn = ctx.module.get_function(ffi_names::SPRINTF).unwrap_or_else(|| {
                         let i32_type = ctx.i32_type();
                         let fn_ty = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
-                        ctx.module.add_function("sprintf", fn_ty, None)
+                        ctx.module.add_function(ffi_names::SPRINTF, fn_ty, None)
                     });
 
                     // Create the map
@@ -279,15 +272,15 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                     // Insert each field into the map
                     for (field_name, value) in fields.iter() {
-                        let key_str = ctx.const_string(field_name);
+                        let key_str = ctx.const_string(&resolve(*field_name));
 
                         // Determine if this value is an array (tracked by array_element_types)
                         let is_array = match value {
                             MirOperand::Temp(name) => {
-                                ctx.array_element_types.contains_key(name.as_str())
+                                ctx.array_element_types.contains_key(&resolve(*name))
                             }
                             MirOperand::Local(name) => {
-                                ctx.array_element_types.contains_key(name.as_str())
+                                ctx.array_element_types.contains_key(&resolve(*name))
                             }
                             _ => false,
                         };
@@ -424,22 +417,24 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         }
                     }
 
-                    ctx.set_temp(dest, map_ptr.into());
+                    ctx.set_temp(&resolve(*dest), map_ptr.into());
                     return Some(map_ptr.into());
                 }
 
                 // Named struct: normal struct creation path
                 // Collect field names in order for metadata
+                let dest_str = resolve(*dest);
+                let sname = resolve(*struct_name);
                 let field_names: Vec<String> =
-                    fields.iter().map(|(name, _)| name.clone()).collect();
+                    fields.iter().map(|(name, _)| resolve(*name)).collect();
 
                 // Register struct metadata for field lookups
-                ctx.register_struct_metadata(struct_name, field_names);
+                ctx.register_struct_metadata(&sname, field_names);
 
                 // Build LLVM struct type with correct field types from type registry
                 // Use get_llvm_type for consistent type mapping across all code paths
                 let field_types: Vec<inkwell::types::BasicTypeEnum> =
-                    if let Some(field_type_ids) = ctx.get_struct_field_types(struct_name) {
+                    if let Some(field_type_ids) = ctx.get_struct_field_types(&sname) {
                         field_type_ids
                             .iter()
                             .map(|type_id| ctx.get_llvm_type(*type_id))
@@ -448,17 +443,31 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         // Fallback: use get_llvm_type based on operand types
                         fields.iter().map(|_| ctx.i64_type().into()).collect()
                     };
-                let struct_type = ctx.get_struct_type(struct_name, &field_types);
+                let struct_type = ctx.get_struct_type(&sname, &field_types);
 
-                // Calculate struct size using LLVM's size_of() for correct padding
-                // CRITICAL FIX: The old calculation (fields.len() * 8) was WRONG because:
-                // - Enum fields are { i32, ptr } = 16 bytes (not 8)
-                // - Struct padding can vary based on field alignment requirements
-                let struct_size = struct_type
-                    .size_of()
-                    .map(|v| v.get_zero_extended_constant().unwrap_or(64))
-                    .unwrap_or((fields.len() * 8) as u64); // Fallback for safety
+                // CRITICAL: Use LLVM's size_of() IntValue DIRECTLY as malloc argument.
+                // DO NOT extract via get_zero_extended_constant() — it fails on ConstantExpr
+                // (sizeof returns ConstantExpr, not ConstantInt), causing wrong fallback sizes.
+                // This was the root cause of heap buffer overflow for structs with enum fields.
                 let i64_type = ctx.context.i64_type();
+                let struct_size_val = struct_type.size_of().unwrap_or_else(|| {
+                    // Fallback: compute size accounting for enum fields (16 bytes each)
+                    let mut offset: u64 = 0;
+                    if let Some(field_type_ids) = ctx.get_struct_field_types(&sname) {
+                        for type_id in &field_type_ids {
+                            let field_size = match ctx.get_type_kind(*type_id) {
+                                Some(doo_core::types::TypeKind::Enum { .. }) => 16,
+                                _ => 8,
+                            };
+                            offset = (offset + 7) & !7;
+                            offset += field_size;
+                        }
+                    } else {
+                        offset = (fields.len() as u64) * 8;
+                    }
+                    let padded = ((offset + 7) & !7).max(16);
+                    i64_type.const_int(padded, false)
+                });
                 let ptr_type = ctx.ptr_type();
 
                 // Get or declare malloc for heap allocation
@@ -476,8 +485,8 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     .builder
                     .build_call(
                         malloc_fn,
-                        &[i64_type.const_int(struct_size.max(16), false).into()], // min 16 bytes
-                        dest,
+                        &[struct_size_val.into()],
+                        &dest_str,
                     )
                     .ok()?
                     .try_as_basic_value()
@@ -485,7 +494,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     .into_pointer_value();
 
                 // Get field type IDs for proper boxing
-                let field_type_ids = ctx.get_struct_field_types(struct_name);
+                let field_type_ids = ctx.get_struct_field_types(&sname);
 
                 // Store field values
                 for (i, (_, value)) in fields.iter().enumerate() {
@@ -503,8 +512,8 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 }
 
                 // Track that this dest variable holds a struct of this type
-                ctx.set_temp_struct_type(dest, struct_name);
-                ctx.set_temp(dest, struct_ptr.into());
+                ctx.set_temp_struct_type(&dest_str, &sname);
+                ctx.set_temp(&dest_str, struct_ptr.into());
                 Some(struct_ptr.into())
             }
 
@@ -513,36 +522,30 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 object,
                 field,
             } => {
-                let debug = std::env::var("DOO_DEBUG").is_ok();
+                let dest_str = resolve(*dest);
+                let field_str = resolve(*field);
+                let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
                 if debug {
                     let blk = ctx
                         .builder
                         .get_insert_block()
                         .map(|b| b.get_name().to_string_lossy().to_string());
-                    doo_debug!("CODEGEN", "FieldGet {} in block {:?}", dest, blk);
+                    doo_debug!("CODEGEN", "FieldGet {} in block {:?}", dest_str, blk);
                 }
                 if let Some(obj_ptr) = operand_to_value(ctx, object) {
                     if obj_ptr.is_pointer_value() {
                         let ptr = obj_ptr.into_pointer_value();
 
-                        // Get struct name from the object operand
-                        // CRITICAL FIX: Try multiple sources for struct type info:
-                        // 1. temp_struct_type (runtime tracking)
-                        // 2. variable_type -> TypeId -> TypeKind::Struct
-                        // 3. variable_type -> TypeId -> TypeKind::TypeRef -> resolved Struct
                         let var_name = Self::get_operand_name(object);
                         let struct_name = var_name.and_then(|name| {
-                            // First try temp_struct_type (most specific)
-                            if let Some(st) = ctx.get_temp_struct_type(name).cloned() {
+                            if let Some(st) = ctx.get_temp_struct_type(&name).cloned() {
                                 return Some(st);
                             }
-                            // Then try variable_type -> TypeKind
-                            if let Some(type_id) = ctx.get_variable_type(name) {
+                            if let Some(type_id) = ctx.get_variable_type(&name) {
                                 if let Some(kind) = ctx.get_type_kind(type_id) {
                                     match kind {
                                         TypeKind::Struct { name, .. } => return Some(name),
                                         TypeKind::TypeRef { name: ref_name } => {
-                                            // Resolve TypeRef to the actual struct type
                                             if let Some(resolved_tid) =
                                                 ctx.type_registry.lookup(&ref_name)
                                             {
@@ -562,39 +565,35 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                         if debug {
                             if struct_name.is_none() {
-                                doo_debug!("CODEGEN", "WARNING: FieldGet {} has no struct type for {:?} (var_name={:?})", 
-                                    dest, object, var_name);
+                                doo_debug!("CODEGEN", "WARNING: FieldGet {} has no struct type for {:?}", 
+                                    dest_str, object);
                             } else {
                                 doo_debug!(
                                     "CODEGEN",
                                     "FieldGet {} using struct_name={:?} for field={}",
-                                    dest,
+                                    dest_str,
                                     struct_name,
-                                    field
+                                    field_str
                                 );
                             }
                         }
 
                         if let Some(struct_name) = struct_name {
-                            // Look up field index by name from struct metadata
                             let field_index =
-                                ctx.get_field_index(&struct_name, field).unwrap_or_else(|| {
-                                    // Fallback: try parsing field as numeric index
-                                    field.parse::<u32>().unwrap_or(0)
+                                ctx.get_field_index(&struct_name, &field_str).unwrap_or_else(|| {
+                                    field_str.parse::<u32>().unwrap_or(0)
                                 });
                             if debug {
                                 doo_debug!(
                                     "CODEGEN",
                                     "FieldGet {} field_index={} for {}.{}",
-                                    dest,
+                                    dest_str,
                                     field_index,
                                     struct_name,
-                                    field
+                                    field_str
                                 );
                             }
 
-                            // Get the struct type from cache, or build it from type registry
-                            // This handles imported/cross-module types
                             if let Some(struct_type) = ctx.get_or_build_struct_type(&struct_name) {
                                 if let Ok(field_ptr) = ctx.builder.build_struct_gep(
                                     struct_type,
@@ -602,18 +601,13 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     field_index,
                                     "field_ptr",
                                 ) {
-                                    // Determine the correct LLVM type based on field's Doo type
                                     let field_type_id =
-                                        ctx.get_struct_field_type(&struct_name, field);
+                                        ctx.get_struct_field_type(&struct_name, &field_str);
 
-                                    // Check if field is a nested struct - if so, propagate struct type info
-                                    // Also handle TypeRef for nested structs
                                     let nested_struct_name = field_type_id.and_then(|tid| {
-                                        // Try direct struct lookup first
                                         if let Some(name) = ctx.get_struct_name_from_type_id(tid) {
                                             return Some(name);
                                         }
-                                        // Try resolving TypeRef
                                         if let Some(TypeKind::TypeRef { name: ref_name }) =
                                             ctx.get_type_kind(tid)
                                         {
@@ -637,10 +631,8 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                     .get_struct_name_from_type_id(t)
                                                     .is_some() =>
                                             {
-                                                // Nested struct - load as pointer
                                                 ctx.ptr_type().into()
                                             }
-                                            // Handle TypeRef pointing to struct
                                             Some(t)
                                                 if matches!(
                                                     ctx.get_type_kind(t),
@@ -655,11 +647,8 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                     Some(TypeKind::Enum { .. })
                                                 ) =>
                                             {
-                                                // Enum field - load as enum struct type { i32, ptr }
                                                 ctx.get_llvm_type(t)
                                             }
-                                            // CRITICAL: Arrays and Maps are stored as pointers
-                                            // This is essential for field access like self.Tasks.push()
                                             Some(t)
                                                 if matches!(
                                                     ctx.get_type_kind(t),
@@ -676,26 +665,24 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                             {
                                                 ctx.ptr_type().into()
                                             }
-                                            _ => ctx.i64_type().into(), // Int and default
+                                            _ => ctx.i64_type().into(),
                                         };
 
                                     if let Ok(val) =
-                                        ctx.builder.build_load(load_type, field_ptr, dest)
+                                        ctx.builder.build_load(load_type, field_ptr, &dest_str)
                                     {
-                                        ctx.set_temp(dest, val);
+                                        ctx.set_temp(&dest_str, val);
 
-                                        // CRITICAL: If field is a nested struct, propagate struct type
-                                        // This enables chained field access like user.address.street
                                         if let Some(nested_name) = nested_struct_name {
                                             if debug {
                                                 doo_debug!(
                                                     "CODEGEN",
                                                     "FieldGet {} setting nested struct type to {}",
-                                                    dest,
+                                                    dest_str,
                                                     nested_name
                                                 );
                                             }
-                                            ctx.set_temp_struct_type(dest, &nested_name);
+                                            ctx.set_temp_struct_type(&dest_str, &nested_name);
                                         }
 
                                         return Some(val);
@@ -703,18 +690,16 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                 }
                             }
                         } else {
-                            // Fallback: numeric index with default struct type
-                            let idx = field.parse::<u32>().unwrap_or(0);
-                            // Try to find any cached struct type
+                            let idx = field_str.parse::<u32>().unwrap_or(0);
                             if let Some(struct_type) = ctx.lookup_struct_type("_default") {
                                 if let Ok(field_ptr) =
                                     ctx.builder
                                         .build_struct_gep(struct_type, ptr, idx, "field_ptr")
                                 {
                                     if let Ok(val) =
-                                        ctx.builder.build_load(ctx.i64_type(), field_ptr, dest)
+                                        ctx.builder.build_load(ctx.i64_type(), field_ptr, &dest_str)
                                     {
-                                        ctx.set_temp(dest, val);
+                                        ctx.set_temp(&dest_str, val);
                                         return Some(val);
                                     }
                                 }
@@ -730,6 +715,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 field,
                 value,
             } => {
+                let field_str = resolve(*field);
                 if let (Some(obj_ptr), Some(val)) =
                     (operand_to_value(ctx, object), operand_to_value(ctx, value))
                 {
@@ -738,14 +724,14 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                         // Get struct name from the object operand
                         let struct_name = Self::get_operand_name(object)
-                            .and_then(|var_name| ctx.get_temp_struct_type(var_name).cloned());
+                            .and_then(|var_name| ctx.get_temp_struct_type(&var_name).cloned());
 
                         if let Some(struct_name) = struct_name {
                             // Look up field index by name from struct metadata
                             let field_index =
-                                ctx.get_field_index(&struct_name, field).unwrap_or_else(|| {
+                                ctx.get_field_index(&struct_name, &field_str).unwrap_or_else(|| {
                                     // Fallback: try parsing field as numeric index
-                                    field.parse::<u32>().unwrap_or(0)
+                                    field_str.parse::<u32>().unwrap_or(0)
                                 });
 
                             // Get the struct type from cache
@@ -761,7 +747,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             }
                         } else {
                             // Fallback: numeric index with default struct type
-                            let idx = field.parse::<u32>().unwrap_or(0);
+                            let idx = field_str.parse::<u32>().unwrap_or(0);
                             if let Some(struct_type) = ctx.lookup_struct_type("_default") {
                                 if let Ok(field_ptr) =
                                     ctx.builder

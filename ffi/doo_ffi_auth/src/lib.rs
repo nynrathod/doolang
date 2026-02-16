@@ -93,7 +93,7 @@ fn ensure_keys() -> Result<&'static (EncodingKey, DecodingKey), &'static str> {
 
     // Slow path: initialize keys (first call only)
     let secret =
-        std::env::var("JWT_SECRET").map_err(|_| "JWT_SECRET environment variable must be set")?;
+        std::env::var(doo_ffi_core::constants::ENV_JWT_SECRET).map_err(|_| "JWT_SECRET environment variable must be set")?;
 
     if secret.len() < MIN_SECRET_LENGTH {
         return Err("JWT_SECRET must be at least 32 bytes for HMAC-SHA256 security");
@@ -139,7 +139,7 @@ fn make_ok_bool(b: bool) -> *mut DooResult {
 /// Create an Err result.
 /// Uses doo_ffi_core::helpers (single source of truth).
 fn make_err(code: AuthErrorCode, message: &str) -> *mut DooResult {
-    doo_ffi_core::helpers::make_err(code as u16, message)
+    doo_ffi_core::helpers::make_err_rfc7807(code as u16, message)
 }
 
 // ============================================================================

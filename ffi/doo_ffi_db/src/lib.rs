@@ -57,7 +57,7 @@ pub fn get_runtime() -> &'static Runtime {
             .enable_all()
             .build()
             .unwrap_or_else(|e| {
-                eprintln!("[Doo] FATAL: Failed to create DB runtime: {}", e);
+                doo_ffi_core::ffi_fatal!("Failed to create DB runtime: {}", e);
                 std::process::exit(1);
             })
     })
@@ -319,11 +319,10 @@ fn db_result_ok(value: *mut c_void) -> *mut DooResult {
 }
 
 /// Helper to create a heap-allocated DooResult for Err case.
-/// Uses DooResult::err_str from doo_ffi_core — wraps string in { *char } struct
-/// matching codegen's error handler which does GEP(data, 0) → load ptr.
-fn db_result_err(msg: &str) -> *mut DooResult {
-    ffi_debug!("DB", "db_result_err: {}", msg);
-    DooResult::err_str(500, msg).into_raw()
+/// Uses RFC 7807 JSON format for structured error responses.
+fn db_result_err(status: u16, msg: &str) -> *mut DooResult {
+    ffi_debug!("DB", "db_result_err: status={} msg={}", status, msg);
+    doo_ffi_core::helpers::make_err_rfc7807(status, msg)
 }
 
 // ============================================================================
@@ -359,7 +358,7 @@ fn create_database_struct(conn_type: &str, connected: bool) -> *mut c_void {
 pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
     safe_ffi("DB", || {
         ffi_debug!("DB", "doo_db_connect_postgres called");
-        let conn_str = match std::env::var("DATABASE_URL") {
+        let conn_str = match std::env::var(doo_ffi_core::constants::ENV_DATABASE_URL) {
             Ok(s) => {
                 ffi_debug!("DB", "DATABASE_URL found");
                 s
@@ -380,7 +379,7 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
             }
             Err(e) => {
                 ffi_debug!("DB", "Connection failed: {}", e);
-                db_result_err(&format!("Database connection failed: {}", e))
+                db_result_err(503, &format!("Database connection failed: {}", e))
             }
         }
     })
@@ -426,7 +425,7 @@ pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut Doo
                 ffi_debug!("DB", "SQL: {}", s);
                 s
             }
-            Err(e) => return db_result_err(&e),
+            Err(e) => return db_result_err(400, &e),
         };
 
         if !is_pool_initialized() {
@@ -448,7 +447,7 @@ pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut Doo
                 ffi_debug!("DB", "Query result, json length: {}", json.len());
                 db_result_ok(string_to_c(&json) as *mut c_void)
             }
-            Err(e) => db_result_err(&e),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }
@@ -476,7 +475,7 @@ pub extern "C" fn doo_db_raw_param(
                 ffi_debug!("DB", "SQL: {}", s);
                 s
             }
-            Err(e) => return db_result_err(&e),
+            Err(e) => return db_result_err(400, &e),
         };
 
         // Defensive: Handle null/empty/invalid params by treating as empty array
@@ -509,7 +508,7 @@ pub extern "C" fn doo_db_raw_param(
         let params_array: Vec<serde_json::Value> = if params_str.trim().starts_with('[') {
             match serde_json::from_str(&params_str) {
                 Ok(v) => v,
-                Err(e) => return db_result_err(&format!("Invalid params JSON: {}", e)),
+                Err(e) => return db_result_err(400, &format!("Invalid params JSON: {}", e)),
             }
         } else {
             if let Ok(n) = params_str.parse::<i64>() {
@@ -547,7 +546,7 @@ pub extern "C" fn doo_db_raw_param(
                 // which crashes when the Doo code expects a Str result.
                 db_result_ok(string_to_c(&json) as *mut c_void)
             }
-            Err(e) => db_result_err(&e),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }
@@ -562,7 +561,7 @@ pub extern "C" fn doo_db_query(sql: *const c_char) -> *mut DooResult {
     safe_ffi("DB", || {
         let sql_str = match c_to_string(sql) {
             Ok(s) => s,
-            Err(e) => return DooResult::err_str(400, &e).into_raw(),
+            Err(e) => return db_result_err(400, &e),
         };
 
         match run_db_async(async move {
@@ -576,7 +575,7 @@ pub extern "C" fn doo_db_query(sql: *const c_char) -> *mut DooResult {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(rows_to_json(&rows))
         }) {
             Ok(json) => DooResult::ok_string(&json).into_raw(),
-            Err(e) => DooResult::err_str(500, &e).into_raw(),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }
@@ -591,18 +590,18 @@ pub extern "C" fn doo_db_query_params(
     safe_ffi("DB", || {
         let sql_str = match c_to_string(sql) {
             Ok(s) => s,
-            Err(e) => return DooResult::err_str(400, &e).into_raw(),
+            Err(e) => return db_result_err(400, &e),
         };
 
         let params_str = match c_to_string(params_json) {
             Ok(s) => s,
-            Err(e) => return DooResult::err_str(400, &e).into_raw(),
+            Err(e) => return db_result_err(400, &e),
         };
 
         let params_array: Vec<serde_json::Value> = match serde_json::from_str(&params_str) {
             Ok(v) => v,
             Err(e) => {
-                return DooResult::err_str(400, &format!("Invalid params JSON: {}", e)).into_raw()
+                return db_result_err(400, &format!("Invalid params JSON: {}", e))
             }
         };
 
@@ -619,7 +618,7 @@ pub extern "C" fn doo_db_query_params(
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(rows_to_json(&rows))
         }) {
             Ok(json) => DooResult::ok_string(&json).into_raw(),
-            Err(e) => DooResult::err_str(500, &e).into_raw(),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }
@@ -630,7 +629,7 @@ pub extern "C" fn doo_db_execute(sql: *const c_char) -> *mut DooResult {
     safe_ffi("DB", || {
         let sql_str = match c_to_string(sql) {
             Ok(s) => s,
-            Err(e) => return DooResult::err_str(400, &e).into_raw(),
+            Err(e) => return db_result_err(400, &e),
         };
 
         match run_db_async(async move {
@@ -642,7 +641,7 @@ pub extern "C" fn doo_db_execute(sql: *const c_char) -> *mut DooResult {
                 let json = format!(r#"{{"affected":{}}}"#, affected);
                 DooResult::ok_string(&json).into_raw()
             }
-            Err(e) => DooResult::err_str(500, &e).into_raw(),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }
@@ -656,18 +655,18 @@ pub extern "C" fn doo_db_execute_params(
     safe_ffi("DB", || {
         let sql_str = match c_to_string(sql) {
             Ok(s) => s,
-            Err(e) => return DooResult::err_str(400, &e).into_raw(),
+            Err(e) => return db_result_err(400, &e),
         };
 
         let params_str = match c_to_string(params_json) {
             Ok(s) => s,
-            Err(e) => return DooResult::err_str(400, &e).into_raw(),
+            Err(e) => return db_result_err(400, &e),
         };
 
         let params_array: Vec<serde_json::Value> = match serde_json::from_str(&params_str) {
             Ok(v) => v,
             Err(e) => {
-                return DooResult::err_str(400, &format!("Invalid params JSON: {}", e)).into_raw()
+                return db_result_err(400, &format!("Invalid params JSON: {}", e))
             }
         };
 
@@ -682,7 +681,7 @@ pub extern "C" fn doo_db_execute_params(
                 let json = format!(r#"{{"affected":{}}}"#, affected);
                 DooResult::ok_string(&json).into_raw()
             }
-            Err(e) => DooResult::err_str(500, &e).into_raw(),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }
@@ -693,7 +692,7 @@ pub extern "C" fn doo_db_query_one(sql: *const c_char) -> *mut DooResult {
     safe_ffi("DB", || {
         let sql_str = match c_to_string(sql) {
             Ok(s) => s,
-            Err(e) => return DooResult::err_str(400, &e).into_raw(),
+            Err(e) => return db_result_err(400, &e),
         };
 
         match run_db_async(async move {
@@ -702,7 +701,7 @@ pub extern "C" fn doo_db_query_one(sql: *const c_char) -> *mut DooResult {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(row_to_json(&row))
         }) {
             Ok(json) => DooResult::ok_string(&json).into_raw(),
-            Err(e) => DooResult::err_str(500, &e).into_raw(),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }
@@ -818,16 +817,16 @@ pub extern "C" fn doo_db_transaction(
     safe_ffi("DB", || {
         let queries_str = match c_to_string(queries_json) {
             Ok(s) => s,
-            Err(e) => return db_result_err(&e),
+            Err(e) => return db_result_err(400, &e),
         };
 
         let queries: Vec<QueryDef> = match serde_json::from_str(&queries_str) {
             Ok(q) => q,
-            Err(e) => return db_result_err(&format!("Invalid transaction queries: {}", e)),
+            Err(e) => return db_result_err(400, &format!("Invalid transaction queries: {}", e)),
         };
 
         if !is_pool_initialized() {
-            return db_result_err("Database not connected");
+            return db_result_err(503, "Database not connected");
         }
 
         match run_db_async(async move {
@@ -853,7 +852,7 @@ pub extern "C" fn doo_db_transaction(
             )
         }) {
             Ok(json) => db_result_ok(string_to_c(&json) as *mut c_void),
-            Err(e) => db_result_err(&e),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }
@@ -1039,16 +1038,16 @@ pub extern "C" fn doo_db_migrate_schemas(schema_json: *const c_char) -> *mut Doo
     safe_ffi("DB", || {
         let schema_str = match c_to_string(schema_json) {
             Ok(s) => s,
-            Err(e) => return db_result_err(&format!("Invalid schema: {}", e)),
+            Err(e) => return db_result_err(400, &format!("Invalid schema: {}", e)),
         };
 
         if !is_pool_initialized() {
-            return db_result_err("Database not connected — cannot run migrations");
+            return db_result_err(503, "Database not connected — cannot run migrations");
         }
 
         let schemas: Vec<migrate::TableSchema> = match serde_json::from_str(&schema_str) {
             Ok(s) => s,
-            Err(e) => return db_result_err(&format!("Invalid schema JSON: {}", e)),
+            Err(e) => return db_result_err(400, &format!("Invalid schema JSON: {}", e)),
         };
 
         let schema_count = schemas.len();
@@ -1071,7 +1070,7 @@ pub extern "C" fn doo_db_migrate_schemas(schema_json: *const c_char) -> *mut Doo
             ))
         }) {
             Ok(json) => db_result_ok(string_to_c(&json) as *mut c_void),
-            Err(e) => db_result_err(&e),
+            Err(e) => db_result_err(500, &e),
         }
     })
 }

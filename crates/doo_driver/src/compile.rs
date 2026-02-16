@@ -22,6 +22,7 @@ use doo_diagnostics::{DiagnosticEmitter, SourceMap};
 use doo_frontend::{Lexer, Parser};
 use doo_hir::Lower;
 use doo_mir::builder::MirBuilder;
+use doo_mir::sym::resolve;
 
 // Module loader - single source of truth for import resolution
 use crate::loader::{merge_imports, resolve_imports, ModuleLoader};
@@ -484,7 +485,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     if doo_core::debug::is_enabled() {
         doo_debug!("DEBUG", "MIR functions: {}", mir_program.functions.len());
         for f in &mir_program.functions {
-            doo_debug!("DEBUG", "  MIR Function: {}", f.name);
+            doo_debug!("DEBUG", "  MIR Function: {}", resolve(f.name));
         }
     }
 
@@ -496,7 +497,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     doo_debug!("DEBUG", "MIR validation passed");
 
     // Check for main function
-    let has_main = mir_program.functions.iter().any(|f| f.name == "main");
+    let has_main = mir_program.functions.iter().any(|f| resolve(f.name) == "main");
     if !has_main {
         return Err(
             "Error: main() function not found. Every program must have a main() function."
@@ -773,7 +774,7 @@ fn link_object_file(
     let mut ffi_libs: HashSet<String> = mir_program
         .functions
         .iter()
-        .filter_map(|f| f.ffi.as_ref().map(|l| normalize_ffi_lib_name(&l.library)))
+        .filter_map(|f| f.ffi.as_ref().map(|l| normalize_ffi_lib_name(&resolve(l.library))))
         .collect();
 
     // Always include core runtime library (new naming: doo_ffi_core)
@@ -785,15 +786,16 @@ fn link_object_file(
 
     // Detect HTTP usage
     let has_http = mir_program.functions.iter().any(|f| {
+        let fname = resolve(f.name);
         f.ffi
             .as_ref()
-            .map(|l| l.library == "doo_ffi_http" || l.library == "doo_http")
+            .map(|l| { let lib = resolve(l.library); lib == "doo_ffi_http" || lib == "doo_http" })
             .unwrap_or(false)
-            || f.name.starts_with("Server::")
-            || f.name.contains("::get")
-            || f.name.contains("::post")
-            || f.name.contains("::put")
-            || f.name.contains("::delete")
+            || fname.starts_with("Server::")
+            || fname.contains("::get")
+            || fname.contains("::post")
+            || fname.contains("::put")
+            || fname.contains("::delete")
     });
 
     if has_http {
@@ -804,13 +806,15 @@ fn link_object_file(
 
     // Detect WebSocket usage (WS is part of doo_ffi_http, not a separate crate)
     let has_ws = mir_program.functions.iter().any(|f| {
+        let fname = resolve(f.name);
         f.ffi
             .as_ref()
             .map(|l| {
-                l.library == "doo_ffi_http" || l.library == "doo_ws" || l.library == "doo_http"
+                let lib = resolve(l.library);
+                lib == "doo_ffi_http" || lib == "doo_ws" || lib == "doo_http"
             })
             .unwrap_or(false)
-            && f.name.contains("ws")
+            && fname.contains("ws")
     });
     if has_ws {
         ffi_libs.insert("doo_ffi_http".to_string());
@@ -819,11 +823,12 @@ fn link_object_file(
 
     // Detect database usage
     let has_db = mir_program.functions.iter().any(|f| {
+        let fname = resolve(f.name);
         f.ffi
             .as_ref()
-            .map(|l| l.library == "doo_ffi_db" || l.library == "doo_db")
+            .map(|l| { let lib = resolve(l.library); lib == "doo_ffi_db" || lib == "doo_db" })
             .unwrap_or(false)
-            || f.name.starts_with("Database::")
+            || fname.starts_with("Database::")
     });
     if has_db {
         ffi_libs.insert("doo_ffi_db".to_string());
@@ -839,7 +844,7 @@ fn link_object_file(
     let has_process = mir_program.functions.iter().any(|f| {
         f.ffi
             .as_ref()
-            .map(|l| l.library == "doo_ffi_process" || l.library == "doo_process")
+            .map(|l| { let lib = resolve(l.library); lib == "doo_ffi_process" || lib == "doo_process" })
             .unwrap_or(false)
     });
     if has_process {

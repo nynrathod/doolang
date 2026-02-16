@@ -14,6 +14,8 @@
 //! All middleware names, FFI identifiers used across compiler and runtime
 //! are defined in the `constants` module.
 
+#[macro_use]
+pub mod macros;
 pub mod casts;
 pub mod constants;
 pub mod debug;

@@ -11,6 +11,7 @@ use crate::layout::{
 use crate::utils::{default_for_type, emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
+use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
 use inkwell::{AddressSpace, IntPredicate};
@@ -78,7 +79,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     ctx.builder.build_store(val_ptr, vv).ok();
                 }
 
-                ctx.set_temp(dest, data_ptr.into());
+                ctx.set_temp(&resolve(*dest), data_ptr.into());
                 Some(data_ptr.into())
             }
 
@@ -182,10 +183,13 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 ctx.builder.build_unconditional_branch(loop_bb).ok()?;
 
                 ctx.builder.position_at_end(end_bb);
-                let res = ctx.builder.build_load(val_llvm, res_alloca, dest).ok()?;
-                ctx.set_temp(dest, res);
+                let res = ctx
+                    .builder
+                    .build_load(val_llvm, res_alloca, &resolve(*dest))
+                    .ok()?;
+                ctx.set_temp(&resolve(*dest), res);
                 // Set the type for the temp so Clone knows the correct value type
-                ctx.set_variable_type(dest, *val_type);
+                ctx.set_variable_type(&resolve(*dest), *val_type);
                 Some(res)
             }
 
@@ -285,9 +289,9 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 ctx.builder.position_at_end(end_bb);
                 let res = ctx
                     .builder
-                    .build_load(ctx.bool_type(), res_alloca, dest)
+                    .build_load(ctx.bool_type(), res_alloca, &resolve(*dest))
                     .ok()?;
-                ctx.set_temp(dest, res);
+                ctx.set_temp(&resolve(*dest), res);
                 Some(res)
             }
 
@@ -298,11 +302,17 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 key_type,
                 val_type,
             } => {
-                let debug = std::env::var("DOO_DEBUG").is_ok();
+                let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
                 if debug {
-                    doo_debug!("CODEGEN", "MapSet: map={:?}, key={:?}, value={:?}", map, key, value);
+                    doo_debug!(
+                        "CODEGEN",
+                        "MapSet: map={:?}, key={:?}, value={:?}",
+                        map,
+                        key,
+                        value
+                    );
                 }
-                
+
                 let mapv = operand_to_value(ctx, map)?;
                 if debug {
                     doo_debug!("CODEGEN", "MapSet: mapv ok");
@@ -479,14 +489,14 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 ctx.builder.position_at_end(end_bb);
                 // update temp binding if we reallocated
                 if let MirOperand::Local(name) | MirOperand::Temp(name) = map {
-                    if let Ok(updated) = ctx
-                        .builder
-                        .build_load(ctx.ptr_type(), updated_alloca, "updated")
+                    if let Ok(updated) =
+                        ctx.builder
+                            .build_load(ctx.ptr_type(), updated_alloca, "updated")
                     {
-                        if let Some(local_ptr) = ctx.get_local(name) {
+                        if let Some(local_ptr) = ctx.get_local(&resolve(*name)) {
                             ctx.builder.build_store(local_ptr, updated).ok();
                         } else {
-                            ctx.set_temp(name, updated);
+                            ctx.set_temp(&resolve(*name), updated);
                         }
                     }
                 }
@@ -504,6 +514,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use doo_mir::sym::sym;
     use doo_mir::MirInstr;
 
     #[test]
@@ -511,7 +522,7 @@ mod tests {
         use doo_core::types::builtin;
         let handler = MapHandler;
         let instr = MirInstr::new(MirInstrKind::MapCreate {
-            dest: "m".to_string(),
+            dest: sym("m"),
             entries: vec![],
             key_type: builtin::STR,
             val_type: builtin::INT,
@@ -524,9 +535,9 @@ mod tests {
         use doo_core::types::builtin;
         let handler = MapHandler;
         let instr = MirInstr::new(MirInstrKind::MapGet {
-            dest: "v".to_string(),
-            map: MirOperand::Local("m".to_string()),
-            key: MirOperand::Local("k".to_string()),
+            dest: sym("v"),
+            map: MirOperand::Local(sym("m")),
+            key: MirOperand::Local(sym("k")),
             key_type: builtin::STR,
             val_type: builtin::INT,
         });
@@ -538,9 +549,9 @@ mod tests {
         use doo_core::types::builtin;
         let handler = MapHandler;
         let instr = MirInstr::new(MirInstrKind::MapSet {
-            map: MirOperand::Local("m".to_string()),
-            key: MirOperand::Local("k".to_string()),
-            value: MirOperand::Local("v".to_string()),
+            map: MirOperand::Local(sym("m")),
+            key: MirOperand::Local(sym("k")),
+            value: MirOperand::Local(sym("v")),
             key_type: builtin::STR,
             val_type: builtin::INT,
         });
@@ -552,9 +563,9 @@ mod tests {
         use doo_core::types::builtin;
         let handler = MapHandler;
         let instr = MirInstr::new(MirInstrKind::MapHas {
-            dest: "has".to_string(),
-            map: MirOperand::Local("m".to_string()),
-            key: MirOperand::Local("k".to_string()),
+            dest: sym("has"),
+            map: MirOperand::Local(sym("m")),
+            key: MirOperand::Local(sym("k")),
             key_type: builtin::STR,
             val_type: builtin::INT,
         });
@@ -565,8 +576,8 @@ mod tests {
     fn test_map_handler_does_not_handle_other() {
         let handler = MapHandler;
         let instr = MirInstr::new(MirInstrKind::Assign {
-            dest: "x".to_string(),
-            value: MirOperand::Local("y".to_string()),
+            dest: sym("x"),
+            value: MirOperand::Local(sym("y")),
         });
         assert!(!handler.handles(&instr));
     }
@@ -576,7 +587,7 @@ mod tests {
         use doo_core::types::builtin;
         let handler = MapHandler;
         let instr = MirInstr::new(MirInstrKind::ArrayCreate {
-            dest: "arr".to_string(),
+            dest: sym("arr"),
             elements: vec![],
             elem_type: builtin::INT,
         });

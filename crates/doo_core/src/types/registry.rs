@@ -285,7 +285,7 @@ impl TypeRegistry {
 
     pub fn define_struct(&mut self, name: &str, fields: Vec<(String, TypeId, bool)>) -> TypeId {
         let id = self.declare_named(name);
-        if std::env::var("DOO_DEBUG_TYPES").is_ok() {
+        if std::env::var(crate::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {
             doo_debug!(
                 "TYPES",
                 "define_struct '{}' with id={:?}, fields={:?}",
@@ -306,7 +306,7 @@ impl TypeRegistry {
 
     pub fn define_enum(&mut self, name: &str, variants: Vec<(String, Option<TypeId>)>) -> TypeId {
         let id = self.declare_named(name);
-        if std::env::var("DOO_DEBUG_TYPES").is_ok() {
+        if std::env::var(crate::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {
             doo_debug!(
                 "TYPES",
                 "define_enum '{}' with id={:?}, variants={:?}",

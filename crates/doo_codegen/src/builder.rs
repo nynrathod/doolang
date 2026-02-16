@@ -5,8 +5,10 @@
 use crate::context::CodegenContext;
 use crate::instructions::InstructionDispatcher;
 use crate::utils::operand_to_value;
+use doo_core::constants::ffi_names::{self, derive_ffi_symbol};
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeKind, TypeRegistry};
+use doo_mir::sym::resolve;
 use doo_mir::{MirBlock, MirConst, MirFunction, MirInstr, MirOperand, MirProgram, MirTerminator};
 use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
@@ -17,35 +19,14 @@ use inkwell::IntPredicate;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Derive FFI symbol from library and function name.
-///
-/// Examples:
-/// - ("doo_http", "Server.new") -> "doo_http_server_new"
-/// - ("doo_http", "Server.get") -> "doo_http_server_get"
-/// - ("doo_db", "Query.exec") -> "doo_db_query_exec"
-fn derive_ffi_symbol(library: &str, func_name: &str) -> String {
-    // Split function name by '.' for methods
-    let parts: Vec<&str> = func_name.split('.').collect();
-
-    if parts.len() == 2 {
-        // Method: Server.get -> {library}_server_get
-        let type_name = parts[0].to_lowercase();
-        let method_name = parts[1].to_lowercase();
-        format!("{}_{}_{}", library, type_name, method_name)
-    } else {
-        // Plain function: myFunc -> {library}_myfunc
-        format!("{}_{}", library, func_name.to_lowercase())
-    }
-}
-
 /// Get the variable name from a MirOperand.
-fn get_operand_name(operand: &MirOperand) -> Option<&str> {
+fn get_operand_name(operand: &MirOperand) -> Option<String> {
     match operand {
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
-            Some(name.as_str())
+            Some(resolve(*name))
         }
         MirOperand::Const(_) => None,
-        MirOperand::FuncRef(name) => Some(name.as_str()),
+        MirOperand::FuncRef(name) => Some(resolve(*name)),
     }
 }
 
@@ -329,16 +310,17 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         .iter()
                         .map(|d| {
                             if d.args.is_empty() {
-                                d.name.clone()
+                                resolve(d.name)
                             } else {
-                                format!("{}({})", d.name, d.args.join(","))
+                                format!("{}({})", resolve(d.name), d.args.join(","))
                             }
                         })
                         .collect();
-                    (f.name.clone(), decs)
+                    (resolve(f.name), decs)
                 })
                 .collect();
-            ctx.struct_field_decorators.insert(struct_name.clone(), field_decorators);
+            ctx.struct_field_decorators
+                .insert(resolve(*struct_name), field_decorators);
         }
 
         // First pass: declare all functions
@@ -357,7 +339,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
     /// Pre-declare all struct types from the type registry.
     /// This ensures struct types are cached before we try to access their fields.
     fn declare_struct_types(&self, ctx: &mut CodegenContext<'ctx>) {
-        let debug = std::env::var("DOO_DEBUG").is_ok();
+        let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
 
         // First, collect all struct information from the registry
         // Fields are now (name, type_id, is_public) tuples
@@ -444,12 +426,13 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
     /// Declare a function (signature only, no body).
     fn declare_function(&self, ctx: &mut CodegenContext<'ctx>, func: &MirFunction) {
-        let debug = std::env::var("DOO_DEBUG").is_ok();
+        let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
+        let func_name = resolve(func.name);
         if debug {
             doo_debug!(
                 "CODEGEN",
                 "Declaring function {} with return_type={:?} is_closure={}",
-                func.name,
+                func_name,
                 func.return_type,
                 func.is_closure
             );
@@ -477,7 +460,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 .unwrap_or_else(|| ctx.context.i64_type().into());
 
             let fn_type = return_llvm_type.fn_type(&param_types, false);
-            ctx.module.add_function(&func.name, fn_type, None);
+            ctx.module.add_function(&func_name, fn_type, None);
             return;
         }
 
@@ -490,16 +473,16 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // Collect Doo TypeIds for parameter types (for argument coercion)
         let param_type_ids: Vec<_> = func.params.iter().map(|p| p.type_id).collect();
-        ctx.register_function_param_types(&func.name, param_type_ids);
+        ctx.register_function_param_types(&func_name, param_type_ids);
 
         // Register return type for struct serialization
         if let Some(ret_type_id) = func.return_type {
-            ctx.register_function_return_type(&func.name, ret_type_id);
+            ctx.register_function_return_type(&func_name, ret_type_id);
         }
 
         // Register error type for middleware error handling
         if let Some(err_type_id) = func.error_type {
-            ctx.register_function_error_type(&func.name, err_type_id);
+            ctx.register_function_error_type(&func_name, err_type_id);
         }
 
         // Build return type
@@ -543,10 +526,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
             };
 
             // Use explicit symbol if provided, otherwise derive from library + function name
+            let ffi_lib = resolve(ffi.library);
             let symbol = ffi
                 .symbol
-                .clone()
-                .unwrap_or_else(|| derive_ffi_symbol(&ffi.library, &func.name));
+                .map(|s| resolve(s))
+                .unwrap_or_else(|| derive_ffi_symbol(&ffi_lib, &func_name));
 
             // Declare FFI function with its EXTERNAL SYMBOL NAME (not the Doo function name)
             // This is critical: linker will look for this exact symbol name
@@ -556,13 +540,13 @@ impl<'ctx> CodegenBuilder<'ctx> {
             // Also register the Doo function name as an alias to the symbol
             // This allows ctx.get_function("jwt") to find "doo_http_jwt"
             if let Some(f) = ctx.module.get_function(&symbol) {
-                ctx.register_function_alias(&func.name, f);
+                ctx.register_function_alias(&func_name, f);
             }
 
             // Register FFI symbol mapping for wrapper generation
-            ctx.register_ffi_symbol(&func.name, &ffi.library, &symbol);
+            ctx.register_ffi_symbol(&func_name, &ffi_lib, &symbol);
         } else {
-            ctx.declare_function(&func.name, &param_types, return_type);
+            ctx.declare_function(&func_name, &param_types, return_type);
         }
     }
 
@@ -578,7 +562,8 @@ impl<'ctx> CodegenBuilder<'ctx> {
             return;
         }
 
-        let llvm_func = match ctx.get_function(&func.name) {
+        let func_name_str = resolve(func.name);
+        let llvm_func = match ctx.get_function(&func_name_str) {
             Some(f) => f,
             None => return, // Function not declared
         };
@@ -592,15 +577,20 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Set closure flag for special return value handling
         ctx.is_closure_function = func.is_closure;
 
-        if std::env::var("DOO_DEBUG").is_ok() {
+        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
             doo_debug!(
                 "CODEGEN",
                 "Function {} has {} MIR locals:",
-                func.name,
+                func_name_str,
                 func.locals.len()
             );
             for local in &func.locals {
-                doo_debug!("CODEGEN", "  Local: {} : {:?}", local.name, local.type_id);
+                doo_debug!(
+                    "CODEGEN",
+                    "  Local: {} : {:?}",
+                    resolve(local.name),
+                    local.type_id
+                );
             }
         }
 
@@ -608,7 +598,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // FIRST: Pre-populate with all known local types from func.locals
         let mut assigned_vars: HashMap<String, doo_core::types::TypeId> = HashMap::new();
         for local in &func.locals {
-            assigned_vars.insert(local.name.clone(), local.type_id);
+            assigned_vars.insert(resolve(local.name), local.type_id);
         }
 
         // SECOND: Scan all blocks to infer types for temps from assignments
@@ -619,6 +609,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             for block in &func.blocks {
                 for instr in &block.instructions {
                     if let doo_mir::MirInstrKind::Assign { dest, value } = &instr.kind {
+                        let dest_str = resolve(*dest);
                         // Infer type from value
                         let type_id = match value {
                             MirOperand::Const(MirConst::Int(_)) => builtin::INT,
@@ -628,15 +619,16 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             MirOperand::Const(MirConst::Nil) => builtin::ANY,
                             MirOperand::Local(name) | MirOperand::Temp(name) => {
                                 // Get type from existing var if known (now includes func.locals)
-                                assigned_vars.get(name).copied().unwrap_or(builtin::ANY)
+                                let n = resolve(*name);
+                                assigned_vars.get(&n).copied().unwrap_or(builtin::ANY)
                             }
                             MirOperand::Global(_) => builtin::ANY,
                             MirOperand::FuncRef(_) => builtin::ANY, // Function references are opaque
                         };
                         // Only update if we have a concrete type (not ANY) or dest is unknown
-                        if type_id != builtin::ANY || !assigned_vars.contains_key(dest) {
-                            if assigned_vars.get(dest) != Some(&type_id) {
-                                assigned_vars.insert(dest.clone(), type_id);
+                        if type_id != builtin::ANY || !assigned_vars.contains_key(&dest_str) {
+                            if assigned_vars.get(&dest_str) != Some(&type_id) {
+                                assigned_vars.insert(dest_str, type_id);
                                 changed = true;
                             }
                         }
@@ -651,8 +643,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Create LLVM basic blocks for each MIR block
         let mut block_map: HashMap<String, BasicBlock<'ctx>> = HashMap::new();
         for mir_block in &func.blocks {
-            let bb = ctx.context.append_basic_block(llvm_func, &mir_block.label);
-            block_map.insert(mir_block.label.clone(), bb);
+            let label = resolve(mir_block.label);
+            let bb = ctx.context.append_basic_block(llvm_func, &label);
+            block_map.insert(label, bb);
         }
 
         // Position at entry block for allocas
@@ -675,16 +668,21 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // Create allocas for parameters
         for (i, param) in func.params.iter().enumerate() {
+            let param_name = resolve(param.name);
             let llvm_param_idx = (i + param_offset) as u32;
-            let param_value = llvm_func.get_nth_param(llvm_param_idx).unwrap();
+            let param_value = llvm_func
+                .get_nth_param(llvm_param_idx)
+                .expect("ICE: LLVM function missing expected parameter");
             let param_type = ctx.get_llvm_type(param.type_id);
-            let alloca = ctx.create_local(&param.name, param_type);
+            let alloca = ctx.create_local(&param_name, param_type);
 
             // Store param directly - closures now use actual types
-            ctx.builder.build_store(alloca, param_value).unwrap();
+            ctx.builder
+                .build_store(alloca, param_value)
+                .expect("ICE: failed to store parameter value into alloca");
 
             // Track parameter type for Clone/Drop
-            ctx.set_variable_type(&param.name, param.type_id);
+            ctx.set_variable_type(&param_name, param.type_id);
 
             // CRITICAL: For struct parameters (or TypeRef to struct), register the struct type association
             // This is needed for FieldGet/FieldSet to work correctly when the parameter
@@ -692,12 +690,12 @@ impl<'ctx> CodegenBuilder<'ctx> {
             if let Some(kind) = ctx.get_type_kind(param.type_id) {
                 match kind {
                     TypeKind::Struct { name, .. } => {
-                        ctx.set_temp_struct_type(&param.name, &name);
-                        if std::env::var("DOO_DEBUG").is_ok() {
+                        ctx.set_temp_struct_type(&param_name, &name);
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!(
                                 "CODEGEN",
                                 "Registered struct param {} as type {}",
-                                param.name,
+                                param_name,
                                 name
                             );
                         }
@@ -723,23 +721,23 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             };
 
                         if let Some(name) = struct_name {
-                            ctx.set_temp_struct_type(&param.name, &name);
-                            if std::env::var("DOO_DEBUG").is_ok() {
+                            ctx.set_temp_struct_type(&param_name, &name);
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                                 doo_debug!(
                                     "CODEGEN",
                                     "Registered TypeRef param {} as struct type {}",
-                                    param.name,
+                                    param_name,
                                     name
                                 );
                             }
                         }
                     }
                     other => {
-                        if std::env::var("DOO_DEBUG").is_ok() {
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!(
                                 "CODEGEN",
                                 "Param {} has non-struct type: {:?} (type_id={:?})",
-                                param.name,
+                                param_name,
                                 other,
                                 param.type_id
                             );
@@ -747,11 +745,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     }
                 }
             } else {
-                if std::env::var("DOO_DEBUG").is_ok() {
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!(
                         "CODEGEN",
                         "WARNING: Param {} has unknown type_id={:?}",
-                        param.name,
+                        param_name,
                         param.type_id
                     );
                 }
@@ -761,23 +759,24 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Create allocas for local variables from MIR
         // Skip if a variable with this name already exists (e.g., from parameters)
         for local in &func.locals {
-            if ctx.get_local(&local.name).is_none() {
+            let local_name = resolve(local.name);
+            if ctx.get_local(&local_name).is_none() {
                 let local_type = ctx.get_llvm_type(local.type_id);
-                ctx.create_local(&local.name, local_type);
+                ctx.create_local(&local_name, local_type);
                 // Track local type for Clone/Drop
-                ctx.set_variable_type(&local.name, local.type_id);
+                ctx.set_variable_type(&local_name, local.type_id);
 
                 // CRITICAL: For struct locals (or TypeRef to struct), register the struct type association
                 // This is needed for FieldGet/FieldSet to work correctly
                 if let Some(kind) = ctx.get_type_kind(local.type_id) {
                     match kind {
                         TypeKind::Struct { name, .. } => {
-                            ctx.set_temp_struct_type(&local.name, &name);
-                            if std::env::var("DOO_DEBUG").is_ok() {
+                            ctx.set_temp_struct_type(&local_name, &name);
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                                 doo_debug!(
                                     "CODEGEN",
                                     "Registered struct local {} as type {}",
-                                    local.name,
+                                    local_name,
                                     name
                                 );
                             }
@@ -800,12 +799,12 @@ impl<'ctx> CodegenBuilder<'ctx> {
                                 };
 
                             if let Some(name) = struct_name {
-                                ctx.set_temp_struct_type(&local.name, &name);
-                                if std::env::var("DOO_DEBUG").is_ok() {
+                                ctx.set_temp_struct_type(&local_name, &name);
+                                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                                     doo_debug!(
                                         "CODEGEN",
                                         "Registered TypeRef local {} as struct type {}",
-                                        local.name,
+                                        local_name,
                                         name
                                     );
                                 }
@@ -824,7 +823,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 ctx.create_local(name, var_type);
                 // Track assigned variable type for Clone/Drop
                 ctx.set_variable_type(name, *type_id);
-                if std::env::var("DOO_DEBUG").is_ok() {
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!("CODEGEN", "Created alloca for variable: {}", name);
                 }
             }
@@ -833,48 +832,52 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Unpack captured variables from env pointer for spawn functions.
         // Must happen AFTER allocas are created and BEFORE block code generation.
         if func.is_closure && !func.captures.is_empty() {
-            crate::instructions::async_ops::emit_env_unpack(ctx, &func.captures, llvm_func);
+            let capture_names: Vec<String> = func.captures.iter().map(|s| resolve(*s)).collect();
+            crate::instructions::async_ops::emit_env_unpack(ctx, &capture_names, llvm_func);
         }
 
         // Generate code for each block
         for mir_block in &func.blocks {
-            let bb = block_map[&mir_block.label];
+            let block_label = resolve(mir_block.label);
+            let bb = block_map[&block_label];
             ctx.builder.position_at_end(bb);
 
-            if std::env::var("DOO_DEBUG").is_ok() {
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                 doo_debug!(
                     "CODEGEN",
                     "Block {} has {} instructions",
-                    mir_block.label,
+                    block_label,
                     mir_block.instructions.len()
                 );
             }
 
             // Generate instructions
             for instr in &mir_block.instructions {
-                if std::env::var("DOO_DEBUG").is_ok() {
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!("CODEGEN", "  Instr: {:?}", instr);
                 }
                 // Use custom emit for Assign to store in alloca
                 if let doo_mir::MirInstrKind::Assign { dest, value } = &instr.kind {
+                    let dest_str = resolve(*dest);
                     if let Some(val) = operand_to_value(ctx, value) {
                         // Propagate struct type association if present
                         if let Some(src_name) = get_operand_name(value) {
-                            if let Some(struct_name) = ctx.get_temp_struct_type(src_name).cloned() {
-                                ctx.set_temp_struct_type(dest, &struct_name);
+                            if let Some(struct_name) = ctx.get_temp_struct_type(&src_name).cloned()
+                            {
+                                ctx.set_temp_struct_type(&dest_str, &struct_name);
                             }
                             // Also propagate the variable type from source to dest
-                            if let Some(src_type) = ctx.get_variable_type(src_name) {
-                                ctx.set_variable_type(dest, src_type);
+                            if let Some(src_type) = ctx.get_variable_type(&src_name) {
+                                ctx.set_variable_type(&dest_str, src_type);
                             }
                             // Propagate array element types from temp to local for map/filter/slice
                             // Critical for correct printing of float/int arrays returned from lambdas
-                            if let Some(&elem_type) = ctx.array_element_types.get(src_name) {
-                                ctx.array_element_types.insert(dest.clone(), elem_type);
+                            if let Some(&elem_type) = ctx.array_element_types.get(&src_name) {
+                                ctx.array_element_types.insert(dest_str.clone(), elem_type);
                             }
                         }
                         // Use set_local which handles type mismatch detection for shadowed variables
-                        ctx.set_local(dest.clone(), val);
+                        ctx.set_local(dest_str, val);
                     }
                 } else {
                     dispatcher.emit(ctx, instr);
@@ -897,7 +900,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let mut maybe_bb = llvm_func.get_first_basic_block();
             while let Some(bb) = maybe_bb {
                 if bb.get_terminator().is_none() {
-                    if std::env::var("DOO_DEBUG").is_ok() {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                         doo_debug!(
                             "CODEGEN",
                             "Block {:?} has no terminator, adding default return",
@@ -923,7 +926,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     } else if func.return_type.is_none() {
                         ctx.builder.build_return(None).ok();
                     } else {
-                        let ret_type = ctx.get_llvm_type(func.return_type.unwrap());
+                        let ret_type = ctx.get_llvm_type(
+                            func.return_type
+                                .expect("ICE: non-void function has no return type in MIR"),
+                        );
                         let default: BasicValueEnum = match ret_type {
                             BasicTypeEnum::IntType(t) => t.const_zero().into(),
                             BasicTypeEnum::FloatType(t) => t.const_zero().into(),
@@ -948,7 +954,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
         term: &MirTerminator,
         block_map: &HashMap<String, BasicBlock<'ctx>>,
     ) {
-        if std::env::var("DOO_DEBUG").is_ok() {
+        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
             doo_debug!("CODEGEN", "Emitting terminator: {:?}", term);
         }
 
@@ -962,7 +968,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     .map(|f| f.get_name().to_str().unwrap_or("") == "main")
                     .unwrap_or(false);
 
-                let debug = std::env::var("DOO_DEBUG").is_ok();
+                let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
 
                 if is_main {
                     // For main function, call exit(0) to bypass Tokio runtime shutdown issues.
@@ -970,16 +976,19 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     // if we use normal return. Calling exit(0) cleanly terminates the process.
 
                     // First flush stdout to ensure all output is written
-                    let fflush_fn = ctx.module.get_function("fflush").unwrap_or_else(|| {
-                        let fn_type = ctx.context.i32_type().fn_type(
-                            &[ctx
-                                .context
-                                .ptr_type(inkwell::AddressSpace::default())
-                                .into()],
-                            false,
-                        );
-                        ctx.module.add_function("fflush", fn_type, None)
-                    });
+                    let fflush_fn =
+                        ctx.module
+                            .get_function(ffi_names::FFLUSH)
+                            .unwrap_or_else(|| {
+                                let fn_type = ctx.context.i32_type().fn_type(
+                                    &[ctx
+                                        .context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into()],
+                                    false,
+                                );
+                                ctx.module.add_function(ffi_names::FFLUSH, fn_type, None)
+                            });
                     let null_ptr = ctx
                         .context
                         .ptr_type(inkwell::AddressSpace::default())
@@ -989,12 +998,12 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         .ok();
 
                     // Now call exit(0)
-                    let exit_fn = ctx.module.get_function("exit").unwrap_or_else(|| {
+                    let exit_fn = ctx.module.get_function(ffi_names::EXIT).unwrap_or_else(|| {
                         let fn_type = ctx
                             .context
                             .void_type()
                             .fn_type(&[ctx.context.i32_type().into()], false);
-                        ctx.module.add_function("exit", fn_type, None)
+                        ctx.module.add_function(ffi_names::EXIT, fn_type, None)
                     });
                     let zero = ctx.context.i32_type().const_int(0, false);
                     ctx.builder
@@ -1020,7 +1029,8 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         MirOperand::Temp(name) | MirOperand::Local(name) => {
                             // If there's an alloca for this variable, always load from it
                             // to ensure SSA domination (allocas are in the entry block)
-                            if let Some(loaded) = ctx.load_from_local(name) {
+                            let name_str = resolve(*name);
+                            if let Some(loaded) = ctx.load_from_local(&name_str) {
                                 Some(loaded)
                             } else {
                                 operand_to_value(ctx, &values[0])
@@ -1067,7 +1077,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
                     if llvm_values.len() != values.len() {
                         // Some values couldn't be converted
-                        if std::env::var("DOO_DEBUG").is_ok() {
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!(
                                 "CODEGEN",
                                 "WARNING: Could not convert all tuple return values"
@@ -1085,10 +1095,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         // Allocate space for tuple on heap (so pointer is valid after return)
                         let ptr_type = ctx.context.ptr_type(inkwell::AddressSpace::default());
                         let size = tuple_type.size_of().unwrap();
-                        let malloc_fn = ctx.get_function("malloc").unwrap_or_else(|| {
+                        let malloc_fn = ctx.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
                             let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
                             ctx.module.add_function(
-                                "malloc",
+                                ffi_names::MALLOC,
                                 fn_type,
                                 Some(inkwell::module::Linkage::External),
                             )
@@ -1122,10 +1132,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 }
             }
             MirTerminator::Goto { target } => {
-                if let Some(target_bb) = block_map.get(target) {
+                let target_str = resolve(*target);
+                if let Some(target_bb) = block_map.get(&target_str) {
                     ctx.builder.build_unconditional_branch(*target_bb).ok();
-                } else if std::env::var("DOO_DEBUG").is_ok() {
-                    doo_debug!("CODEGEN", "ERROR: Goto target {} not found", target);
+                } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                    doo_debug!("CODEGEN", "ERROR: Goto target {} not found", target_str);
                 }
             }
             MirTerminator::Branch {
@@ -1133,7 +1144,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 then_block,
                 else_block,
             } => {
-                if std::env::var("DOO_DEBUG").is_ok() {
+                let then_str = resolve(*then_block);
+                let else_str = resolve(*else_block);
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!("CODEGEN", "Branch cond: {:?}", cond);
                     if let Some(bb) = ctx.builder.get_insert_block() {
                         doo_debug!(
@@ -1144,7 +1157,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     }
                 }
                 if let Some(cond_val) = operand_to_value(ctx, cond) {
-                    if std::env::var("DOO_DEBUG").is_ok() {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                         doo_debug!("CODEGEN", "Branch cond_val: {:?}", cond_val);
                     }
                     // LLVM conditional branch requires i1 condition.
@@ -1171,20 +1184,20 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     };
 
                     if let (Some(then_bb), Some(else_bb)) =
-                        (block_map.get(then_block), block_map.get(else_block))
+                        (block_map.get(&then_str), block_map.get(&else_str))
                     {
-                        if std::env::var("DOO_DEBUG").is_ok() {
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!(
                                 "CODEGEN",
                                 "Building conditional branch to {} / {}",
-                                then_block,
-                                else_block
+                                then_str,
+                                else_str
                             );
                         }
                         let result = ctx
                             .builder
                             .build_conditional_branch(cond_bool, *then_bb, *else_bb);
-                        if std::env::var("DOO_DEBUG").is_ok() {
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!(
                                 "CODEGEN",
                                 "build_conditional_branch result: {:?}",
@@ -1195,15 +1208,15 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             }
                         }
                         result.ok();
-                    } else if std::env::var("DOO_DEBUG").is_ok() {
+                    } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                         doo_debug!(
                             "CODEGEN",
                             "ERROR: Branch targets not found: {} or {}",
-                            then_block,
-                            else_block
+                            then_str,
+                            else_str
                         );
                     }
-                } else if std::env::var("DOO_DEBUG").is_ok() {
+                } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!(
                         "CODEGEN",
                         "ERROR: Branch condition not found for {:?}",
@@ -1220,15 +1233,17 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 if let Some(val) = operand_to_value(ctx, value) {
                     if val.is_int_value() {
                         let int_val = val.into_int_value();
+                        let default_str = resolve(*default);
                         let default_bb = block_map
-                            .get(default)
+                            .get(&default_str)
                             .copied()
                             .unwrap_or_else(|| ctx.builder.get_insert_block().unwrap());
 
                         let llvm_cases: Vec<_> = cases
                             .iter()
                             .filter_map(|(case_val, target)| {
-                                block_map.get(target).map(|bb| {
+                                let target_str = resolve(*target);
+                                block_map.get(&target_str).map(|bb| {
                                     (
                                         ctx.context.i64_type().const_int(*case_val as u64, true),
                                         *bb,
