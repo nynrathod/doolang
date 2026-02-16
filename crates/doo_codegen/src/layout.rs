@@ -26,6 +26,12 @@ use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 use inkwell::IntPredicate;
 
+/// Map entry size in bytes: each entry stores key (8 bytes) + value (8 bytes).
+/// Currently all Doo map keys/values are represented as either i64 or pointer,
+/// both of which are 8 bytes on 64-bit systems. If we ever support different-sized
+/// key/value types, this must become dynamic based on key_type.size_of() + value_type.size_of().
+pub const MAP_ENTRY_SIZE: u64 = 16;
+
 // ============================================================================
 // Array Layout Helpers
 // ============================================================================
@@ -339,6 +345,209 @@ pub fn map_header_size<'ctx>(ctx: &CodegenContext<'ctx>) -> IntValue<'ctx> {
 // Common Allocation Helpers
 // ============================================================================
 
+// ============================================================================
+// Overflow-Safe Arithmetic for Allocation Sizes
+// ============================================================================
+
+/// Perform checked multiplication for allocation sizes.
+/// If the multiplication overflows, aborts the program with an error message
+/// instead of silently wrapping around (which would cause undersized allocations
+/// and heap buffer overflows).
+///
+/// Uses LLVM's `@llvm.umul.with.overflow.i64` intrinsic for zero-cost overflow detection.
+pub fn checked_mul_or_abort<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    lhs: IntValue<'ctx>,
+    rhs: IntValue<'ctx>,
+    name: &str,
+) -> Option<IntValue<'ctx>> {
+    let i64_type = ctx.context.i64_type();
+
+    // Ensure both operands are i64
+    let lhs_i64 = if lhs.get_type().get_bit_width() != 64 {
+        ctx.builder
+            .build_int_z_extend(lhs, i64_type, "lhs_i64")
+            .ok()?
+    } else {
+        lhs
+    };
+    let rhs_i64 = if rhs.get_type().get_bit_width() != 64 {
+        ctx.builder
+            .build_int_z_extend(rhs, i64_type, "rhs_i64")
+            .ok()?
+    } else {
+        rhs
+    };
+
+    // Declare @llvm.umul.with.overflow.i64 intrinsic
+    let overflow_struct_type = ctx.context.struct_type(&[i64_type.into(), ctx.context.bool_type().into()], false);
+    let intrinsic_type = overflow_struct_type.fn_type(&[i64_type.into(), i64_type.into()], false);
+    let intrinsic = ctx
+        .module
+        .get_function("llvm.umul.with.overflow.i64")
+        .unwrap_or_else(|| {
+            ctx.module.add_function("llvm.umul.with.overflow.i64", intrinsic_type, None)
+        });
+
+    // Call the intrinsic: returns { i64 result, i1 overflow }
+    let call_result = ctx
+        .builder
+        .build_call(intrinsic, &[lhs_i64.into(), rhs_i64.into()], &format!("{}_overflow", name))
+        .ok()?
+        .try_as_basic_value()
+        .basic()?;
+
+    // Extract result and overflow flag
+    let mul_result = ctx
+        .builder
+        .build_extract_value(call_result.into_struct_value(), 0, name)
+        .ok()?
+        .into_int_value();
+    let did_overflow = ctx
+        .builder
+        .build_extract_value(call_result.into_struct_value(), 1, &format!("{}_flag", name))
+        .ok()?
+        .into_int_value();
+
+    // Branch: if overflow, abort; else continue
+    let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
+    let overflow_bb = ctx.context.append_basic_block(current_fn, &format!("{}_overflow_abort", name));
+    let ok_bb = ctx.context.append_basic_block(current_fn, &format!("{}_ok", name));
+
+    ctx.builder
+        .build_conditional_branch(did_overflow, overflow_bb, ok_bb)
+        .ok()?;
+
+    // Overflow block: print error and abort
+    ctx.builder.position_at_end(overflow_bb);
+    emit_allocation_overflow_abort(ctx, "allocation size overflow: multiplication overflow");
+    // Ensure the block is terminated (emit_allocation_overflow_abort calls exit,
+    // but we add unreachable for LLVM)
+    let _ = ctx.builder.build_unreachable();
+
+    // Continue in the ok block
+    ctx.builder.position_at_end(ok_bb);
+
+    Some(mul_result)
+}
+
+/// Perform checked addition for allocation sizes.
+/// If the addition overflows, aborts the program with an error message.
+///
+/// Uses LLVM's `@llvm.uadd.with.overflow.i64` intrinsic for zero-cost overflow detection.
+pub fn checked_add_or_abort<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    lhs: IntValue<'ctx>,
+    rhs: IntValue<'ctx>,
+    name: &str,
+) -> Option<IntValue<'ctx>> {
+    let i64_type = ctx.context.i64_type();
+
+    // Ensure both operands are i64
+    let lhs_i64 = if lhs.get_type().get_bit_width() != 64 {
+        ctx.builder
+            .build_int_z_extend(lhs, i64_type, "lhs_i64")
+            .ok()?
+    } else {
+        lhs
+    };
+    let rhs_i64 = if rhs.get_type().get_bit_width() != 64 {
+        ctx.builder
+            .build_int_z_extend(rhs, i64_type, "rhs_i64")
+            .ok()?
+    } else {
+        rhs
+    };
+
+    // Declare @llvm.uadd.with.overflow.i64 intrinsic
+    let overflow_struct_type = ctx.context.struct_type(&[i64_type.into(), ctx.context.bool_type().into()], false);
+    let intrinsic_type = overflow_struct_type.fn_type(&[i64_type.into(), i64_type.into()], false);
+    let intrinsic = ctx
+        .module
+        .get_function("llvm.uadd.with.overflow.i64")
+        .unwrap_or_else(|| {
+            ctx.module.add_function("llvm.uadd.with.overflow.i64", intrinsic_type, None)
+        });
+
+    // Call the intrinsic: returns { i64 result, i1 overflow }
+    let call_result = ctx
+        .builder
+        .build_call(intrinsic, &[lhs_i64.into(), rhs_i64.into()], &format!("{}_overflow", name))
+        .ok()?
+        .try_as_basic_value()
+        .basic()?;
+
+    // Extract result and overflow flag
+    let add_result = ctx
+        .builder
+        .build_extract_value(call_result.into_struct_value(), 0, name)
+        .ok()?
+        .into_int_value();
+    let did_overflow = ctx
+        .builder
+        .build_extract_value(call_result.into_struct_value(), 1, &format!("{}_flag", name))
+        .ok()?
+        .into_int_value();
+
+    // Branch: if overflow, abort; else continue
+    let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
+    let overflow_bb = ctx.context.append_basic_block(current_fn, &format!("{}_overflow_abort", name));
+    let ok_bb = ctx.context.append_basic_block(current_fn, &format!("{}_ok", name));
+
+    ctx.builder
+        .build_conditional_branch(did_overflow, overflow_bb, ok_bb)
+        .ok()?;
+
+    // Overflow block: print error and abort
+    ctx.builder.position_at_end(overflow_bb);
+    emit_allocation_overflow_abort(ctx, "allocation size overflow: addition overflow");
+    let _ = ctx.builder.build_unreachable();
+
+    // Continue in the ok block
+    ctx.builder.position_at_end(ok_bb);
+
+    Some(add_result)
+}
+
+/// Emit code to print an error message and call exit(1).
+/// Used by overflow check helpers to abort on allocation size overflow.
+fn emit_allocation_overflow_abort<'ctx>(ctx: &mut CodegenContext<'ctx>, message: &str) {
+    // Get or declare fprintf(stderr, ...)
+    let printf_type = ctx.context.i32_type().fn_type(&[ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).into()], true);
+    let printf = ctx
+        .module
+        .get_function("printf")
+        .unwrap_or_else(|| ctx.module.add_function("printf", printf_type, None));
+
+    let error_msg = ctx.const_string(&format!("fatal: {}\n", message));
+    let _ = ctx
+        .builder
+        .build_call(printf, &[error_msg.into()], "print_overflow_err");
+
+    // Flush stdout
+    let fflush_type = ctx.context.i32_type().fn_type(&[ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).into()], false);
+    let fflush = ctx
+        .module
+        .get_function("fflush")
+        .unwrap_or_else(|| ctx.module.add_function("fflush", fflush_type, None));
+    let null_ptr = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).const_null();
+    let _ = ctx.builder.build_call(fflush, &[null_ptr.into()], "flush");
+
+    // Exit with code 1
+    let exit_type = ctx
+        .context
+        .void_type()
+        .fn_type(&[ctx.context.i32_type().into()], false);
+    let exit_fn = ctx
+        .module
+        .get_function("exit")
+        .unwrap_or_else(|| ctx.module.add_function("exit", exit_type, None));
+    let exit_code = ctx.context.i32_type().const_int(1, false);
+    let _ = ctx
+        .builder
+        .build_call(exit_fn, &[exit_code.into()], "exit_overflow");
+}
+
 /// Allocate memory using centralized `doo_alloc`
 pub fn alloc_memory<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
@@ -500,15 +709,11 @@ pub fn realloc_array_capacity<'ctx>(
     let new_cap = calculate_new_capacity(ctx, current_cap, new_len_i64);
 
     // Calculate new total size: header (16) + (capacity * elem_size)
+    // CRITICAL: Use checked arithmetic to prevent integer overflow.
+    // Overflow here would cause undersized allocation → heap buffer overflow.
     let header_size = array_header_size(ctx);
-    let data_size = ctx
-        .builder
-        .build_int_mul(new_cap, elem_size, "data_size")
-        .ok()?;
-    let total_size = ctx
-        .builder
-        .build_int_add(header_size, data_size, "total_size")
-        .ok()?;
+    let data_size = checked_mul_or_abort(ctx, new_cap, elem_size, "data_size")?;
+    let total_size = checked_add_or_abort(ctx, header_size, data_size, "total_size")?;
 
     // Reallocate the HEADER pointer, not the data pointer
     let realloc_fn = ctx
@@ -599,14 +804,10 @@ pub fn alloc_with_header<'ctx>(
         .size_of()
         .unwrap_or(ctx.context.i64_type().const_int(8, false));
     let header_size = array_header_size(ctx);
-    let data_size = ctx
-        .builder
-        .build_int_mul(len_i64, elem_size, "data_size")
-        .ok()?;
-    let computed_size = ctx
-        .builder
-        .build_int_add(header_size, data_size, "computed_size")
-        .ok()?;
+    // CRITICAL: Use checked arithmetic to prevent integer overflow.
+    // Overflow here would cause undersized allocation → heap buffer overflow.
+    let data_size = checked_mul_or_abort(ctx, len_i64, elem_size, "data_size")?;
+    let computed_size = checked_add_or_abort(ctx, header_size, data_size, "computed_size")?;
 
     // Ensure minimum allocation size to prevent empty array crash
     // The data pointer (header + 16) must be within allocated memory

@@ -69,19 +69,40 @@ fn env_usize(name: &str, default: usize) -> usize {
 // ============================================================================
 
 /// Execute middleware chain then handler
-/// This is the centralized middleware execution point - no duplication
+/// This is the centralized middleware execution point - no duplication.
+/// CRITICAL: Wraps all user handler/middleware calls in catch_unwind
+/// to prevent panics from crossing the FFI boundary (which is UB).
 fn execute_middleware_chain(
     req: *const DooRequest,
     middleware: &[DooMiddlewareFn],
     handler: DooHandlerFn,
 ) -> *mut DooResult {
-    if middleware.is_empty() {
-        // No middleware - call handler directly
-        return handler(req);
-    }
+    // Wrap the entire chain in catch_unwind — any panic in user handler
+    // or middleware is caught here instead of unwinding across FFI.
+    let req_send = req as usize; // raw pointer → usize for UnwindSafe
+    let handler_send = handler as usize;
+    let mw_ptr = middleware.as_ptr() as usize;
+    let mw_len = middleware.len();
 
-    // Build the next function chain using pointer-based context (no Vec clone)
-    execute_middleware_at_index(req, middleware.as_ptr(), middleware.len(), 0, handler)
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let req = req_send as *const DooRequest;
+        let handler: DooHandlerFn = unsafe { std::mem::transmute(handler_send) };
+        let middleware_ptr: *const DooMiddlewareFn = mw_ptr as *const DooMiddlewareFn;
+
+        if mw_len == 0 {
+            // No middleware - call handler directly
+            return handler(req);
+        }
+
+        // Build the next function chain using pointer-based context (no Vec clone)
+        execute_middleware_at_index(req, middleware_ptr, mw_len, 0, handler)
+    })) {
+        Ok(result) => result,
+        Err(payload) => {
+            // Panic caught — return RFC 7807 error instead of UB
+            doo_ffi_core::helpers::make_panic_err("HTTP", payload)
+        }
+    }
 }
 
 /// Execute middleware at given index, with next pointing to rest of chain.
@@ -162,18 +183,37 @@ impl Default for MiddlewareContext {
 unsafe impl Send for MiddlewareContext {}
 
 /// The "next" function passed to middleware
-/// Continues execution to the next middleware or handler — zero allocation
+/// Continues execution to the next middleware or handler — zero allocation.
+/// SAFETY: Uses unwrap_or to avoid panicking across FFI on missing handler.
 extern "C" fn middleware_next(req: *const DooRequest) -> *mut DooResult {
-    MIDDLEWARE_CONTEXT.with(|ctx| {
-        let ctx = ctx.borrow();
-        let next_index = ctx.current_index + 1;
-        let middleware_ptr = ctx.middleware_ptr;
-        let middleware_len = ctx.middleware_len;
-        let handler = ctx.handler.expect("Handler must be set");
-        drop(ctx);
+    // Wrap in catch_unwind to prevent panics from crossing FFI boundary
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        MIDDLEWARE_CONTEXT.with(|ctx| {
+            let ctx = ctx.borrow();
+            let next_index = ctx.current_index + 1;
+            let middleware_ptr = ctx.middleware_ptr;
+            let middleware_len = ctx.middleware_len;
+            // SAFETY: Use unwrap_or_else instead of .expect() — .expect() panics
+            // across FFI = instant UB. If handler is None, return 500 error.
+            let handler = match ctx.handler {
+                Some(h) => h,
+                None => {
+                    drop(ctx);
+                    return doo_ffi_core::DooResult::err_str(
+                        500,
+                        "Internal error: middleware handler not set",
+                    )
+                    .into_raw();
+                }
+            };
+            drop(ctx);
 
-        execute_middleware_at_index(req, middleware_ptr, middleware_len, next_index, handler)
-    })
+            execute_middleware_at_index(req, middleware_ptr, middleware_len, next_index, handler)
+        })
+    })) {
+        Ok(result) => result,
+        Err(payload) => doo_ffi_core::helpers::make_panic_err("HTTP.middleware_next", payload),
+    }
 }
 
 /// Handle incoming HTTP request — hot path, every allocation matters
@@ -406,6 +446,12 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     let doo_request = unsafe {
         let req_ptr = libc::malloc(std::mem::size_of::<DooRequest>()) as *mut DooRequest;
+        // CRITICAL: Null check after malloc — under memory pressure, malloc returns null
+        // and dereferencing null = segfault. Return 500 error instead.
+        if req_ptr.is_null() {
+            let err = internal_error("Out of memory: failed to allocate request", &path);
+            return Ok(build_response(500, &err.to_json()));
+        }
         (*req_ptr).method = string_to_c(&method);
         (*req_ptr).path = string_to_c(&path);
         (*req_ptr).body = string_to_c(&body_str);

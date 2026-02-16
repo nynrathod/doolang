@@ -1199,15 +1199,10 @@ impl ArrayBuiltins {
         // Allocate result array (same size)
         // Standard array layout: 16-byte header (i64 length + i64 capacity) + data
         let doo_alloc = ctx.get_function(ffi_names::DOO_ALLOC)?;
-        let total_size = ctx
-            .builder
-            .build_int_mul(len_i64, elem_size, "data_size")
-            .ok()?;
+        // CRITICAL: Use checked arithmetic to prevent overflow → heap buffer overflow
+        let total_size = crate::layout::checked_mul_or_abort(ctx, len_i64, elem_size, "data_size")?;
         let header_size = ctx.context.i64_type().const_int(16, false); // length (i64) + capacity (i64)
-        let alloc_size = ctx
-            .builder
-            .build_int_add(header_size, total_size, "alloc_size")
-            .ok()?;
+        let alloc_size = crate::layout::checked_add_or_abort(ctx, header_size, total_size, "alloc_size")?;
 
         let result_heap = ctx
             .builder
@@ -1324,15 +1319,10 @@ impl ArrayBuiltins {
         // Allocate result array (max size = original size, will track actual count)
         // Standard array layout: 16-byte header (i64 length + i64 capacity) + data
         let doo_alloc = ctx.get_function(ffi_names::DOO_ALLOC)?;
-        let total_size = ctx
-            .builder
-            .build_int_mul(len_i64, elem_size, "data_size")
-            .ok()?;
+        // CRITICAL: Use checked arithmetic to prevent overflow → heap buffer overflow
+        let total_size = crate::layout::checked_mul_or_abort(ctx, len_i64, elem_size, "data_size")?;
         let header_size = ctx.context.i64_type().const_int(16, false); // length (i64) + capacity (i64)
-        let alloc_size = ctx
-            .builder
-            .build_int_add(header_size, total_size, "alloc_size")
-            .ok()?;
+        let alloc_size = crate::layout::checked_add_or_abort(ctx, header_size, total_size, "alloc_size")?;
 
         let result_heap = ctx
             .builder
@@ -1409,8 +1399,8 @@ impl ArrayBuiltins {
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
 
-        // Call closure predicate - filter predicates return Bool (i1)
-        let bool_ty = ctx.context.bool_type().into();
+        // Call closure predicate - filter predicates return Bool (i8 for C ABI)
+        let bool_ty = ctx.context.i8_type().into();
         let pred_result = call_closure(ctx, closure_ptr, &[elem], bool_ty)?;
         let pred_bool = if pred_result.is_int_value() {
             let int_val = pred_result.into_int_value();

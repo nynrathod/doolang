@@ -80,10 +80,21 @@ pub fn get_jwt_secret() -> &'static str {
 /// JWT middleware handler
 /// Validates the JWT token signature + expiration, extracts the user ID,
 /// and sets it on the request for handlers that need authenticated user info.
+/// SAFETY: Wrapped in catch_unwind to prevent panics across FFI boundary.
 pub extern "C" fn jwt_middleware_handler(
     req: *const DooRequest,
     next: DooNextFn,
 ) -> *mut DooResult {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        jwt_middleware_inner(req, next)
+    })) {
+        Ok(result) => result,
+        Err(payload) => doo_ffi_core::helpers::make_panic_err("HTTP.jwt_middleware", payload),
+    }
+}
+
+/// Inner JWT middleware logic (separated for catch_unwind wrapping)
+fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResult {
     if req.is_null() {
         return make_err_response(401, "Null request");
     }
@@ -160,6 +171,11 @@ pub extern "C" fn jwt_middleware_handler(
         // Set the user_id on the request
         let user_id_str = user_id.to_string();
         let req_mut = req as *mut DooRequest;
+        // CRITICAL: Free old user_id if it was previously set (e.g., by prior middleware)
+        // to prevent memory leak per request in multi-middleware chains.
+        if !(*req_mut).user_id.is_null() {
+            doo_ffi_core::doo_free((*req_mut).user_id as *mut u8);
+        }
         (*req_mut).user_id = string_to_c(&user_id_str);
 
         // Call next handler with the verified request
@@ -201,6 +217,12 @@ fn lookup_user_id_by_email(email: &str) -> Option<i64> {
     // Parse the result - it's a JSON array with rows
     // Each row is an object with column values
     let result_str = c_to_string(result_ptr as *const c_char);
+
+    // CRITICAL: Free the DB result pointer to prevent leak on every JWT-authenticated request
+    unsafe {
+        doo_ffi_core::doo_free(result_ptr as *mut u8);
+    }
+
     let result: serde_json::Value = serde_json::from_str(&result_str).ok()?;
 
     // Get the first row's id field
@@ -208,32 +230,49 @@ fn lookup_user_id_by_email(email: &str) -> Option<i64> {
 }
 
 /// CORS middleware handler
+/// SAFETY: Wrapped in catch_unwind to prevent panics across FFI boundary.
 pub extern "C" fn cors_middleware_handler(
     req: *const DooRequest,
     next: DooNextFn,
 ) -> *mut DooResult {
-    if req.is_null() {
-        return next(req);
-    }
-
-    unsafe {
-        let method = c_to_string((*req).method);
-
-        // Handle OPTIONS preflight
-        if method.eq_ignore_ascii_case("OPTIONS") {
-            return make_cors_preflight_response();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if req.is_null() {
+            return next(req);
         }
 
-        // Continue to handler, CORS headers added in response
-        next(req)
+        unsafe {
+            let method = c_to_string((*req).method);
+
+            // Handle OPTIONS preflight
+            if method.eq_ignore_ascii_case("OPTIONS") {
+                return make_cors_preflight_response();
+            }
+
+            // Continue to handler, CORS headers added in response
+            next(req)
+        }
+    })) {
+        Ok(result) => result,
+        Err(payload) => doo_ffi_core::helpers::make_panic_err("HTTP.cors_middleware", payload),
     }
 }
 
 /// Rate limit middleware handler
+/// SAFETY: Wrapped in catch_unwind to prevent panics across FFI boundary.
 pub extern "C" fn ratelimit_middleware_handler(
     req: *const DooRequest,
     next: DooNextFn,
 ) -> *mut DooResult {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ratelimit_middleware_inner(req, next)
+    })) {
+        Ok(result) => result,
+        Err(payload) => doo_ffi_core::helpers::make_panic_err("HTTP.ratelimit_middleware", payload),
+    }
+}
+
+/// Inner rate limit logic (separated for catch_unwind wrapping)
+fn ratelimit_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResult {
     if req.is_null() {
         return next(req);
     }

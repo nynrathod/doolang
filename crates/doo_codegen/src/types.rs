@@ -29,7 +29,8 @@ impl<'ctx> TypeMapper<'ctx> {
             return self.context.f64_type().into();
         }
         if type_id == builtin::BOOL {
-            return self.context.bool_type().into();
+            // Use i8 (not i1) for Bool — C ABI compatible
+            return self.context.i8_type().into();
         }
         if type_id == builtin::STR {
             return self.context.i8_type().ptr_type(AddressSpace::default()).into();
@@ -73,10 +74,10 @@ impl<'ctx> TypeMapper<'ctx> {
 
     /// Create a Result type.
     pub fn result_type(&self, _ok_type: BasicTypeEnum<'ctx>, _err_type: BasicTypeEnum<'ctx>) -> StructType<'ctx> {
-        // Result: { i1 is_ok, ptr value }
+        // Result: { i8 is_ok, ptr value } — i8 for C ABI compatibility
         self.context.struct_type(
             &[
-                self.context.bool_type().into(),  // is_ok
+                self.context.i8_type().into(),  // is_ok (i8 for ABI)
                 self.context.i8_type().ptr_type(AddressSpace::default()).into(),  // value
             ],
             false,
@@ -85,10 +86,10 @@ impl<'ctx> TypeMapper<'ctx> {
 
     /// Create an optional type.
     pub fn optional_type(&self, inner_type: BasicTypeEnum<'ctx>) -> StructType<'ctx> {
-        // Optional: { i1 has_value, T value }
+        // Optional: { i8 has_value, T value } — i8 for C ABI compatibility
         self.context.struct_type(
             &[
-                self.context.bool_type().into(),  // has_value
+                self.context.i8_type().into(),  // has_value (i8 for ABI)
                 inner_type,  // value
             ],
             false,

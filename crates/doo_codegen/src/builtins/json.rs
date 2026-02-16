@@ -94,7 +94,7 @@ impl JsonBuiltins {
                     }
                     Some(TypeKind::Bool) => (
                         ffi_names::DOO_JSON_PARSE_BOOL,
-                        ctx.context.bool_type().into(),
+                        ctx.context.i8_type().into(), // Bool is i8 for C ABI compatibility
                     ),
                     Some(TypeKind::Str) => (ffi_names::DOO_JSON_PARSE_STR, i8_ptr.into()),
                     Some(TypeKind::Array { element: elem_type }) => {
@@ -1364,7 +1364,7 @@ impl JsonBuiltins {
         let ft = ctx
             .context
             .void_type()
-            .fn_type(&[ptr_ty.into(), ctx.context.bool_type().into()], false);
+            .fn_type(&[ptr_ty.into(), ctx.context.i8_type().into()], false); // Bool is i8 for C ABI
         ctx.module.add_function("doo_json_write_bool", ft, None)
     }
     fn get_or_declare_write_string<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
@@ -1426,11 +1426,11 @@ impl JsonBuiltins {
             return f;
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
-        let i1_ty = ctx.context.bool_type();
+        let bool_ty = ctx.context.i8_type(); // Bool is i8 for C ABI compatibility
         let ft = ctx
             .context
             .void_type()
-            .fn_type(&[ptr_ty.into(), i1_ty.into()], false);
+            .fn_type(&[ptr_ty.into(), bool_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITE_KEY_BOOL, ft, None)
     }

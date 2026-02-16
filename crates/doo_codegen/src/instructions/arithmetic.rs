@@ -648,11 +648,9 @@ fn value_to_string<'ctx>(
     // Determine format string and value based on type
     let (fmt_str, args): (&str, Vec<BasicValueEnum>) = if val.is_int_value() {
         let int_val = val.into_int_value();
-        // Check if it's a boolean (i1) or integer
-        if int_val.get_type().get_bit_width() == 1 {
-            // Boolean - need to convert to "true" or "false"
-            // For now, just use %d which will output 0 or 1
-            // TODO: Proper "true"/"false" string output
+        // Check if it's a boolean (i1 or i8) or integer
+        if int_val.get_type().get_bit_width() <= 8 {
+            // Boolean (i8 for C ABI, or i1 from comparison) - output 0 or 1
             ("%d", vec![val])
         } else {
             ("%lld", vec![val])

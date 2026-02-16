@@ -398,11 +398,22 @@ fn clone_struct<'ctx>(
     // Get or create struct type
     let struct_type = ctx.lookup_struct_type(struct_name)?;
 
-    // Calculate struct size using LLVM's size_of() for correct padding
+    // Calculate struct size using LLVM's size_of() for correct padding.
+    // The fallback uses fields.len() * 8 (pointer-sized fields) as a conservative estimate,
+    // but we also ensure a minimum of 8 bytes to prevent zero-size allocations.
+    // SAFETY: If LLVM can determine the size at compile time, we use that exact value.
+    // If not, the fallback may over-allocate (safe) but never under-allocate.
     let struct_size = struct_type
         .size_of()
-        .map(|v| v.get_zero_extended_constant().unwrap_or(64))
-        .unwrap_or((fields.len() * 8) as u64); // Fallback for safety
+        .map(|v| v.get_zero_extended_constant().unwrap_or_else(|| {
+            // LLVM knows the type but can't give us a constant — use field count * 8
+            // This is safe because each field is at most pointer-sized (8 bytes on 64-bit)
+            std::cmp::max(fields.len() as u64 * 8, 8)
+        }))
+        .unwrap_or_else(|| {
+            // LLVM doesn't know the type at all — use field count * 8 with minimum
+            std::cmp::max(fields.len() as u64 * 8, 8)
+        });
 
     // Get or declare malloc
     let malloc_fn = ctx
@@ -722,8 +733,8 @@ fn clone_map<'ctx>(
         .build_int_truncate(src_len, ctx.context.i32_type(), "len_i32")
         .ok()?;
 
-    // Use i8 array type for map entries (16 bytes per entry)
-    let pair_type = ctx.context.i8_type().array_type(16);
+    // Use i8 array type for map entries (MAP_ENTRY_SIZE bytes per entry)
+    let pair_type = ctx.context.i8_type().array_type(crate::layout::MAP_ENTRY_SIZE as u32);
 
     // Allocate new map with same length
     let dst_ptr = alloc_with_header(ctx, src_len_i32, pair_type, "cloned_map")?;
@@ -757,8 +768,8 @@ fn clone_map<'ctx>(
         idx_phi.add_incoming(&[(&i64_type.const_zero(), loop_preheader)]);
         let idx = idx_phi.as_basic_value().into_int_value();
 
-        // Calculate entry offset (idx * 16 for fixed pair size)
-        let entry_size = i64_type.const_int(16, false);
+        // Calculate entry offset (idx * MAP_ENTRY_SIZE for fixed pair size)
+        let entry_size = i64_type.const_int(crate::layout::MAP_ENTRY_SIZE, false);
         let entry_offset = ctx
             .builder
             .build_int_mul(idx, entry_size, "entry_offset")
@@ -847,7 +858,7 @@ fn clone_map<'ctx>(
         ctx.builder.position_at_end(loop_end);
     } else {
         // For primitive key/value types, use efficient memcpy
-        let entry_size = i64_type.const_int(16, false);
+        let entry_size = i64_type.const_int(crate::layout::MAP_ENTRY_SIZE, false);
         let copy_size = ctx
             .builder
             .build_int_mul(src_len, entry_size, "copy_size")

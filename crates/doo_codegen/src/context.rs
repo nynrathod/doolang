@@ -351,7 +351,10 @@ impl<'ctx> CodegenContext<'ctx> {
             return self.context.f64_type().into();
         }
         if type_id == builtin::BOOL {
-            return self.context.bool_type().into();
+            // Use i8 (not i1) for Bool type — C ABI uses i8/i32 for bools.
+            // i1 in struct fields causes LLVM to use bitfield packing, creating
+            // layout mismatches with FFI structs. i8 ensures predictable 1-byte alignment.
+            return self.context.i8_type().into();
         }
         if type_id == builtin::STR {
             return self
@@ -375,7 +378,7 @@ impl<'ctx> CodegenContext<'ctx> {
         if let Some(info) = self.type_registry.get(type_id) {
             match &info.kind {
                 TypeKind::Void => self.context.i8_type().into(),
-                TypeKind::Bool => self.context.bool_type().into(),
+                TypeKind::Bool => self.context.i8_type().into(),
                 TypeKind::Int => self.context.i64_type().into(),
                 TypeKind::Float => self.context.f64_type().into(),
                 TypeKind::Str => self
@@ -1087,9 +1090,10 @@ impl<'ctx> CodegenContext<'ctx> {
         self.context.i8_type()
     }
 
-    /// Get the bool type.
+    /// Get the Doo bool type (i8 for C ABI compatibility).
+    /// NOTE: For LLVM comparison results (i1), use `self.context.bool_type()` directly.
     pub fn bool_type(&self) -> inkwell::types::IntType<'ctx> {
-        self.context.bool_type()
+        self.context.i8_type()
     }
 
     /// Get the f64 type.
@@ -1112,9 +1116,9 @@ impl<'ctx> CodegenContext<'ctx> {
         self.context.f64_type().const_float(val)
     }
 
-    /// Create a bool constant.
+    /// Create a bool constant (i8 for C ABI compatibility).
     pub fn const_bool(&self, val: bool) -> inkwell::values::IntValue<'ctx> {
-        self.context.bool_type().const_int(val as u64, false)
+        self.context.i8_type().const_int(val as u64, false)
     }
 
     /// Create a global string constant.

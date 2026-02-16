@@ -13,6 +13,7 @@ use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::BasicValueEnum;
+use inkwell::IntPredicate;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -111,10 +112,10 @@ fn convert_return_value<'ctx>(
                     }
                 }
                 TypeKind::Bool => {
-                    // Load i1 from pointer
+                    // Load i8 from pointer (Bool uses i8 for C ABI compatibility)
                     if let Ok(loaded) =
                         ctx.builder
-                            .build_load(ctx.context.bool_type(), ptr, "ret_bool")
+                            .build_load(ctx.context.i8_type(), ptr, "ret_bool")
                     {
                         return loaded;
                     }
@@ -204,9 +205,9 @@ fn convert_i64_to_type<'ctx>(
             i64_val.into()
         }
         TypeKind::Bool => {
-            // Truncate i64 to i1
+            // Truncate i64 to i8 (Bool is i8 for C ABI compatibility)
             ctx.builder
-                .build_int_truncate(i64_val, ctx.context.bool_type(), "i64_to_bool")
+                .build_int_truncate(i64_val, ctx.context.i8_type(), "i64_to_bool")
                 .map(|v| v.into())
                 .unwrap_or(val)
         }
@@ -1146,10 +1147,26 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     if std::env::var("DOO_DEBUG").is_ok() {
                         doo_debug!("CODEGEN", "Branch cond_val: {:?}", cond_val);
                     }
+                    // LLVM conditional branch requires i1 condition.
+                    // Bool type is i8 (for C ABI), comparison results are i1.
+                    // Convert any non-i1 integer to i1 via icmp ne 0.
                     let cond_bool = if cond_val.is_int_value() {
-                        cond_val.into_int_value()
+                        let int_val = cond_val.into_int_value();
+                        if int_val.get_type().get_bit_width() == 1 {
+                            int_val
+                        } else {
+                            // Convert i8/i32/i64 to i1: val != 0
+                            ctx.builder
+                                .build_int_compare(
+                                    IntPredicate::NE,
+                                    int_val,
+                                    int_val.get_type().const_zero(),
+                                    "cond_i1",
+                                )
+                                .unwrap_or(ctx.context.bool_type().const_int(1, false))
+                        }
                     } else {
-                        // Convert to bool (non-zero = true)
+                        // Non-int: default to true
                         ctx.context.bool_type().const_int(1, false)
                     };
 
