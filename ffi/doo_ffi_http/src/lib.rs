@@ -61,6 +61,7 @@ mod auth;
 mod crud;
 mod db_bridge;
 mod dispatch;
+mod fetch;
 mod map_ops;
 mod metadata;
 mod middleware_ffi;

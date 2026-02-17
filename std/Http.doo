@@ -57,6 +57,8 @@ struct Server {
     Host: Str,
 }
 
+
+
 // === HTTP Status Codes ===
 
 fn StatusOk() -> Int { return 200; }
@@ -532,3 +534,17 @@ fn Server.activeWsConnections(self) -> Int {}
 // Check if a path is a registered WebSocket route
 @extern("doo_http", "doo_ws_is_ws_route")
 fn Server.isWsRoute(self, path: Str) -> Bool {}
+
+// ============================================================================
+// HTTP Client — Fetch() for outbound HTTP requests
+// ============================================================================
+
+// Make an outbound HTTP request.
+// url: The URL to request.
+// options: ObjectLit with method, body, timeout, headers (like CORS pattern).
+//   Example: { method: "POST", body: "...", timeout: 30, headers: ["Content-Type: application/json"] }
+//   Default: GET with no headers, 30s timeout.
+// Returns: JSON string with status, body, ok, headers.
+//   Example: '{"status":200,"body":"...","ok":true,"headers":{...}}'
+@extern("doo_http", "doo_http_fetch")
+fn Fetch(url: Str, options: {Str: Str}?) -> Str {}

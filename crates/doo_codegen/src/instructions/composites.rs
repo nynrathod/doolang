@@ -226,7 +226,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 // instead of a raw struct. This ensures proper interop with FFI functions
                 // that expect HashMap<String, String> (e.g., cors/ratelimit config).
                 // This is the single source of truth for object-literal-to-map conversion.
-                if resolve(*struct_name) == "__anon" {
+                if ffi_names::is_object_lit(&resolve(*struct_name)) {
                     let ptr_type = ctx.ptr_type();
                     let i64_type = ctx.context.i64_type();
 

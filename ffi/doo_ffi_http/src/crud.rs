@@ -294,9 +294,7 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
         .get("id")
         .and_then(|v: &serde_json::Value| v.as_str())
         .and_then(|s: &str| s.parse().ok())
-        .unwrap_or_else(|| {
-            parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0)
-        });
+        .unwrap_or_else(|| parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0));
 
     // Try database-backed CRUD first
     if is_db_backed_crud(&resource) {
@@ -367,9 +365,7 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
         .get("id")
         .and_then(|v: &serde_json::Value| v.as_str())
         .and_then(|s: &str| s.parse().ok())
-        .unwrap_or_else(|| {
-            parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0)
-        });
+        .unwrap_or_else(|| parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0));
 
     let updates: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -475,9 +471,7 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
         .get("id")
         .and_then(|v: &serde_json::Value| v.as_str())
         .and_then(|s: &str| s.parse().ok())
-        .unwrap_or_else(|| {
-            parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0)
-        });
+        .unwrap_or_else(|| parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0));
 
     // Try database-backed CRUD first
     if is_db_backed_crud(&resource) {

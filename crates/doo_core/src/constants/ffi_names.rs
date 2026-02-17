@@ -61,6 +61,21 @@ pub fn is_builtin_module(name: &str) -> bool {
 }
 
 // ============================================================================
+// Compiler Internal Names
+// ============================================================================
+
+/// Name used for anonymous object literals `{ key: value }` in HIR.
+/// ObjectLit is lowered to `HirExprKind::Struct { name: OBJECT_LIT_NAME, .. }`
+/// and compiled to a `HashMap<String, String>` at codegen time.
+pub const OBJECT_LIT_NAME: &str = "__anon";
+
+/// Check if a struct name is an anonymous object literal
+#[inline]
+pub fn is_object_lit(name: &str) -> bool {
+    name == OBJECT_LIT_NAME
+}
+
+// ============================================================================
 // Standard C Library Functions
 // ============================================================================
 
@@ -492,6 +507,15 @@ pub const DOO_PROCESS_READ_STDERR: &str = "doo_process_read_stderr";
 // Lifecycle
 pub const DOO_PROCESS_SHUTDOWN: &str = "doo_process_shutdown";
 pub const DOO_PROCESS_ACTIVE_COUNT: &str = "doo_process_active_count";
+
+// ============================================================================
+// Doo HTTP Client / Fetch FFI (doo_ffi_http) - Single Source of Truth
+// ============================================================================
+
+/// `Fetch(url, options?)` — Make an outbound HTTP request.
+/// options: ObjectLit `{ method: "POST", body: "...", timeout: 30, headers: ["K: V"] }`
+/// Returns JSON: `{"status":200,"body":"...","ok":true,"headers":{...}}`
+pub const DOO_HTTP_FETCH: &str = "doo_http_fetch";
 
 // ============================================================================
 // FFI Symbol Derivation — Single Source of Truth

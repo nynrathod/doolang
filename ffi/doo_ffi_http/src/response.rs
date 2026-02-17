@@ -12,8 +12,8 @@ use doo_ffi_core::{ffi_safe_cstr, ffi_safe_i32};
 
 use crate::error::*;
 use crate::helpers::{
-    c_to_string, get_current_request_path, get_last_error_json, get_last_error_status,
-    string_to_c, CONTENT_TYPE_JSON,
+    c_to_string, get_current_request_path, get_last_error_json, get_last_error_status, string_to_c,
+    CONTENT_TYPE_JSON,
 };
 use crate::router::get_frozen_routes;
 use crate::types::*;
@@ -260,11 +260,8 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
             if let Some(json_str) = try_read_as_json_string(struct_ptr) {
                 // Filter out @writeOnly/@internal fields from db.raw() results
                 let elem_type = &return_type[1..return_type.len() - 1];
-                let filtered = filter_response_json_by_layout(
-                    &json_str,
-                    elem_type,
-                    &metadata.struct_layouts,
-                );
+                let filtered =
+                    filter_response_json_by_layout(&json_str, elem_type, &metadata.struct_layouts);
                 return string_to_c(&filtered);
             }
             // Otherwise, fall through to struct serialization (for actual in-memory arrays)

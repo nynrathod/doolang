@@ -355,12 +355,23 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             } else if let Some(ffi_info) = builder.get_ffi_info(&func_name).cloned() {
                 // FFI function call - emit FfiCall instead of Call
                 let dest = builder.new_temp();
+
+                // Pad missing optional parameters with Nil (null pointer)
+                // This handles calls like Fetch(url) where options: {Str: Str}? is omitted
+                let mut ffi_args = arg_ops;
+                if let Some(param_types) = builder.get_function_param_types(&func_name) {
+                    let expected = param_types.len();
+                    while ffi_args.len() < expected {
+                        ffi_args.push(MirOperand::Const(MirConst::Nil));
+                    }
+                }
+
                 builder.emit(
                     MirInstrKind::FfiCall {
                         dest: Some(dest),
                         lib: sym(&ffi_info.library),
                         symbol: sym(&ffi_info.symbol),
-                        args: arg_ops,
+                        args: ffi_args,
                     },
                     span,
                 );

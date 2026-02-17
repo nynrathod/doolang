@@ -897,8 +897,9 @@ impl TypeChecker {
 
                     // Validate argument count and types against function signature
                     if let Some(param_types) = self.functions.get(name).cloned() {
-                        // Check argument count
-                        if arg_types.len() != param_types.len() {
+                        // Check argument count — allow fewer args if missing params are Optional
+                        if arg_types.len() > param_types.len() {
+                            // Too many args — always an error
                             self.errors.push(TypeError {
                                 kind: TypeErrorKind::ArgMismatch {
                                     expected: param_types.len(),
@@ -906,6 +907,49 @@ impl TypeChecker {
                                 },
                                 span: expr.span,
                             });
+                        } else if arg_types.len() < param_types.len() {
+                            // Fewer args — OK only if all missing params have Optional types
+                            let missing_params = &param_types[arg_types.len()..];
+                            let all_optional = missing_params.iter().all(|p| {
+                                if let Some(tid) = p {
+                                    if let Some(info) = self.registry.get(*tid) {
+                                        matches!(info.kind, TypeKind::Optional { .. })
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    true // untyped params are permissive
+                                }
+                            });
+                            if !all_optional {
+                                self.errors.push(TypeError {
+                                    kind: TypeErrorKind::ArgMismatch {
+                                        expected: param_types.len(),
+                                        found: arg_types.len(),
+                                    },
+                                    span: expr.span,
+                                });
+                            } else {
+                                // Check types for provided args only
+                                for (i, (arg_type, param_type)) in
+                                    arg_types.iter().zip(param_types.iter()).enumerate()
+                                {
+                                    if let Some(expected) = param_type {
+                                        if *arg_type != builtin::ANY
+                                            && *expected != builtin::ANY
+                                            && !self.registry.is_compatible(*arg_type, *expected)
+                                        {
+                                            self.errors.push(TypeError {
+                                                kind: TypeErrorKind::Mismatch {
+                                                    expected: *expected,
+                                                    found: *arg_type,
+                                                },
+                                                span: args[i].span,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             // Check argument types
                             for (i, (arg_type, param_type)) in
@@ -1700,12 +1744,15 @@ impl TypeChecker {
                 }
             }
         } else {
-            let struct_key = format!("__struct_{}", name);
-            if self.scopes.lookup(&struct_key).is_none() {
-                self.errors.push(TypeError {
-                    kind: TypeErrorKind::Undefined(name.to_string()),
-                    span,
-                });
+            // ObjectLit is a dynamic map, not a real struct — skip undefined check
+            if !ffi_names::is_object_lit(name) {
+                let struct_key = format!("__struct_{}", name);
+                if self.scopes.lookup(&struct_key).is_none() {
+                    self.errors.push(TypeError {
+                        kind: TypeErrorKind::Undefined(name.to_string()),
+                        span,
+                    });
+                }
             }
             for (_, fexpr) in fields {
                 self.check_expr(fexpr);

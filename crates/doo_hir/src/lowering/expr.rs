@@ -1,6 +1,7 @@
 //! Expression lowering.
 
 use doo_core::{
+    constants::ffi_names,
     doo_debug,
     infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
@@ -106,7 +107,7 @@ impl Lower {
                 let name = if let ExprKind::StructLit { name, .. } = &expr.kind {
                     name.clone()
                 } else {
-                    "__anon".to_string()
+                    ffi_names::OBJECT_LIT_NAME.to_string()
                 };
                 HirExprKind::Struct {
                     name,
@@ -407,7 +408,7 @@ impl Lower {
                 let name = if let ExprKind::StructLit { name, .. } = &expr.kind {
                     name.clone()
                 } else {
-                    "__anon".to_string()
+                    ffi_names::OBJECT_LIT_NAME.to_string()
                 };
                 HirExprKind::Struct {
                     name,
@@ -707,11 +708,15 @@ impl Lower {
                 out.type_id = Some(registry.register_tuple(element_types));
             }
             HirExprKind::Struct { name, .. } => {
-                out.type_id = Some(
+                // ObjectLit is a dynamic map — use ANY to avoid
+                // creating a self-referential TypeRef that hangs is_compatible
+                out.type_id = Some(if ffi_names::is_object_lit(name) {
+                    builtin::ANY
+                } else {
                     registry
                         .lookup(name)
-                        .unwrap_or_else(|| registry.declare_named(name)),
-                );
+                        .unwrap_or_else(|| registry.declare_named(name))
+                });
             }
             HirExprKind::EnumVariant { enum_name, .. } => {
                 out.type_id = Some(

@@ -502,13 +502,15 @@ impl TypeRegistry {
                     (_, TypeKind::Optional { inner: e_inner }) => {
                         self.is_compatible(actual, *e_inner)
                     }
-                    // TypeRef resolves to actual type
+                    // TypeRef resolves to actual type (guard against self-referential TypeRefs)
                     (TypeKind::TypeRef { name }, _) => self
                         .lookup(name)
+                        .filter(|&id| id != actual)
                         .map(|id| self.is_compatible(id, expected))
                         .unwrap_or(false),
                     (_, TypeKind::TypeRef { name }) => self
                         .lookup(name)
+                        .filter(|&id| id != expected)
                         .map(|id| self.is_compatible(actual, id))
                         .unwrap_or(false),
                     _ => false,

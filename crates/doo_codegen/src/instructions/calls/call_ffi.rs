@@ -1,17 +1,13 @@
 //! FFI call implementation — signatures, declarations, and call emission.
 
+use super::call_metadata::{
+    emit_handler_metadata_registration, emit_struct_metadata_registration_for_auth_crud,
+};
 use super::call_utils::operand_to_value;
 use super::call_wrappers::{
-    extract_route_context,
-    get_or_generate_handler_wrapper,
-    get_or_generate_handler_wrapper_with_context,
-    get_or_generate_ws_handler_wrapper,
-    get_or_generate_ws_event_handler_wrapper,
-    get_or_generate_ws_lifecycle_handler_wrapper,
-};
-use super::call_metadata::{
-    emit_handler_metadata_registration,
-    emit_struct_metadata_registration_for_auth_crud,
+    extract_route_context, get_or_generate_handler_wrapper,
+    get_or_generate_handler_wrapper_with_context, get_or_generate_ws_event_handler_wrapper,
+    get_or_generate_ws_handler_wrapper, get_or_generate_ws_lifecycle_handler_wrapper,
 };
 use super::RouteContext;
 use crate::context::CodegenContext;
@@ -122,11 +118,21 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::DOO_HTTP_GROUP => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_HTTP_CORS_CUSTOM => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_HTTP_RATELIMIT_CUSTOM => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_GET_WITH_MIDDLEWARE => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_POST_WITH_MIDDLEWARE => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_PUT_WITH_MIDDLEWARE => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_DELETE_WITH_MIDDLEWARE => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_PATCH_WITH_MIDDLEWARE => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
+        ffi_names::DOO_HTTP_GET_WITH_MIDDLEWARE => {
+            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
+        }
+        ffi_names::DOO_HTTP_POST_WITH_MIDDLEWARE => {
+            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
+        }
+        ffi_names::DOO_HTTP_PUT_WITH_MIDDLEWARE => {
+            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
+        }
+        ffi_names::DOO_HTTP_DELETE_WITH_MIDDLEWARE => {
+            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
+        }
+        ffi_names::DOO_HTTP_PATCH_WITH_MIDDLEWARE => {
+            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
+        }
         ffi_names::DOO_HTTP_REGISTER_ROUTE => Some((&["ptr", "ptr", "ptr", "ptr"], "void", false)),
         ffi_names::DOO_HTTP_REQ_GET_HEADER => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::DOO_HTTP_REQ_GET_BODY => Some((&["ptr"], "ptr", false)),
@@ -230,6 +236,9 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::DOO_PROCESS_READ_STDERR => Some((&["ptr"], "ptr", false)),
         ffi_names::DOO_PROCESS_SHUTDOWN => Some((&[], "void", false)),
         ffi_names::DOO_PROCESS_ACTIVE_COUNT => Some((&[], "i64", false)),
+
+        // HTTP Client / Fetch FFI
+        ffi_names::DOO_HTTP_FETCH => Some((&["ptr", "ptr"], "ptr", false)),
 
         // Unknown - use default signature
         _ => None,
@@ -370,11 +379,14 @@ fn convert_to_ffi_arg<'ctx>(
                     .unwrap();
 
                 // Get or declare sprintf
-                let sprintf = ctx.module.get_function(ffi_names::SPRINTF).unwrap_or_else(|| {
-                    let i32_type = ctx.i32_type();
-                    let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
-                    ctx.module.add_function(ffi_names::SPRINTF, fn_type, None)
-                });
+                let sprintf = ctx
+                    .module
+                    .get_function(ffi_names::SPRINTF)
+                    .unwrap_or_else(|| {
+                        let i32_type = ctx.i32_type();
+                        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
+                        ctx.module.add_function(ffi_names::SPRINTF, fn_type, None)
+                    });
 
                 // Format string: "%lld"
                 let fmt = ctx.const_string("%lld");
@@ -403,11 +415,14 @@ fn convert_to_ffi_arg<'ctx>(
                     .unwrap();
 
                 // Get or declare sprintf
-                let sprintf = ctx.module.get_function(ffi_names::SPRINTF).unwrap_or_else(|| {
-                    let i32_type = ctx.i32_type();
-                    let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
-                    ctx.module.add_function(ffi_names::SPRINTF, fn_type, None)
-                });
+                let sprintf = ctx
+                    .module
+                    .get_function(ffi_names::SPRINTF)
+                    .unwrap_or_else(|| {
+                        let i32_type = ctx.i32_type();
+                        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
+                        ctx.module.add_function(ffi_names::SPRINTF, fn_type, None)
+                    });
 
                 // Format string: "%g" (compact float format)
                 let fmt = ctx.const_string("%g");
@@ -702,17 +717,23 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
         .ok()?;
 
     // Get sprintf
-    let sprintf = ctx.module.get_function(ffi_names::SPRINTF).unwrap_or_else(|| {
-        let i32_type = ctx.i32_type();
-        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
-        ctx.module.add_function(ffi_names::SPRINTF, fn_type, None)
-    });
+    let sprintf = ctx
+        .module
+        .get_function(ffi_names::SPRINTF)
+        .unwrap_or_else(|| {
+            let i32_type = ctx.i32_type();
+            let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
+            ctx.module.add_function(ffi_names::SPRINTF, fn_type, None)
+        });
 
     // Get strlen
-    let strlen = ctx.module.get_function(ffi_names::STRLEN).unwrap_or_else(|| {
-        let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
-        ctx.module.add_function(ffi_names::STRLEN, fn_type, None)
-    });
+    let strlen = ctx
+        .module
+        .get_function(ffi_names::STRLEN)
+        .unwrap_or_else(|| {
+            let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
+            ctx.module.add_function(ffi_names::STRLEN, fn_type, None)
+        });
 
     // Start with "["
     let open_bracket = ctx.const_string("[");
@@ -925,8 +946,11 @@ pub(super) fn emit_ffi_call<'ctx>(
                                 .context
                                 .void_type()
                                 .fn_type(&[ptr_type.into(), ptr_type.into()], false);
-                            ctx.module
-                                .add_function(ffi_names::DOO_HTTP_REGISTER_MIDDLEWARE, fn_type, None)
+                            ctx.module.add_function(
+                                ffi_names::DOO_HTTP_REGISTER_MIDDLEWARE,
+                                fn_type,
+                                None,
+                            )
                         });
 
                     let mw_name_str = ctx.const_string(mw_name);
@@ -980,9 +1004,12 @@ pub(super) fn emit_ffi_call<'ctx>(
                 arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
                 continue;
             }
-            if symbol == ffi_names::DOO_WS_CONN_ON_CONNECT || symbol == ffi_names::DOO_WS_CONN_ON_DISCONNECT {
+            if symbol == ffi_names::DOO_WS_CONN_ON_CONNECT
+                || symbol == ffi_names::DOO_WS_CONN_ON_DISCONNECT
+            {
                 // Lifecycle handler: fn() -> void (no params)
-                let wrapper = get_or_generate_ws_lifecycle_handler_wrapper(ctx, &resolve(*func_name));
+                let wrapper =
+                    get_or_generate_ws_lifecycle_handler_wrapper(ctx, &resolve(*func_name));
                 arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
                 continue;
             }
@@ -1034,7 +1061,11 @@ pub(super) fn emit_ffi_call<'ctx>(
                 // it's an empty array - pass "[]" directly
                 if has_elem_type && !has_elem_temps {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!("CODEGEN", "Converting empty array {} to JSON \"[]\"", name_str);
+                        doo_debug!(
+                            "CODEGEN",
+                            "Converting empty array {} to JSON \"[]\"",
+                            name_str
+                        );
                     }
                     let empty_json = ctx.const_string("[]");
                     arg_vals.push(empty_json.into());
