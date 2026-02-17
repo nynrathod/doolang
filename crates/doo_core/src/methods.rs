@@ -64,95 +64,378 @@ pub fn get_method(type_name: &str, method_name: &str) -> Option<&'static MethodD
 // String Methods (16 methods)
 // =============================================================================
 pub static STRING_METHODS: &[MethodDef] = &[
-    MethodDef { name: "len", params: &[], return_type: "Int", mutates: false },
-    MethodDef { name: "charAt", params: &["Int"], return_type: "Str", mutates: false },
-    MethodDef { name: "substring", params: &["Int", "Int"], return_type: "Str", mutates: false },
-    MethodDef { name: "concat", params: &["Str"], return_type: "Str", mutates: false },
-    MethodDef { name: "indexOf", params: &["Str"], return_type: "Int", mutates: false },
-    MethodDef { name: "toUpper", params: &[], return_type: "Str", mutates: false },
-    MethodDef { name: "toLower", params: &[], return_type: "Str", mutates: false },
-    MethodDef { name: "replace", params: &["Str", "Str"], return_type: "Str", mutates: false },
-    MethodDef { name: "trim", params: &[], return_type: "Str", mutates: false },
-    MethodDef { name: "reverse", params: &[], return_type: "Str", mutates: false },
-    MethodDef { name: "contains", params: &["Str"], return_type: "Bool", mutates: false },
-    MethodDef { name: "startsWith", params: &["Str"], return_type: "Bool", mutates: false },
-    MethodDef { name: "endsWith", params: &["Str"], return_type: "Bool", mutates: false },
-    MethodDef { name: "repeat", params: &["Int"], return_type: "Str", mutates: false },
-    MethodDef { name: "charCode", params: &[], return_type: "Int", mutates: false },
-    MethodDef { name: "countSubstr", params: &["Str"], return_type: "Int", mutates: false },
+    MethodDef {
+        name: "len",
+        params: &[],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "charAt",
+        params: &["Int"],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "substring",
+        params: &["Int", "Int"],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "concat",
+        params: &["Str"],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "indexOf",
+        params: &["Str"],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "toUpper",
+        params: &[],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "toLower",
+        params: &[],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "replace",
+        params: &["Str", "Str"],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "trim",
+        params: &[],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "reverse",
+        params: &[],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "contains",
+        params: &["Str"],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "startsWith",
+        params: &["Str"],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "endsWith",
+        params: &["Str"],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "repeat",
+        params: &["Int"],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "charCode",
+        params: &[],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "countSubstr",
+        params: &["Str"],
+        return_type: "Int",
+        mutates: false,
+    },
 ];
 
 // =============================================================================
 // Array Methods (16 methods including lambda methods)
 // =============================================================================
 pub static ARRAY_METHODS: &[MethodDef] = &[
-    MethodDef { name: "len", params: &[], return_type: "Int", mutates: false },
-    MethodDef { name: "first", params: &[], return_type: "T", mutates: false },
-    MethodDef { name: "last", params: &[], return_type: "T", mutates: false },
-    MethodDef { name: "isEmpty", params: &[], return_type: "Bool", mutates: false },
-    MethodDef { name: "push", params: &["T"], return_type: "Void", mutates: true },
-    MethodDef { name: "pop", params: &[], return_type: "T", mutates: true },
-    MethodDef { name: "contains", params: &["T"], return_type: "Bool", mutates: false },
-    MethodDef { name: "indexOf", params: &["T"], return_type: "Int", mutates: false },
-    MethodDef { name: "sort", params: &[], return_type: "Void", mutates: true },
-    MethodDef { name: "reverse", params: &[], return_type: "Void", mutates: true },
-    MethodDef { name: "slice", params: &["Int", "Int"], return_type: "[T]", mutates: false },
-    MethodDef { name: "clear", params: &[], return_type: "Void", mutates: true },
-    MethodDef { name: "join", params: &["Str"], return_type: "Str", mutates: false },
+    MethodDef {
+        name: "len",
+        params: &[],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "first",
+        params: &[],
+        return_type: "T",
+        mutates: false,
+    },
+    MethodDef {
+        name: "last",
+        params: &[],
+        return_type: "T",
+        mutates: false,
+    },
+    MethodDef {
+        name: "isEmpty",
+        params: &[],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "push",
+        params: &["T"],
+        return_type: "Void",
+        mutates: true,
+    },
+    MethodDef {
+        name: "pop",
+        params: &[],
+        return_type: "T",
+        mutates: true,
+    },
+    MethodDef {
+        name: "contains",
+        params: &["T"],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "indexOf",
+        params: &["T"],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "sort",
+        params: &[],
+        return_type: "Void",
+        mutates: true,
+    },
+    MethodDef {
+        name: "reverse",
+        params: &[],
+        return_type: "Void",
+        mutates: true,
+    },
+    MethodDef {
+        name: "slice",
+        params: &["Int", "Int"],
+        return_type: "[T]",
+        mutates: false,
+    },
+    MethodDef {
+        name: "clear",
+        params: &[],
+        return_type: "Void",
+        mutates: true,
+    },
+    MethodDef {
+        name: "join",
+        params: &["Str"],
+        return_type: "Str",
+        mutates: false,
+    },
     // Lambda methods
-    MethodDef { name: "map", params: &["(T) -> U"], return_type: "[U]", mutates: false },
-    MethodDef { name: "filter", params: &["(T) -> Bool"], return_type: "[T]", mutates: false },
-    MethodDef { name: "reduce", params: &["U", "(U, T) -> U"], return_type: "U", mutates: false },
+    MethodDef {
+        name: "map",
+        params: &["(T) -> U"],
+        return_type: "[U]",
+        mutates: false,
+    },
+    MethodDef {
+        name: "filter",
+        params: &["(T) -> Bool"],
+        return_type: "[T]",
+        mutates: false,
+    },
+    MethodDef {
+        name: "reduce",
+        params: &["U", "(U, T) -> U"],
+        return_type: "U",
+        mutates: false,
+    },
 ];
 
 // =============================================================================
 // Map Methods (7 methods)
 // =============================================================================
 pub static MAP_METHODS: &[MethodDef] = &[
-    MethodDef { name: "has", params: &["K"], return_type: "Bool", mutates: false },
-    MethodDef { name: "size", params: &[], return_type: "Int", mutates: false },
-    MethodDef { name: "isEmpty", params: &[], return_type: "Bool", mutates: false },
-    MethodDef { name: "keys", params: &[], return_type: "[K]", mutates: false },
-    MethodDef { name: "values", params: &[], return_type: "[V]", mutates: false },
-    MethodDef { name: "remove", params: &["K"], return_type: "Void", mutates: true },
-    MethodDef { name: "clear", params: &[], return_type: "Void", mutates: true },
+    MethodDef {
+        name: "has",
+        params: &["K"],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "size",
+        params: &[],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "isEmpty",
+        params: &[],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "keys",
+        params: &[],
+        return_type: "[K]",
+        mutates: false,
+    },
+    MethodDef {
+        name: "values",
+        params: &[],
+        return_type: "[V]",
+        mutates: false,
+    },
+    MethodDef {
+        name: "remove",
+        params: &["K"],
+        return_type: "Void",
+        mutates: true,
+    },
+    MethodDef {
+        name: "clear",
+        params: &[],
+        return_type: "Void",
+        mutates: true,
+    },
 ];
 
 // =============================================================================
 // Int Methods
 // =============================================================================
 pub static INT_METHODS: &[MethodDef] = &[
-    MethodDef { name: "toChar", params: &[], return_type: "Str", mutates: false },
-    MethodDef { name: "toString", params: &[], return_type: "Str", mutates: false },
-    MethodDef { name: "abs", params: &[], return_type: "Int", mutates: false },
-    MethodDef { name: "min", params: &["Int"], return_type: "Int", mutates: false },
-    MethodDef { name: "max", params: &["Int"], return_type: "Int", mutates: false },
-    MethodDef { name: "clamp", params: &["Int", "Int"], return_type: "Int", mutates: false },
+    MethodDef {
+        name: "toChar",
+        params: &[],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "toString",
+        params: &[],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "abs",
+        params: &[],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "min",
+        params: &["Int"],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "max",
+        params: &["Int"],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "clamp",
+        params: &["Int", "Int"],
+        return_type: "Int",
+        mutates: false,
+    },
 ];
 
 // =============================================================================
 // Float Methods
 // =============================================================================
 pub static FLOAT_METHODS: &[MethodDef] = &[
-    MethodDef { name: "toString", params: &[], return_type: "Str", mutates: false },
-    MethodDef { name: "abs", params: &[], return_type: "Float", mutates: false },
-    MethodDef { name: "floor", params: &[], return_type: "Int", mutates: false },
-    MethodDef { name: "ceil", params: &[], return_type: "Int", mutates: false },
-    MethodDef { name: "round", params: &[], return_type: "Int", mutates: false },
-    MethodDef { name: "isNaN", params: &[], return_type: "Bool", mutates: false },
-    MethodDef { name: "isInfinite", params: &[], return_type: "Bool", mutates: false },
-    MethodDef { name: "min", params: &["Float"], return_type: "Float", mutates: false },
-    MethodDef { name: "max", params: &["Float"], return_type: "Float", mutates: false },
-    MethodDef { name: "sqrt", params: &[], return_type: "Float", mutates: false },
-    MethodDef { name: "pow", params: &["Float"], return_type: "Float", mutates: false },
+    MethodDef {
+        name: "toString",
+        params: &[],
+        return_type: "Str",
+        mutates: false,
+    },
+    MethodDef {
+        name: "abs",
+        params: &[],
+        return_type: "Float",
+        mutates: false,
+    },
+    MethodDef {
+        name: "floor",
+        params: &[],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "ceil",
+        params: &[],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "round",
+        params: &[],
+        return_type: "Int",
+        mutates: false,
+    },
+    MethodDef {
+        name: "isNaN",
+        params: &[],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "isInfinite",
+        params: &[],
+        return_type: "Bool",
+        mutates: false,
+    },
+    MethodDef {
+        name: "min",
+        params: &["Float"],
+        return_type: "Float",
+        mutates: false,
+    },
+    MethodDef {
+        name: "max",
+        params: &["Float"],
+        return_type: "Float",
+        mutates: false,
+    },
+    MethodDef {
+        name: "sqrt",
+        params: &[],
+        return_type: "Float",
+        mutates: false,
+    },
+    MethodDef {
+        name: "pow",
+        params: &["Float"],
+        return_type: "Float",
+        mutates: false,
+    },
 ];
 
 // =============================================================================
 // Bool Methods
 // =============================================================================
-pub static BOOL_METHODS: &[MethodDef] = &[
-    MethodDef { name: "toString", params: &[], return_type: "Str", mutates: false },
-];
+pub static BOOL_METHODS: &[MethodDef] = &[MethodDef {
+    name: "toString",
+    params: &[],
+    return_type: "Str",
+    mutates: false,
+}];
 
 #[cfg(test)]
 mod tests {

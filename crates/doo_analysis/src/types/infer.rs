@@ -315,15 +315,20 @@ impl TypeInference {
                 let object_type = self.infer_expr_type(object, registry);
                 if let Some(info) = registry.get(object_type) {
                     match &info.kind {
-                        TypeKind::Struct { name: struct_name, fields } => {
+                        TypeKind::Struct {
+                            name: struct_name,
+                            fields,
+                        } => {
                             for (fname, ftype, is_public) in fields {
                                 if fname == field {
                                     // Check visibility: private fields (camelCase) cannot be accessed from outside
                                     if !is_public {
                                         // Field is private - report error
-                                        // For now, we'll still return the type but the codegen/semantic 
+                                        // For now, we'll still return the type but the codegen/semantic
                                         // analysis should catch this. We could add an error here later.
-                                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG)
+                                            .is_ok()
+                                        {
                                             doo_debug!("VISIBILITY", "Warning: Accessing private field '{}' on struct '{}'", field, struct_name);
                                         }
                                     }

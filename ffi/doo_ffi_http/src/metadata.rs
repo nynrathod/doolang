@@ -123,12 +123,27 @@ pub(crate) fn get_struct_metadata(name: &str) -> Option<StructMetadata> {
     registry.get(name).cloned()
 }
 
+/// Normalize a field name to a canonical form for comparison.
+/// Strips underscores and lowercases, so "InternalId" and "internal_id" both become "internalid".
+fn normalize_field_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| *c != '_')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Check if two field names refer to the same field, regardless of casing convention.
+/// Handles PascalCase ("InternalId") == snake_case ("internal_id") == camelCase ("internalId").
+pub(crate) fn field_names_match(a: &str, b: &str) -> bool {
+    normalize_field_name(a) == normalize_field_name(b)
+}
+
 /// Check if a field should be included in response output.
 /// Fields with @writeOnly or @internal decorators are EXCLUDED from responses.
 pub(crate) fn should_include_in_response(struct_name: &str, field_name: &str) -> bool {
     if let Some(meta) = get_struct_metadata(struct_name) {
         for field in &meta.fields {
-            if field.name.eq_ignore_ascii_case(field_name) {
+            if field_names_match(&field.name, field_name) {
                 // @writeOnly: accepted in request, hidden from response
                 // @internal: hidden from both request and response
                 if field
@@ -150,7 +165,7 @@ pub(crate) fn should_include_in_response(struct_name: &str, field_name: &str) ->
 pub(crate) fn should_accept_from_request(struct_name: &str, field_name: &str) -> bool {
     if let Some(meta) = get_struct_metadata(struct_name) {
         for field in &meta.fields {
-            if field.name.eq_ignore_ascii_case(field_name) {
+            if field_names_match(&field.name, field_name) {
                 // @readOnly: visible in response, rejected from request
                 // @internal: hidden from both request and response
                 if field

@@ -316,6 +316,20 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
         );
     }
 
+    // Sync user into CRUD in-memory store so GET /users returns auth-created users
+    {
+        let mut user_data = serde_json::json!({
+            "id": user_id,
+            "email": email,
+        });
+        if let Some(obj) = user_data.as_object_mut() {
+            for (k, v) in &extra_fields {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        crate::crud::crud_store_insert("users", user_data);
+    }
+
     // Generate JWT token with user_id in claims
     let token = generate_jwt_token(&email, user_id as i64);
     ffi_debug!("AUTH", "JWT token generated for: {}", email);

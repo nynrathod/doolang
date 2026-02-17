@@ -333,11 +333,22 @@ pub(crate) fn filter_response_json_by_layout(
 }
 
 /// Recursively strip excluded fields from a JSON value (object or array of objects).
+/// Handles both PascalCase and snake_case keys by using normalized comparison.
 fn strip_fields_recursive(value: &mut serde_json::Value, fields_to_exclude: &[String]) {
     match value {
         serde_json::Value::Object(map) => {
-            for field in fields_to_exclude {
-                map.remove(field);
+            // Collect keys to remove (matching by normalized name)
+            let keys_to_remove: Vec<String> = map
+                .keys()
+                .filter(|key| {
+                    fields_to_exclude
+                        .iter()
+                        .any(|excl| crate::metadata::field_names_match(key, excl))
+                })
+                .cloned()
+                .collect();
+            for key in keys_to_remove {
+                map.remove(&key);
             }
         }
         serde_json::Value::Array(arr) => {

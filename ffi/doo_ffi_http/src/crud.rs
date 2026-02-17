@@ -80,6 +80,16 @@ fn get_crud_struct_name(resource: &str) -> Option<String> {
     tables.get(resource).cloned()
 }
 
+/// Insert an item into the CRUD in-memory store for a given resource.
+/// Used by auth to sync signed-up users into the CRUD store so that
+/// GET /users returns users created via signup when no DB is available.
+pub(crate) fn crud_store_insert(resource: &str, item: serde_json::Value) {
+    let mut stores = get_crud_stores().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(store) = stores.get_mut(resource) {
+        store.items.push(item);
+    }
+}
+
 /// Extract resource name from CRUD path.
 /// Examples:
 ///   "/api/posts" -> "posts"
