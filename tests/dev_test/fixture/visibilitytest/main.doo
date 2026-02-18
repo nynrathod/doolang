@@ -47,3 +47,29 @@ fn main() {
 
     print("\n=== All visibility tests passed! ===");
 }
+
+// Expect: === Testing Public/Private Visibility ===
+// Expect: All imports are PUBLIC (PascalCase) - this should compile and run
+// Expect:
+// Expect: Test 1: Public function creates struct
+// Expect:   User ID: 1
+// Expect:   User Name: Alice
+// Expect:   User Email: alice@example.com
+// Expect:
+// Expect: Test 2: Public enum via function
+// Expect:   Status: Active
+// Expect:
+// Expect: Test 3: Public enum variant
+// Expect:   Inactive status: Inactive
+// Expect:   Pending status: Pending
+// Expect:
+// Expect: Test 4: Public function using private internals
+// Expect:   Timeout value: 30
+// Expect:
+// Expect: Test 5: Public function using private enum
+// Expect:   Is ready: true
+// Expect:
+// Expect: Test 6: Match on public enum
+// Expect:   Matched: Active
+// Expect:
+// Expect: === All visibility tests passed! ===

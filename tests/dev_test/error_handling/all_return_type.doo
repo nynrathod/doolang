@@ -2,23 +2,23 @@
 
 // Test structs for error types
 struct IntError {
-    code: Int,
-    reason: Str
+   code: Int,
+   reason: Str
 }
 
 struct FloatError {
-    value: Float,
-    message: Str
+   value: Float,
+   message: Str
 }
 
 struct BoolError {
-    flag: Bool,
-    info: Str
+   flag: Bool,
+   info: Str
 }
 
 struct StrError {
-    text: Str,
-    context: Str
+   text: Str,
+   context: Str
 }
 
 // ============================================
@@ -27,207 +27,207 @@ struct StrError {
 
 // Int error type
 fn TestIntError(x: Int) -> Str ! Int {
-    if x < 0 {
-        Err -1;
-    }
-    Ok "success";
+   if x < 0 {
+       Err -1;
+   }
+   Ok "success";
 }
 
 // Float error type
 fn TestFloatError(x: Float) -> Str ! Float {
-    if x < 0.0 {
-        Err -99.9;
-    }
-    Ok "success";
+   if x < 0.0 {
+       Err -99.9;
+   }
+   Ok "success";
 }
 
 // Bool error type
 fn TestBoolError(x: Bool) -> Str ! Bool {
-    if x {
-        Err true;
-    }
-    Ok "success";
+   if x {
+       Err true;
+   }
+   Ok "success";
 }
 
 // Str error type
 fn TestStrError(x: Int) -> Int ! Str {
-    if x < 0 {
-        Err "string error occurred";
-    }
-    Ok x * 2;
+   if x < 0 {
+       Err "string error occurred";
+   }
+   Ok x * 2;
 }
 
 // Struct error types
 fn TestStructIntError(x: Int) -> Str ! IntError {
-    if x < 0 {
-        Err IntError { code: 100, reason: "negative value" };
-    }
-    Ok "success";
+   if x < 0 {
+       Err IntError { code: 100, reason: "negative value" };
+   }
+   Ok "success";
 }
 
 fn TestStructFloatError(x: Float) -> Str ! FloatError {
-    if x < 0.0 {
-        Err FloatError { value: x, message: "negative float" };
-    }
-    Ok "success";
+   if x < 0.0 {
+       Err FloatError { value: x, message: "negative float" };
+   }
+   Ok "success";
 }
 
 fn TestStructBoolError(x: Bool) -> Str ! BoolError {
-    if x {
-        Err BoolError { flag: x, info: "flag was true" };
-    }
-    Ok "success";
+   if x {
+       Err BoolError { flag: x, info: "flag was true" };
+   }
+   Ok "success";
 }
 
 fn TestStructStrError(x: Int) -> Int ! StrError {
-    if x < 0 {
-        Err StrError { text: "error text", context: "negative number" };
-    }
-    Ok x;
+   if x < 0 {
+       Err StrError { text: "error text", context: "negative number" };
+   }
+   Ok x;
 }
 
 // Array error type
 fn TestArrayIntError(x: Int) -> Str ! [Int] {
-    if x < 0 {
-        Err [1, 2, 3];
-    }
-    Ok "success";
+   if x < 0 {
+       Err [1, 2, 3];
+   }
+   Ok "success";
 }
 
 fn TestArrayFloatError(x: Float) -> Str ! [Float] {
-    if x < 0.0 {
-        Err [1.1, 2.2, 3.3];
-    }
-    Ok "success";
+   if x < 0.0 {
+       Err [1.1, 2.2, 3.3];
+   }
+   Ok "success";
 }
 
 fn TestArrayBoolError(x: Bool) -> Str ! [Bool] {
-    if x {
-        Err [true, false, true];
-    }
-    Ok "success";
+   if x {
+       Err [true, false, true];
+   }
+   Ok "success";
 }
 
 fn TestArrayStrError(x: Int) -> Int ! [Str] {
-    if x < 0 {
-        Err ["error1", "error2", "error3"];
-    }
-    Ok x;
+   if x < 0 {
+       Err ["error1", "error2", "error3"];
+   }
+   Ok x;
 }
 
 // Map error types
 fn TestMapStrIntError(x: Int) -> Str ! {Str: Int} {
-    if x < 0 {
-        Err { "code": 500, "status": 1 };
-    }
-    Ok "success";
+   if x < 0 {
+       Err { "code": 500, "status": 1 };
+   }
+   Ok "success";
 }
 
 fn TestMapStrFloatError(x: Float) -> Str ! {Str: Float} {
-    if x < 0.0 {
-        Err { "value": 1.5, "threshold": 0.0 };
-    }
-    Ok "success";
+   if x < 0.0 {
+       Err { "value": 1.5, "threshold": 0.0 };
+   }
+   Ok "success";
 }
 
 fn TestMapStrBoolError(x: Bool) -> Str ! {Str: Bool} {
-    if x {
-        Err { "enabled": true, "valid": false };
-    }
-    Ok "success";
+   if x {
+       Err { "enabled": true, "valid": false };
+   }
+   Ok "success";
 }
 
 fn TestMapStrStrError(x: Int) -> Int ! {Str: Str} {
-    if x < 0 {
-        Err { "error": "occurred", "type": "negative" };
-    }
-    Ok x;
+   if x < 0 {
+       Err { "error": "occurred", "type": "negative" };
+   }
+   Ok x;
 }
 
 fn TestMapIntIntError(x: Int) -> Str ! {Int: Int} {
-    if x < 0 {
-        Err { 1: 100, 2: 200 };
-    }
-    Ok "success";
+   if x < 0 {
+       Err { 1: 100, 2: 200 };
+   }
+   Ok "success";
 }
 
 fn TestMapIntFloatError(x: Float) -> Str ! {Int: Float} {
-    if x < 0.0 {
-        Err { 1: 1.5, 2: 2.5 };
-    }
-    Ok "success";
+   if x < 0.0 {
+       Err { 1: 1.5, 2: 2.5 };
+   }
+   Ok "success";
 }
 
 fn TestMapIntBoolError(x: Bool) -> Str ! {Int: Bool} {
-    if x {
-        Err { 0: false, 1: true };
-    }
-    Ok "success";
+   if x {
+       Err { 0: false, 1: true };
+   }
+   Ok "success";
 }
 
 fn TestMapIntStrError(x: Int) -> Int ! {Int: Str} {
-    if x < 0 {
-        Err { 1: "first", 2: "second" };
-    }
-    Ok x;
+   if x < 0 {
+       Err { 1: "first", 2: "second" };
+   }
+   Ok x;
 }
 
 // Float key maps
 fn TestMapFloatIntError(x: Int) -> Str ! {Float: Int} {
-    if x < 0 {
-        Err { 1.5: 100, 2.5: 200 };
-    }
-    Ok "success";
+   if x < 0 {
+       Err { 1.5: 100, 2.5: 200 };
+   }
+   Ok "success";
 }
 
 fn TestMapFloatFloatError(x: Float) -> Str ! {Float: Float} {
-    if x < 0.0 {
-        Err { 1.1: 1.5, 2.2: 2.5 };
-    }
-    Ok "success";
+   if x < 0.0 {
+       Err { 1.1: 1.5, 2.2: 2.5 };
+   }
+   Ok "success";
 }
 
 fn TestMapFloatBoolError(x: Bool) -> Str ! {Float: Bool} {
-    if x {
-        Err { 0.0: false, 1.0: true };
-    }
-    Ok "success";
+   if x {
+       Err { 0.0: false, 1.0: true };
+   }
+   Ok "success";
 }
 
 fn TestMapFloatStrError(x: Int) -> Int ! {Float: Str} {
-    if x < 0 {
-        Err { 1.0: "first", 2.0: "second" };
-    }
-    Ok x;
+   if x < 0 {
+       Err { 1.0: "first", 2.0: "second" };
+   }
+   Ok x;
 }
 
 // Bool key maps
 fn TestMapBoolIntError(x: Int) -> Str ! {Bool: Int} {
-    if x < 0 {
-        Err { true: 100, false: 200 };
-    }
-    Ok "success";
+   if x < 0 {
+       Err { true: 100, false: 200 };
+   }
+   Ok "success";
 }
 
 fn TestMapBoolFloatError(x: Float) -> Str ! {Bool: Float} {
-    if x < 0.0 {
-        Err { true: 1.5, false: 2.5 };
-    }
-    Ok "success";
+   if x < 0.0 {
+       Err { true: 1.5, false: 2.5 };
+   }
+   Ok "success";
 }
 
 fn TestMapBoolBoolError(x: Bool) -> Str ! {Bool: Bool} {
-    if x {
-        Err { true: false, false: true };
-    }
-    Ok "success";
+   if x {
+       Err { true: false, false: true };
+   }
+   Ok "success";
 }
 
 fn TestMapBoolStrError(x: Int) -> Int ! {Bool: Str} {
-    if x < 0 {
-        Err { true: "yes", false: "no" };
-    }
-    Ok x;
+   if x < 0 {
+       Err { true: "yes", false: "no" };
+   }
+   Ok x;
 }
 
 // ============================================
@@ -235,340 +235,558 @@ fn TestMapBoolStrError(x: Int) -> Int ! {Bool: Str} {
 // ============================================
 
 fn main() {
-    print("=== Comprehensive Error Handling Test ===\n");
+   print("=== Comprehensive Error Handling Test ===\n");
 
-    // Test 1: Int error
-    print("Test 1: Int error (Ok case)");
-    let r1 , e1 = TestIntError(5);
-    if e1 != nil {
-        print("  Error:", e1);
-    } else {
-        print("  Result:", r1);
-    }
+   // Test 1: Int error
+   print("Test 1: Int error (Ok case)");
+   let r1 , e1 = TestIntError(5);
+   if e1 != nil {
+       print("  Error:", e1);
+   } else {
+       print("  Result:", r1);
+   }
 
-    print("Test 1b: Int error (Err case)");
-    let r1b , e1b = TestIntError(-5);
-    if e1b != nil {
-        print("  Error:", e1b);
-    } else {
-        print("  Result:", r1b);
-    }
+   print("Test 1b: Int error (Err case)");
+   let r1b , e1b = TestIntError(-5);
+   if e1b != nil {
+       print("  Error:", e1b);
+   } else {
+       print("  Result:", r1b);
+   }
 
-    // Test 2: Float error
-    print("\nTest 2: Float error (Ok case)");
-    let r2 , e2 = TestFloatError(5.5);
-    if e2 != nil {
-        print("  Error:", e2);
-    } else {
-        print("  Result:", r2);
-    }
+   // Test 2: Float error
+   print("\nTest 2: Float error (Ok case)");
+   let r2 , e2 = TestFloatError(5.5);
+   if e2 != nil {
+       print("  Error:", e2);
+   } else {
+       print("  Result:", r2);
+   }
 
-    print("Test 2b: Float error (Err case)");
-    let r2b , e2b = TestFloatError(-5.5);
-    if e2b != nil {
-        print("  Error:", e2b);
-    } else {
-        print("  Result:", r2b);
-    }
+   print("Test 2b: Float error (Err case)");
+   let r2b , e2b = TestFloatError(-5.5);
+   if e2b != nil {
+       print("  Error:", e2b);
+   } else {
+       print("  Result:", r2b);
+   }
 
-    // Test 3: Bool error
-    print("\nTest 3: Bool error (Ok case)");
-    let r3 , e3 = TestBoolError(false);
-    if e3 != nil {
-        print("  Error:", e3);
-    } else {
-        print("  Result:", r3);
-    }
+   // Test 3: Bool error
+   print("\nTest 3: Bool error (Ok case)");
+   let r3 , e3 = TestBoolError(false);
+   if e3 != nil {
+       print("  Error:", e3);
+   } else {
+       print("  Result:", r3);
+   }
 
-    print("Test 3b: Bool error (Err case)");
-    let r3b , e3b = TestBoolError(true);
-    if e3b != nil {
-        print("  Error:", e3b);
-    } else {
-        print("  Result:", r3b);
-    }
+   print("Test 3b: Bool error (Err case)");
+   let r3b , e3b = TestBoolError(true);
+   if e3b != nil {
+       print("  Error:", e3b);
+   } else {
+       print("  Result:", r3b);
+   }
 
-    // Test 4: Str error
-    print("\nTest 4: Str error (Ok case)");
-    let r4 , e4 = TestStrError(5);
-    if e4 != nil {
-        print("  Error:", e4);
-    } else {
-        print("  Result:", r4);
-    }
+   // Test 4: Str error
+   print("\nTest 4: Str error (Ok case)");
+   let r4 , e4 = TestStrError(5);
+   if e4 != nil {
+       print("  Error:", e4);
+   } else {
+       print("  Result:", r4);
+   }
 
-    print("Test 4b: Str error (Err case)");
-    let r4b , e4b = TestStrError(-5);
-    if e4b != nil {
-        print("  Error:", e4b);
-    } else {
-        print("  Result:", r4b);
-    }
+   print("Test 4b: Str error (Err case)");
+   let r4b , e4b = TestStrError(-5);
+   if e4b != nil {
+       print("  Error:", e4b);
+   } else {
+       print("  Result:", r4b);
+   }
 
-    // Test 5: Struct with Int field
-    print("\nTest 5: IntError struct (Ok case)");
-    let r5 , e5 = TestStructIntError(5);
-    if e5 != nil {
-        print("  Error code:", e5.code, ", reason:", e5.reason);
-    } else {
-        print("  Result:", r5);
-    }
+   // Test 5: Struct with Int field
+   print("\nTest 5: IntError struct (Ok case)");
+   let r5 , e5 = TestStructIntError(5);
+   if e5 != nil {
+       print("  Error code:", e5.code, ", reason:", e5.reason);
+   } else {
+       print("  Result:", r5);
+   }
 
-    print("Test 5b: IntError struct (Err case)");
-    let r5b , e5b = TestStructIntError(-5);
-    if e5b != nil {
-        print("  Error code:", e5b.code, ", reason:", e5b.reason);
-    } else {
-        print("  Result:", r5b);
-    }
+   print("Test 5b: IntError struct (Err case)");
+   let r5b , e5b = TestStructIntError(-5);
+   if e5b != nil {
+       print("  Error code:", e5b.code, ", reason:", e5b.reason);
+   } else {
+       print("  Result:", r5b);
+   }
 
-    // Test 6: Struct with Float field
-    print("\nTest 6: FloatError struct (Ok case)");
-    let r6 , e6 = TestStructFloatError(5.5);
-    if e6 != nil {
-        print("  Error value:", e6.value, ", message:", e6.message);
-    } else {
-        print("  Result:", r6);
-    }
+   // Test 6: Struct with Float field
+   print("\nTest 6: FloatError struct (Ok case)");
+   let r6 , e6 = TestStructFloatError(5.5);
+   if e6 != nil {
+       print("  Error value:", e6.value, ", message:", e6.message);
+   } else {
+       print("  Result:", r6);
+   }
 
-    print("Test 6b: FloatError struct (Err case)");
-    let r6b , e6b = TestStructFloatError(-5.5);
-    if e6b != nil {
-        print("  Error value:", e6b.value, ", message:", e6b.message);
-    } else {
-        print("  Result:", r6b);
-    }
+   print("Test 6b: FloatError struct (Err case)");
+   let r6b , e6b = TestStructFloatError(-5.5);
+   if e6b != nil {
+       print("  Error value:", e6b.value, ", message:", e6b.message);
+   } else {
+       print("  Result:", r6b);
+   }
 
-    // Test 7: Struct with Bool field
-    print("\nTest 7: BoolError struct (Ok case)");
-    let r7 , e7 = TestStructBoolError(false);
-    if e7 != nil {
-        print("  Error flag:", e7.flag, ", info:", e7.info);
-    } else {
-        print("  Result:", r7);
-    }
+   // Test 7: Struct with Bool field
+   print("\nTest 7: BoolError struct (Ok case)");
+   let r7 , e7 = TestStructBoolError(false);
+   if e7 != nil {
+       print("  Error flag:", e7.flag, ", info:", e7.info);
+   } else {
+       print("  Result:", r7);
+   }
 
-    print("Test 7b: BoolError struct (Err case)");
-    let r7b , e7b = TestStructBoolError(true);
-    if e7b != nil {
-        print("  Error flag:", e7b.flag, ", info:", e7b.info);
-    } else {
-        print("  Result:", r7b);
-    }
+   print("Test 7b: BoolError struct (Err case)");
+   let r7b , e7b = TestStructBoolError(true);
+   if e7b != nil {
+       print("  Error flag:", e7b.flag, ", info:", e7b.info);
+   } else {
+       print("  Result:", r7b);
+   }
 
-    // Test 8: Struct with Str field
-    print("\nTest 8: StrError struct (Ok case)");
-    let r8 , e8 = TestStructStrError(5);
-    if e8 != nil {
-        print("  Error text:", e8.text, ", context:", e8.context);
-    } else {
-        print("  Result:", r8);
-    }
+   // Test 8: Struct with Str field
+   print("\nTest 8: StrError struct (Ok case)");
+   let r8 , e8 = TestStructStrError(5);
+   if e8 != nil {
+       print("  Error text:", e8.text, ", context:", e8.context);
+   } else {
+       print("  Result:", r8);
+   }
 
-    print("Test 8b: StrError struct (Err case)");
-    let r8b , e8b = TestStructStrError(-5);
-    if e8b != nil {
-        print("  Error text:", e8b.text, ", context:", e8b.context);
-    } else {
-        print("  Result:", r8b);
-    }
+   print("Test 8b: StrError struct (Err case)");
+   let r8b , e8b = TestStructStrError(-5);
+   if e8b != nil {
+       print("  Error text:", e8b.text, ", context:", e8b.context);
+   } else {
+       print("  Result:", r8b);
+   }
 
-    // Test 9: Array of Int
-    print("\nTest 9: [Int] error (Ok case)");
-    let r9 , e9 = TestArrayIntError(5);
-    if e9 != nil {
-        print("  Error array:", e9);
-    } else {
-        print("  Result:", r9);
-    }
+   // Test 9: Array of Int
+   print("\nTest 9: [Int] error (Ok case)");
+   let r9 , e9 = TestArrayIntError(5);
+   if e9 != nil {
+       print("  Error array:", e9);
+   } else {
+       print("  Result:", r9);
+   }
 
-    print("Test 9b: [Int] error (Err case)");
-    let r9b , e9b = TestArrayIntError(-5);
-    if e9b != nil {
-        print("  Error array:", e9b);
-    } else {
-        print("  Result:", r9b);
-    }
+   print("Test 9b: [Int] error (Err case)");
+   let r9b , e9b = TestArrayIntError(-5);
+   if e9b != nil {
+       print("  Error array:", e9b);
+   } else {
+       print("  Result:", r9b);
+   }
 
-    // Test 10: Array of Float
-    print("\nTest 10: [Float] error (Ok case)");
-    let r10 , e10 = TestArrayFloatError(5.5);
-    if e10 != nil {
-        print("  Error array:", e10);
-    } else {
-        print("  Result:", r10);
-    }
+   // Test 10: Array of Float
+   print("\nTest 10: [Float] error (Ok case)");
+   let r10 , e10 = TestArrayFloatError(5.5);
+   if e10 != nil {
+       print("  Error array:", e10);
+   } else {
+       print("  Result:", r10);
+   }
 
-    print("Test 10b: [Float] error (Err case)");
-    let r10b , e10b = TestArrayFloatError(-5.5);
-    if e10b != nil {
-        print("  Error array:", e10b);
-    } else {
-        print("  Result:", r10b);
-    }
+   print("Test 10b: [Float] error (Err case)");
+   let r10b , e10b = TestArrayFloatError(-5.5);
+   if e10b != nil {
+       print("  Error array:", e10b);
+   } else {
+       print("  Result:", r10b);
+   }
 
-    // Test 11: Array of Bool
-    print("\nTest 11: [Bool] error (Ok case)");
-    let r11 , e11 = TestArrayBoolError(false);
-    if e11 != nil {
-        print("  Error array:", e11);
-    } else {
-        print("  Result:", r11);
-    }
+   // Test 11: Array of Bool
+   print("\nTest 11: [Bool] error (Ok case)");
+   let r11 , e11 = TestArrayBoolError(false);
+   if e11 != nil {
+       print("  Error array:", e11);
+   } else {
+       print("  Result:", r11);
+   }
 
-    print("Test 11b: [Bool] error (Err case)");
-    let r11b , e11b = TestArrayBoolError(true);
-    if e11b != nil {
-        print("  Error array:", e11b);
-    } else {
-        print("  Result:", r11b);
-    }
+   print("Test 11b: [Bool] error (Err case)");
+   let r11b , e11b = TestArrayBoolError(true);
+   if e11b != nil {
+       print("  Error array:", e11b);
+   } else {
+       print("  Result:", r11b);
+   }
 
-    // Test 12: Array of Str
-    print("\nTest 12: [Str] error (Ok case)");
-    let r12 , e12 = TestArrayStrError(5);
-    if e12 != nil {
-        print("  Error array:", e12);
-    } else {
-        print("  Result:", r12);
-    }
+   // Test 12: Array of Str
+   print("\nTest 12: [Str] error (Ok case)");
+   let r12 , e12 = TestArrayStrError(5);
+   if e12 != nil {
+       print("  Error array:", e12);
+   } else {
+       print("  Result:", r12);
+   }
 
-    print("Test 12b: [Str] error (Err case)");
-    let r12b , e12b = TestArrayStrError(-5);
-    if e12b != nil {
-        print("  Error array:", e12b);
-    } else {
-        print("  Result:", r12b);
-    }
+   print("Test 12b: [Str] error (Err case)");
+   let r12b , e12b = TestArrayStrError(-5);
+   if e12b != nil {
+       print("  Error array:", e12b);
+   } else {
+       print("  Result:", r12b);
+   }
 
-    // Test 13-28: Map error types (abbreviated for brevity)
-    print("\nTest 13: {Str: Int} error (Err case)");
-    let r13 , e13 = TestMapStrIntError(-5);
-    if e13 != nil {
-        print("  Error map:", e13);
-    } else {
-        print("  Result:", r13);
-    }
+   // Test 13: {Str: Int} error (Ok case)
+   print("\nTest 13: {Str: Int} error (Ok case)");
+   let r13a , e13a = TestMapStrIntError(5);
+   if e13a != nil {
+       print("  Error map:", e13a);
+   } else {
+       print("  Result:", r13a);
+   }
 
-    print("\nTest 14: {Str: Float} error (Err case)");
-    let r14 , e14 = TestMapStrFloatError(-5.5);
-    if e14 != nil {
-        print("  Error map:", e14);
-    } else {
-        print("  Result:", r14);
-    }
+   // Test 13b: {Str: Int} error (Err case)
+   print("\nTest 13b: {Str: Int} error (Err case)");
+   let r13 , e13 = TestMapStrIntError(-5);
+   if e13 != nil {
+       print("  Error map:", e13);
+   } else {
+       print("  Result:", r13);
+   }
 
-    print("\nTest 15: {Str: Bool} error (Err case)");
-    let r15 , e15 = TestMapStrBoolError(true);
-    if e15 != nil {
-        print("  Error map:", e15);
-    } else {
-        print("  Result:", r15);
-    }
+   // Test 14: {Str: Float} error (Ok case)
+   print("\nTest 14: {Str: Float} error (Ok case)");
+   let r14a , e14a = TestMapStrFloatError(5.5);
+   if e14a != nil {
+       print("  Error map:", e14a);
+   } else {
+       print("  Result:", r14a);
+   }
 
-    print("\nTest 16: {Str: Str} error (Err case)");
-    let r16 , e16 = TestMapStrStrError(-5);
-    if e16 != nil {
-        print("  Error map:", e16);
-    } else {
-        print("  Result:", r16);
-    }
+   // Test 14b: {Str: Float} error (Err case)
+   print("\nTest 14b: {Str: Float} error (Err case)");
+   let r14 , e14 = TestMapStrFloatError(-5.5);
+   if e14 != nil {
+       print("  Error map:", e14);
+   } else {
+       print("  Result:", r14);
+   }
 
-    print("\nTest 17: {Int: Int} error (Err case)");
-    let r17 , e17 = TestMapIntIntError(-5);
-    if e17 != nil {
-        print("  Error map:", e17);
-    } else {
-        print("  Result:", r17);
-    }
+   // Test 15: {Str: Bool} error (Ok case)
+   print("\nTest 15: {Str: Bool} error (Ok case)");
+   let r15a , e15a = TestMapStrBoolError(false);
+   if e15a != nil {
+       print("  Error map:", e15a);
+   } else {
+       print("  Result:", r15a);
+   }
 
-    print("\nTest 18: {Int: Float} error (Err case)");
-    let r18 , e18 = TestMapIntFloatError(-5.5);
-    if e18 != nil {
-        print("  Error map:", e18);
-    } else {
-        print("  Result:", r18);
-    }
+   // Test 15b: {Str: Bool} error (Err case)
+   print("\nTest 15b: {Str: Bool} error (Err case)");
+   let r15 , e15 = TestMapStrBoolError(true);
+   if e15 != nil {
+       print("  Error map:", e15);
+   } else {
+       print("  Result:", r15);
+   }
 
-    print("\nTest 19: {Int: Bool} error (Err case)");
-    let r19 , e19 = TestMapIntBoolError(true);
-    if e19 != nil {
-        print("  Error map:", e19);
-    } else {
-        print("  Result:", r19);
-    }
+   // Test 16: {Str: Str} error (Ok case)
+   print("\nTest 16: {Str: Str} error (Ok case)");
+   let r16a , e16a = TestMapStrStrError(5);
+   if e16a != nil {
+       print("  Error map:", e16a);
+   } else {
+       print("  Result:", r16a);
+   }
 
-    print("\nTest 20: {Int: Str} error (Err case)");
-    let r20 , e20 = TestMapIntStrError(-5);
-    if e20 != nil {
-        print("  Error map:", e20);
-    } else {
-        print("  Result:", r20);
-    }
+   // Test 16b: {Str: Str} error (Err case)
+   print("\nTest 16b: {Str: Str} error (Err case)");
+   let r16 , e16 = TestMapStrStrError(-5);
+   if e16 != nil {
+       print("  Error map:", e16);
+   } else {
+       print("  Result:", r16);
+   }
 
-    print("\nTest 21: {Float: Int} error (Err case)");
-    let r21 , e21 = TestMapFloatIntError(-5);
-    if e21 != nil {
-        print("  Error map:", e21);
-    } else {
-        print("  Result:", r21);
-    }
+   // Test 17: {Int: Int} error (Ok case)
+   print("\nTest 17: {Int: Int} error (Ok case)");
+   let r17a , e17a = TestMapIntIntError(5);
+   if e17a != nil {
+       print("  Error map:", e17a);
+   } else {
+       print("  Result:", r17a);
+   }
 
-    print("\nTest 22: {Float: Float} error (Err case)");
-    let r22 , e22 = TestMapFloatFloatError(-5.5);
-    if e22 != nil {
-        print("  Error map:", e22);
-    } else {
-        print("  Result:", r22);
-    }
+   // Test 17b: {Int: Int} error (Err case)
+   print("\nTest 17b: {Int: Int} error (Err case)");
+   let r17 , e17 = TestMapIntIntError(-5);
+   if e17 != nil {
+       print("  Error map:", e17);
+   } else {
+       print("  Result:", r17);
+   }
 
-    print("\nTest 23: {Float: Bool} error (Err case)");
-    let r23 , e23 = TestMapFloatBoolError(true);
-    if e23 != nil {
-        print("  Error map:", e23);
-    } else {
-        print("  Result:", r23);
-    }
+   // Test 18: {Int: Float} error (Ok case)
+   print("\nTest 18: {Int: Float} error (Ok case)");
+   let r18a , e18a = TestMapIntFloatError(5.5);
+   if e18a != nil {
+       print("  Error map:", e18a);
+   } else {
+       print("  Result:", r18a);
+   }
 
-    print("\nTest 24: {Float: Str} error (Err case)");
-    let r24 , e24 = TestMapFloatStrError(-5);
-    if e24 != nil {
-        print("  Error map:", e24);
-    } else {
-        print("  Result:", r24);
-    }
+   // Test 18b: {Int: Float} error (Err case)
+   print("\nTest 18b: {Int: Float} error (Err case)");
+   let r18 , e18 = TestMapIntFloatError(-5.5);
+   if e18 != nil {
+       print("  Error map:", e18);
+   } else {
+       print("  Result:", r18);
+   }
 
-    print("\nTest 25: {Bool: Int} error (Err case)");
-    let r25 , e25 = TestMapBoolIntError(-5);
-    if e25 != nil {
-        print("  Error map:", e25);
-    } else {
-        print("  Result:", r25);
-    }
+   // Test 19: {Int: Bool} error (Ok case)
+   print("\nTest 19: {Int: Bool} error (Ok case)");
+   let r19a , e19a = TestMapIntBoolError(false);
+   if e19a != nil {
+       print("  Error map:", e19a);
+   } else {
+       print("  Result:", r19a);
+   }
 
-    print("\nTest 26: {Bool: Float} error (Err case)");
-    let r26 , e26 = TestMapBoolFloatError(-5.5);
-    if e26 != nil {
-        print("  Error map:", e26);
-    } else {
-        print("  Result:", r26);
-    }
+   // Test 19b: {Int: Bool} error (Err case)
+   print("\nTest 19b: {Int: Bool} error (Err case)");
+   let r19 , e19 = TestMapIntBoolError(true);
+   if e19 != nil {
+       print("  Error map:", e19);
+   } else {
+       print("  Result:", r19);
+   }
 
-    print("\nTest 27: {Bool: Bool} error (Err case)");
-    let r27 , e27 = TestMapBoolBoolError(true);
-    if e27 != nil {
-        print("  Error map:", e27);
-    } else {
-        print("  Result:", r27);
-    }
+   // Test 20: {Int: Str} error (Ok case)
+   print("\nTest 20: {Int: Str} error (Ok case)");
+   let r20a , e20a = TestMapIntStrError(5);
+   if e20a != nil {
+       print("  Error map:", e20a);
+   } else {
+       print("  Result:", r20a);
+   }
 
-    print("\nTest 28: {Bool: Str} error (Err case)");
-    let r28 , e28 = TestMapBoolStrError(-5);
-    if e28 != nil {
-        print("  Error map:", e28);
-    } else {
-        print("  Result:", r28);
-    }
+   // Test 20b: {Int: Str} error (Err case)");
+   print("\nTest 20b: {Int: Str} error (Err case)");
+   let r20 , e20 = TestMapIntStrError(-5);
+   if e20 != nil {
+       print("  Error map:", e20);
+   } else {
+       print("  Result:", r20);
+   }
 
-    print("\n=== All tests completed! ===");
+   // Test 21: {Float: Int} error (Ok case)
+   print("\nTest 21: {Float: Int} error (Ok case)");
+   let r21a , e21a = TestMapFloatIntError(5);
+   if e21a != nil {
+       print("  Error map:", e21a);
+   } else {
+       print("  Result:", r21a);
+   }
+
+   // Test 21b: {Float: Int} error (Err case)
+   print("\nTest 21b: {Float: Int} error (Err case)");
+   let r21 , e21 = TestMapFloatIntError(-5);
+   if e21 != nil {
+       print("  Error map:", e21);
+   } else {
+       print("  Result:", r21);
+   }
+
+   // Test 22: {Float: Float} error (Ok case)
+   print("\nTest 22: {Float: Float} error (Ok case)");
+   let r22a , e22a = TestMapFloatFloatError(5.5);
+   if e22a != nil {
+       print("  Error map:", e22a);
+   } else {
+       print("  Result:", r22a);
+   }
+
+   // Test 22b: {Float: Float} error (Err case)
+   print("\nTest 22b: {Float: Float} error (Err case)");
+   let r22 , e22 = TestMapFloatFloatError(-5.5);
+   if e22 != nil {
+       print("  Error map:", e22);
+   } else {
+       print("  Result:", r22);
+   }
+
+   // Test 23: {Float: Bool} error (Ok case)
+   print("\nTest 23: {Float: Bool} error (Ok case)");
+   let r23a , e23a = TestMapFloatBoolError(false);
+   if e23a != nil {
+       print("  Error map:", e23a);
+   } else {
+       print("  Result:", r23a);
+   }
+
+   // Test 23b: {Float: Bool} error (Err case)
+   print("\nTest 23b: {Float: Bool} error (Err case)");
+   let r23 , e23 = TestMapFloatBoolError(true);
+   if e23 != nil {
+       print("  Error map:", e23);
+   } else {
+       print("  Result:", r23);
+   }
+
+   // Test 24: {Float: Str} error (Ok case)
+   print("\nTest 24: {Float: Str} error (Ok case)");
+   let r24a , e24a = TestMapFloatStrError(5);
+   if e24a != nil {
+       print("  Error map:", e24a);
+   } else {
+       print("  Result:", r24a);
+   }
+
+   // Test 24b: {Float: Str} error (Err case)
+   print("\nTest 24b: {Float: Str} error (Err case)");
+   let r24 , e24 = TestMapFloatStrError(-5);
+   if e24 != nil {
+       print("  Error map:", e24);
+   } else {
+       print("  Result:", r24);
+   }
+
+   // Test 25: {Bool: Int} error (Ok case)
+   print("\nTest 25: {Bool: Int} error (Ok case)");
+   let r25a , e25a = TestMapBoolIntError(5);
+   if e25a != nil {
+       print("  Error map:", e25a);
+   } else {
+       print("  Result:", r25a);
+   }
+
+   // Test 25b: {Bool: Int} error (Err case)
+   print("\nTest 25b: {Bool: Int} error (Err case)");
+   let r25 , e25 = TestMapBoolIntError(-5);
+   if e25 != nil {
+       print("  Error map:", e25);
+   } else {
+       print("  Result:", r25);
+   }
+
+   // Test 26: {Bool: Float} error (Ok case)
+   print("\nTest 26: {Bool: Float} error (Ok case)");
+   let r26a , e26a = TestMapBoolFloatError(5.5);
+   if e26a != nil {
+       print("  Error map:", e26a);
+   } else {
+       print("  Result:", r26a);
+   }
+
+   // Test 26b: {Bool: Float} error (Err case)
+   print("\nTest 26b: {Bool: Float} error (Err case)");
+   let r26 , e26 = TestMapBoolFloatError(-5.5);
+   if e26 != nil {
+       print("  Error map:", e26);
+   } else {
+       print("  Result:", r26);
+   }
+
+   // Test 27: {Bool: Bool} error (Ok case)
+   print("\nTest 27: {Bool: Bool} error (Ok case)");
+   let r27a , e27a = TestMapBoolBoolError(false);
+   if e27a != nil {
+       print("  Error map:", e27a);
+   } else {
+       print("  Result:", r27a);
+   }
+
+   // Test 27b: {Bool: Bool} error (Err case)
+   print("\nTest 27b: {Bool: Bool} error (Err case)");
+   let r27 , e27 = TestMapBoolBoolError(true);
+   if e27 != nil {
+       print("  Error map:", e27);
+   } else {
+       print("  Result:", r27);
+   }
+
+   // Test 28: {Bool: Str} error (Ok case)
+   print("\nTest 28: {Bool: Str} error (Ok case)");
+   let r28a , e28a = TestMapBoolStrError(5);
+   if e28a != nil {
+       print("  Error map:", e28a);
+   } else {
+       print("  Result:", r28a);
+   }
+
+   // Test 28b: {Bool: Str} error (Err case)
+   print("\nTest 28b: {Bool: Str} error (Err case)");
+   let r28 , e28 = TestMapBoolStrError(-5);
+   if e28 != nil {
+       print("  Error map:", e28);
+   } else {
+       print("  Result:", r28);
+   }
+
+   print("\n=== All tests completed! ===");
 }
+
+// EXPECT: === Comprehensive Error Handling Test ===
+// EXPECT:   Result: success
+// EXPECT:   Error: -1
+// EXPECT:   Result: success
+// EXPECT:   Error: -99.9
+// EXPECT:   Result: success
+// EXPECT:   Error: true
+// EXPECT:   Result: 10
+// EXPECT:   Error: string error occurred
+// EXPECT:   Result: success
+// EXPECT:   Error code: 100 , reason: negative value
+// EXPECT:   Result: success
+// EXPECT:   Error value: -5.5 , message: negative float
+// EXPECT:   Result: success
+// EXPECT:   Error flag: true , info: flag was true
+// EXPECT:   Result: 5
+// EXPECT:   Error text: error text , context: negative number
+// EXPECT:   Result: success
+// EXPECT:   Error array: [1, 2, 3]
+// EXPECT:   Result: success
+// EXPECT:   Error array: [1.1, 2.2, 3.3]
+// EXPECT:   Result: success
+// EXPECT:   Error array: [true, false, true]
+// EXPECT:   Result: 5
+// EXPECT:   Error array: [error1, error2, error3]
+// EXPECT:   Result: success
+// EXPECT:   Error map: {"code": 500, "status": 1}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {"value": 1.5, "threshold": 0.0}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {"enabled": true, "valid": false}
+// EXPECT:   Result: 5
+// EXPECT:   Error map: {"error": occurred, "type": negative}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {1: 100, 2: 200}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {1: 1.5, 2: 2.5}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {0: false, 1: true}
+// EXPECT:   Result: 5
+// EXPECT:   Error map: {1: first, 2: second}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {1.5: 100, 2.5: 200}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {1.1: 1.5, 2.2: 2.5}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {0.0: false, 1.0: true}
+// EXPECT:   Result: 5
+// EXPECT:   Error map: {1.0: first, 2.0: second}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {true: 100, false: 200}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {true: 1.5, false: 2.5}
+// EXPECT:   Result: success
+// EXPECT:   Error map: {true: false, false: true}
+// EXPECT:   Result: 5
+// EXPECT:   Error map: {true: yes, false: no}
+// EXPECT: === All tests completed! ===

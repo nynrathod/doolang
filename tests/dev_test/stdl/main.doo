@@ -100,3 +100,40 @@ fn main() {
     print("✓ Array functions PASS");
     print("");
 }
+
+// expect: Abs(-42): 42
+// expect: Abs(42): 42
+// expect: Pow(2, 8): 256
+// expect: Pow(3, 3): 27
+// expect: Sqrt(49): 7
+// expect: Sqrt(16): 4
+// expect: Min(3, 7): 3
+// expect: Min(10, 5): 5
+// expect: Max(3, 7): 7
+// expect: Max(100, 50): 100
+// expect: Floor(3.7): 3
+// expect: Floor(-3.7): -4
+// expect: Ceil(3.2): 4
+// expect: Ceil(-3.2): -3
+// expect: Round(3.5): 4
+// expect: Round(3.49): 3
+// expect: Round(-3.5): -4
+// expect: Round(-3.51): -4
+// expect:
+// expect: ✓ Math functions PASS
+// expect:
+// expect: Unique([1,2,2,3,3,3]): [1, 2, 3]
+// expect: Unique([5,5,5,5]): [5]
+// expect: Unique([1,2,3]): [1, 2, 3]
+// expect: Range(3, 7): [3, 4, 5, 6]
+// expect: Range(0, 5): [0, 1, 2, 3, 4]
+// expect: Range(10, 15): [10, 11, 12, 13, 14]
+// expect: Sum([1,2,3,4,5]): 15
+// expect: Sum([10,20,30]): 60
+// expect: MinArr([5,2,8,1,9]): 1
+// expect: MinArr([100,50,75]): 50
+// expect: MaxArr([5,2,8,1,9]): 9
+// expect: MaxArr([100,50,75]): 100
+// expect:
+// expect: ✓ Array functions PASS
+// expect:

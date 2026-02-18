@@ -60,3 +60,22 @@ fn main() {
     b--;
     print("After: a=", a, ", b=", b);
 }
+
+// EXPECT: Initial i: 0
+// EXPECT: After i++: 1
+// EXPECT: After i++: 2
+// EXPECT: Initial j: 5
+// EXPECT: After j--: 4
+// EXPECT: After j--: 3
+// EXPECT: Initial x: 1.5
+// EXPECT: After x++: 2.5
+// EXPECT: After x++: 3.5
+// EXPECT: Initial y: 3.5
+// EXPECT: After y--: 2.5
+// EXPECT: After y--: 1.5
+// EXPECT: Loop test:
+// EXPECT:   count: 0
+// EXPECT:   count: 1
+// EXPECT:   count: 2
+// EXPECT: Before: a= 10 , b= 20
+// EXPECT: After: a= 12 , b= 20

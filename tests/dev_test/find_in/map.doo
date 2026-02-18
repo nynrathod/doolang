@@ -7,11 +7,15 @@ fn main() {
     for key, value in map1 { print(key, value); }
     print("Checking 'age' in map1...");
     if "age" in map1 { print("age found"); } else { print("age not found"); }
+    print("Checking 'missing' in map1...");
+    if "missing" in map1 { print("missing found"); } else { print("missing not found"); }
 
     let map1Explicit: {Str: Int} = {"age": 30, "score": 100};
     for key, value in map1Explicit { print(key, value); }
     print("Checking 'age' in map1Explicit...");
     if "age" in map1Explicit { print("age found"); } else { print("age not found"); }
+    print("Checking 'missing' in map1Explicit...");
+    if "missing" in map1Explicit { print("missing found"); } else { print("missing not found"); }
 
     // {Str: Float}
     print("\n--- {Str: Float} ---");
@@ -19,11 +23,15 @@ fn main() {
     for key, value in map2 { print(key, value); }
     print("Checking 'height' in map2...");
     if "height" in map2 { print("height found"); } else { print("height not found"); }
+    print("Checking 'missing' in map2...");
+    if "missing" in map2 { print("missing found"); } else { print("missing not found"); }
 
     let map2Explicit: {Str: Float} = {"height": 1.75, "weight": 65.5};
     for key, value in map2Explicit { print(key, value); }
     print("Checking 'height' in map2Explicit...");
     if "height" in map2Explicit { print("height found"); } else { print("height not found"); }
+    print("Checking 'missing' in map2Explicit...");
+    if "missing" in map2Explicit { print("missing found"); } else { print("missing not found"); }
 
     // {Str: Bool}
     print("\n--- {Str: Bool} ---");
@@ -31,11 +39,15 @@ fn main() {
     for key, value in map3 { print(key, value); }
     print("Checking 'active' in map3...");
     if "active" in map3 { print("active found"); } else { print("active not found"); }
+    print("Checking 'missing' in map3...");
+    if "missing" in map3 { print("missing found"); } else { print("missing not found"); }
 
     let map3Explicit: {Str: Bool} = {"active": true, "verified": false};
     for key, value in map3Explicit { print(key, value); }
     print("Checking 'active' in map3Explicit...");
     if "active" in map3Explicit { print("active found"); } else { print("active not found"); }
+    print("Checking 'missing' in map3Explicit...");
+    if "missing" in map3Explicit { print("missing found"); } else { print("missing not found"); }
 
     // {Str: Str}
     print("\n--- {Str: Str} ---");
@@ -43,11 +55,15 @@ fn main() {
     for key, value in map4 { print(key, value); }
     print("Checking 'name' in map4...");
     if "name" in map4 { print("name found"); } else { print("name not found"); }
+    print("Checking 'missing' in map4...");
+    if "missing" in map4 { print("missing found"); } else { print("missing not found"); }
 
     let map4Explicit: {Str: Str} = {"name": "Alice", "role": "admin"};
     for key, value in map4Explicit { print(key, value); }
     print("Checking 'name' in map4Explicit...");
     if "name" in map4Explicit { print("name found"); } else { print("name not found"); }
+    print("Checking 'missing' in map4Explicit...");
+    if "missing" in map4Explicit { print("missing found"); } else { print("missing not found"); }
 
     // {Int: Int}
     print("\n--- {Int: Int} ---");
@@ -55,11 +71,15 @@ fn main() {
     for key, value in map5 { print(key, value); }
     print("Checking 1 in map5...");
     if 1 in map5 { print("1 found"); } else { print("1 not found"); }
+    print("Checking 99 in map5...");
+    if 99 in map5 { print("99 found"); } else { print("99 not found"); }
 
     let map5Explicit: {Int: Int} = {1: 10, 2: 20, 3: 30};
     for key, value in map5Explicit { print(key, value); }
     print("Checking 1 in map5Explicit...");
     if 1 in map5Explicit { print("1 found"); } else { print("1 not found"); }
+    print("Checking 99 in map5Explicit...");
+    if 99 in map5Explicit { print("99 found"); } else { print("99 not found"); }
 
     // {Int: Float}
     print("\n--- {Int: Float} ---");
@@ -67,11 +87,15 @@ fn main() {
     for key, value in map6 { print(key, value); }
     print("Checking 1 in map6...");
     if 1 in map6 { print("1 found"); } else { print("1 not found"); }
+    print("Checking 99 in map6...");
+    if 99 in map6 { print("99 found"); } else { print("99 not found"); }
 
     let map6Explicit: {Int: Float} = {1: 1.1, 2: 2.2, 3: 3.3};
     for key, value in map6Explicit { print(key, value); }
     print("Checking 1 in map6Explicit...");
     if 1 in map6Explicit { print("1 found"); } else { print("1 not found"); }
+    print("Checking 99 in map6Explicit...");
+    if 99 in map6Explicit { print("99 found"); } else { print("99 not found"); }
 
     // {Int: Bool}
     print("\n--- {Int: Bool} ---");
@@ -79,11 +103,15 @@ fn main() {
     for key, value in map7 { print(key, value); }
     print("Checking 1 in map7...");
     if 1 in map7 { print("1 found"); } else { print("1 not found"); }
+    print("Checking 99 in map7...");
+    if 99 in map7 { print("99 found"); } else { print("99 not found"); }
 
     let map7Explicit: {Int: Bool} = {1: true, 2: false, 3: true};
     for key, value in map7Explicit { print(key, value); }
     print("Checking 1 in map7Explicit...");
     if 1 in map7Explicit { print("1 found"); } else { print("1 not found"); }
+    print("Checking 99 in map7Explicit...");
+    if 99 in map7Explicit { print("99 found"); } else { print("99 not found"); }
 
     // {Int: Str}
     print("\n--- {Int: Str} ---");
@@ -91,11 +119,15 @@ fn main() {
     for key, value in map8 { print(key, value); }
     print("Checking 1 in map8...");
     if 1 in map8 { print("1 found"); } else { print("1 not found"); }
+    print("Checking 99 in map8...");
+    if 99 in map8 { print("99 found"); } else { print("99 not found"); }
 
     let map8Explicit: {Int: Str} = {1: "one", 2: "two", 3: "three"};
     for key, value in map8Explicit { print(key, value); }
     print("Checking 1 in map8Explicit...");
     if 1 in map8Explicit { print("1 found"); } else { print("1 not found"); }
+    print("Checking 99 in map8Explicit...");
+    if 99 in map8Explicit { print("99 found"); } else { print("99 not found"); }
 
     // {Float: Int}
     print("\n--- {Float: Int} ---");
@@ -103,11 +135,15 @@ fn main() {
     for key, value in map9 { print(key, value); }
     print("Checking 1.1 in map9...");
     if 1.1 in map9 { print("1.1 found"); } else { print("1.1 not found"); }
+    print("Checking 9.9 in map9...");
+    if 9.9 in map9 { print("9.9 found"); } else { print("9.9 not found"); }
 
     let map9Explicit: {Float: Int} = {1.1: 10, 2.2: 20, 3.3: 30};
     for key, value in map9Explicit { print(key, value); }
     print("Checking 1.1 in map9Explicit...");
     if 1.1 in map9Explicit { print("1.1 found"); } else { print("1.1 not found"); }
+    print("Checking 9.9 in map9Explicit...");
+    if 9.9 in map9Explicit { print("9.9 found"); } else { print("9.9 not found"); }
 
     // {Float: Float}
     print("\n--- {Float: Float} ---");
@@ -115,11 +151,15 @@ fn main() {
     for key, value in map10 { print(key, value); }
     print("Checking 1.1 in map10...");
     if 1.1 in map10 { print("1.1 found"); } else { print("1.1 not found"); }
+    print("Checking 9.9 in map10...");
+    if 9.9 in map10 { print("9.9 found"); } else { print("9.9 not found"); }
 
     let map10Explicit: {Float: Float} = {1.1: 1.11, 2.2: 2.22, 3.3: 3.33};
     for key, value in map10Explicit { print(key, value); }
     print("Checking 1.1 in map10Explicit...");
     if 1.1 in map10Explicit { print("1.1 found"); } else { print("1.1 not found"); }
+    print("Checking 9.9 in map10Explicit...");
+    if 9.9 in map10Explicit { print("9.9 found"); } else { print("9.9 not found"); }
 
     // {Float: Bool}
     print("\n--- {Float: Bool} ---");
@@ -127,11 +167,15 @@ fn main() {
     for key, value in map11 { print(key, value); }
     print("Checking 1.1 in map11...");
     if 1.1 in map11 { print("1.1 found"); } else { print("1.1 not found"); }
+    print("Checking 9.9 in map11...");
+    if 9.9 in map11 { print("9.9 found"); } else { print("9.9 not found"); }
 
     let map11Explicit: {Float: Bool} = {1.1: true, 2.2: false, 3.3: true};
     for key, value in map11Explicit { print(key, value); }
     print("Checking 1.1 in map11Explicit...");
     if 1.1 in map11Explicit { print("1.1 found"); } else { print("1.1 not found"); }
+    print("Checking 9.9 in map11Explicit...");
+    if 9.9 in map11Explicit { print("9.9 found"); } else { print("9.9 not found"); }
 
     // {Float: Str}
     print("\n--- {Float: Str} ---");
@@ -139,11 +183,15 @@ fn main() {
     for key, value in map12 { print(key, value); }
     print("Checking 1.1 in map12...");
     if 1.1 in map12 { print("1.1 found"); } else { print("1.1 not found"); }
+    print("Checking 9.9 in map12...");
+    if 9.9 in map12 { print("9.9 found"); } else { print("9.9 not found"); }
 
     let map12Explicit: {Float: Str} = {1.1: "one", 2.2: "two", 3.3: "three"};
     for key, value in map12Explicit { print(key, value); }
     print("Checking 1.1 in map12Explicit...");
     if 1.1 in map12Explicit { print("1.1 found"); } else { print("1.1 not found"); }
+    print("Checking 9.9 in map12Explicit...");
+    if 9.9 in map12Explicit { print("9.9 found"); } else { print("9.9 not found"); }
 
     // {Bool: Int}
     print("\n--- {Bool: Int} ---");
@@ -151,11 +199,15 @@ fn main() {
     for key, value in map13 { print(key, value); }
     print("Checking true in map13...");
     if true in map13 { print("true found"); } else { print("true not found"); }
+    print("Checking false in map13...");
+    if false in map13 { print("false found"); } else { print("false not found"); }
 
     let map13Explicit: {Bool: Int} = {true: 100, false: 200};
     for key, value in map13Explicit { print(key, value); }
     print("Checking true in map13Explicit...");
     if true in map13Explicit { print("true found"); } else { print("true not found"); }
+    print("Checking false in map13Explicit...");
+    if false in map13Explicit { print("false found"); } else { print("false not found"); }
 
     // {Bool: Float}
     print("\n--- {Bool: Float} ---");
@@ -163,11 +215,15 @@ fn main() {
     for key, value in map14 { print(key, value); }
     print("Checking true in map14...");
     if true in map14 { print("true found"); } else { print("true not found"); }
+    print("Checking false in map14...");
+    if false in map14 { print("false found"); } else { print("false not found"); }
 
     let map14Explicit: {Bool: Float} = {true: 1.5, false: 2.5};
     for key, value in map14Explicit { print(key, value); }
     print("Checking true in map14Explicit...");
     if true in map14Explicit { print("true found"); } else { print("true not found"); }
+    print("Checking false in map14Explicit...");
+    if false in map14Explicit { print("false found"); } else { print("false not found"); }
 
     // {Bool: Bool}
     print("\n--- {Bool: Bool} ---");
@@ -175,11 +231,15 @@ fn main() {
     for key, value in map15 { print(key, value); }
     print("Checking true in map15...");
     if true in map15 { print("true found"); } else { print("true not found"); }
+    print("Checking false in map15...");
+    if false in map15 { print("false found"); } else { print("false not found"); }
 
     let map15Explicit: {Bool: Bool} = {true: false, false: true};
     for key, value in map15Explicit { print(key, value); }
     print("Checking true in map15Explicit...");
     if true in map15Explicit { print("true found"); } else { print("true not found"); }
+    print("Checking false in map15Explicit...");
+    if false in map15Explicit { print("false found"); } else { print("false not found"); }
 
     // {Bool: Str}
     print("\n--- {Bool: Str} ---");
@@ -187,11 +247,83 @@ fn main() {
     for key, value in map16 { print(key, value); }
     print("Checking true in map16...");
     if true in map16 { print("true found"); } else { print("true not found"); }
+    print("Checking false in map16...");
+    if false in map16 { print("false found"); } else { print("false not found"); }
 
     let map16Explicit: {Bool: Str} = {true: "yes", false: "no"};
     for key, value in map16Explicit { print(key, value); }
     print("Checking true in map16Explicit...");
     if true in map16Explicit { print("true found"); } else { print("true not found"); }
+    print("Checking false in map16Explicit...");
+    if false in map16Explicit { print("false found"); } else { print("false not found"); }
 
     print("\n=== All tests complete ===");
 }
+
+//
+// EXPECT: === Test 'in' operator after loop iterations ===
+// EXPECT: age found
+// EXPECT: missing not found
+// EXPECT: age found
+// EXPECT: missing not found
+// EXPECT: height found
+// EXPECT: missing not found
+// EXPECT: height found
+// EXPECT: missing not found
+// EXPECT: active found
+// EXPECT: missing not found
+// EXPECT: active found
+// EXPECT: missing not found
+// EXPECT: name found
+// EXPECT: missing not found
+// EXPECT: name found
+// EXPECT: missing not found
+// EXPECT: 1 found
+// EXPECT: 99 not found
+// EXPECT: 1 found
+// EXPECT: 99 not found
+// EXPECT: 1 found
+// EXPECT: 99 not found
+// EXPECT: 1 found
+// EXPECT: 99 not found
+// EXPECT: 1 found
+// EXPECT: 99 not found
+// EXPECT: 1 found
+// EXPECT: 99 not found
+// EXPECT: 1 found
+// EXPECT: 99 not found
+// EXPECT: 1 found
+// EXPECT: 99 not found
+// EXPECT: 1.1 found
+// EXPECT: 9.9 not found
+// EXPECT: 1.1 found
+// EXPECT: 9.9 not found
+// EXPECT: 1.1 found
+// EXPECT: 9.9 not found
+// EXPECT: 1.1 found
+// EXPECT: 9.9 not found
+// EXPECT: 1.1 found
+// EXPECT: 9.9 not found
+// EXPECT: 1.1 found
+// EXPECT: 9.9 not found
+// EXPECT: 1.1 found
+// EXPECT: 9.9 not found
+// EXPECT: 1.1 found
+// EXPECT: 9.9 not found
+// EXPECT: true found
+// EXPECT: false found
+// EXPECT: true found
+// EXPECT: false found
+// EXPECT: true found
+// EXPECT: false found
+// EXPECT: true found
+// EXPECT: false found
+// EXPECT: true found
+// EXPECT: false found
+// EXPECT: true found
+// EXPECT: false found
+// EXPECT: true found
+// EXPECT: false found
+// EXPECT: true found
+// EXPECT: false found
+// EXPECT: === All tests complete ===

@@ -2,7 +2,7 @@
 // Test @writeOnly, @readOnly, @internal decorators with HTTP and Database
 
 import std::Http::Server;
-import std::Database::{DatabaseError};
+import std::Database;
 
 // User model with field visibility decorators
 struct User {

@@ -1,3 +1,4 @@
+//
 // ============================================================================
 // Error Handling Rules Test File 2
 // Testing Rules 9-16: Struct errors, panic, nested propagation, edge cases
@@ -331,6 +332,12 @@ fn main() {
     }
     print("");
 
+    // Test Rule 10: Unreachable Code After ?
+    print("Rule 10: Unreachable Code After ?");
+    let unreachable = TestUnreachableCode()?;
+    print("  TestUnreachableCode() =", unreachable);
+    print("");
+
     // Test Rule 11: All paths return
     print("Rule 11: All Paths Must Return");
     let complex = TestAllPathsComplex(5, 3, true)?;
@@ -419,3 +426,28 @@ fn main() {
     print("");
     print("=== All Advanced Error Handling Tests Passed! ===");
 }
+
+//
+// EXPECT:   SafeDivide(100, 5) = 20
+// EXPECT:   TestUnreachableCode() = 100
+// EXPECT:   TestAllPathsComplex(5, 3, true) = 8
+// EXPECT:   TestElseIfChain(50) = medium
+// EXPECT:   TestValidIgnoreSuccess() = success
+// EXPECT:   TestValidIgnoreError() = 42
+// EXPECT:   TestUnwrapOrPanic() = 198
+// EXPECT:   TestMultiplePanics() = 198
+// EXPECT:   TestNestedPropagation() = 18
+// EXPECT:   TestDeepNesting() = 5
+// EXPECT:   TestMultipleReturns() = 30
+// EXPECT: Got: 42 data true
+// EXPECT:   TestTripleReturn() = data
+// EXPECT:   TestPartialCapture() = 10
+// EXPECT:   WithExplicitReturn(5) = 25
+// EXPECT:   WithImplicitReturn(4) = 16
+// EXPECT:   MixedReturns(7) = 14
+// EXPECT:   FindPositive([-5, -3, 0, 2, 5]) = 2
+// EXPECT:   ProcessMultiple() = 200
+// EXPECT:   Classify(42) = double digit
+// EXPECT:   Caught expected error: invalid coordinates
+// EXPECT:   Caught struct error from SafeDivide
+// EXPECT: === All Advanced Error Handling Tests Passed! ===

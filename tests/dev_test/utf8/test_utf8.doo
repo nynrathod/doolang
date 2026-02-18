@@ -146,3 +146,77 @@ fn main() {
 
     print("=== All UTF-8 tests completed ===");
 }
+
+// EXPECT: === UTF-8 String Support Test ===
+// EXPECT:
+// EXPECT: Test 1: Basic ASCII
+// EXPECT: Hello World
+// EXPECT:
+// EXPECT: Test 2: Emoji support (simple)
+// EXPECT: Hello 👋 World 🌍
+// EXPECT:
+// EXPECT: Test 3: Chinese characters
+// EXPECT: 你好世界
+// EXPECT:
+// EXPECT: Test 4: Mixed languages
+// EXPECT: Hello 你好 مرحبا שלום
+// EXPECT:
+// EXPECT: Test 5: Various emojis
+// EXPECT: 🚀 🎉 ❤️ 😊 🔥
+// EXPECT:
+// EXPECT: Test 6: Japanese
+// EXPECT: こんにちは世界
+// EXPECT:
+// EXPECT: Test 7: Korean
+// EXPECT: 안녕하세요
+// EXPECT:
+// EXPECT: Test 8: String variable with emoji
+// EXPECT: Alice 👋
+// EXPECT:
+// EXPECT: Test 9: Empty string
+// EXPECT:
+// EXPECT:
+// EXPECT: Test 10: Embedded null character
+// EXPECT: Null here ->\0<- did it print?
+// EXPECT:
+// EXPECT: Test 11: Combining diacritics vs precomposed
+// EXPECT: é
+// EXPECT: é
+// EXPECT:
+// EXPECT: Test 12: Latin-1 extended characters
+// EXPECT: Café, año, señor, façade, naïve
+// EXPECT:
+// EXPECT: Test 13: Case differences (German ß, Turkish dotted/dotless i)
+// EXPECT: straße
+// EXPECT: STRASSE
+// EXPECT: İstanbul
+// EXPECT: istanbul
+// EXPECT:
+// EXPECT: Test 14: Variation selectors
+// EXPECT: ✌
+// EXPECT: ✌️
+// EXPECT:
+// EXPECT: Test 15: ZWJ sequences & modifiers
+// EXPECT: 👩‍👩‍👧‍👦
+// EXPECT: 👍🏽 👍🏻 👍🏿
+// EXPECT:
+// EXPECT: Test 16: Regional indicator flags
+// EXPECT: 🇺🇸
+// EXPECT: 🇯🇵
+// EXPECT:
+// EXPECT: Test 17: Long multi-byte sequence
+// EXPECT: 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+// EXPECT:
+// EXPECT: Test 18: Right-to-left and bidi marks
+// EXPECT: English אבגדה English
+// EXPECT: LTR‏RTL
+// EXPECT:
+// EXPECT: Test 19: Hangul decomposed vs precomposed
+// EXPECT: 가
+// EXPECT: 가
+// EXPECT:
+// EXPECT: Test 20: Devanagari and Thai
+// EXPECT: नमस्ते
+// EXPECT: สวัสดี
+// EXPECT:
+// EXPECT: === All UTF-8 tests completed ===

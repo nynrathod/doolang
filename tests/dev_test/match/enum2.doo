@@ -117,7 +117,37 @@ fn main() {
         _ => print("Unknown"),
     }
 
+    // Added missing test for Response::Errorrr
+    let resp4 = Response::Errorrr("Error", false);
+    match resp4 {
+        Response::Okkk(code, msg) => print("Full Ok:", code, msg),
+        Response::Errorrr(msg, fatal) => print("Non-fatal Error:", msg),
+        _ => print("Unknown"),
+    }
+
     print("========================================");
     print("ALL ADVANCED ENUM MATCHING TESTS COMPLETED");
     print("========================================");
 }
+
+// EXPECT: ========================================
+// EXPECT: ADVANCED ENUM PATTERNS DEMO
+// EXPECT: ========================================
+// EXPECT: Code: 200 Msg: Success
+// EXPECT: Wrapped Active
+// EXPECT: Array: [1, 2, 3]
+// EXPECT: Map: {name: Alice, role: admin}
+// EXPECT: Other success: 404
+// EXPECT: Other success: 200
+// EXPECT: active
+// EXPECT: inactive
+// EXPECT: pending
+// EXPECT: Active
+// EXPECT: Inactive
+// EXPECT: Pending
+// EXPECT: Full Ok: 100 Partial
+// EXPECT: Non-fatal Error: Error
+// EXPECT: Non-fatal Error: Error
+// EXPECT: ========================================
+// EXPECT: ALL ADVANCED ENUM MATCHING TESTS COMPLETED
+// EXPECT: ========================================

@@ -129,3 +129,82 @@ fn main() {
 
     print("\n=== All map & loop tests complete ===");
 }
+
+// EXPECT: === Comprehensive Map Creation & Printing (implicit + explicit typed) ===
+// EXPECT:
+// EXPECT: --- {Str: Int} ---
+// EXPECT: implicit: {"age": 30, "score": 100}
+// EXPECT: explicit: {"age": 30, "score": 100}
+// EXPECT:
+// EXPECT: --- {Str: Float} ---
+// EXPECT: implicit: {"height": 1.75, "weight": 65.5}
+// EXPECT: explicit: {"height": 1.75, "weight": 65.5}
+// EXPECT:
+// EXPECT: --- {Str: Bool} ---
+// EXPECT: implicit: {"active": true, "verified": false}
+// EXPECT: explicit: {"active": true, "verified": false}
+// EXPECT:
+// EXPECT: --- {Str: Str} ---
+// EXPECT: implicit: {"name": "Alice", "role": "admin"}
+// EXPECT: explicit: {"name": "Alice", "role": "admin"}
+// EXPECT:
+// EXPECT: --- {Int: Int} ---
+// EXPECT: implicit: {1: 10, 2: 20}
+// EXPECT: explicit: {1: 10, 2: 20}
+// EXPECT:
+// EXPECT: --- {Int: Float} ---
+// EXPECT: implicit: {1: 1.1, 2: 2.2}
+// EXPECT: explicit: {1: 1.1, 2: 2.2}
+// EXPECT:
+// EXPECT: --- {Int: Bool} ---
+// EXPECT: implicit: {1: true, 2: false}
+// EXPECT: explicit: {1: true, 2: false}
+// EXPECT:
+// EXPECT: --- {Int: Str} ---
+// EXPECT: implicit: {1: "one", 2: "two"}
+// EXPECT: explicit: {1: "one", 2: "two"}
+// EXPECT:
+// EXPECT: --- {Float: Int} ---
+// EXPECT: implicit: {1.1: 10, 2.2: 20}
+// EXPECT: explicit: {1.1: 10, 2.2: 20}
+// EXPECT:
+// EXPECT: --- {Float: Float} ---
+// EXPECT: implicit: {1.1: 11.1, 2.2: 22.2}
+// EXPECT: explicit: {1.1: 11.1, 2.2: 22.2}
+// EXPECT:
+// EXPECT: --- {Float: Bool} ---
+// EXPECT: implicit: {1.1: true, 2.2: false}
+// EXPECT: explicit: {1.1: true, 2.2: false}
+// EXPECT:
+// EXPECT: --- {Float: Str} ---
+// EXPECT: implicit: {1.1: "one", 2.2: "two"}
+// EXPECT: explicit: {1.1: "one", 2.2: "two"}
+// EXPECT:
+// EXPECT: --- {Bool: Int} ---
+// EXPECT: implicit: {true: 100, false: 200}
+// EXPECT: explicit: {true: 100, false: 200}
+// EXPECT:
+// EXPECT: --- {Bool: Float} ---
+// EXPECT: implicit: {true: 1.5, false: 2.5}
+// EXPECT: explicit: {true: 1.5, false: 2.5}
+// EXPECT:
+// EXPECT: --- {Bool: Bool} ---
+// EXPECT: implicit: {true: false, false: true}
+// EXPECT: explicit: {true: false, false: true}
+// EXPECT:
+// EXPECT: --- {Bool: Str} ---
+// EXPECT: implicit: {true: "yes", false: "no"}
+// EXPECT: explicit: {true: "yes", false: "no"}
+// EXPECT:
+// EXPECT: --- Combine 'in' + array loop ---
+// EXPECT:   indices[ 0 ] = 0 exists in lookup -> zero
+// EXPECT:   indices[ 1 ] = 1 exists in lookup -> one
+// EXPECT:   indices[ 2 ] = 2 exists in lookup -> two
+// EXPECT:   indices[ 3 ] = 5 not in lookup
+// EXPECT:
+// EXPECT: --- 'in' operator in nested context ---
+// EXPECT:   ID 1 at index 0 is valid
+// EXPECT:   ID 2 at index 1 is valid
+// EXPECT:   ID 5 at index 2 is invalid
+// EXPECT:
+// EXPECT: === All map & loop tests complete ===

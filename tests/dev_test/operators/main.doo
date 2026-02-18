@@ -114,3 +114,48 @@ fn main() {
 
     print("\n=== All Operator Tests Complete ===");
 }
+
+// EXPECT: i + j: 13
+// EXPECT: i - j: 7
+// EXPECT: i * j: 30
+// EXPECT: i / j: 3
+// EXPECT: i % j: 1
+// EXPECT: i += 5: 15
+// EXPECT: i -= 2: 13
+// EXPECT: i *= 2: 26
+// EXPECT: i /= 3: 8
+// EXPECT: i %= 4: 0
+// EXPECT: i++: 1
+// EXPECT: i--: 0
+// EXPECT: x + y: 7.5
+// EXPECT: x - y: 3.5
+// EXPECT: x * y: 11
+// EXPECT: x / y: 2.75
+// EXPECT: x += 1.5: 7
+// EXPECT: x -= 0.5: 6.5
+// EXPECT: x *= 2.0: 13
+// EXPECT: x /= 3.0: 4.3333335
+// EXPECT: x++: 5.3333335
+// EXPECT: x--: 4.3333335
+// EXPECT: neg + zero: -10
+// EXPECT: neg - zero: -10
+// EXPECT: neg * zero: 0
+// EXPECT: a == b: true
+// EXPECT: a != c: true
+// EXPECT: a < c: true
+// EXPECT: c > a: true
+// EXPECT: a <= b: true
+// EXPECT: c >= a: true
+// EXPECT: fa == fb: true
+// EXPECT: fa != fc: true
+// EXPECT: fa < fc: true
+// EXPECT: fc > fa: true
+// EXPECT: fa <= fb: true
+// EXPECT: fc >= fa: true
+// EXPECT: t && t: true
+// EXPECT: t && f: false
+// EXPECT: t || f: true
+// EXPECT: f || f: false
+// EXPECT: cond ((x1 < x2) && (x2 % x1 == 0)): true
+// EXPECT: yes
+// EXPECT: === All Operator Tests Complete ===

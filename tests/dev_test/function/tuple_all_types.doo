@@ -456,3 +456,123 @@ fn main() {
 
     print("\n=== ALL TESTS PASSED ===");
 }
+
+//
+// EXPECT: === Basic Types Test ===
+// EXPECT: Int:  42 Float:  3.14 Bool:  true Str:  hello
+// EXPECT:
+// EXPECT: === Array Types Test ===
+// EXPECT: IntArray[0]:  [1, 2, 3] 1 Val:  10
+// EXPECT: FloatArray[0]:  [1.1, 2.2, 3.3] 1.1 Val:  20
+// EXPECT: BoolArray[0]:  [true, false, true] true Val:  30
+// EXPECT: StrArray[0]:  ["a", "b", "c"] b Val:  40
+// EXPECT:
+// EXPECT: === Str Key Maps Test ===
+// EXPECT: StrIntMap:  {"a": 1, "b": 2} 1 Val:  100
+// EXPECT: StrFloatMap:  {"x": 1.5, "y": 2.5} 1.5 Val:  101
+// EXPECT: StrBoolMap:  {"flag1": true, "flag2": false} true Val:  102
+// EXPECT: StrStrMap:  {"key1": "val1", "key2": "val2"} val1 Val:  103
+// EXPECT:
+// EXPECT: === Int Key Maps Test ===
+// EXPECT: IntIntMap:  {1: 10, 2: 20} 10 Val:  200
+// EXPECT: IntFloatMap:  {1: 1.5, 2: 2.5} 1.5 Val:  201
+// EXPECT: IntBoolMap:  {1: true, 2: false} true Val:  202
+// EXPECT: IntStrMap:  one Val:  203
+// EXPECT:
+// EXPECT: === Float Key Maps Test ===
+// EXPECT: FloatIntMap:  {1.5: 10, 2.5: 20} 10 Val:  300
+// EXPECT: FloatFloatMap:  {1.5: 10.5, 2.5: 20.5} 10.5 Val:  301
+// EXPECT: FloatBoolMap:  {1.5: true, 2.5: false} true Val:  302
+// EXPECT: FloatStrMap:  {1.5: "one", 2.5: "two"} one Val:  303
+// EXPECT:
+// EXPECT: === Bool Key Maps Test ===
+// EXPECT: BoolIntMap:  {true: 1, false: 0} 1 Val:  400
+// EXPECT: BoolFloatMap:  {true: 1.5, false: 0.5} 1.5 Val:  401
+// EXPECT: BoolBoolMap:  {true: false, false: true} false Val:  402
+// EXPECT: BoolStrMap:  {true: "yes", false: "no"} yes Val:  403
+// EXPECT:
+// EXPECT: === Multiple Arrays Test ===
+// EXPECT: Arrays:  1  1.5  true  x
+// EXPECT:
+// EXPECT: === Complex Mix Test ===
+// EXPECT: Complex:  10  100  99.9  true
+// EXPECT:
+// EXPECT: === Single Value Return Types ===
+// EXPECT: Int:  123
+// EXPECT: Float:  4.56
+// EXPECT: Bool:  false
+// EXPECT: Str:  abc
+// EXPECT: [Int]:  [7, 8, 9]
+// EXPECT: [Float]:  [7.7, 8.8, 9.9]
+// EXPECT: [Bool]:  [false, true]
+// EXPECT: [Str]:  ["foo", "bar"]
+// EXPECT: {Str: Int}:  {"x": 1, "y": 2}
+// EXPECT: {Str: Float}:  {"a": 1.1, "b": 2.2}
+// EXPECT: {Str: Bool}:  {"t": true, "f": false}
+// EXPECT: {Str: Str}:  {"hello": "world"}
+// EXPECT: {Int: Int}:  {3: 33, 4: 44}
+// EXPECT: {Int: Float}:  {5: 5.5, 6: 6.6}
+// EXPECT: {Int: Bool}:  {7: true, 8: false}
+// EXPECT: {Int: Str}:  {9: "nine", 10: "ten"}
+// EXPECT: {Float: Int}:  {3.3: 3, 4.4: 4}
+// EXPECT: {Float: Float}:  {5.5: 55.5, 6.6: 66.6}
+// EXPECT: {Float: Bool}:  {7.7: true, 8.8: false}
+// EXPECT: {Float: Str}:  {9.9: "nine", 10.1: "ten"}
+// EXPECT: {Bool: Int}:  {true: 11, false: 12}
+// EXPECT: {Bool: Float}:  {true: 13.13, false: 14.14}
+// EXPECT: {Bool: Bool}:  {true: true, false: false}
+// EXPECT: {Bool: Str}:  {true: "true", false: "false"}
+// EXPECT:
+// EXPECT: === Merged Tuple Returns Tests ===
+// EXPECT: Two ints:  10  20
+// EXPECT: Int and Str:  42  hello
+// EXPECT: Mixed:  test  3.14  true
+// EXPECT: Map value for a:  1 Key:  key
+// EXPECT: All types - Int:  42 Float:  3.14 Str:  hello Bool:  true
+// EXPECT: Conditional true:  1  true
+// EXPECT: Conditional false:  0  false
+// EXPECT: Int array first:  1
+// EXPECT: Str array first:  a
+// EXPECT: Map1 value for 1:  one
+// EXPECT: Map2 value for a:  1
+// EXPECT: Five:  1  two  3.0  true  5
+// EXPECT: Basic 4 Ints:  10  20  30  40
+// EXPECT: String array 1 first:  hello
+// EXPECT: String array 2 first:  foo
+// EXPECT: All maps test passed 1 one true
+// EXPECT:
+// EXPECT: === JSON Parse Return Type Tests (using tuple function values) ===
+// EXPECT: ParseInt: 42
+// EXPECT: ParseFloat: 3.14
+// EXPECT: ParseBool: true
+// EXPECT: ParseStr: hello
+// EXPECT: ParseIntArray: [1, 2, 3]
+// EXPECT: ParseFloatArray: [1.1, 2.2, 3.3]
+// EXPECT: ParseBoolArray: [true, false, true]
+// EXPECT: ParseStrArray: ["a", "b", "c"]
+// EXPECT: ParseStrIntMap: {"a": 1, "b": 2}
+// EXPECT: ParseStrFloatMap: {"x": 1.5, "y": 2.5}
+// EXPECT: ParseStrBoolMap: {"flag1": true, "flag2": false}
+// EXPECT: ParseStrStrMap: {"key1": "val1", "key2": "val2"}
+// EXPECT: ParseIntIntMap: {1: 10, 2: 20}
+// EXPECT: ParseIntFloatMap: {1: 1.5, 2: 2.5}
+// EXPECT: ParseIntBoolMap: {1: true, 2: false}
+// EXPECT: ParseIntStrMap: {1: "one", 2: "two"}
+// EXPECT: ParseFloatIntMap: {1.5: 10, 2.5: 20}
+// EXPECT: ParseFloatFloatMap: {1.5: 10.5, 2.5: 20.5}
+// EXPECT: ParseFloatBoolMap: {1.5: true, 2.5: false}
+// EXPECT: ParseFloatStrMap: {1.5: "one", 2.5: "two"}
+// EXPECT: ParseBoolIntMap: {true: 1, false: 0}
+// EXPECT: ParseBoolFloatMap: {true: 1.5, false: 0.5}
+// EXPECT: ParseBoolBoolMap: {true: false, false: true}
+// EXPECT: ParseBoolStrMap: {true: "yes", false: "no"}
+// EXPECT: ParseIntArray (multi): [1, 2]
+// EXPECT: ParseFloatArray (multi): [1.5, 2.5]
+// EXPECT: ParseBoolArray (multi): [true, false]
+// EXPECT: ParseStrArray (multi): ["x", "y"]
+// EXPECT: ParseIntArray (complex): [10, 20, 30]
+// EXPECT: ParseStrIntMap (complex): {"key": 100}
+// EXPECT: ParseFloat (complex): 99.9
+// EXPECT: ParseBool (complex): true
+// EXPECT:
+// EXPECT: === ALL TESTS PASSED ===

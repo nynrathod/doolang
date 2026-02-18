@@ -51,3 +51,17 @@ fn main() {
     let ec = returnEmptyComplex();
     print("Returned empty complex struct:", ec);
 }
+
+// EXPECT: === Struct Return Type Tests ===
+// EXPECT: Returned struct: Point { x: 10, y: 20 }
+// EXPECT: Returned zero struct: Point { x: 0, y: 0 }
+// EXPECT:
+// EXPECT: === Enum Return Type Tests ===
+// EXPECT: Returned enum: Active
+// EXPECT: Returned enum: Inactive
+// EXPECT: Returned enum with payload: Success(123)
+// EXPECT: Returned enum with payload: Failure(fail)
+// EXPECT:
+// EXPECT: === Complex/Composite Return Type Tests ===
+// EXPECT: Returned complex struct: Complex { arr: [1, 2], map: {"x": 2}, status: Active }
+// EXPECT: Returned empty complex struct: Complex { arr: [], map: {}, status: Inactive }

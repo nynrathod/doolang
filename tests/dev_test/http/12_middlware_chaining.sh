@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Source common utilities
+# Source common utilities (includes assertion framework)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../common.sh"
 
@@ -9,58 +9,35 @@ PORT=3109
 FILE="12_middlware_chaining.doo"
 
 echo "Starting server on port $PORT..."
-
-# Start server and set up cleanup
 start_server "$FILE" "$PORT" || exit 1
 setup_trap
 
-# --------------------------------------------------
-# PUBLIC ROUTE
-# --------------------------------------------------
-
-echo "Test 1: Public route (/status)"
-curl -s http://127.0.0.1:$PORT/status | pretty_json
+# --- PUBLIC ---
 echo ""
+echo "Test 1: Public route /status (200)"
+RESPONSE=$(http_get "/status")
+assert_status "$RESPONSE" 200 "GET /status"
+assert_json "$RESPONSE" ".Message" "API is running" ".Message=API is running"
+assert_json "$RESPONSE" ".Value" "100" ".Value=100"
 
-# Expected:
-# LogMiddleware → TimingMiddleware → CorsMiddleware → Handler
-
-# --------------------------------------------------
-# PROTECTED ROUTE — NO TOKEN
-# --------------------------------------------------
-
-echo "Test 2: Protected route (/protected) without token → 401"
-curl -s http://127.0.0.1:$PORT/protected | pretty_json
+# --- PROTECTED: no token → 401 ---
 echo ""
+echo "Test 2: Protected /protected without token (401)"
+RESPONSE=$(http_get "/protected")
+assert_rfc7807 "$RESPONSE" 401 "Unauthorized" "unauthorized"
 
-# Expected:
-# LogMiddleware → TimingMiddleware → CorsMiddleware → AuthMiddleware (fails)
-
-# --------------------------------------------------
-# PROTECTED ROUTE — INVALID TOKEN
-# --------------------------------------------------
-
-echo "Test 3: Protected route (/protected) with invalid token → 401"
-curl -s \
-  -H "Authorization: Bearer wrong-token" \
-  http://127.0.0.1:$PORT/protected | pretty_json
+# --- PROTECTED: invalid token → 401 ---
 echo ""
+echo "Test 3: Protected /protected invalid token (401)"
+RESPONSE=$(http_get "/protected" "Authorization: Bearer wrong-token")
+assert_rfc7807 "$RESPONSE" 401 "Unauthorized" "unauthorized"
 
-# Expected:
-# LogMiddleware → TimingMiddleware → CorsMiddleware → AuthMiddleware (fails)
-
-# --------------------------------------------------
-# PROTECTED ROUTE — VALID TOKEN
-# --------------------------------------------------
-
-echo "Test 4: Protected route (/protected) with valid token → 200"
-curl -s \
-  -H "Authorization: Bearer valid-token" \
-  http://127.0.0.1:$PORT/protected | pretty_json
+# --- PROTECTED: valid token → 200 ---
 echo ""
+echo "Test 4: Protected /protected valid token (200)"
+RESPONSE=$(http_get "/protected" "Authorization: Bearer valid-token")
+assert_status "$RESPONSE" 200 "GET /protected valid"
+assert_json "$RESPONSE" ".Message" "Protected resource" ".Message=Protected resource"
+assert_json "$RESPONSE" ".Value" "200" ".Value=200"
 
-# Expected:
-# LogMiddleware → TimingMiddleware → CorsMiddleware
-# → AuthMiddleware → Handler → unwind back through middleware
-
-echo "✅ All middleware chaining tests completed"
+print_http_summary

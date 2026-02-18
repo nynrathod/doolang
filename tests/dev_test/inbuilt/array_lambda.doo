@@ -175,3 +175,44 @@ fn main() {
 
     print("\n=== All Array Lambda Method Tests Complete ===");
 }
+
+// EXPECT: === Array Lambda Method Tests ===
+// EXPECT: --- [Int] Array ---
+// EXPECT: map (x*2): [2, 4, 6, 8, 10]
+// EXPECT: map block (x*2): [2, 4, 6, 8, 10]
+// EXPECT: filter (even): [2, 4]
+// EXPECT: filter block (odd): [1, 3, 5]
+// EXPECT: reduce (sum): 15
+// EXPECT: reduce block (product): 120
+// EXPECT: chain (filter>map>reduce): 36
+// EXPECT: map on empty: []
+// EXPECT: filter on single: [42]
+// EXPECT:
+// EXPECT: --- [Float] Array ---
+// EXPECT: map (x*x): [2.25, 6.25, 12.25, 20.25]
+// EXPECT: map block (+1.0): [2.5, 3.5, 4.5, 5.5]
+// EXPECT: filter (>2): [2.5, 3.5, 4.5]
+// EXPECT: filter block (<4): [1.5, 2.5, 3.5]
+// EXPECT: reduce (product): 59.0625
+// EXPECT: reduce block (sum): 12.0
+// EXPECT: chain (filter>map>reduce): 10.0
+// EXPECT: reduce on empty: 1.0
+// EXPECT: map on single: [3.85]
+// EXPECT:
+// EXPECT: --- [Bool] Array ---
+// EXPECT: map (!b): [false, true, false, true, false]
+// EXPECT: filter block (true): [true, true, true]
+// EXPECT: reduce (count true): 3
+// EXPECT: chain (filter>map): [false, false, false]
+// EXPECT: filter all false: []
+// EXPECT: reduce on empty: 0
+// EXPECT:
+// EXPECT: --- [Str] Array ---
+// EXPECT: map (+!): ["apple!", "banana!", "cherry!", "date!"]
+// EXPECT: filter block (len>5): ["banana", "cherry"]
+// EXPECT: chain (filter>map): ["banana?", "banana?"]
+// EXPECT: map on empty: []
+// EXPECT: filter on single: ["solo"]
+// EXPECT:
+// EXPECT: === All Array Lambda Method Tests Complete ===
+```

@@ -67,7 +67,7 @@ fn GetPublicInfo() -> MessageResponse {
 }
 
 fn main() {
-    let db = Postgres()?;
+    let db = Database::Postgres()?;
 
     let app = Server::new(":3108");
 

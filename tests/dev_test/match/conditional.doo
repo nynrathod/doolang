@@ -9,7 +9,7 @@ fn main() {
         x > 0 && x < 100 => print("Positive and less than 100"),
         x >= 100 => print("Large"),
         _ => print("Other")
-    }
+    }a
 
     // Float comparisons
     print("\n--- Float comparisons ---");
@@ -133,3 +133,30 @@ fn main() {
         _ => print("No access")
     }
 }
+
+// EXPECT: --- Int comparisons ---
+// EXPECT: Positive and less than 100
+// EXPECT: --- Float comparisons ---
+// EXPECT: Negative float
+// EXPECT: --- Bool logic ---
+// EXPECT: At least one true
+// EXPECT: --- String comparisons ---
+// EXPECT: Greeting
+// EXPECT: --- Membership in array ---
+// EXPECT: 2 is in array
+// EXPECT: --- Membership in map ---
+// EXPECT: Key exists
+// EXPECT: --- Nested conditions ---
+// EXPECT: Positive odd
+// EXPECT: --- Array length check ---
+// EXPECT: Two elements
+// EXPECT: --- Map key/value check ---
+// EXPECT: Adult user
+// EXPECT: --- Multiple logical operators ---
+// EXPECT: Good and passed
+// EXPECT: --- Test 1: Age condition ---
+// EXPECT: Adult
+// EXPECT: --- Test 2: Temperature condition ---
+// EXPECT: Warm
+// EXPECT: --- Test 3: Bool condition ---
+// EXPECT: User access

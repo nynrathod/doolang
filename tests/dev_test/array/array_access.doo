@@ -55,3 +55,26 @@ fn main() {
     // print(arr[10]);    // panic: index 10, length 5
     // nums[100] = 999;   // panic: index 100, length 5
 }
+
+// EXPECT: === Array Get ===
+// EXPECT: arr: [10, 20, 30, 40, 50]
+// EXPECT: arr[0]: 10
+// EXPECT: arr[2]: 30
+// EXPECT: arr[4]: 50
+// EXPECT: floats: [1.5, 2.5, 3.5]
+// EXPECT: floats[0]: 1.5
+// EXPECT: floats[1]: 2.5
+// EXPECT: flags: [true, false, true]
+// EXPECT: flags[0]: true
+// EXPECT: flags[1]: false
+// EXPECT: flags[2]: true
+// EXPECT: names: ["Alice", "Bob", "Charlie"]
+// EXPECT: names[0]: Alice
+// EXPECT: names[2]: Charlie
+// EXPECT: === Array Set ===
+// EXPECT: nums before: [1, 2, 3, 4, 5]
+// EXPECT: nums after: [100, 2, 300, 4, 500]
+// EXPECT: fvals before: [1.1, 2.2, 3.3]
+// EXPECT: fvals after: [1.1, 9.9, 3.3]
+// EXPECT: bools before: [true, true, true]
+// EXPECT: bools after: [true, false, true]

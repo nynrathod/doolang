@@ -129,7 +129,184 @@ fn main() {
     for key, _ in map16 { print(key); }
     for _, _ in map16 { print("loop"); }
 
-
-
     print("\n=== All tests complete ===");
 }
+
+// EXPECT: === Testing all map types with iteration patterns ===
+// EXPECT: --- {Str: Int} ---
+// EXPECT: age 30
+// EXPECT: score 100
+// EXPECT: 30
+// EXPECT: 100
+// EXPECT: age
+// EXPECT: score
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Str: Float} ---
+// EXPECT: height 1.75
+// EXPECT: weight 65.5
+// EXPECT: 1.75
+// EXPECT: 65.5
+// EXPECT: height
+// EXPECT: weight
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Str: Bool} ---
+// EXPECT: active true
+// EXPECT: verified false
+// EXPECT: true
+// EXPECT: false
+// EXPECT: active
+// EXPECT: verified
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Str: Str} ---
+// EXPECT: name Alice
+// EXPECT: role admin
+// EXPECT: Alice
+// EXPECT: admin
+// EXPECT: name
+// EXPECT: role
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Int: Int} ---
+// EXPECT: 1 10
+// EXPECT: 2 20
+// EXPECT: 3 30
+// EXPECT: 10
+// EXPECT: 20
+// EXPECT: 30
+// EXPECT: 1
+// EXPECT: 2
+// EXPECT: 3
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Int: Float} ---
+// EXPECT: 1 1.1
+// EXPECT: 2 2.2
+// EXPECT: 3 3.3
+// EXPECT: 1.1
+// EXPECT: 2.2
+// EXPECT: 3.3
+// EXPECT: 1
+// EXPECT: 2
+// EXPECT: 3
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Int: Bool} ---
+// EXPECT: 1 true
+// EXPECT: 2 false
+// EXPECT: 3 true
+// EXPECT: true
+// EXPECT: false
+// EXPECT: true
+// EXPECT: 1
+// EXPECT: 2
+// EXPECT: 3
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Int: Str} ---
+// EXPECT: 1 one
+// EXPECT: 2 two
+// EXPECT: 3 three
+// EXPECT: one
+// EXPECT: two
+// EXPECT: three
+// EXPECT: 1
+// EXPECT: 2
+// EXPECT: 3
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Float: Int} ---
+// EXPECT: 1.1 10
+// EXPECT: 2.2 20
+// EXPECT: 3.3 30
+// EXPECT: 10
+// EXPECT: 20
+// EXPECT: 30
+// EXPECT: 1.1
+// EXPECT: 2.2
+// EXPECT: 3.3
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Float: Float} ---
+// EXPECT: 1.1 1.11
+// EXPECT: 2.2 2.22
+// EXPECT: 3.3 3.33
+// EXPECT: 1.11
+// EXPECT: 2.22
+// EXPECT: 3.33
+// EXPECT: 1.1
+// EXPECT: 2.2
+// EXPECT: 3.3
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Float: Bool} ---
+// EXPECT: 1.1 true
+// EXPECT: 2.2 false
+// EXPECT: 3.3 true
+// EXPECT: true
+// EXPECT: false
+// EXPECT: true
+// EXPECT: 1.1
+// EXPECT: 2.2
+// EXPECT: 3.3
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Float: Str} ---
+// EXPECT: 1.1 one
+// EXPECT: 2.2 two
+// EXPECT: 3.3 three
+// EXPECT: one
+// EXPECT: two
+// EXPECT: three
+// EXPECT: 1.1
+// EXPECT: 2.2
+// EXPECT: 3.3
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Bool: Int} ---
+// EXPECT: true 100
+// EXPECT: false 200
+// EXPECT: 100
+// EXPECT: 200
+// EXPECT: true
+// EXPECT: false
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Bool: Float} ---
+// EXPECT: true 1.5
+// EXPECT: false 2.5
+// EXPECT: 1.5
+// EXPECT: 2.5
+// EXPECT: true
+// EXPECT: false
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Bool: Bool} ---
+// EXPECT: true false
+// EXPECT: false true
+// EXPECT: false
+// EXPECT: true
+// EXPECT: true
+// EXPECT: false
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: --- {Bool: Str} ---
+// EXPECT: true yes
+// EXPECT: false no
+// EXPECT: yes
+// EXPECT: no
+// EXPECT: true
+// EXPECT: false
+// EXPECT: loop
+// EXPECT: loop
+// EXPECT: === All tests complete ===

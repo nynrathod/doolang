@@ -1,106 +1,82 @@
 #!/bin/bash
 set -e
 
-# Source common utilities
+# Source common utilities (includes assertion framework)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../common.sh"
-EMAIL="u$(date +%s)@t.com"
 
+EMAIL="u$(date +%s)@t.com"
 PORT=3108
 FILE="8_jwt_middleware_test.doo"
 
 echo "Starting server on port $PORT..."
-
-# Start server and set up cleanup
 start_server "$FILE" "$PORT" || exit 1
 setup_trap
 
-# --------------------------------------------------
-# Public route (NO JWT)
-# --------------------------------------------------
-
-echo "Public route (expect 200)"
-curl -s http://127.0.0.1:$PORT/public | pretty_json
+# --- Public route (no auth needed) ---
 echo ""
+echo "Test 1: Public route (200)"
+RESPONSE=$(http_get "/public")
+assert_status "$RESPONSE" 200 "GET /public"
 
-# --------------------------------------------------
-# Protected route WITHOUT JWT
-# --------------------------------------------------
-
-echo "Protected GET /profile without JWT (expect 401)"
-curl -s http://127.0.0.1:$PORT/profile | pretty_json
+# --- Protected route WITHOUT JWT → 401 ---
 echo ""
+echo "Test 2: Protected no JWT (401)"
+RESPONSE=$(http_get "/profile")
+assert_rfc7807 "$RESPONSE" 401 "Unauthorized" "unauthorized"
 
-# --------------------------------------------------
-# Signup + Login
-# --------------------------------------------------
-
-echo "Signup"
-SIGNUP_RESP=$(curl -s -X POST http://127.0.0.1:$PORT/signup \
-  -H "Content-Type: application/json" \
-  -d "{\"Email\":\"$EMAIL\",\"Password\":\"testpass123\",\"Name\":\"Jwt\",\"Role\":\"user\"}")
-
-echo "$SIGNUP_RESP" | pretty_json
+# --- Signup (dynamic token) ---
 echo ""
+echo "Test 3: Signup"
+RESPONSE=$(http_post "/signup" "{\"Email\":\"$EMAIL\",\"Password\":\"testpass123\",\"Name\":\"Jwt\",\"Role\":\"user\"}")
+assert_status "$RESPONSE" 200 "signup"
+assert_json_exists "$RESPONSE" ".data.token" "signup returns token"
+assert_json_type "$RESPONSE" ".data.token" "string" "token is string"
+assert_json_not_has "$RESPONSE" "Password" "password not exposed"
+TOKEN=$(extract_json "$RESPONSE" ".data.token")
 
-# Extract token from signup response (more reliable)
-TOKEN=$(echo "$SIGNUP_RESP" | grep -o '"token":"[^"]*"' | head -1 | sed 's/"token":"//;s/"$//')
-
-echo "Login"
-LOGIN_RESP=$(curl -s -X POST http://127.0.0.1:$PORT/login \
-  -H "Content-Type: application/json" \
-  -d "{\"Email\":\"$EMAIL\",\"Password\":\"testpass123\"}")
-
-echo "$LOGIN_RESP" | pretty_json
-
-# If signup token extraction failed, try from login
-if [ -z "$TOKEN" ]; then
-  TOKEN=$(echo "$LOGIN_RESP" | grep -o '"token":"[^"]*"' | head -1 | sed 's/"token":"//;s/"$//')
+# --- Login (dynamic token) ---
+echo ""
+echo "Test 4: Login"
+RESPONSE=$(http_post "/login" "{\"Email\":\"$EMAIL\",\"Password\":\"testpass123\"}")
+assert_status "$RESPONSE" 200 "login"
+assert_json_exists "$RESPONSE" ".data.token" "login returns token"
+# Use login token if signup had issues
+NEW_TOKEN=$(extract_json "$RESPONSE" ".data.token")
+if [ -n "$NEW_TOKEN" ] && [ "$NEW_TOKEN" != "null" ]; then
+    TOKEN="$NEW_TOKEN"
 fi
+
+# --- Protected route WITH JWT → 200 ---
 echo ""
+echo "Test 5: Protected GET /profile with JWT (200)"
+RESPONSE=$(http_get "/profile" "Authorization: Bearer $TOKEN")
+assert_status "$RESPONSE" 200 "GET /profile with JWT"
 
-# --------------------------------------------------
-# Protected routes WITH JWT
-# --------------------------------------------------
-
-echo "Protected GET /profile with JWT (expect 200)"
-curl -s http://127.0.0.1:$PORT/profile \
-  -H "Authorization: Bearer $TOKEN" \
-  | pretty_json
 echo ""
+echo "Test 6: Protected POST /profile with JWT (200)"
+RESPONSE=$(http_post "/profile" "" "Authorization: Bearer $TOKEN")
+assert_status "$RESPONSE" 200 "POST /profile with JWT"
 
-echo "Protected POST /profile with JWT (expect 200)"
-curl -s -X POST http://127.0.0.1:$PORT/profile \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  | pretty_json
+# --- API group middleware ---
 echo ""
+echo "Test 7: API group without JWT (401)"
+RESPONSE=$(http_get "/api/profile")
+assert_rfc7807 "$RESPONSE" 401 "Unauthorized" "unauthorized"
 
-# --------------------------------------------------
-# API group middleware
-# --------------------------------------------------
-
-echo "API group without JWT (expect 401)"
-curl -s http://127.0.0.1:$PORT/api/profile | pretty_json
 echo ""
+echo "Test 8: API group GET with JWT (200)"
+RESPONSE=$(http_get "/api/profile" "Authorization: Bearer $TOKEN")
+assert_status "$RESPONSE" 200 "GET /api/profile with JWT"
 
-echo "API group GET with JWT"
-curl -s http://127.0.0.1:$PORT/api/profile \
-  -H "Authorization: Bearer $TOKEN" \
-  | pretty_json
 echo ""
+echo "Test 9: API group POST with JWT (200)"
+RESPONSE=$(http_post "/api/create" "" "Authorization: Bearer $TOKEN")
+assert_status "$RESPONSE" 200 "POST /api/create with JWT"
 
-echo "API group POST with JWT"
-curl -s -X POST http://127.0.0.1:$PORT/api/create \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  | pretty_json
 echo ""
+echo "Test 10: API group LIST with JWT (200)"
+RESPONSE=$(http_get "/api/list" "Authorization: Bearer $TOKEN")
+assert_status "$RESPONSE" 200 "GET /api/list with JWT"
 
-echo "API group LIST with JWT"
-curl -s http://127.0.0.1:$PORT/api/list \
-  -H "Authorization: Bearer $TOKEN" \
-  | pretty_json
-echo ""
-
-echo "✅ JWT middleware tests completed"
+print_http_summary

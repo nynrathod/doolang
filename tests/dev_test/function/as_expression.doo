@@ -59,94 +59,134 @@ fn tupleMixOps(x: Int, f: Float) -> Int, Float => x * 2, f / 2.0;
 
 // --- Usage ---
 fn main() {
-    print("=== Expression Function Tests for All Supported Types (with parameters) ===\n");
+   print("=== Expression Function Tests for All Supported Types (with parameters) ===\n");
 
-    // Primitive
-    print("Int:", exprInt(2, 3));
-    print("Float:", exprFloat(2.0, 4.5));
-    print("Bool:", exprBool(false));
-    print("Str:", exprStr("World"));
+   // Primitive
+   print("Int:", exprInt(2, 3));
+   print("Float:", exprFloat(2.0, 4.5));
+   print("Bool:", exprBool(false));
+   print("Str:", exprStr("World"));
 
-    // Arrays
-    let arrInt = [1, 2, 3];
-    let arrFloat = [1.1, 2.2, 3.3];
-    let arrBool = [true, false, true];
-    let arrStr = ["a", "b", "c"];
-    print("[Int]:", exprArrInt(arrInt));
-    print("[Float]:", exprArrFloat(arrFloat));
-    print("[Bool]:", exprArrBool(arrBool));
-    print("[Str]:", exprArrStr(arrStr));
+   // Arrays
+   let arrInt = [1, 2, 3];
+   let arrFloat = [1.1, 2.2, 3.3];
+   let arrBool = [true, false, true];
+   let arrStr = ["a", "b", "c"];
+   print("[Int]:", exprArrInt(arrInt));
+   print("[Float]:", exprArrFloat(arrFloat));
+   print("[Bool]:", exprArrBool(arrBool));
+   print("[Str]:", exprArrStr(arrStr));
 
-    // Maps
-    let mapStrInt = {"a": 1, "b": 2};
-    let mapStrFloat = {"x": 1.1, "y": 2.2};
-    let mapStrBool = {"t": true, "f": false};
-    let mapStrStr = {"foo": "bar", "baz": "qux"};
-    print("{Str: Int}:", exprMapStrInt(mapStrInt));
-    print("{Str: Float}:", exprMapStrFloat(mapStrFloat));
-    print("{Str: Bool}:", exprMapStrBool(mapStrBool));
-    print("{Str: Str}:", exprMapStrStr(mapStrStr));
+   // Maps
+   let mapStrInt = {"a": 1, "b": 2};
+   let mapStrFloat = {"x": 1.1, "y": 2.2};
+   let mapStrBool = {"t": true, "f": false};
+   let mapStrStr = {"foo": "bar", "baz": "qux"};
+   print("{Str: Int}:", exprMapStrInt(mapStrInt));
+   print("{Str: Float}:", exprMapStrFloat(mapStrFloat));
+   print("{Str: Bool}:", exprMapStrBool(mapStrBool));
+   print("{Str: Str}:", exprMapStrStr(mapStrStr));
 
-    let mapIntInt = {1: 10, 2: 20};
-    let mapIntFloat = {1: 1.1, 2: 2.2};
-    let mapIntBool = {1: true, 2: false};
-    let mapIntStr = {1: "one", 2: "two"};
-    print("{Int: Int}:", exprMapIntInt(mapIntInt));
-    print("{Int: Float}:", exprMapIntFloat(mapIntFloat));
-    print("{Int: Bool}:", exprMapIntBool(mapIntBool));
-    print("{Int: Str}:", exprMapIntStr(mapIntStr));
+   let mapIntInt = {1: 10, 2: 20};
+   let mapIntFloat = {1: 1.1, 2: 2.2};
+   let mapIntBool = {1: true, 2: false};
+   let mapIntStr = {1: "one", 2: "two"};
+   print("{Int: Int}:", exprMapIntInt(mapIntInt));
+   print("{Int: Float}:", exprMapIntFloat(mapIntFloat));
+   print("{Int: Bool}:", exprMapIntBool(mapIntBool));
+   print("{Int: Str}:", exprMapIntStr(mapIntStr));
 
-    let mapFloatInt = {1.1: 1, 2.2: 2};
-    let mapFloatFloat = {1.1: 1.1, 2.2: 2.2};
-    let mapFloatBool = {1.1: true, 2.2: false};
-    let mapFloatStr = {1.1: "low", 2.2: "high"};
-    print("{Float: Int}:", exprMapFloatInt(mapFloatInt));
-    print("{Float: Float}:", exprMapFloatFloat(mapFloatFloat));
-    print("{Float: Bool}:", exprMapFloatBool(mapFloatBool));
-    print("{Float: Str}:", exprMapFloatStr(mapFloatStr));
+   let mapFloatInt = {1.1: 1, 2.2: 2};
+   let mapFloatFloat = {1.1: 1.1, 2.2: 2.2};
+   let mapFloatBool = {1.1: true, 2.2: false};
+   let mapFloatStr = {1.1: "low", 2.2: "high"};
+   print("{Float: Int}:", exprMapFloatInt(mapFloatInt));
+   print("{Float: Float}:", exprMapFloatFloat(mapFloatFloat));
+   print("{Float: Bool}:", exprMapFloatBool(mapFloatBool));
+   print("{Float: Str}:", exprMapFloatStr(mapFloatStr));
 
-    let mapBoolInt = {true: 1, false: 0};
-    let mapBoolFloat = {true: 1.1, false: 0.0};
-    let mapBoolBool = {true: true, false: false};
-    let mapBoolStr = {true: "yes", false: "no"};
-    print("{Bool: Int}:", exprMapBoolInt(mapBoolInt));
-    print("{Bool: Float}:", exprMapBoolFloat(mapBoolFloat));
-    print("{Bool: Bool}:", exprMapBoolBool(mapBoolBool));
-    print("{Bool: Str}:", exprMapBoolStr(mapBoolStr));
+   let mapBoolInt = {true: 1, false: 0};
+   let mapBoolFloat = {true: 1.1, false: 0.0};
+   let mapBoolBool = {true: true, false: false};
+   let mapBoolStr = {true: "yes", false: "no"};
+   print("{Bool: Int}:", exprMapBoolInt(mapBoolInt));
+   print("{Bool: Float}:", exprMapBoolFloat(mapBoolFloat));
+   print("{Bool: Bool}:", exprMapBoolBool(mapBoolBool));
+   print("{Bool: Str}:", exprMapBoolStr(mapBoolStr));
 
-    // --- Operator Tuple Cases ---
-    let add1, add2 = tupleAdd(7, 5);
-    print("Tuple +:", add1, add2);
+   // --- Operator Tuple Cases ---
+   let add1, add2 = tupleAdd(7, 5);
+   print("Tuple +:", add1, add2);
 
-    let sub1, sub2 = tupleSub(7, 5);
-    print("Tuple -:", sub1, sub2);
+   let sub1, sub2 = tupleSub(7, 5);
+   print("Tuple -:", sub1, sub2);
 
-    let mul1, mul2 = tupleMul(7, 5);
-    print("Tuple *:", mul1, mul2);
+   let mul1, mul2 = tupleMul(7, 5);
+   print("Tuple *:", mul1, mul2);
 
-    let div1, div2 = tupleDiv(7, 5);
-    print("Tuple /:", div1, div2);
+   let div1, div2 = tupleDiv(7, 5);
+   print("Tuple /:", div1, div2);
 
-    let mod1, mod2 = tupleMod(7, 5);
-    print("Tuple %:", mod1, mod2);
+   let mod1, mod2 = tupleMod(7, 5);
+   print("Tuple %:", mod1, mod2);
 
-    let f1, f2 = tupleFloatOps(2.5, 4.0);
-    print("Tuple Float (+,*):", f1, f2);
+   let f1, f2 = tupleFloatOps(2.5, 4.0);
+   print("Tuple Float (+,*):", f1, f2);
 
-    let mix1, mix2 = tupleMixOps(10, 3.0);
-    print("Tuple Mix (Int, Float):", mix1, mix2);
+   let mix1, mix2 = tupleMixOps(10, 3.0);
+   print("Tuple Mix (Int, Float):", mix1, mix2);
 
-    // --- Direct function call as expression body ---
-    print("callBaseInt():", callBaseInt());
-    print("callBaseFloat():", callBaseFloat());
-    print("callBaseBool():", callBaseBool());
-    print("callBaseStr():", callBaseStr());
+   // --- Direct function call as expression body ---
+   print("callBaseInt():", callBaseInt());
+   print("callBaseFloat():", callBaseFloat());
+   print("callBaseBool():", callBaseBool());
+   print("callBaseStr():", callBaseStr());
 
-    let tInt, tStr = tupleBaseIntStr();
-    print("Tuple from function call (Int, Str):", tInt, tStr);
+   let tInt, tStr = tupleBaseIntStr();
+   print("Tuple from function call (Int, Str):", tInt, tStr);
 
-    let tFloat, tBool = tupleBaseFloatBool();
-    print("Tuple from function call (Float, Bool):", tFloat, tBool);
+   let tFloat, tBool = tupleBaseFloatBool();
+   print("Tuple from function call (Float, Bool):", tFloat, tBool);
 
-    print("\n=== All Expression Function Tests Complete ===");
+   print("\n=== All Expression Function Tests Complete ===");
 }
+
+// EXPECT: === Expression Function Tests for All Supported Types (with parameters) ===
+// EXPECT: Int: 5
+// EXPECT: Float: 9
+// EXPECT: Bool: true
+// EXPECT: Str: Hello, World
+// EXPECT: [Int]: [1, 2, 3]
+// EXPECT: [Float]: [1.1, 2.2, 3.3]
+// EXPECT: [Bool]: [true, false, true]
+// EXPECT: [Str]: ["a", "b", "c"]
+// EXPECT: {Str: Int}: {"a": 1, "b": 2}
+// EXPECT: {Str: Float}: {"x": 1.1, "y": 2.2}
+// EXPECT: {Str: Bool}: {"t": true, "f": false}
+// EXPECT: {Str: Str}: {"foo": "bar", "baz": "qux"}
+// EXPECT: {Int: Int}: {1: 10, 2: 20}
+// EXPECT: {Int: Float}: {1: 1.1, 2: 2.2}
+// EXPECT: {Int: Bool}: {1: true, 2: false}
+// EXPECT: {Int: Str}: {1: "one", 2: "two"}
+// EXPECT: {Float: Int}: {1.1: 1, 2.2: 2}
+// EXPECT: {Float: Float}: {1.1: 1.1, 2.2: 2.2}
+// EXPECT: {Float: Bool}: {1.1: true, 2.2: false}
+// EXPECT: {Float: Str}: {1.1: "low", 2.2: "high"}
+// EXPECT: {Bool: Int}: {true: 1, false: 0}
+// EXPECT: {Bool: Float}: {true: 1.1, false: 0.0}
+// EXPECT: {Bool: Bool}: {true: true, false: false}
+// EXPECT: {Bool: Str}: {true: "yes", false: "no"}
+// EXPECT: Tuple +: 12 12
+// EXPECT: Tuple -: 2 -2
+// EXPECT: Tuple *: 35 35
+// EXPECT: Tuple /: 2 1
+// EXPECT: Tuple %: 3 6
+// EXPECT: Tuple Float (+,*): 6.5 10
+// EXPECT: Tuple Mix (Int, Float): 20 1.5
+// EXPECT: callBaseInt(): 100
+// EXPECT: callBaseFloat(): 2.718
+// EXPECT: callBaseBool(): false
+// EXPECT: callBaseStr(): base
+// EXPECT: Tuple from function call (Int, Str): 100 base
+// EXPECT: Tuple from function call (Float, Bool): 2.718 false
+// EXPECT: === All Expression Function Tests Complete ===

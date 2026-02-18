@@ -210,3 +210,118 @@ fn main() {
         JSON.parse(JSON.stringify([0.0]))
     );
 }
+
+// EXPECT OUTPUT
+/*
+EXPECT: Int param: 0
+EXPECT: Int param: -999999
+EXPECT: Int param: 999999
+EXPECT: Float param: 0.0
+EXPECT: Float param: -3.1415
+EXPECT: Float param: 10000000000.0
+EXPECT: Bool param: true
+EXPECT: Bool param: false
+EXPECT: Str param:
+EXPECT: Str param: hello
+EXPECT: Str param: edge
+EXPECT: Array[Int] param: [1, 2, 3]
+EXPECT: Array[Int] param: []
+EXPECT: Array[Float] param: [1.1, 2.2]
+EXPECT: Array[Float] param: []
+EXPECT: Array[Bool] param: [true, false]
+EXPECT: Array[Bool] param: []
+EXPECT: Array[Str] param: [a, b]
+EXPECT: Array[Str] param: []
+EXPECT: Map{Str: Int} param: {"a": 1}
+EXPECT: Map{Str: Int} param: {}
+EXPECT: Map{Str: Float} param: {"x": 2.2}
+EXPECT: Map{Str: Float} param: {}
+EXPECT: Map{Str: Bool} param: {"flag": true}
+EXPECT: Map{Str: Bool} param: {}
+EXPECT: Map{Str: Str} param: {"key": "val"}
+EXPECT: Map{Str: Str} param: {}
+EXPECT: Map{Int: Int} param: {1: 10}
+EXPECT: Map{Int: Int} param: {}
+EXPECT: Map{Int: Float} param: {2: 2.2}
+EXPECT: Map{Int: Float} param: {}
+EXPECT: Map{Int: Bool} param: {3: false}
+EXPECT: Map{Int: Bool} param: {}
+EXPECT: Map{Int: Str} param: {4: "four"}
+EXPECT: Map{Int: Str} param: {}
+EXPECT: Map{Float: Int} param: {1.1: 100}
+EXPECT: Map{Float: Int} param: {}
+EXPECT: Map{Float: Float} param: {2.2: 2.22}
+EXPECT: Map{Float: Float} param: {}
+EXPECT: Map{Float: Bool} param: {3.3: true}
+EXPECT: Map{Float: Bool} param: {}
+EXPECT: Map{Float: Str} param: {4.4: "float"}
+EXPECT: Map{Float: Str} param: {}
+EXPECT: Map{Bool: Int} param: {true: 1, false: 0}
+EXPECT: Map{Bool: Int} param: {}
+EXPECT: Map{Bool: Float} param: {true: 1.1, false: 0.0}
+EXPECT: Map{Bool: Float} param: {}
+EXPECT: Map{Bool: Bool} param: {true: false, false: true}
+EXPECT: Map{Bool: Bool} param: {}
+EXPECT: Map{Bool: Str} param: {true: "yes", false: "no"}
+EXPECT: Map{Bool: Str} param: {}
+EXPECT: Struct param: Point { x: 10, y: 20 }
+EXPECT: Struct param: Point { x: 0, y: 0 }
+EXPECT: Complex struct param: Complex { arr: [1, 2], map: {"x": 2}, status: Active }
+EXPECT: Complex struct param: Complex { arr: [], map: {}, status: Inactive }
+EXPECT: Enum param: Active
+EXPECT: Enum param: Inactive
+EXPECT: Enum param: Pending
+EXPECT: Enum with payload param: Success(123)
+EXPECT: Enum with payload param: Failure(fail)
+EXPECT: Multi param: 1 test [1.1, 2.2]
+EXPECT: Multi param: -1 edge [0.0]
+EXPECT: Int param: 100
+EXPECT: Float param: 2.718
+EXPECT: Bool param: false
+EXPECT: Str param: direct
+EXPECT: === JSON Parse(JSON.stringify(value)) as Param Tests ===
+EXPECT: Int param: 123
+EXPECT: Float param: 3.14
+EXPECT: Bool param: true
+EXPECT: Str param: abc
+EXPECT: Array[Int] param: [1, 2, 3]
+EXPECT: Array[Float] param: [1.1, 2.2, 3.3]
+EXPECT: Array[Bool] param: [true, false, true]
+EXPECT: Array[Str] param: [foo, bar]
+EXPECT: Map{Str: Int} param: {"x": 1, "y": 2}
+EXPECT: Map{Str: Float} param: {"a": 1.1, "b": 2.2}
+EXPECT: Map{Str: Bool} param: {"t": true, "f": false}
+EXPECT: Map{Str: Str} param: {"hello": "world"}
+EXPECT: Map{Int: Int} param: {3: 33, 4: 44}
+EXPECT: Map{Int: Float} param: {5: 5.5, 6: 6.6}
+EXPECT: Map{Int: Bool} param: {7: true, 8: false}
+EXPECT: Map{Int: Str} param: {9: "nine", 10: "ten"}
+EXPECT: Map{Float: Int} param: {3.3: 3, 4.4: 4}
+EXPECT: Map{Float: Int} param: {}
+EXPECT: Map{Float: Float} param: {5.5: 55.5, 6.6: 66.6}
+EXPECT: Map{Float: Float} param: {}
+EXPECT: Map{Float: Bool} param: {7.7: true, 8.8: false}
+EXPECT: Map{Float: Bool} param: {}
+EXPECT: Map{Float: Str} param: {9.9: "nine", 10.1: "ten"}
+EXPECT: Map{Float: Str} param: {}
+EXPECT: Map{Bool: Int} param: {true: 11, false: 12}
+EXPECT: Map{Bool: Int} param: {}
+EXPECT: Map{Bool: Float} param: {true: 13.13, false: 14.14}
+EXPECT: Map{Bool: Float} param: {}
+EXPECT: Map{Bool: Bool} param: {true: true, false: false}
+EXPECT: Map{Bool: Bool} param: {}
+EXPECT: Map{Bool: Str} param: {true: "true", false: "false"}
+EXPECT: Map{Bool: Str} param: {}
+EXPECT: Struct param: Point { x: 10, y: 20 }
+EXPECT: Struct param: Point { x: 0, y: 0 }
+EXPECT: Complex struct param: Complex { arr: [1, 2], map: {"x": 2}, status: Active }
+EXPECT: Complex struct param: Complex { arr: [], map: {}, status: Inactive }
+EXPECT: Enum param: Active
+EXPECT: Enum param: Inactive
+EXPECT: Enum param: Pending
+EXPECT: Enum with payload param: Success(123)
+EXPECT: Enum with payload param: Failure(fail)
+EXPECT: Multi param: 1 test [1.1, 2.2]
+EXPECT: Multi param: 0  []
+EXPECT: Multi param: -1 edge [0.0]
+*/

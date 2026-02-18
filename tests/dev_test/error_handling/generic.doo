@@ -335,3 +335,22 @@ fn main() {
 
     print("\n=== Generic Error Type Tests Complete ===");
 }
+
+//
+// EXPECT:   PASS: Result = 142
+// EXPECT:   PASS: Error propagated correctly
+// EXPECT:   PASS: Error propagated correctly
+// EXPECT:   PASS: Error propagated correctly
+// EXPECT:   PASS: Error propagated correctly
+// EXPECT:   PASS: Error propagated correctly
+// EXPECT:   PASS: all operations succeeded
+// EXPECT:   PASS: Error in chain propagated correctly
+// EXPECT:   PASS: all files read
+// EXPECT:   PASS: Sum = 126
+// EXPECT:   PASS: Result = 99
+// EXPECT:   PASS: Error propagated
+// EXPECT:   PASS: Error propagated
+// EXPECT:   PASS: Error propagated
+// EXPECT:   PASS: Error propagated
+// EXPECT: === Generic Error Type Tests Complete ===
+//

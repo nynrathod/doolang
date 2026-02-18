@@ -34,3 +34,9 @@ fn main() {
     print("Testing invalid decorator cases...");
     print("Expect validation errors for each field.");
 }
+
+// Expect: EmailStr: invalid email format
+// Expect: Age: value below minimum of 18
+// Expect: Score: value above maximum of 100
+// Expect: Role: value not in enum [Admin, Moderator]
+// Expect: Name: valid

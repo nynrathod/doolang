@@ -84,8 +84,14 @@ fn main() {
     }
     print("");
 
-    // 9. Move/rename file
-    print("9. Move/rename file");
+    // 9. Check if copied file exists
+    print("9. Check copied file exists");
+    let existsCopy = File::Exists("test_manual_copy.txt");
+    print("  File exists:", existsCopy);
+    print("");
+
+    // 10. Move/rename file
+    print("10. Move/rename file");
     let _, errMove = File::Move("test_manual_copy.txt", "test_manual_renamed.txt");
     if errMove == nil {
         print("  Success: File moved/renamed");
@@ -94,8 +100,8 @@ fn main() {
     }
     print("");
 
-    // 10. Create directory
-    print("10. Create directory");
+    // 11. Create directory
+    print("11. Create directory");
     let _, errMkDir = File::MkDir("test_dir_manual");
     if errMkDir == nil {
         print("  Success: Directory created");
@@ -104,8 +110,8 @@ fn main() {
     }
     print("");
 
-    // 11. Get directory metadata
-    print("11. Get directory metadata");
+    // 12. Get directory metadata
+    print("12. Get directory metadata");
     let metaDir, errMetaDir = File::Metadata("test_dir_manual");
     if errMetaDir == nil {
         print("  Success: Directory metadata =", metaDir);
@@ -114,8 +120,8 @@ fn main() {
     }
     print("");
 
-    // 12. List directory
-    print("12. List directory");
+    // 13. List directory
+    print("13. List directory");
     let list, errList = File::ListDir(".");
     if errList == nil {
         print("  Success: Found files in directory =", list);
@@ -124,8 +130,8 @@ fn main() {
     }
     print("");
 
-    // 13. Remove empty directory
-    print("13. Remove empty directory");
+    // 14. Remove empty directory
+    print("14. Remove empty directory");
     let _, errRmDir = File::RmDir("test_dir_manual");
     if errRmDir == nil {
         print("  Success: Directory removed");
@@ -134,8 +140,8 @@ fn main() {
     }
     print("");
 
-    // 14. Create directory with files for recursive delete
-    print("14. Create directory for recursive delete");
+    // 15. Create directory with files for recursive delete
+    print("15. Create directory for recursive delete");
     let _, errMkDir2 = File::MkDir("test_dir_recursive");
     File::Write("test_dir_recursive/file1.txt", "data");
     File::Write("test_dir_recursive/file2.txt", "data");
@@ -146,8 +152,8 @@ fn main() {
     }
     print("");
 
-    // 15. Remove directory recursively
-    print("15. Remove directory recursively");
+    // 16. Remove directory recursively
+    print("16. Remove directory recursively");
     let _, errRmDirAll = File::RmDirAll("test_dir_recursive");
     if errRmDirAll == nil {
         print("  Success: Directory and contents removed");
@@ -156,8 +162,8 @@ fn main() {
     }
     print("");
 
-    // 16. Delete file
-    print("16. Delete file");
+    // 17. Delete file
+    print("17. Delete file");
     let _, errDelete = File::Delete("test_manual.txt");
     if errDelete == nil {
         print("  Success: File deleted");
@@ -166,8 +172,8 @@ fn main() {
     }
     print("");
 
-    // 17. Cleanup: Delete renamed file if exists
-    print("17. Cleanup: Delete renamed file");
+    // 18. Cleanup: Delete renamed file if exists
+    print("18. Cleanup: Delete renamed file");
     let _, errClean = File::Delete("test_manual_renamed.txt");
     if errClean == nil {
         print("  Success: Cleanup complete");
@@ -178,3 +184,42 @@ fn main() {
 
     print("=== All Success Tests Complete ===");
 }
+
+// EXPECT: === Manual Success Test - All File Operations ===
+// EXPECT: 1. Write to file
+// EXPECT:   Success: File written
+// EXPECT: 2. Read file we wrote
+// EXPECT:   Success: Content = Hello World
+// EXPECT: 3. Append to file
+// EXPECT:   Success: Content appended
+// EXPECT: 4. Check file exists
+// EXPECT:   File exists: true
+// EXPECT: 5. Get file size
+// EXPECT:   Success: File size = 25 byte
+// EXPECT: 6. Get file metadata
+// EXPECT:   Success: Metadata =
+// EXPECT: 7. ReadLines
+// EXPECT:   Success: Lines read =
+// EXPECT: 8. Copy file
+// EXPECT:   Success: File copied
+// EXPECT: 9. Check copied file exists
+// EXPECT:   File exists: true
+// EXPECT: 10. Move/rename file
+// EXPECT:   Success: File moved/renamed
+// EXPECT: 11. Create directory
+// EXPECT:   Success: Directory created
+// EXPECT: 12. Get directory metadata
+// EXPECT:   Success: Directory metadata =
+// EXPECT: 13. List directory
+// EXPECT:   Success: Found files in directory =
+// EXPECT: 14. Remove empty directory
+// EXPECT:   Success: Directory removed
+// EXPECT: 15. Create directory for recursive delete
+// EXPECT:   Success: Directory with files created
+// EXPECT: 16. Remove directory recursively
+// EXPECT:   Success: Directory and contents removed
+// EXPECT: 17. Delete file
+// EXPECT:   Success: File deleted
+// EXPECT: 18. Cleanup: Delete renamed file
+// EXPECT:   Success: Cleanup complete
+// EXPECT: === All Success Tests Complete ===

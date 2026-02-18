@@ -280,6 +280,8 @@ fn main() {
     print("  CreateUser Ok:", user1);
     let _, user2Err = CreateUser("bob@example.com", -5);
     print("  CreateUser Err:", user2Err);
+    let _, user3Err = CreateUser("carol@example.com", 200);
+    print("  CreateUser Err:", user3Err);
 
     let pr1, pr1Err = ProcessResult(true, 50);
     print("  ProcessResult Ok:", pr1);
@@ -293,3 +295,39 @@ fn main() {
 
     print("\n=== All Error Handling Tests Completed ===");
 }
+
+//
+// EXPECT: === Error Handling: Primitive, Struct, Enum, and Advanced Tests ===
+// EXPECT: Primitive Error Tests:
+// EXPECT:   Int Ok: success
+// EXPECT:   Int Err: -1
+// EXPECT:   Float Ok: success
+// EXPECT:   Float Err: -99.9
+// EXPECT:   Bool Ok: success
+// EXPECT:   Bool Err: true
+// EXPECT:   Str Ok: 10
+// EXPECT:   Str Err: string error occurred
+// EXPECT: Struct Error Tests:
+// EXPECT:   IntError Ok: success
+// EXPECT:   IntError Err: 100 negative value
+// EXPECT:   FloatError Ok: success
+// EXPECT:   FloatError Err: -5.5 negative float
+// EXPECT:   BoolError Ok: success
+// EXPECT:   BoolError Err: true flag was true
+// EXPECT:   StrError Ok: 5
+// EXPECT:   StrError Err: error text negative number
+// EXPECT:   ComplexError Ok: success
+// EXPECT:   ComplexError Err: 500 -99.9 true complex error occurred
+// EXPECT: Advanced Struct & Enum Error Handling:
+// EXPECT:   CreatePoint Ok: 30
+// EXPECT:   CreatePoint Err: Coordinates cannot be negative
+// EXPECT:   CalculateArea Ok: 50
+// EXPECT:   CalculateArea Err: Dimensions must be positive
+// EXPECT:   CreateUser Ok: 25
+// EXPECT:   CreateUser Err: Age cannot be negative
+// EXPECT:   CreateUser Err: Age too large
+// EXPECT:   ProcessResult Ok: 100
+// EXPECT:   ProcessResult Err: Result was failure
+// EXPECT:   ChainedOps Ok: 50
+// EXPECT:   ChainedOps Err: Area too large
+// EXPECT: === All Error Handling Tests Completed ===

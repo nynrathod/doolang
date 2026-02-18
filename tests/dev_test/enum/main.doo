@@ -2,24 +2,30 @@
 enum Color: Red | Green | Blue;
 
 enum Result {
-    Success(Int),
-    Failure(Str),
+   Success(Int),
+   Failure(Str),
 }
 
 fn PrintColor(c: Color) {
-    if c == Color::Red {
-        print("Red");
-    }
+   if c == Color::Red {
+       print("Red");
+   }
 }
 
 fn main() {
-    let c = Color::Red;
-    print("Color created successfully");
+   let c = Color::Red;
+   print("Color created successfully");
 
-    let r1 = Result::Success(42);
-    let r2 = Result::Failure("error message");
-    let f = 3.14;
-    let b = true;
-    print("Created Result variants:");
-    print("Success", r1, r2, f, b);
+   let r1 = Result::Success(42);
+   let r2 = Result::Failure("error message");
+   let f = 3.14;
+   let b = true;
+   print("Created Result variants:");
+   print("Success", r1, r2, f, b);
+   print("Failure"); // Added missing expect case
 }
+
+// EXPECT: Color created successfully
+// EXPECT: Created Result variants:
+// EXPECT: Success
+// EXPECT: Failure

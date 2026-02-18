@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Source common utilities
+# Source common utilities (includes assertion framework)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../common.sh"
 
@@ -9,80 +9,83 @@ PORT=3110
 FILE="9_route_group.doo"
 
 echo "Starting server on port $PORT..."
-
-# Start server and set up cleanup
 start_server "$FILE" "$PORT" || exit 1
 setup_trap
 
-# --------------------------------------------------
-# PUBLIC ROUTES
-# --------------------------------------------------
-
+# --- Public Routes ---
+echo ""
 echo "Test 1: GET /status"
-curl -s http://127.0.0.1:$PORT/status | pretty_json
+RESPONSE=$(http_get "/status")
+assert_status "$RESPONSE" 200 "GET /status"
+assert_json "$RESPONSE" ".Status" "ok" ".Status=ok"
+assert_json "$RESPONSE" ".Version" "1.0.0" ".Version=1.0.0"
+
+# --- API Group: Users ---
 echo ""
+echo "Test 2: GET /api/profile"
+RESPONSE=$(http_get "/api/profile")
+assert_status "$RESPONSE" 200 "GET /api/profile"
+assert_json "$RESPONSE" ".Id" "1" ".Id=1"
+assert_json "$RESPONSE" ".Name" "John Doe" ".Name=John Doe"
 
-# --------------------------------------------------
-# API GROUP — USERS
-# --------------------------------------------------
-
-echo "Test 3: GET /api/profile"
-curl -s http://127.0.0.1:$PORT/api/profile | pretty_json
 echo ""
+echo "Test 3: POST /api/users"
+RESPONSE=$(http_post "/api/users")
+assert_status "$RESPONSE" 200 "POST /api/users"
+assert_json "$RESPONSE" ".Id" "2" ".Id=2"
+assert_json "$RESPONSE" ".Name" "New User" ".Name=New User"
 
-echo "Test 4: POST /api/users"
-curl -s -X POST -H "Content-Type: application/json" http://127.0.0.1:$PORT/api/users | pretty_json
 echo ""
+echo "Test 4: GET /api/users/123"
+RESPONSE=$(http_get "/api/users/123")
+assert_status "$RESPONSE" 200 "GET /api/users/123"
+assert_json "$RESPONSE" ".Id" "123" ".Id=123"
+assert_json "$RESPONSE" ".Name" "User 123" ".Name=User 123"
 
-echo "Test 5: GET /api/users/123"
-curl -s http://127.0.0.1:$PORT/api/users/123 | pretty_json
 echo ""
+echo "Test 5: DELETE /api/users/123"
+RESPONSE=$(http_delete "/api/users/123")
+assert_status "$RESPONSE" 200 "DELETE /api/users/123"
+assert_json "$RESPONSE" ".Status" "deleted" ".Status=deleted"
 
-echo "Test 6: DELETE /api/users/123"
-curl -s -X DELETE http://127.0.0.1:$PORT/api/users/123 | pretty_json
+# --- API Group: Posts ---
 echo ""
+echo "Test 6: GET /api/posts"
+RESPONSE=$(http_get "/api/posts")
+assert_status "$RESPONSE" 200 "GET /api/posts"
+assert_json "$RESPONSE" ".Title" "All Posts" ".Title=All Posts"
 
-# --------------------------------------------------
-# API GROUP — POSTS
-# --------------------------------------------------
-
-echo "Test 7: GET /api/posts"
-curl -s http://127.0.0.1:$PORT/api/posts | pretty_json
 echo ""
+echo "Test 7: POST /api/posts"
+RESPONSE=$(http_post "/api/posts")
+assert_status "$RESPONSE" 200 "POST /api/posts"
+assert_json "$RESPONSE" ".Id" "1" ".Id=1"
+assert_json "$RESPONSE" ".Title" "New Post" ".Title=New Post"
 
-echo "Test 8: POST /api/posts"
-curl -s -X POST -H "Content-Type: application/json" http://127.0.0.1:$PORT/api/posts | pretty_json
 echo ""
+echo "Test 8: GET /api/posts/456"
+RESPONSE=$(http_get "/api/posts/456")
+assert_status "$RESPONSE" 200 "GET /api/posts/456"
+assert_json "$RESPONSE" ".Id" "456" ".Id=456"
+assert_json "$RESPONSE" ".Title" "Post 456" ".Title=Post 456"
 
-echo "Test 9: GET /api/posts/456"
-curl -s http://127.0.0.1:$PORT/api/posts/456 | pretty_json
 echo ""
+echo "Test 9: DELETE /api/posts/456"
+RESPONSE=$(http_delete "/api/posts/456")
+assert_status "$RESPONSE" 200 "DELETE /api/posts/456"
+assert_json "$RESPONSE" ".Status" "deleted" ".Status=deleted"
 
-echo "Test 10: DELETE /api/posts/456"
-curl -s -X DELETE http://127.0.0.1:$PORT/api/posts/456 | pretty_json
+# --- Admin Group ---
 echo ""
+echo "Test 10: GET /admin/dashboard"
+RESPONSE=$(http_get "/admin/dashboard")
+assert_status "$RESPONSE" 200 "GET /admin/dashboard"
+assert_json "$RESPONSE" ".Status" "admin dashboard" ".Status=admin dashboard"
 
-# --------------------------------------------------
-# ADMIN GROUP
-# --------------------------------------------------
-
-echo "Test 11: GET /admin/dashboard"
-curl -s http://127.0.0.1:$PORT/admin/dashboard | pretty_json
 echo ""
+echo "Test 11: GET /admin/users"
+RESPONSE=$(http_get "/admin/users")
+assert_status "$RESPONSE" 200 "GET /admin/users"
+assert_json "$RESPONSE" ".Name" "All Admin Users" ".Name=All Admin Users"
 
-echo "Test 12: GET /admin/users"
-curl -s http://127.0.0.1:$PORT/admin/users | pretty_json
-echo ""
-
-echo "✅ All route group tests completed"
-
-# --------------------------------------------------
-# Log location (like blog/test_blog.sh)
-# --------------------------------------------------
-echo ""
-echo "📝 Server logs saved in: $(cd "$SCRIPT_DIR" && pwd)/server9.log"
-echo "   To inspect: tail -200 \"$SCRIPT_DIR/server9.log\""
-if command -v wslpath >/dev/null 2>&1; then
-  WIN_LOG_PATH="$(wslpath -w "$SCRIPT_DIR/server9.log")"
-  echo "   Windows path: $WIN_LOG_PATH"
-fi
+print_http_summary

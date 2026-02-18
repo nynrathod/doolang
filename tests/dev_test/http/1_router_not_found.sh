@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Source common utilities
+# Source common utilities (includes assertion framework)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../common.sh"
 
@@ -14,14 +14,34 @@ echo "Starting server on port $PORT..."
 start_server "$FILE" "$PORT" || exit 1
 setup_trap
 
-echo "Test: Valid route"
-curl -s http://127.0.0.1:$PORT/users | pretty_json
+# =========================================================
+# Test 1: Valid route — should return 200 with body
+# =========================================================
 echo ""
+echo "Test 1: Valid route (GET /users)"
+RESPONSE=$(http_get "/users")
+assert_status "$RESPONSE" 200 "GET /users"
+assert_body "$RESPONSE" "User found!" "GET /users body"
 
-echo "Test: 404 not found (Expect 404 JSON)"
-curl -s http://127.0.0.1:$PORT/notfound | pretty_json
+# =========================================================
+# Test 2: 404 Not Found — GET non-existent route
+# =========================================================
 echo ""
+echo "Test 2: 404 Not Found (GET /notfound)"
+RESPONSE=$(http_get "/notfound")
+assert_rfc7807 "$RESPONSE" 404 "Not Found" "not_found" \
+    "The requested route does not exist" "/notfound" "GET"
 
-echo "Test: POST Invalid (Expect 404 JSON)"
-curl -s -X POST http://127.0.0.1:$PORT/invalid | pretty_json
+# =========================================================
+# Test 3: 404 Not Found — POST non-existent route
+# =========================================================
 echo ""
+echo "Test 3: 404 Not Found (POST /invalid)"
+RESPONSE=$(http_post "/invalid")
+assert_rfc7807 "$RESPONSE" 404 "Not Found" "not_found" \
+    "The requested route does not exist" "/invalid" "POST"
+
+# =========================================================
+# Summary
+# =========================================================
+print_http_summary

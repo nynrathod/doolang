@@ -131,3 +131,54 @@ fn main() {
     print("  bslice =", bslice);
     print("    bslice indices:", bslice[0], bslice[1]);
 }
+
+//
+// EXPECT: Basic slicing
+// EXPECT:   nums = [1, 2, 3, 4, 5]
+// EXPECT:   slice = [2, 3, 4]
+// EXPECT:   last = 5
+// EXPECT: Example 1: Spread single array
+// EXPECT:   arr1 = [1, 2, 3]
+// EXPECT:   arr2 = [1, 2, 3, 4, 5]
+// EXPECT:   arr2 indices: 1 2 3 4 5
+// EXPECT: Example 2: Spread multiple arrays
+// EXPECT:   nums1 = [10, 20]
+// EXPECT:   nums2 = [30, 40]
+// EXPECT:   combined = [10, 20, 30, 40, 50]
+// EXPECT:   combined indices: 10 20 30 40 50
+// EXPECT: Example 3: Spread at start
+// EXPECT:   base = [100, 200]
+// EXPECT:   extended = [0, 100, 200]
+// EXPECT:   extended indices: 0 100 200
+// EXPECT: Example 4: Works with Float arrays
+// EXPECT:   floats1 = [1.1, 2.2]
+// EXPECT:   floats2 = [1.1, 2.2, 3.3]
+// EXPECT:   floats2 indices: 1.1 2.2 3.3
+// EXPECT: Example 5: Works with String arrays
+// EXPECT:   strs1 = ["hello", "world"]
+// EXPECT:   strs2 = ["hello", "world", "test"]
+// EXPECT:   strs2 indices: hello world test
+// EXPECT: Example 6: Multiple spreads
+// EXPECT:   abc = [1, 2, 3]
+// EXPECT: Combined Usage (structs & arrays)
+// EXPECT:   Created user: Bob - bob@test.com
+// EXPECT:   allData = [5, 10, 15, 20]
+// EXPECT:   allData indices: 5 10 15 20
+// EXPECT: Array Slicing
+// EXPECT:   numbers[1..4] (exclusive): [20, 30, 40]
+// EXPECT:     slice1 elements: 20 30 40
+// EXPECT:   numbers[1..=4] (inclusive): [20, 30, 40, 50]
+// EXPECT:     slice2 elements: 20 30 40 50
+// EXPECT:   numbers[0..3]: [10, 20, 30]
+// EXPECT:     slice3 elements: 10 20 30
+// EXPECT: Combined Spread + Slice
+// EXPECT:   allvalues = [100, 200, 300, 400, 500]
+// EXPECT:   allvalues indices: 100 200 300 400 500
+// EXPECT:   Sliced allvalues[1..4]: [200, 300, 400]
+// EXPECT:     subset indices: 200 300 400
+// EXPECT: Float array slice
+// EXPECT:   fslice = [2.5, 3.5]
+// EXPECT:     fslice indices: 2.5 3.5
+// EXPECT: Bool array slice
+// EXPECT:   bslice = [true, false]
+// EXPECT:     bslice indices: true false

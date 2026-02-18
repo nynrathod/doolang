@@ -9,8 +9,6 @@ fn main() {
     // invalid names (and a root-fallback) to provoke OS-level errors
     // (e.g., invalid filename characters on Windows, permission errors on Unix).
 
-
-
     // Two candidates used per test:
     //  - invalidWindows: bad names with characters not permitted in Windows filenames
     //  - invalidUnixFallback: a root-protected path that should fail for non-root users
@@ -331,3 +329,53 @@ fn main() {
     print("=== Manual Environment Error Test Complete ===");
     print("");
 }
+
+// Expect: ----------------------------------------
+// Expect: Test 1: File::Write with invalid filename (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 2: File::Read with invalid filename (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 3: File::Append with invalid filename (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 4: File::Exists on invalid filename (may return false, may not error)
+// Expect:   File exists (invalidWindows): false
+// Expect:   File exists (invalidUnixFallback): false
+// Expect: ----------------------------------------
+// Expect: Test 5: File::Size on invalid filename (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 6: File::Metadata on invalid filename (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 7: File::Copy from invalid source to dest (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 8: File::MkDir with invalid directory name (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 9: File::Metadata on invalid directory (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 10: File::Move with invalid source (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 11: File::ListDir on invalid directory (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 12: File::ReadLines on invalid filename (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 13: File::Delete on invalid filename (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 14: File::RmDir on invalid directory (should fail)
+// Expect:   Expected error occurred:
+// Expect: ----------------------------------------
+// Expect: Test 15: File::RmDirAll on invalid directory (should fail)
+// Expect:   Expected error occurred:
+// Expect:
+// Expect: === Manual Environment Error Test Complete ===
+// Expect:

@@ -320,3 +320,52 @@ fn main() {
 
     print("\n=== Test Complete ===");
 }
+
+// EXPECT: Matched 42
+// EXPECT: Matched 42 (explicit)
+// EXPECT: Matched 3.14
+// EXPECT: Matched 3.14 (explicit)
+// EXPECT: Matched true
+// EXPECT: Matched true (explicit)
+// EXPECT: Matched hello
+// EXPECT: Matched hello (explicit)
+// EXPECT: Matched 1
+// EXPECT: Matched 1 (explicit)
+// EXPECT: Matched 1.1
+// EXPECT: Matched 1.1 (explicit)
+// EXPECT: Matched true
+// EXPECT: Matched true (explicit)
+// EXPECT: Matched foo
+// EXPECT: Matched foo (explicit)
+// EXPECT: Matched 1
+// EXPECT: Matched 1 (explicit)
+// EXPECT: Matched 1.5
+// EXPECT: Matched 1.5 (explicit)
+// EXPECT: Matched true
+// EXPECT: Matched true (explicit)
+// EXPECT: Matched one
+// EXPECT: Matched one (explicit)
+// EXPECT: Matched 10
+// EXPECT: Matched 10 (explicit)
+// EXPECT: Matched 1.1
+// EXPECT: Matched 1.1 (explicit)
+// EXPECT: Matched true
+// EXPECT: Matched true (explicit)
+// EXPECT: Matched one
+// EXPECT: Matched one (explicit)
+// EXPECT: Matched 10
+// EXPECT: Matched 10 (explicit)
+// EXPECT: Matched 1.11
+// EXPECT: Matched 1.11 (explicit)
+// EXPECT: Matched true
+// EXPECT: Matched true (explicit)
+// EXPECT: Matched one
+// EXPECT: Matched one (explicit)
+// EXPECT: Matched 100
+// EXPECT: Matched 100 (explicit)
+// EXPECT: Matched 1.5
+// EXPECT: Matched 1.5 (explicit)
+// EXPECT: Matched yes
+// EXPECT: Matched yes (explicit)
+// EXPECT:
+// EXPECT: === Test Complete ===

@@ -40,3 +40,27 @@ fn main() {
     File::Delete("metadata_test.txt")?;
     print("Test complete!");
 }
+
+// EXPECT: === FileMetadata Test ===
+// EXPECT:
+// EXPECT: Creating test file...
+// EXPECT: Test file created
+// EXPECT:
+// EXPECT: Getting file metadata...
+// EXPECT: Metadata retrieved successfully!
+// EXPECT:
+// EXPECT: Full metadata struct:
+// EXPECT: <meta>
+// EXPECT:
+// EXPECT: Individual fields:
+// EXPECT:   isFile: true
+// EXPECT:   isDir: false
+// EXPECT:   isSymlink: false
+// EXPECT:   size: ${meta.Size} bytes
+// EXPECT:   readonly: false
+// EXPECT:   created: <created>
+// EXPECT:   modified: <modified>
+// EXPECT:   accessed: <accessed>
+// EXPECT:
+// EXPECT: Cleaning up...
+// EXPECT: Test complete!

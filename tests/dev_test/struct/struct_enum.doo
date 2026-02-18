@@ -41,3 +41,12 @@ fn main() {
     print("User3:", user3);
     print("Zero User:", user0);
 }
+
+// EXPECT: User1: {name: Alice, age: 30, status: Active}
+// EXPECT: User2: {name: Bob, age: 25, status: Inactive}
+// EXPECT: User3: {name: Charlie, age: 40, status: Pending}
+// EXPECT: Zero User: {name: , age: 0, status: Inactive}
+// EXPECT: User1: {name: Alice, age: 30, status: Active}
+// EXPECT: User2: {name: Bob, age: 25, status: Inactive}
+// EXPECT: User3: {name: Charlie, age: 40, status: Pending}
+// EXPECT: Zero User: {name: , age: 0, status: Inactive}
