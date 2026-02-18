@@ -1,7 +1,5 @@
 #![no_main]
-use bumpalo::Bump;
-use doo::lexer::lexer::lex;
-use doo::parser::Parser;
+use doo_frontend::{Lexer, Parser};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -14,8 +12,8 @@ fuzz_target!(|data: &[u8]| {
     }
 
     if let Ok(s) = std::str::from_utf8(data) {
-        let arena = Bump::new();
-        let tokens = lex(s, &arena);
+        let mut lexer = Lexer::new(s, 0);
+        let tokens = lexer.tokenize();
 
         if tokens.len() > 5000 {
             return;
