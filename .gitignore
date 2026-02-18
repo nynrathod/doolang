@@ -10,12 +10,12 @@ target-*
 /tests/fuzz/artifacts
 /fuzz_logs
 output
-#output.*
+output.*
 /linkers
 *.o
 *.ll
 *.env
-#*.log
+*.log
 
 # Compiled binaries
 *.exe
