@@ -1,0 +1,21 @@
+[36m  ____              
+ |  _ \  ___   ___  
+ | | | |/ _ \ / _ \ 
+ | |_| | (_) | (_) |
+ |____/ \___/ \___/          Doo v0.4.0[0m
+-------------------------------------------
+Info Server Online
+-------------------------------------------
+  Boot Time:            3 ms
+  Listening on:         http://127.0.0.1:3100
+  Handlers Loaded:      9
+  WebSocket Routes:     0
+  Process ID:           14004
+  Max Connections:      10000
+  Max Body Size:        1048576 bytes
+  Request Timeout:      30000 ms
+-------------------------------------------
+[Doo] Server started on http://127.0.0.1:3100 (pid=14004)
+📍 Handler: GetProfile
+📍 Handler: GetPublicInfo
+📍 Handler: GetProfile

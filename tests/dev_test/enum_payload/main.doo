@@ -1,0 +1,10 @@
+enum Shape {
+    Circle(Int),
+    Rectangle(Int, Int)
+}
+
+fn main() {
+    let c = Shape::Circle(5);
+    let r = Shape::Rectangle(3, 4);
+    print("Enum payload constructors work!");
+}

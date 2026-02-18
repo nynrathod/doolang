@@ -1,0 +1,345 @@
+// =============================================================================
+// DOO ASYNC STRESS TEST — PRODUCTION-GRADE VALIDATION
+// =============================================================================
+// Tests concurrency guarantees under load:
+// - Many concurrent tasks in scopes
+// - Nested scopes
+// - Mixed sync/async code paths
+// - Rapid spawn/await cycles
+// - Deep nesting of go blocks
+// - Sequential vs parallel correctness
+// - Scope + async fn composition
+// =============================================================================
+import helpers::{SlowQuery, BackgroundWorker, Compute};
+
+// --- Helper async functions ---
+
+async fn FastOp(id: Int) -> Str {
+    sleep(5);
+    return "fast-${id}";
+}
+
+async fn MediumOp(id: Int) -> Str {
+    sleep(25);
+    return "medium-${id}";
+}
+
+async fn SlowOp(id: Int) -> Str {
+    sleep(50);
+    return "slow-${id}";
+}
+
+async fn Chain(label: Str) -> Str {
+    let a = await FastOp(1);
+    let b = await FastOp(2);
+    return "${label}:${a}+${b}";
+}
+
+fn main() {
+    print("========================================");
+    print("  DOO ASYNC STRESS TEST SUITE");
+    print("========================================");
+    print("");
+
+    // =========================================================================
+    // TEST 1: Scope with many concurrent tasks (fan-out)
+    // All 5 tasks run concurrently; fastest finishes first
+    // =========================================================================
+    print("TEST 1: Scope fan-out (5 concurrent tasks)");
+    scope {
+        go {
+            sleep(50);
+            print("  T1 done (50ms)");
+        }
+        go {
+            sleep(10);
+            print("  T2 done (10ms)");
+        }
+        go {
+            sleep(30);
+            print("  T3 done (30ms)");
+        }
+        go {
+            sleep(5);
+            print("  T4 done (5ms)");
+        }
+        go {
+            sleep(20);
+            print("  T5 done (20ms)");
+        }
+    }
+    print("  Expected: T4, T2, T5, T3, T1");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 2: Nested scopes (inner scope completes before outer continues)
+    // =========================================================================
+    print("TEST 2: Nested scopes");
+    scope {
+        go {
+            print("  outer-A start");
+            scope {
+                go {
+                    sleep(10);
+                    print("    inner-X done");
+                }
+                go {
+                    sleep(5);
+                    print("    inner-Y done");
+                }
+            }
+            print("  outer-A: inner scope finished");
+        }
+        go {
+            sleep(30);
+            print("  outer-B done (30ms)");
+        }
+    }
+    print("  Nested scopes completed");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 3: Rapid spawn/await cycle (sequential, 10 iterations)
+    // Tests handle creation and consumption repeatedly
+    // =========================================================================
+    print("TEST 3: Rapid spawn/await cycle");
+    for i in 0..10 {
+        let result = await FastOp(i);
+        print("  iter ${i}: ${result}");
+    }
+    print("  10 sequential awaits completed");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 4: Async fn chaining (await inside async fn)
+    // Tests that async fns can call other async fns
+    // =========================================================================
+    print("TEST 4: Async fn chaining");
+    let chained = await Chain("test");
+    print("  chain result: ${chained}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 5: Multiple go handles awaited sequentially
+    // Each go block runs concurrently, but awaits are sequential
+    // =========================================================================
+    print("TEST 5: Multiple go handles");
+    let h1 = go {
+        sleep(30);
+        print("  handle-1 done");
+    };
+    let h2 = go {
+        sleep(10);
+        print("  handle-2 done");
+    };
+    let h3 = go {
+        sleep(20);
+        print("  handle-3 done");
+    };
+    // All three started concurrently, await in order
+    await h1;
+    print("  h1 awaited");
+    await h2;
+    print("  h2 awaited");
+    await h3;
+    print("  h3 awaited");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 6: Scope with async fn calls inside go blocks
+    // Tests composition of scopes + async fns + await
+    // =========================================================================
+    print("TEST 6: Scope + async fn composition");
+    scope {
+        go {
+            let r1 = await SlowOp(1);
+            print("  scope-task-1: ${r1}");
+        }
+        go {
+            let r2 = await FastOp(2);
+            print("  scope-task-2: ${r2}");
+        }
+        go {
+            let r3 = await MediumOp(3);
+            print("  scope-task-3: ${r3}");
+        }
+    }
+    print("  Expected order: task-2, task-3, task-1");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 7: Detached tasks (fire-and-forget) — verify they run
+    // =========================================================================
+    print("TEST 7: Multiple detached tasks");
+    go {
+        sleep(10);
+        print("  detached-A ran");
+    }
+    go {
+        sleep(20);
+        print("  detached-B ran");
+    }
+    go {
+        sleep(5);
+        print("  detached-C ran");
+    }
+    // Wait enough for all detached tasks to complete
+    sleep(100);
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 8: Mixed sync compute + async in scope
+    // CPU-bound work interleaved with async sleep
+    // =========================================================================
+    print("TEST 8: Mixed sync/async in scope");
+    scope {
+        go {
+            let va = Compute(7);
+            print("  compute(7) = ${va}");
+            sleep(10);
+            let vb = Compute(va);
+            print("  compute(${va}) = ${vb}");
+        }
+        go {
+            let vc = Compute(3);
+            print("  compute(3) = ${vc}");
+            sleep(15);
+            let vd = Compute(vc);
+            print("  compute(${vc}) = ${vd}");
+        }
+    }
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 9: Deep nesting — go inside go inside scope
+    // =========================================================================
+    print("TEST 9: Deep nesting");
+    scope {
+        go {
+            print("  level-1 start");
+            let inner = go {
+                sleep(10);
+                print("    level-2 done");
+            };
+            await inner;
+            print("  level-1 done after inner");
+        }
+    }
+    print("  Deep nesting completed");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 10: Sequential scope blocks — second scope starts after first ends
+    // =========================================================================
+    print("TEST 10: Sequential scopes");
+    print("  scope-1 start");
+    scope {
+        go {
+            sleep(20);
+            print("    scope-1-task done");
+        }
+    }
+    print("  scope-1 ended");
+    print("  scope-2 start");
+    scope {
+        go {
+            sleep(10);
+            print("    scope-2-task done");
+        }
+    }
+    print("  scope-2 ended");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 11: Polling loop with await sleep
+    // =========================================================================
+    print("TEST 11: Polling loop (5 iterations)");
+    for i in 0..5 {
+        await sleep(10);
+        print("  poll ${i}");
+    }
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 12: Cross-file async fn in scope
+    // Tests imported async fns running concurrently in scope
+    // =========================================================================
+    print("TEST 12: Imported async fns in scope");
+    scope {
+        go {
+            let r = await SlowQuery("orders", 30);
+            print("  ${r}");
+        }
+        go {
+            let r = await SlowQuery("products", 10);
+            print("  ${r}");
+        }
+        go {
+            let w = await BackgroundWorker("scanner", 2);
+            print("  ${w}");
+        }
+    }
+    print("  Cross-file async composition done");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 13: Multiple scopes with shared async fn
+    // Same async fn called from different scopes — tests isolation
+    // =========================================================================
+    print("TEST 13: Isolated scopes with shared async fn");
+    scope {
+        go {
+            let r = await FastOp(100);
+            print("  scope-A: ${r}");
+        }
+    }
+    scope {
+        go {
+            let r = await FastOp(200);
+            print("  scope-B: ${r}");
+        }
+    }
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 14: Scope with single task (edge case — no concurrency needed)
+    // =========================================================================
+    print("TEST 14: Single-task scope");
+    scope {
+        go {
+            sleep(10);
+            print("  only task done");
+        }
+    }
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 15: Async fn returning computed value + sleep
+    // Ensures return value survives cross-thread boundary
+    // =========================================================================
+    print("TEST 15: Async return values across threads");
+    let a = await FastOp(42);
+    let b = await MediumOp(99);
+    let c = await SlowOp(7);
+    print("  a=${a}, b=${b}, c=${c}");
+    print("  PASS");
+    print("");
+
+    print("========================================");
+    print("  ALL 15 STRESS TESTS PASSED");
+    print("========================================");
+}

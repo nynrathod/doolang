@@ -1,0 +1,23 @@
+// helpers.doo — Async helper functions for concurrency testing
+
+// Simulate a "slow database query" — sleeps then returns data
+async fn SlowQuery(label: Str, ms: Int) -> Str {
+    print("    [${label}] query start (${ms}ms)");
+    sleep(ms);
+    print("    [${label}] query done");
+    return "${label}-result";
+}
+
+// Simulate a background worker that runs N iterations
+async fn BackgroundWorker(name: Str, iterations: Int) -> Str {
+    for i in 0..iterations {
+        sleep(20);
+        print("    [${name}] tick ${i}");
+    }
+    return "${name}-completed";
+}
+
+// Simple compute function (no async, no sleep)
+fn Compute(x: Int) -> Int {
+    return x * x + 1;
+}

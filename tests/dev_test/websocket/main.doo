@@ -1,0 +1,135 @@
+import std::Http::{Server, WsConnection, WsError};
+
+// ============================================================================
+// Echo Route
+// ============================================================================
+
+fn onEchoMessage(conn: WsConnection, data: Str) {
+    conn.emit("echo", data);
+}
+
+fn echoHandler(conn: WsConnection) {
+    conn.on("echo", onEchoMessage);
+}
+
+// ============================================================================
+// Chat Route
+// ============================================================================
+
+fn onChatMessage(conn: WsConnection, data: Str, app: Server) {
+    app.toRoomEmit("lobby", "message", data);
+}
+
+fn onJoinRoom(conn: WsConnection, data: Str) {
+    conn.join(data);
+}
+
+fn onLeaveRoom(conn: WsConnection, data: Str) {
+    conn.leave(data);
+}
+
+fn onRoomMsg(conn: WsConnection, data: Str, app: Server) {
+    app.toRoomEmit("vip", "room_msg", data);
+}
+
+fn onChatConnect(conn: WsConnection) {
+    print("Client connected to chat");
+}
+
+fn onChatDisconnect(conn: WsConnection) {
+    print("Client disconnected from chat");
+}
+
+fn chatHandler(conn: WsConnection) {
+    conn.join("lobby");
+
+    conn.on("message", onChatMessage);
+    conn.on("join_room", onJoinRoom);
+    conn.on("leave_room", onLeaveRoom);
+    conn.on("room_msg", onRoomMsg);
+
+    conn.onConnect(onChatConnect);
+    conn.onDisconnect(onChatDisconnect);
+}
+
+// ============================================================================
+// Lifecycle Route
+// ============================================================================
+
+fn onLifecycleConnect(conn: WsConnection) {
+    print("LIFECYCLE: connected");
+}
+
+fn onLifecycleDisconnect(conn: WsConnection) {
+    print("LIFECYCLE: disconnected");
+}
+
+fn onLifecycleError(conn: WsConnection, err: Str) {
+    print("LIFECYCLE: error - " + err);
+}
+
+fn onLifecyclePing(conn: WsConnection, data: Str) {
+    conn.emit("pong", data);
+}
+
+fn lifecycleHandler(conn: WsConnection) {
+    conn.onConnect(onLifecycleConnect);
+    conn.onDisconnect(onLifecycleDisconnect);
+    conn.onError(onLifecycleError);
+    conn.on("ping", onLifecyclePing);
+}
+
+// ============================================================================
+// Close Test Route — tests conn.close() and conn.isClosed()
+// ============================================================================
+
+fn onCloseCheck(conn: WsConnection, data: Str) {
+    let closed = conn.isClosed();
+    if closed {
+        conn.emit("status", "already_closed");
+    } else {
+        conn.emit("status", "open");
+    }
+}
+
+fn onServerClose(conn: WsConnection, data: Str) {
+    conn.emit("closing", "bye");
+    conn.close();
+}
+
+fn closeTestHandler(conn: WsConnection) {
+    conn.on("check_status", onCloseCheck);
+    conn.on("server_close", onServerClose);
+}
+
+// ============================================================================
+// HTTP Status Endpoints
+// ============================================================================
+
+fn getActiveConnections(app: Server) -> Str {
+    let count = app.activeWsConnections();
+    return "{\"active_connections\": ${count}}";
+}
+
+fn getBroadcast(app: Server) -> Str {
+    app.broadcast("server_event", "{\"msg\": \"hello_all\"}");
+    return "{\"status\": \"broadcast_sent\"}";
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() {
+    let app = Server::new(":3210");
+
+    app.ws("/ws/echo", echoHandler);
+    app.ws("/ws/chat", chatHandler);
+    app.ws("/ws/lifecycle", lifecycleHandler);
+    app.ws("/ws/close-test", closeTestHandler);
+
+    app.get("/status/connections", getActiveConnections);
+    app.get("/control/broadcast", getBroadcast);
+
+    app.start();
+}
