@@ -1,0 +1,30 @@
+// OUTPUT: 1
+// OUTPUT: 2
+// OUTPUT: Fizz
+// OUTPUT: 4
+// OUTPUT: Buzz
+// OUTPUT: Fizz
+// OUTPUT: 7
+// OUTPUT: 8
+// OUTPUT: Fizz
+// OUTPUT: Buzz
+// OUTPUT: 11
+// OUTPUT: Fizz
+// OUTPUT: 13
+// OUTPUT: 14
+// OUTPUT: FizzBuzz
+// Classic FizzBuzz problem
+
+fn main() {
+    for i in 1..16 {
+        if i % 15 == 0 {
+            print("FizzBuzz");
+        } else if i % 3 == 0 {
+            print("Fizz");
+        } else if i % 5 == 0 {
+            print("Buzz");
+        } else {
+            print(i);
+        }
+    }
+}

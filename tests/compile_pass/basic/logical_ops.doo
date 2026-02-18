@@ -1,0 +1,50 @@
+// OUTPUT: t && t: true
+// OUTPUT: t && f: false
+// OUTPUT: f && t: false
+// OUTPUT: f && f: false
+// OUTPUT: t || t: true
+// OUTPUT: t || f: true
+// OUTPUT: f || t: true
+// OUTPUT: f || f: false
+// OUTPUT: !t: false
+// OUTPUT: !f: true
+// OUTPUT: Combined: true
+// OUTPUT: Complex: true
+// OUTPUT: Chained: true
+// OUTPUT: Or chain: true
+// OUTPUT: Negated: true
+fn main() {
+    let t = true;
+    let f = false;
+
+    print("t && t:", t && t);
+    print("t && f:", t && f);
+    print("f && t:", f && t);
+    print("f && f:", f && f);
+
+    print("t || t:", t || t);
+    print("t || f:", t || f);
+    print("f || t:", f || t);
+    print("f || f:", f || f);
+
+    print("!t:", !t);
+    print("!f:", !f);
+
+    let a = 10;
+    let b = 20;
+    let combined = (a < b) && (b > 15);
+    print("Combined:", combined);
+
+    let complex = (a == 10) || (b == 30);
+    print("Complex:", complex);
+
+    let chain = (a > 5) && (a < 15) && (b > 10) && (b < 25);
+    print("Chained:", chain);
+
+    let orChain = (a == 1) || (a == 5) || (a == 10) || (a == 15);
+    print("Or chain:", orChain);
+
+    let negated = !(a > b);
+    print("Negated:", negated);
+}
+

@@ -1,0 +1,32 @@
+// OUTPUT: 42 temporary [1, 2, 3] {"a": 1}
+// OUTPUT: After function returned
+// OUTPUT: will be dropped
+// OUTPUT: After scope ended
+// OUTPUT: Temp: 0
+// OUTPUT: Temp: 10
+// OUTPUT: Temp: 20
+// OUTPUT: After loop
+fn createAndDrop() {
+    let x = 42;
+    let s = "temporary";
+    let arr = [1, 2, 3];
+    let m = {"a": 1};
+    print(x, s, arr, m);
+}
+
+fn main() {
+    createAndDrop();
+    print("After function returned");
+
+    if true {
+        let scoped = "will be dropped";
+        print(scoped);
+    }
+    print("After scope ended");
+
+    for i in 0..3 {
+        let temp = i * 10;
+        print("Temp:", temp);
+    }
+    print("After loop");
+}

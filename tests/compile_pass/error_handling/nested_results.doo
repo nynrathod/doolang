@@ -1,0 +1,42 @@
+// OUTPUT: Result: 42
+// OUTPUT: Error: 404 file not found
+struct AppError {
+    code: Int,
+    message: Str,
+}
+
+fn readFile(path: Str) -> Str ! AppError {
+    if path == "" {
+        Err AppError { code: 404, message: "file not found" };
+    }
+    Ok "file contents";
+}
+
+fn parseContent(content: Str) -> Int ! AppError {
+    if content == "" {
+        Err AppError { code: 400, message: "empty content" };
+    }
+    Ok 42;
+}
+
+fn processFile(path: Str) -> Int ! AppError {
+    let content = readFile(path)?;
+    let value = parseContent(content)?;
+    Ok value;
+}
+
+fn main() {
+    let r1, e1 = processFile("test.txt");
+    if e1 != nil {
+        print("Error:", e1.code, e1.message);
+    } else {
+        print("Result:", r1);
+    }
+
+    let r2, e2 = processFile("");
+    if e2 != nil {
+        print("Error:", e2.code, e2.message);
+    } else {
+        print("Result:", r2);
+    }
+}

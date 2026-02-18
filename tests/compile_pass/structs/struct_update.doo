@@ -1,0 +1,29 @@
+// OUTPUT: Initial: 0 clicks
+// OUTPUT: After update: 1
+// OUTPUT: After increment: 2
+// OUTPUT: New label: taps
+// OUTPUT: Set to 100: 100
+struct Counter {
+    value: Int,
+    label: Str,
+}
+
+fn main() {
+    let mut counter = Counter {
+        value: 0,
+        label: "clicks",
+    };
+    print("Initial:", counter.value, counter.label);
+
+    counter.value = 1;
+    print("After update:", counter.value);
+
+    counter.value = counter.value + 1;
+    print("After increment:", counter.value);
+
+    counter.label = "taps";
+    print("New label:", counter.label);
+
+    counter.value = 100;
+    print("Set to 100:", counter.value);
+}

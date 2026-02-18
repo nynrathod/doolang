@@ -1,0 +1,6 @@
+// OUTPUT: Nested path import test
+import a::b::c::d
+
+fn main() {
+    print("Nested path import test");
+}

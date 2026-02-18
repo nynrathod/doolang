@@ -1,0 +1,10 @@
+
+fn main() {
+    let x = 42;
+    let label = match {
+        x > 100 => "big",
+        x > 10 => "medium",
+        _ => "small",
+    };
+    print(label);
+}

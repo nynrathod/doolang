@@ -1,0 +1,14 @@
+// ERROR: already defined
+// Tests that ambiguous name usage produces a resolution error
+
+fn foo() {
+    print("first foo");
+}
+
+fn foo() {
+    print("second foo");
+}
+
+fn main() {
+    foo();
+}

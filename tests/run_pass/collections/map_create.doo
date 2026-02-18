@@ -1,0 +1,7 @@
+// OUTPUT: {name: Alice, age: 30}
+// Tests creating and printing a map
+
+fn main() {
+    let m = {"name": "Alice", "age": "30"};
+    print(m);
+}

@@ -1,0 +1,28 @@
+// OUTPUT: PI: 3.141590
+// OUTPUT: Max size: 1000
+// OUTPUT: App name: MyApp
+// OUTPUT: Is production: false
+// OUTPUT: Circle area (r=5): 78.539750
+// OUTPUT: Half max: 500
+// OUTPUT: Welcome to MyApp
+fn main() {
+    let pi = 3.14159;
+    let maxSize = 1000;
+    let appName = "MyApp";
+    let isProduction = false;
+
+    print("PI:", pi);
+    print("Max size:", maxSize);
+    print("App name:", appName);
+    print("Is production:", isProduction);
+
+    let area = pi * 5.0 * 5.0;
+    print("Circle area (r=5):", area);
+
+    let halfMax = maxSize / 2;
+    print("Half max:", halfMax);
+
+    let greeting = "Welcome to " + appName;
+    print(greeting);
+}
+

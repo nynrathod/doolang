@@ -1,0 +1,8 @@
+// Crash test: deeply nested function calls
+fn f(x: Int) -> Int {
+    return x + 1
+}
+
+fn test() -> Int {
+    return f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(1))))))))))))))))))))))))))))))))))))))))))))))))))
+}

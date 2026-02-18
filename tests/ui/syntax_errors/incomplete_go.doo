@@ -1,0 +1,5 @@
+// ERROR: parse
+// Incomplete go block
+fn main() {
+    go;
+}

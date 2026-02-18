@@ -1,0 +1,11 @@
+
+fn main() {
+    let x = 50;
+    if x > 100 {
+        print("big");
+    } else if x > 10 {
+        print("medium");
+    } else {
+        print("small");
+    }
+}

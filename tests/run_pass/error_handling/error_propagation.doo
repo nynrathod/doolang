@@ -1,0 +1,18 @@
+// OUTPUT: Error: failed
+// Tests propagating errors up the call stack
+
+fn inner() -> Int ! Str {
+    Err "failed";
+}
+
+fn outer() -> Int ! Str {
+    let n = inner()?;
+    Ok n;
+}
+
+fn main() {
+    let _, e = outer();
+    if e != nil {
+        print("Error:", e);
+    }
+}

@@ -1,0 +1,14 @@
+
+enum Shape {
+    Circle(Int),
+    Rectangle(Int, Int),
+}
+fn area(s: Shape) -> Int {
+    match s {
+        Shape::Circle(r) => r * r,
+        Shape::Rectangle(w, h) => w * h,
+    }
+}
+fn main() {
+    print(area(Shape::Rectangle(3, 4)));
+}

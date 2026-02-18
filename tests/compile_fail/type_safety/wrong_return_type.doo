@@ -1,0 +1,11 @@
+// ERROR: expected Int, found Str
+// This program should fail to compile because the function declares it returns Int but actually returns Str
+
+fn getValue() -> Int {
+    return "not an integer";
+}
+
+fn main() {
+    let x = getValue();
+    print(x);
+}

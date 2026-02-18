@@ -1,0 +1,7 @@
+// ERROR: expected Int, found Str
+// Tests that assigning a string to an Int variable produces a type error
+
+fn main() {
+    let x: Int = "hello";
+    print(x);
+}

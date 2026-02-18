@@ -1,0 +1,18 @@
+// OUTPUT: Bob
+// OUTPUT: 25
+// Tests returning struct from function
+
+struct Person {
+    name: Str,
+    age: Int
+}
+
+fn createPerson() -> Person {
+    return Person { name: "Bob", age: 25 };
+}
+
+fn main() {
+    let p = createPerson();
+    print(p.name);
+    print(p.age);
+}

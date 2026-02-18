@@ -1,0 +1,33 @@
+// OUTPUT: Success: 5
+// OUTPUT: Failed: division by zero
+// OUTPUT: Doubled result: 40
+fn safeDivide(a: Int, b: Int) -> Int ! Str {
+    if b == 0 {
+        Err "division by zero";
+    }
+    Ok a / b;
+}
+
+fn main() {
+    let result, err = safeDivide(10, 2);
+    if err != nil {
+        print("Failed:", err);
+    } else {
+        print("Success:", result);
+    }
+
+    let result2, err2 = safeDivide(10, 0);
+    if err2 != nil {
+        print("Failed:", err2);
+    } else {
+        print("Success:", result2);
+    }
+
+    let result3, err3 = safeDivide(100, 5);
+    if err3 != nil {
+        print("Error occurred");
+    } else {
+        let doubled = result3 * 2;
+        print("Doubled result:", doubled);
+    }
+}

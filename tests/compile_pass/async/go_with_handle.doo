@@ -1,0 +1,8 @@
+// Go block with handle
+fn main() {
+    let task = go {
+        sleep(30);
+        print("task done");
+    };
+    sleep(100);
+}

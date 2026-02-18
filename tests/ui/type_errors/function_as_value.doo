@@ -1,0 +1,11 @@
+// Tests that using a function name as a value
+// Note: compiler currently allows function references
+
+fn getNumber() -> Int {
+    return 42;
+}
+
+fn main() {
+    let x: Int = getNumber;
+    print(x);
+}

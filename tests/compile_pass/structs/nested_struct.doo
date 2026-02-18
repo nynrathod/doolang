@@ -1,0 +1,44 @@
+// OUTPUT: Name: Alice
+// OUTPUT: City: Springfield
+// OUTPUT: Street: 123 Main St
+// OUTPUT: Zip: 12345
+// OUTPUT: Person2: Bob Portland
+struct Address {
+    street: Str,
+    city: Str,
+    zipcode: Int,
+}
+
+struct Person {
+    name: Str,
+    age: Int,
+    address: Address,
+}
+
+fn main() {
+    let addr = Address {
+        street: "123 Main St",
+        city: "Springfield",
+        zipcode: 12345,
+    };
+    let person = Person {
+        name: "Alice",
+        age: 30,
+        address: addr,
+    };
+    print("Name:", person.name);
+    print("City:", person.address.city);
+    print("Street:", person.address.street);
+    print("Zip:", person.address.zipcode);
+
+    let person2 = Person {
+        name: "Bob",
+        age: 25,
+        address: Address {
+            street: "456 Oak Ave",
+            city: "Portland",
+            zipcode: 67890,
+        },
+    };
+    print("Person2:", person2.name, person2.address.city);
+}

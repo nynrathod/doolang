@@ -1,0 +1,11 @@
+// OUTPUT: 5
+// OUTPUT: true
+// OUTPUT: false
+// Tests string methods like length and contains
+
+fn main() {
+    let s = "Hello";
+    print(s.length());
+    print(s.contains("ell"));
+    print(s.contains("xyz"));
+}

@@ -1,0 +1,19 @@
+// OUTPUT: Host: localhost
+// OUTPUT: Port: 8080
+// OUTPUT: Debug: true
+pub struct Config {
+    host: Str,
+    port: Int,
+    debug: Bool,
+}
+
+fn main() {
+    let config = Config {
+        host: "localhost",
+        port: 8080,
+        debug: true,
+    };
+    print("Host:", config.host);
+    print("Port:", config.port);
+    print("Debug:", config.debug);
+}

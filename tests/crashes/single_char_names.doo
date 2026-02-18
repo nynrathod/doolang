@@ -1,0 +1,54 @@
+// Crash test: all single letter identifiers
+let a = 1
+let b = 2
+let c = 3
+let d = 4
+let e = 5
+let f = 6
+let g = 7
+let h = 8
+let i = 9
+let j = 10
+let k = 11
+let l = 12
+let m = 13
+let n = 14
+let o = 15
+let p = 16
+let q = 17
+let r = 18
+let s = 19
+let t = 20
+let u = 21
+let v = 22
+let w = 23
+let x = 24
+let y = 25
+let z = 26
+
+fn A() -> Int { return 1 }
+fn B() -> Int { return 2 }
+fn C() -> Int { return 3 }
+fn D() -> Int { return 4 }
+fn E() -> Int { return 5 }
+fn F() -> Int { return 6 }
+fn G() -> Int { return 7 }
+fn H() -> Int { return 8 }
+fn I() -> Int { return 9 }
+fn J() -> Int { return 10 }
+fn K() -> Int { return 11 }
+fn L() -> Int { return 12 }
+fn M() -> Int { return 13 }
+fn N() -> Int { return 14 }
+fn O() -> Int { return 15 }
+fn P() -> Int { return 16 }
+fn Q() -> Int { return 17 }
+fn R() -> Int { return 18 }
+fn S() -> Int { return 19 }
+fn T() -> Int { return 20 }
+fn U() -> Int { return 21 }
+fn V() -> Int { return 22 }
+fn W() -> Int { return 23 }
+fn X() -> Int { return 24 }
+fn Y() -> Int { return 25 }
+fn Z() -> Int { return 26 }

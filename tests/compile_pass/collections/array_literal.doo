@@ -1,0 +1,21 @@
+// OUTPUT: Ints: [1, 2, 3, 4, 5]
+// OUTPUT: Floats: [1.100000, 2.200000, 3.300000]
+// OUTPUT: Strings: ["hello", "world", "test"]
+// OUTPUT: Bools: [true, false, true, false]
+// OUTPUT: Single: [42]
+// OUTPUT: Negatives: [-1, -2, -3]
+fn main() {
+    let ints = [1, 2, 3, 4, 5];
+    let floats = [1.1, 2.2, 3.3];
+    let strs = ["hello", "world", "test"];
+    let bools = [true, false, true, false];
+    let single = [42];
+    let negatives = [-1, -2, -3];
+
+    print("Ints:", ints);
+    print("Floats:", floats);
+    print("Strings:", strs);
+    print("Bools:", bools);
+    print("Single:", single);
+    print("Negatives:", negatives);
+}

@@ -1,0 +1,7 @@
+// ERROR: Undefined
+// This program should fail to compile because 'nonexistent' function does not exist
+
+fn main() {
+    let result = nonexistent(42);
+    print(result);
+}

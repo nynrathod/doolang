@@ -1,0 +1,9 @@
+
+fn main() {
+    let mut last = 0;
+    for i in 0..100 {
+        if i >= 5 { break; }
+        last = i;
+    }
+    print(last);
+}

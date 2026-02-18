@@ -1,0 +1,12 @@
+// ERROR: not mutable
+// This program should fail to compile because user is not declared as mut
+
+struct User {
+    name: Str
+}
+
+fn main() {
+    let user = User { name: "Alice" };
+    user.name = "Bob";
+    print(user.name);
+}

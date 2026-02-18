@@ -1,0 +1,8 @@
+
+fn take(s: Str) { print(s); }
+fn main() {
+    let s = "hello";
+    take(s);
+    take(s);
+    print(s);
+}

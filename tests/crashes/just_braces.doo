@@ -1,0 +1,9 @@
+// Crash test: mismatched braces
+{{{{{}}}}}
+{{{}}}
+{{{
+}}}
+{{{{
+}}
+{
+}

@@ -1,0 +1,15 @@
+// ERROR: expected Int, found Str
+// Tests that providing wrong type for struct field produces a type error
+
+struct User {
+    name: Str,
+    age: Int
+}
+
+fn main() {
+    let user = User {
+        name: "Alice",
+        age: "twenty-five"
+    };
+    print(user.name);
+}

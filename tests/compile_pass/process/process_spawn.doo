@@ -1,0 +1,8 @@
+// Process::spawn + isRunning + kill
+import std::Process::{Process, ProcessError};
+fn main() {
+    let handle = Process::spawn("ping", "[\"127.0.0.1\"]")?;
+    let running = Process::isRunning(handle);
+    print(running);
+    Process::kill(handle)?;
+}

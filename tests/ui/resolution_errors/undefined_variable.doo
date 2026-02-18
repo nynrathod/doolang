@@ -1,0 +1,6 @@
+// ERROR: Undefined
+// Tests that using an undefined variable produces a resolution error
+
+fn main() {
+    print(x);
+}

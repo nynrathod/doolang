@@ -1,0 +1,8 @@
+// Crash test: repeated keywords
+fn fn fn fn fn
+struct struct struct
+enum enum enum
+let let let let
+if if if
+for for for
+return return return

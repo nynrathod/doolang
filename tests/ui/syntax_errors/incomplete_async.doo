@@ -1,0 +1,3 @@
+// ERROR: parse
+// Incomplete async function declaration
+async fn broken()

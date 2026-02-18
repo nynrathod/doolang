@@ -1,0 +1,12 @@
+
+enum Priority { Low, Medium, High }
+fn Priority.label(self) -> Str {
+    return match self {
+        Priority::Low => "low",
+        Priority::Medium => "medium",
+        Priority::High => "high",
+    };
+}
+fn main() {
+    print(Priority::High.label());
+}

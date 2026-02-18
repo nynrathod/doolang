@@ -1,0 +1,20 @@
+// OUTPUT: Action: Starting service
+// OUTPUT: Service is running
+fn main() {
+    let cmd = "start";
+    let action = match cmd {
+        "start" => "Starting service",
+        "stop" => "Stopping service",
+        "restart" => "Restarting service",
+        _ => "Unknown command",
+    };
+    print("Action:", action);
+
+    let status = "running";
+    match status {
+        "running" => print("Service is running"),
+        "stopped" => print("Service is stopped"),
+        "error" => print("Service has error"),
+        _ => print("Unknown status"),
+    }
+}

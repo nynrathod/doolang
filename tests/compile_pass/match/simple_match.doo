@@ -1,0 +1,20 @@
+// OUTPUT: Result: two
+// OUTPUT: It's something else
+fn main() {
+    let x = 2;
+    let result = match x {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "other",
+    };
+    print("Result:", result);
+
+    let y = 10;
+    match y {
+        1 => print("It's one"),
+        2 => print("It's two"),
+        _ => print("It's something else"),
+    }
+}
+

@@ -1,0 +1,20 @@
+// Crash test: unicode in identifiers and strings
+let 变量 = "中文字符串"
+let переменная = "Русский текст"
+let μεταβλητή = "Ελληνικό κείμενο"
+let متغير = "نص عربي"
+let 変数 = "日本語のテキスト"
+let משתנה = "טקסט בעברית"
+let 변수 = "한국어 텍스트"
+
+fn функция() -> String {
+    return "🌍🌎🌏"
+}
+
+fn 関数() -> Int {
+    return 42
+}
+
+struct Структура {
+    поле: String
+}

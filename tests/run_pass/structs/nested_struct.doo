@@ -1,0 +1,20 @@
+// OUTPUT: NYC
+// OUTPUT: USA
+// Tests struct containing another struct
+
+struct Address {
+    city: Str,
+    country: Str
+}
+
+struct Person {
+    name: Str,
+    address: Address
+}
+
+fn main() {
+    let addr = Address { city: "NYC", country: "USA" };
+    let p = Person { name: "Alice", address: addr };
+    print(p.address.city);
+    print(p.address.country);
+}

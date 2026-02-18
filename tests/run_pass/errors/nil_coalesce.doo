@@ -1,0 +1,8 @@
+
+fn getValue() -> Str ! Str {
+    Ok "hello";
+}
+fn main() {
+    let v, _ = getValue();
+    print(v);
+}

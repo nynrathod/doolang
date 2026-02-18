@@ -1,0 +1,21 @@
+// WebSocket lifecycle hooks
+import std::Http::{Server, WsConnection};
+fn onConnect(conn: WsConnection) {
+    print("connected");
+}
+fn onDisconnect(conn: WsConnection) {
+    print("disconnected");
+}
+fn onError(conn: WsConnection, err: Str) {
+    print("error: " + err);
+}
+fn handler(conn: WsConnection) {
+    conn.onConnect(onConnect);
+    conn.onDisconnect(onDisconnect);
+    conn.onError(onError);
+}
+fn main() {
+    let app = Server::new(":3000");
+    app.ws("/ws/lifecycle", handler);
+    app.start();
+}

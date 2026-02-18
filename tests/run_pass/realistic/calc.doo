@@ -1,0 +1,15 @@
+
+fn calc(op: Str, a: Int, b: Int) -> Int ! Str {
+    if op == "add" { Ok a + b; }
+    if op == "sub" { Ok a - b; }
+    if op == "mul" { Ok a * b; }
+    if op == "div" {
+        if b == 0 { Err "division by zero"; }
+        Ok a / b;
+    }
+    Err "unknown op";
+}
+fn main() {
+    let v, e = calc("mul", 6, 7);
+    if e == nil { print(v); }
+}

@@ -1,0 +1,16 @@
+// OUTPUT: Result: 5
+fn divide(a: Int, b: Int) -> Int ! Str {
+    if b == 0 {
+        Err "division by zero";
+    }
+    Ok a / b;
+}
+
+fn main() {
+    let result, err = divide(10, 2);
+    if err != nil {
+        print("Error:", err);
+    } else {
+        print("Result:", result);
+    }
+}

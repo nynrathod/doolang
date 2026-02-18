@@ -1,0 +1,32 @@
+// OUTPUT: Concatenation: hello world
+// OUTPUT: Empty concat: non-empty
+// OUTPUT: Special chars: tab	here
+// OUTPUT: newline
+// OUTPUT: Quotes: She said "hello"
+// OUTPUT: Long string: This is a longer string that spans many characters in a single line for testing
+// OUTPUT: The answer is known
+fn main() {
+    let s1 = "hello";
+    let s2 = "world";
+    let concat = s1 + " " + s2;
+    print("Concatenation:", concat);
+
+    let empty = "";
+    let result = empty + "non-empty";
+    print("Empty concat:", result);
+
+    let special = "tab\there\nnewline";
+    print("Special chars:", special);
+
+    let quotes = "She said \"hello\"";
+    print("Quotes:", quotes);
+
+    let long = "This is a longer string that spans many characters in a single line for testing";
+    print("Long string:", long);
+
+    let num = 42;
+    let withNum = "The answer is " + "known";
+    print(withNum);
+}
+// newline
+

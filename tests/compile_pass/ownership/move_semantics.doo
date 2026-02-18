@@ -1,0 +1,25 @@
+// OUTPUT: Consumed: hello
+// OUTPUT: Still usable: hello
+// OUTPUT: Original: [1, 2, 3]
+// OUTPUT: Copy: [1, 2, 3]
+// OUTPUT: Original map: {"key": "value"}
+// OUTPUT: Copy map: {"key": "value"}
+fn consume(s: Str) {
+    print("Consumed:", s);
+}
+
+fn main() {
+    let s1 = "hello";
+    consume(s1);
+    print("Still usable:", s1);
+
+    let arr = [1, 2, 3];
+    let arr2 = arr;
+    print("Original:", arr);
+    print("Copy:", arr2);
+
+    let m = {"key": "value"};
+    let m2 = m;
+    print("Original map:", m);
+    print("Copy map:", m2);
+}

@@ -1,0 +1,25 @@
+// OUTPUT: 100
+// Tests nested Result handling with multiple ? operators
+
+fn step1() -> Int ! Str {
+    Ok 10;
+}
+
+fn step2(n: Int) -> Int ! Str {
+    Ok n * 10;
+}
+
+fn process() -> Int ! Str {
+    let a = step1()?;
+    let b = step2(a)?;
+    Ok b;
+}
+
+fn main() {
+    let v, e = process();
+    if e == nil {
+        print(v);
+    } else {
+        print("Error:", e);
+    }
+}

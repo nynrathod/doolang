@@ -1,0 +1,13 @@
+// OUTPUT: Something went wrong
+// Tests error with custom message
+
+fn getMessage() -> Int ! Str {
+    Err "Something went wrong";
+}
+
+fn main() {
+    let _, e = getMessage();
+    if e != nil {
+        print(e);
+    }
+}

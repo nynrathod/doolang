@@ -1,0 +1,21 @@
+// OUTPUT: 0
+// OUTPUT: 1
+// OUTPUT: 1
+// OUTPUT: 2
+// OUTPUT: 3
+// OUTPUT: 5
+// OUTPUT: 8
+// Compute fibonacci numbers
+
+fn main() {
+    let mut a = 0;
+    let mut b = 1;
+    print(a);
+    print(b);
+    for _ in 0..5 {
+        let next = a + b;
+        print(next);
+        a = b;
+        b = next;
+    }
+}

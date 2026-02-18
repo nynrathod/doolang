@@ -1,0 +1,24 @@
+// OUTPUT: Str:Int: {"a": 1, "b": 2, "c": 3}
+// OUTPUT: Str:Str: {"name": "Alice", "role": "admin"}
+// OUTPUT: Str:Bool: {"active": true, "verified": false}
+// OUTPUT: Str:Float: {"pi": 3.140000, "e": 2.718000}
+// OUTPUT: Int:Int: {1: 10, 2: 20, 3: 30}
+// OUTPUT: Int:Str: {1: "one", 2: "two"}
+// OUTPUT: Bool:Str: {true: "yes", false: "no"}
+fn main() {
+    let strInt = {"a": 1, "b": 2, "c": 3};
+    let strStr = {"name": "Alice", "role": "admin"};
+    let strBool = {"active": true, "verified": false};
+    let strFloat = {"pi": 3.14, "e": 2.718};
+    let intInt = {1: 10, 2: 20, 3: 30};
+    let intStr = {1: "one", 2: "two"};
+    let boolStr = {true: "yes", false: "no"};
+
+    print("Str:Int:", strInt);
+    print("Str:Str:", strStr);
+    print("Str:Bool:", strBool);
+    print("Str:Float:", strFloat);
+    print("Int:Int:", intInt);
+    print("Int:Str:", intStr);
+    print("Bool:Str:", boolStr);
+}

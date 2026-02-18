@@ -1,0 +1,56 @@
+// OUTPUT: Simple iteration:
+// OUTPUT:   Value: 10
+// OUTPUT:   Value: 20
+// OUTPUT:   Value: 30
+// OUTPUT:   Value: 40
+// OUTPUT:   Value: 50
+// OUTPUT: Indexed iteration:
+// OUTPUT:   Index: 0 Value: 10
+// OUTPUT:   Index: 1 Value: 20
+// OUTPUT:   Index: 2 Value: 30
+// OUTPUT:   Index: 3 Value: 40
+// OUTPUT:   Index: 4 Value: 50
+// OUTPUT: String iteration:
+// OUTPUT:   Position: 0 Name: Alice
+// OUTPUT:   Position: 1 Name: Bob
+// OUTPUT:   Position: 2 Name: Charlie
+// OUTPUT: Range iteration:
+// OUTPUT:   i: 0
+// OUTPUT:   i: 1
+// OUTPUT:   i: 2
+// OUTPUT:   i: 3
+// OUTPUT:   i: 4
+// OUTPUT: Inclusive range:
+// OUTPUT:   i: 0
+// OUTPUT:   i: 1
+// OUTPUT:   i: 2
+// OUTPUT:   i: 3
+fn main() {
+    let nums = [10, 20, 30, 40, 50];
+
+    print("Simple iteration:");
+    for num in nums {
+        print("  Value:", num);
+    }
+
+    print("Indexed iteration:");
+    for i, num in nums {
+        print("  Index:", i, "Value:", num);
+    }
+
+    let names = ["Alice", "Bob", "Charlie"];
+    print("String iteration:");
+    for i, name in names {
+        print("  Position:", i, "Name:", name);
+    }
+
+    print("Range iteration:");
+    for i in 0..5 {
+        print("  i:", i);
+    }
+
+    print("Inclusive range:");
+    for i in 0..=3 {
+        print("  i:", i);
+    }
+}

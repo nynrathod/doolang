@@ -1,0 +1,15 @@
+// Crash test: recursive type without indirection
+struct Node {
+    value: Int
+    next: Node
+}
+
+struct Tree {
+    data: String
+    left: Tree
+    right: Tree
+}
+
+struct Cycle {
+    ref: Cycle
+}

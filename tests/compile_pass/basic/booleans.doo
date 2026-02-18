@@ -1,0 +1,34 @@
+// OUTPUT: True: true
+// OUTPUT: False: false
+// OUTPUT: true && false: false
+// OUTPUT: true || false: true
+// OUTPUT: !true: false
+// OUTPUT: !false: true
+// OUTPUT: Complex: true
+// OUTPUT: Short circuit and: false
+// OUTPUT: Short circuit or: true
+fn main() {
+    let t = true;
+    let f = false;
+    print("True:", t);
+    print("False:", f);
+
+    let andResult = t && f;
+    let orResult = t || f;
+    print("true && false:", andResult);
+    print("true || false:", orResult);
+
+    let notTrue = !t;
+    let notFalse = !f;
+    print("!true:", notTrue);
+    print("!false:", notFalse);
+
+    let complex = (t && t) || (f && f);
+    print("Complex:", complex);
+
+    let shortCircuit = f && t;
+    print("Short circuit and:", shortCircuit);
+    let shortCircuitOr = t || f;
+    print("Short circuit or:", shortCircuitOr);
+}
+

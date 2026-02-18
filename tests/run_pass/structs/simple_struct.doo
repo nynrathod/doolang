@@ -1,0 +1,14 @@
+// OUTPUT: Alice
+// OUTPUT: 30
+// Tests creating a struct and printing fields
+
+struct Person {
+    name: Str,
+    age: Int
+}
+
+fn main() {
+    let p = Person { name: "Alice", age: 30 };
+    print(p.name);
+    print(p.age);
+}

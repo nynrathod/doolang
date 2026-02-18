@@ -1,0 +1,53 @@
+// OUTPUT: Pipeline result: 29
+// OUTPUT: Pipeline error: step1 failed: negative input
+// OUTPUT: Pipeline result: 119
+fn step1(x: Int) -> Int ! Str {
+    if x < 0 {
+        Err "step1 failed: negative input";
+    }
+    Ok x + 10;
+}
+
+fn step2(x: Int) -> Int ! Str {
+    if x > 100 {
+        Err "step2 failed: too large";
+    }
+    Ok x * 2;
+}
+
+fn step3(x: Int) -> Int ! Str {
+    if x == 0 {
+        Err "step3 failed: zero";
+    }
+    Ok x - 1;
+}
+
+fn pipeline(input: Int) -> Int ! Str {
+    let a = step1(input)?;
+    let b = step2(a)?;
+    let c = step3(b)?;
+    Ok c;
+}
+
+fn main() {
+    let r1, e1 = pipeline(5);
+    if e1 != nil {
+        print("Pipeline error:", e1);
+    } else {
+        print("Pipeline result:", r1);
+    }
+
+    let r2, e2 = pipeline(-1);
+    if e2 != nil {
+        print("Pipeline error:", e2);
+    } else {
+        print("Pipeline result:", r2);
+    }
+
+    let r3, e3 = pipeline(50);
+    if e3 != nil {
+        print("Pipeline error:", e3);
+    } else {
+        print("Pipeline result:", r3);
+    }
+}

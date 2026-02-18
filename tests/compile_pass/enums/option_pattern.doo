@@ -1,0 +1,28 @@
+// OUTPUT: Found: Alice
+// OUTPUT: Not found: user not found
+fn findUser(id: Int) -> Str ! Str {
+    if id == 1 {
+        Ok "Alice";
+    }
+    if id == 2 {
+        Ok "Bob";
+    }
+    Err "user not found";
+}
+
+fn main() {
+    let name, err = findUser(1);
+    if err != nil {
+        print("Not found:", err);
+    } else {
+        print("Found:", name);
+    }
+
+    let name2, err2 = findUser(999);
+    if err2 != nil {
+        print("Not found:", err2);
+    } else {
+        print("Found:", name2);
+    }
+}
+

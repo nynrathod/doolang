@@ -1,0 +1,7 @@
+// ERROR: expected Bool, found Int
+// Tests that assigning an integer to a Bool variable produces a type error
+
+fn main() {
+    let x: Bool = 42;
+    print(x);
+}

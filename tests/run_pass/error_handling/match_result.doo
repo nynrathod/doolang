@@ -1,0 +1,15 @@
+// OUTPUT: Got value: 42
+// Tests matching on Result type
+
+fn getValue() -> Int ! Str {
+    Ok 42;
+}
+
+fn main() {
+    let v, e = getValue();
+    if e == nil {
+        print("Got value:", v);
+    } else {
+        print("Got error:", e);
+    }
+}

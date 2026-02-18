@@ -1,0 +1,29 @@
+// OUTPUT: Outer x: 10
+// OUTPUT: Inner x: 20
+// OUTPUT: Innermost x: 30
+// OUTPUT: Back to inner x: 30
+// OUTPUT: Back to outer x: 30
+// OUTPUT: Shadowed name: Bob
+// OUTPUT: Original name: Bob
+fn main() {
+    let x = 10;
+    print("Outer x:", x);
+    if true {
+        let x = 20;
+        print("Inner x:", x);
+        if true {
+            let x = 30;
+            print("Innermost x:", x);
+        }
+        print("Back to inner x:", x);
+    }
+    print("Back to outer x:", x);
+
+    let name = "Alice";
+    if true {
+        let name = "Bob";
+        print("Shadowed name:", name);
+    }
+    print("Original name:", name);
+}
+

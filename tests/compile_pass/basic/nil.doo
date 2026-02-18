@@ -1,0 +1,25 @@
+// OUTPUT: Got result: 10
+// OUTPUT: Got error: negative
+fn mayFail(x: Int) -> Int ! Str {
+    if x < 0 {
+        Err "negative";
+    }
+    Ok x;
+}
+
+fn main() {
+    let result, err = mayFail(10);
+    if err != nil {
+        print("Got error:", err);
+    } else {
+        print("Got result:", result);
+    }
+
+    let result2, err2 = mayFail(-1);
+    if err2 != nil {
+        print("Got error:", err2);
+    } else {
+        print("Got result:", result2);
+    }
+}
+

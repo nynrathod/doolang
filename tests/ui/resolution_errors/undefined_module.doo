@@ -1,0 +1,8 @@
+// Tests that importing an undefined module produces a resolution error
+// Note: compiler doesn't currently check for undefined modules
+
+import foo::bar
+
+fn main() {
+    print("hello");
+}

@@ -1,0 +1,7 @@
+// Go block — fire and forget
+fn main() {
+    go {
+        print("detached");
+    }
+    sleep(100);
+}

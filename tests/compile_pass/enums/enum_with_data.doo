@@ -1,0 +1,18 @@
+// OUTPUT: Circle: Shape::Circle(5.000000)
+// OUTPUT: Rectangle: Shape::Rectangle((10.000000, 20.000000))
+// OUTPUT: Triangle: Shape::Triangle((3.000000, 4.000000, 5.000000))
+enum Shape {
+    Circle(Float),
+    Rectangle(Float, Float),
+    Triangle(Float, Float, Float),
+}
+
+fn main() {
+    let c = Shape::Circle(5.0);
+    let r = Shape::Rectangle(10.0, 20.0);
+    let t = Shape::Triangle(3.0, 4.0, 5.0);
+    print("Circle:", c);
+    print("Rectangle:", r);
+    print("Triangle:", t);
+}
+

@@ -1,0 +1,28 @@
+// OUTPUT: 15
+// OUTPUT: 5
+// OUTPUT: 50
+// OUTPUT: 2
+// Basic calculator with functions
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn subtract(a: Int, b: Int) -> Int {
+    return a - b;
+}
+
+fn multiply(a: Int, b: Int) -> Int {
+    return a * b;
+}
+
+fn divide(a: Int, b: Int) -> Int {
+    return a / b;
+}
+
+fn main() {
+    print(add(10, 5));
+    print(subtract(10, 5));
+    print(multiply(10, 5));
+    print(divide(10, 5));
+}

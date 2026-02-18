@@ -1,0 +1,25 @@
+// OUTPUT: Pair: 42 hello
+// OUTPUT: Triple: 1 2.500000 true
+// OUTPUT: Swapped: 20 10
+fn getPair() -> Int, Str {
+    return 42, "hello";
+}
+
+fn getTriple() -> Int, Float, Bool {
+    return 1, 2.5, true;
+}
+
+fn swap(a: Int, b: Int) -> Int, Int {
+    return b, a;
+}
+
+fn main() {
+    let num, text = getPair();
+    print("Pair:", num, text);
+
+    let i, f, b = getTriple();
+    print("Triple:", i, f, b);
+
+    let x, y = swap(10, 20);
+    print("Swapped:", x, y);
+}

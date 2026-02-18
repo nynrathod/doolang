@@ -1,0 +1,12 @@
+
+struct User { name: Str, age: Int }
+fn User.isAdult(self) -> Bool => self.age >= 18;
+fn main() {
+    let users = [
+        User { name: "Alice", age: 25 },
+        User { name: "Bob", age: 15 },
+        User { name: "Charlie", age: 30 },
+    ];
+    let adults = users.filter((u) => u.isAdult());
+    print(adults.len());
+}

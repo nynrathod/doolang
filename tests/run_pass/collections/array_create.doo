@@ -1,0 +1,7 @@
+// OUTPUT: [1, 2, 3]
+// Tests creating and printing an array
+
+fn main() {
+    let arr = [1, 2, 3];
+    print(arr);
+}

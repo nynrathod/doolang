@@ -1,0 +1,10 @@
+// OUTPUT: 100
+// OUTPUT: PI = 3.14159
+// Tests constant values
+
+fn main() {
+    let MAX = 100;
+    let PI = 3.14159;
+    print(MAX);
+    print("PI = ${PI}");
+}

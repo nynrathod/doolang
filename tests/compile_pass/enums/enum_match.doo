@@ -1,0 +1,24 @@
+// OUTPUT: Message: pending
+// OUTPUT: Status is active
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+fn main() {
+    let s2 = Status::Pending;
+    let msg = match s2 {
+        Status::Active => "active",
+        Status::Inactive => "inactive",
+        Status::Pending => "pending",
+    };
+    print("Message:", msg);
+
+    let s = Status::Active;
+    match s {
+        Status::Active => print("Status is active"),
+        Status::Inactive => print("Status is inactive"),
+        Status::Pending => print("Status is pending"),
+    }
+}

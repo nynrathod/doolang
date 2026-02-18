@@ -1,0 +1,25 @@
+// OUTPUT: Chain result: 44
+// OUTPUT: Float chain: [6.250000, 12.250000, 20.250000]
+// OUTPUT: String chain: ["apple!", "banana!", "cherry!"]
+fn main() {
+    let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+    let chain = nums
+        .filter((x) => x > 3)
+        .map((x) => x * 2)
+        .filter((x) => x < 16)
+        .reduce(0, (a, b) => a + b);
+    print("Chain result:", chain);
+
+    let floats: [Float] = [1.5, 2.5, 3.5, 4.5];
+    let floatChain = floats
+        .filter((x) => x > 2.0)
+        .map((x) => x * x);
+    print("Float chain:", floatChain);
+
+    let words = ["apple", "banana", "cherry", "date"];
+    let strChain = words
+        .filter((s) => s.len() > 4)
+        .map((s) => s + "!");
+    print("String chain:", strChain);
+}

@@ -1,0 +1,22 @@
+// WebSocket close and isClosed
+import std::Http::{Server, WsConnection};
+fn onCheck(conn: WsConnection, data: Str) {
+    let closed = conn.isClosed();
+    if closed {
+        conn.emit("status", "closed");
+    } else {
+        conn.emit("status", "open");
+    }
+}
+fn onClose(conn: WsConnection, data: Str) {
+    conn.close();
+}
+fn handler(conn: WsConnection) {
+    conn.on("check", onCheck);
+    conn.on("close", onClose);
+}
+fn main() {
+    let app = Server::new(":3000");
+    app.ws("/ws/close", handler);
+    app.start();
+}

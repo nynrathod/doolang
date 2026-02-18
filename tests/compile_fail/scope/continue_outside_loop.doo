@@ -1,0 +1,9 @@
+// ERROR: can only be used inside a loop
+// This program should fail to compile because continue can only be used inside a loop
+
+fn main() {
+    if true {
+        continue;
+    }
+    print("done");
+}

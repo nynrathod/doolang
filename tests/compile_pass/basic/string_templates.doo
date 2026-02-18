@@ -1,0 +1,39 @@
+// OUTPUT: Hello Alice!
+// OUTPUT: Alice is 30 years old
+// OUTPUT: Name: Alice, Age: 30, Height: 5.600000, Active: 1
+// OUTPUT: 10 + 20 = 30
+// OUTPUT: Result: 70
+// OUTPUT: Direct interpolation: Alice is here
+// OUTPUT: StartEnd
+// OUTPUT: Repeated: AliceAliceAlice
+fn main() {
+    let name = "Alice";
+    let age = 30;
+    let height = 5.6;
+    let active = true;
+
+    let greeting = "Hello ${name}!";
+    print(greeting);
+
+    let info = "${name} is ${age} years old";
+    print(info);
+
+    let detail = "Name: ${name}, Age: ${age}, Height: ${height}, Active: ${active}";
+    print(detail);
+
+    let math = "10 + 20 = ${10 + 20}";
+    print(math);
+
+    let nested = "Result: ${age * 2 + 10}";
+    print(nested);
+
+    print("Direct interpolation: ${name} is here");
+
+    let empty = "";
+    let withEmpty = "Start${empty}End";
+    print(withEmpty);
+
+    let multi = "${name}${name}${name}";
+    print("Repeated:", multi);
+}
+

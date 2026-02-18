@@ -1,0 +1,14 @@
+// Scope block — structured concurrency
+fn main() {
+    scope {
+        go {
+            sleep(40);
+            print("slow");
+        }
+        go {
+            sleep(10);
+            print("fast");
+        }
+    }
+    print("all done");
+}

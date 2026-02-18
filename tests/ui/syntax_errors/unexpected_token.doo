@@ -1,0 +1,7 @@
+// ERROR: expected identifier
+// Tests that missing identifier in let statement produces a syntax error
+
+fn main() {
+    let = 42;
+    print(x);
+}

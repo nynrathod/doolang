@@ -1,0 +1,24 @@
+// OUTPUT: Item 0 : Apple costs 1.5
+// OUTPUT: Item 1 : Banana costs 0.75
+// OUTPUT: Item 2 : Cherry costs 3
+// OUTPUT: First item: Apple
+// OUTPUT: Last item: Cherry
+struct Item {
+    name: Str,
+    price: Float,
+}
+
+fn main() {
+    let items = [
+        Item { name: "Apple", price: 1.50 },
+        Item { name: "Banana", price: 0.75 },
+        Item { name: "Cherry", price: 3.00 },
+    ];
+
+    for i, item in items {
+        print("Item", i, ":", item.name, "costs", item.price);
+    }
+
+    print("First item:", items[0].name);
+    print("Last item:", items[2].name);
+}

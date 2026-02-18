@@ -1,0 +1,27 @@
+// OUTPUT: m[a]: 1
+// OUTPUT: m[b]: 2
+// OUTPUT: has a: true
+// OUTPUT: has z: false
+// OUTPUT: intMap[1]: one
+// OUTPUT: has 1: true
+fn main() {
+    let m = {"a": 1, "b": 2, "c": 3};
+    let val = m["a"];
+    print("m[a]:", val);
+
+    let val2 = m["b"];
+    print("m[b]:", val2);
+
+    let hasKey = "a" in m;
+    print("has a:", hasKey);
+
+    let noKey = "z" in m;
+    print("has z:", noKey);
+
+    let intMap = {1: "one", 2: "two"};
+    let v = intMap[1];
+    print("intMap[1]:", v);
+
+    let hasInt = 1 in intMap;
+    print("has 1:", hasInt);
+}

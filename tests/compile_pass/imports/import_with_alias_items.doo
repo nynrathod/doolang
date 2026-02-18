@@ -1,0 +1,6 @@
+// OUTPUT: Import items with alias test
+import std { File as F }
+
+fn main() {
+    print("Import items with alias test");
+}

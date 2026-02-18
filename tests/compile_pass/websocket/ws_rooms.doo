@@ -1,0 +1,22 @@
+// WebSocket room management
+import std::Http::{Server, WsConnection};
+fn onMsg(conn: WsConnection, data: Str, app: Server) {
+    app.toRoomEmit("lobby", "message", data);
+}
+fn onJoin(conn: WsConnection, data: Str) {
+    conn.join(data);
+}
+fn onLeave(conn: WsConnection, data: Str) {
+    conn.leave(data);
+}
+fn handler(conn: WsConnection) {
+    conn.join("lobby");
+    conn.on("message", onMsg);
+    conn.on("join_room", onJoin);
+    conn.on("leave_room", onLeave);
+}
+fn main() {
+    let app = Server::new(":3000");
+    app.ws("/ws/chat", handler);
+    app.start();
+}

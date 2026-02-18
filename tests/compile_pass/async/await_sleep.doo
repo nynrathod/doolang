@@ -1,0 +1,5 @@
+// Await sleep
+fn main() {
+    await sleep(50);
+    print("done");
+}

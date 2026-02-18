@@ -1,0 +1,10 @@
+// ERROR: Expected
+// Tests that missing closing parenthesis produces a syntax error
+
+fn main() {
+    foo(1, 2;
+}
+
+fn foo(a: Int, b: Int) -> Int {
+    return a + b;
+}

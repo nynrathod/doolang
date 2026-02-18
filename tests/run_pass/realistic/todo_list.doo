@@ -1,0 +1,27 @@
+// OUTPUT: Buy milk - false
+// OUTPUT: Write code - false
+// OUTPUT: Buy milk - true
+// OUTPUT: Write code - false
+// Simple todo list with structs
+
+struct Todo {
+    title: Str,
+    done: Bool
+}
+
+fn main() {
+    let mut todos = [
+        Todo { title: "Buy milk", done: false },
+        Todo { title: "Write code", done: false }
+    ];
+
+    for todo in todos {
+        print("${todo.title} - ${todo.done}");
+    }
+
+    todos[0].done = true;
+
+    for todo in todos {
+        print("${todo.title} - ${todo.done}");
+    }
+}

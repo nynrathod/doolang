@@ -1,0 +1,11 @@
+// ERROR: ArgMismatch
+// This program should fail to compile because add expects 2 arguments but receives 3
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn main() {
+    let result = add(1, 2, 3);
+    print(result);
+}

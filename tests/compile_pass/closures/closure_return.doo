@@ -1,0 +1,25 @@
+// OUTPUT: Block closure: [3, 5, 7, 9, 11]
+// OUTPUT: Block filter: [2, 4]
+// OUTPUT: Sum of squares: 55
+fn main() {
+    let nums = [1, 2, 3, 4, 5];
+
+    let mapped = nums.map((x) => {
+        let doubled = x * 2;
+        let adjusted = doubled + 1;
+        return adjusted;
+    });
+    print("Block closure:", mapped);
+
+    let filtered = nums.filter((x) => {
+        let isEven = x % 2 == 0;
+        return isEven;
+    });
+    print("Block filter:", filtered);
+
+    let reduced = nums.reduce(0, (acc, x) => {
+        let contribution = x * x;
+        return acc + contribution;
+    });
+    print("Sum of squares:", reduced);
+}

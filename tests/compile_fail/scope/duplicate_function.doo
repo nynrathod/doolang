@@ -1,0 +1,15 @@
+// ERROR: already defined
+// This program should fail to compile because there are two functions named 'add'
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn add(x: Int, y: Int) -> Int {
+    return x + y + 1;
+}
+
+fn main() {
+    let result = add(1, 2);
+    print(result);
+}

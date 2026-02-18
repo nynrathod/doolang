@@ -1,0 +1,16 @@
+// OUTPUT: Alice is 30 years old
+// Tests passing struct to function
+
+struct Person {
+    name: Str,
+    age: Int
+}
+
+fn printPerson(p: Person) {
+    print("${p.name} is ${p.age} years old");
+}
+
+fn main() {
+    let p = Person { name: "Alice", age: 30 };
+    printPerson(p);
+}

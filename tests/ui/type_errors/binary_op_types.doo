@@ -1,0 +1,7 @@
+// Tests that binary operations on incompatible types
+// Note: compiler currently allows string + int concatenation
+
+fn main() {
+    let x = "hello" + 42;
+    print(x);
+}

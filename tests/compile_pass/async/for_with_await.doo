@@ -1,0 +1,7 @@
+// For loop with await
+fn main() {
+    for i in 0..3 {
+        await sleep(20);
+        print("iteration ${i}");
+    }
+}

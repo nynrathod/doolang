@@ -1,0 +1,12 @@
+// OUTPUT: Hello
+// OUTPUT: World
+// OUTPUT: Hello World
+// Tests string operations and concatenation
+
+fn main() {
+    let s1 = "Hello";
+    let s2 = "World";
+    print(s1);
+    print(s2);
+    print("${s1} ${s2}");
+}

@@ -1,0 +1,7 @@
+// ERROR: Expected
+// Tests that missing equals sign in assignment produces a syntax error
+
+fn main() {
+    let x 42;
+    print(x);
+}

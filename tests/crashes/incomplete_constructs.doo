@@ -1,0 +1,9 @@
+// Crash test: incomplete language constructs
+fn
+struct
+enum
+let
+if
+for
+while
+return

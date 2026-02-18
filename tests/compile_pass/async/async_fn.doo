@@ -1,0 +1,9 @@
+// Async function declaration and await
+async fn fetchData() -> Str {
+    sleep(10);
+    return "data";
+}
+fn main() {
+    let result = await fetchData();
+    print(result);
+}

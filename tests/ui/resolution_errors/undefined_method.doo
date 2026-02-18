@@ -1,0 +1,12 @@
+// ERROR: Undefined
+// Tests that calling an undefined method produces a resolution error
+
+struct User {
+    name: Str,
+    age: Int
+}
+
+fn main() {
+    let user = User { name: "Alice", age: 30 };
+    user.bar();
+}

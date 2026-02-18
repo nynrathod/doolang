@@ -1,0 +1,12 @@
+// OUTPUT: Both conditions true
+// Tests nested if statements
+
+fn main() {
+    let x = 10;
+    let y = 20;
+    if x > 5 {
+        if y > 15 {
+            print("Both conditions true");
+        }
+    }
+}

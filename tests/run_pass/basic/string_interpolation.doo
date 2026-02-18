@@ -1,0 +1,13 @@
+// OUTPUT: Hello Alice
+// OUTPUT: You are 30 years old
+// OUTPUT: Result: 42
+// Tests string interpolation with variables
+
+fn main() {
+    let name = "Alice";
+    let age = 30;
+    let result = 42;
+    print("Hello ${name}");
+    print("You are ${age} years old");
+    print("Result: ${result}");
+}

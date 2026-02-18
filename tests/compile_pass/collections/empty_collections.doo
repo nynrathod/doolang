@@ -1,0 +1,28 @@
+// OUTPUT: Empty int arr: []
+// OUTPUT: Empty str arr: []
+// OUTPUT: Empty float arr: []
+// OUTPUT: Empty bool arr: []
+// OUTPUT: Empty map: {}
+// OUTPUT: Empty str map: {}
+// OUTPUT: After push int: [1]
+// OUTPUT: After push str: ["hello"]
+fn main() {
+    let mut emptyIntArr: [Int] = [];
+    let mut emptyStrArr: [Str] = [];
+    let mut emptyFloatArr: [Float] = [];
+    let mut emptyBoolArr: [Bool] = [];
+    let mut emptyMap: {Str: Int} = {};
+    let mut emptyStrMap: {Str: Str} = {};
+
+    print("Empty int arr:", emptyIntArr);
+    print("Empty str arr:", emptyStrArr);
+    print("Empty float arr:", emptyFloatArr);
+    print("Empty bool arr:", emptyBoolArr);
+    print("Empty map:", emptyMap);
+    print("Empty str map:", emptyStrMap);
+
+    emptyIntArr.push(1);
+    emptyStrArr.push("hello");
+    print("After push int:", emptyIntArr);
+    print("After push str:", emptyStrArr);
+}

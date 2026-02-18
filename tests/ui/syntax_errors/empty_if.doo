@@ -1,0 +1,8 @@
+// ERROR: Expected
+// Tests that if statement without condition produces a syntax error
+
+fn main() {
+    if {
+        print("hello");
+    }
+}

@@ -1,0 +1,32 @@
+// OUTPUT: Result1: Success
+// OUTPUT: Division failed: Cannot divide by zero
+// OUTPUT: Value: 20
+fn divide(a: Int, b: Int) -> Int ! Str {
+    if b == 0 {
+        Err "Cannot divide by zero";
+    }
+    Ok a / b;
+}
+
+fn main() {
+    let result1, err1 = divide(10, 2);
+    if err1 != nil {
+        print("Result1: Error occurred");
+    } else {
+        print("Result1: Success");
+    }
+
+    let result2, err2 = divide(10, 0);
+    if err2 != nil {
+        print("Division failed:", err2);
+    } else {
+        print("Division succeeded:", result2);
+    }
+
+    let result3, err3 = divide(100, 5);
+    if err3 != nil {
+        print("Error:", err3);
+    } else {
+        print("Value:", result3);
+    }
+}

@@ -1,0 +1,7 @@
+// ERROR: InvalidArrayElement
+// Tests that mixed type arrays produce a type error
+
+fn main() {
+    let arr: [Int] = [1, 2, "three", 4];
+    print(arr);
+}

@@ -1,0 +1,14 @@
+// ERROR: MissingStructField
+// This program should fail to compile because the User struct instantiation is missing the required age field
+
+struct User {
+    name: Str,
+    age: Int
+}
+
+fn main() {
+    let user = User {
+        name: "Bob"
+    };
+    print(user.name);
+}

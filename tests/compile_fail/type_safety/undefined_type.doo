@@ -1,0 +1,7 @@
+// ERROR: Undefined
+// This program should fail to compile because 'UndefinedType' does not exist
+
+fn main() {
+    let x: UndefinedType = 42;
+    print(x);
+}

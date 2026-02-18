@@ -1,0 +1,15 @@
+// OUTPUT: 0
+// OUTPUT: 1
+// OUTPUT: 2
+// Tests while-like pattern using for and break
+
+fn main() {
+    let mut i = 0;
+    for _ in 0..100 {
+        if i >= 3 {
+            break;
+        }
+        print(i);
+        i = i + 1;
+    }
+}
