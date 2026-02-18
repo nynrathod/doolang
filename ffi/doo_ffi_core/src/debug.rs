@@ -11,7 +11,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```rust,ignore
 //! use doo_ffi_core::ffi_debug;
 //! ffi_debug!("HTTP", "Request received: {} {}", method, path);
 //! ffi_debug!("DB", "Query executed in {}ms", elapsed);

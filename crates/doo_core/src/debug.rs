@@ -10,7 +10,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```rust,ignore
 //! use doo_core::doo_debug;
 //! doo_debug!("CODEGEN", "Processing function: {}", func_name);
 //! doo_debug!("MIR", "Built {} basic blocks", count);

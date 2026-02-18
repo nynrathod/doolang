@@ -421,6 +421,12 @@ mod tests {
         let registry = Arc::new(TypeRegistry::new());
         let mut codegen = CodegenContext::new(&ctx, "test", registry);
 
+        // Set up a basic block for builder operations (needed for string constants)
+        let fn_type = ctx.void_type().fn_type(&[], false);
+        let func = codegen.module.add_function("test_fn", fn_type, None);
+        let entry = ctx.append_basic_block(func, "entry");
+        codegen.builder.position_at_end(entry);
+
         // Test Int constant
         let int_op = MirOperand::Const(doo_mir::MirConst::Int(42));
         let int_val = operand_to_value(&mut codegen, &int_op).unwrap();

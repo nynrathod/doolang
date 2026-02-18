@@ -4,7 +4,7 @@
 //! No hardcoded strings in codegen, type checker, or anywhere else.
 //!
 //! ## Usage
-//! ```
+//! ```rust,ignore
 //! use doo_core::constants::ffi_names;
 //! let malloc_fn = module.get_function(ffi_names::MALLOC)?;
 //!
