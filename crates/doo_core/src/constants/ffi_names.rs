@@ -119,6 +119,7 @@ pub const DOO_ZERO: &str = "doo_zero";
 
 // Writer API
 pub const DOO_JSON_WRITER_NEW: &str = "doo_json_writer_new";
+pub const DOO_JSON_WRITER_NEW_WITH_CAP: &str = "doo_json_writer_new_with_cap";
 pub const DOO_JSON_WRITER_FREE: &str = "doo_json_writer_free";
 pub const DOO_JSON_WRITER_FINISH: &str = "doo_json_writer_finish";
 
@@ -173,6 +174,15 @@ pub const DOO_JSON_GET_FIELD: &str = "doo_json_get_field";
 pub const DOO_JSON_GET_VARIANT_NAME: &str = "doo_json_get_variant_name";
 pub const DOO_JSON_GET_VARIANT_PAYLOAD: &str = "doo_json_get_variant_payload";
 pub const DOO_JSON_IS_UNIT_VARIANT: &str = "doo_json_is_unit_variant";
+
+// Parse-once object API (zero re-serialization)
+pub const DOO_JSON_PARSE_OBJECT: &str = "doo_json_parse_object";
+pub const DOO_JSON_OBJECT_GET_INT: &str = "doo_json_object_get_int";
+pub const DOO_JSON_OBJECT_GET_FLOAT: &str = "doo_json_object_get_float";
+pub const DOO_JSON_OBJECT_GET_BOOL: &str = "doo_json_object_get_bool";
+pub const DOO_JSON_OBJECT_GET_STR: &str = "doo_json_object_get_str";
+pub const DOO_JSON_OBJECT_GET_JSON: &str = "doo_json_object_get_json";
+pub const DOO_JSON_OBJECT_FREE: &str = "doo_json_object_free";
 
 // ============================================================================
 // Doo HTTP FFI (doo_ffi_http)
@@ -232,6 +242,8 @@ pub const DOO_DB_CONNECT_POSTGRES: &str = "doo_db_connect_postgres";
 pub const DOO_DB_GET_GLOBAL: &str = "doo_db_get_global";
 pub const DOO_DB_RAW_PARAM: &str = "doo_db_raw_param";
 pub const DOO_DB_FREE_STRING: &str = "doo_db_free_string";
+pub const DOO_DB_BATCH_QUERY: &str = "doo_db_batch_query";
+pub const DOO_DB_BATCH_UPDATE: &str = "doo_db_batch_update";
 
 // ============================================================================
 // Doo Auth FFI (doo_ffi_auth)

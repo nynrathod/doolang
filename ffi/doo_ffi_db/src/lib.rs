@@ -80,6 +80,13 @@ pub fn get_runtime() -> &'static Runtime {
 // ============================================================================
 
 /// Execute async DB work from synchronous FFI context.
+///
+/// Fast path: When called from a Tokio worker thread (HTTP handler), runs
+/// the future inline via `block_in_place` + `block_on` — zero task spawn,
+/// zero oneshot channel overhead.
+///
+/// Fallback: When no Tokio runtime is active (standalone DB usage), spawns
+/// on the dedicated DB runtime with oneshot channel.
 fn run_db_async<F, T>(f: F) -> Result<T, String>
 where
     F: std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>
@@ -87,25 +94,48 @@ where
         + 'static,
     T: Send + 'static,
 {
-    let rt = get_runtime();
     let timeout = limits::get_query_timeout();
     let sem_timeout = limits::get_semaphore_wait_timeout();
 
+    // Fast path: already on a Tokio multi-thread worker (HTTP handler context)
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        return tokio::task::block_in_place(|| {
+            handle.block_on(async {
+                let _permit =
+                    tokio::time::timeout(sem_timeout, limits::get_query_semaphore().acquire())
+                        .await
+                        .map_err(|_| "Database overloaded".to_string())?
+                        .map_err(|_| "Semaphore closed".to_string())?;
+
+                tokio::time::timeout(timeout, f)
+                    .await
+                    .map_err(|_| format!("Query timed out ({}s)", timeout.as_secs()))?
+                    .map_err(|e| format!("Query failed: {}", e))
+            })
+        });
+    }
+
+    // Fallback: no current runtime — spawn on dedicated DB runtime
+    let rt = get_runtime();
     let (tx, rx) = tokio::sync::oneshot::channel();
 
     rt.spawn(async move {
-        let _permit =
-            match tokio::time::timeout(sem_timeout, limits::get_query_semaphore().acquire()).await {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(_)) => {
-                    let _ = tx.send(Err("Semaphore closed".to_string()));
-                    return;
-                }
-                Err(_) => {
-                    let _ = tx.send(Err("Database overloaded".to_string()));
-                    return;
-                }
-            };
+        let _permit = match tokio::time::timeout(
+            sem_timeout,
+            limits::get_query_semaphore().acquire(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                let _ = tx.send(Err("Semaphore closed".to_string()));
+                return;
+            }
+            Err(_) => {
+                let _ = tx.send(Err("Database overloaded".to_string()));
+                return;
+            }
+        };
 
         let result = match tokio::time::timeout(timeout, f).await {
             Ok(Ok(val)) => Ok(val),
@@ -240,14 +270,15 @@ pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut Doo
         let drv = match get_driver() {
             Some(d) => d,
             None => {
-                ffi_debug!("DB", "No driver registered, returning empty result (demo mode)");
+                ffi_debug!(
+                    "DB",
+                    "No driver registered, returning empty result (demo mode)"
+                );
                 return db_result_ok(string_to_c("[]") as *mut c_void);
             }
         };
 
-        match run_db_async(async move {
-            drv.query(&sql_str, &[]).await
-        }) {
+        match run_db_async(async move { drv.query(&sql_str, &[]).await }) {
             Ok(json) => {
                 ffi_debug!("DB", "Query result, json length: {}", json.len());
                 db_result_ok(string_to_c(&json) as *mut c_void)
@@ -328,9 +359,7 @@ pub extern "C" fn doo_db_raw_param(
             }
         };
 
-        match run_db_async(async move {
-            drv.query(&sql_str, &params_array).await
-        }) {
+        match run_db_async(async move { drv.query(&sql_str, &params_array).await }) {
             Ok(json) => {
                 ffi_debug!("DB", "Query result, json length: {}", json.len());
                 db_result_ok(string_to_c(&json) as *mut c_void)
@@ -358,9 +387,7 @@ pub extern "C" fn doo_db_query(sql: *const c_char) -> *mut DooResult {
             None => return db_result_err(503, "No database driver registered"),
         };
 
-        match run_db_async(async move {
-            drv.query(&sql_str, &[]).await
-        }) {
+        match run_db_async(async move { drv.query(&sql_str, &[]).await }) {
             Ok(json) => DooResult::ok_string(&json).into_raw(),
             Err(e) => db_result_err(500, &e),
         }
@@ -386,9 +413,7 @@ pub extern "C" fn doo_db_query_params(
 
         let params_array: Vec<serde_json::Value> = match serde_json::from_str(&params_str) {
             Ok(v) => v,
-            Err(e) => {
-                return db_result_err(400, &format!("Invalid params JSON: {}", e))
-            }
+            Err(e) => return db_result_err(400, &format!("Invalid params JSON: {}", e)),
         };
 
         let drv = match get_driver() {
@@ -396,9 +421,7 @@ pub extern "C" fn doo_db_query_params(
             None => return db_result_err(503, "No database driver registered"),
         };
 
-        match run_db_async(async move {
-            drv.query(&sql_str, &params_array).await
-        }) {
+        match run_db_async(async move { drv.query(&sql_str, &params_array).await }) {
             Ok(json) => DooResult::ok_string(&json).into_raw(),
             Err(e) => db_result_err(500, &e),
         }
@@ -419,9 +442,7 @@ pub extern "C" fn doo_db_execute(sql: *const c_char) -> *mut DooResult {
             None => return db_result_err(503, "No database driver registered"),
         };
 
-        match run_db_async(async move {
-            drv.execute(&sql_str, &[]).await
-        }) {
+        match run_db_async(async move { drv.execute(&sql_str, &[]).await }) {
             Ok(affected) => {
                 let json = format!(r#"{{"affected":{}}}"#, affected);
                 DooResult::ok_string(&json).into_raw()
@@ -450,9 +471,7 @@ pub extern "C" fn doo_db_execute_params(
 
         let params_array: Vec<serde_json::Value> = match serde_json::from_str(&params_str) {
             Ok(v) => v,
-            Err(e) => {
-                return db_result_err(400, &format!("Invalid params JSON: {}", e))
-            }
+            Err(e) => return db_result_err(400, &format!("Invalid params JSON: {}", e)),
         };
 
         let drv = match get_driver() {
@@ -460,9 +479,7 @@ pub extern "C" fn doo_db_execute_params(
             None => return db_result_err(503, "No database driver registered"),
         };
 
-        match run_db_async(async move {
-            drv.execute(&sql_str, &params_array).await
-        }) {
+        match run_db_async(async move { drv.execute(&sql_str, &params_array).await }) {
             Ok(affected) => {
                 let json = format!(r#"{{"affected":{}}}"#, affected);
                 DooResult::ok_string(&json).into_raw()
@@ -486,9 +503,7 @@ pub extern "C" fn doo_db_query_one(sql: *const c_char) -> *mut DooResult {
             None => return db_result_err(503, "No database driver registered"),
         };
 
-        match run_db_async(async move {
-            drv.query_one(&sql_str, &[]).await
-        }) {
+        match run_db_async(async move { drv.query_one(&sql_str, &[]).await }) {
             Ok(json) => DooResult::ok_string(&json).into_raw(),
             Err(e) => db_result_err(500, &e),
         }
@@ -614,9 +629,7 @@ pub extern "C" fn doo_db_transaction(
             None => return db_result_err(503, "Database not connected"),
         };
 
-        match run_db_async(async move {
-            drv.transaction(&queries_str).await
-        }) {
+        match run_db_async(async move { drv.transaction(&queries_str).await }) {
             Ok(json) => db_result_ok(string_to_c(&json) as *mut c_void),
             Err(e) => db_result_err(500, &e),
         }
@@ -645,9 +658,7 @@ pub extern "C" fn doo_db_execute_sql(sql: *const c_char) -> *mut c_void {
             }
         };
 
-        match run_db_async(async move {
-            drv.execute_auto(&sql_str, &[]).await
-        }) {
+        match run_db_async(async move { drv.execute_auto(&sql_str, &[]).await }) {
             Ok(json) => string_to_c(&json) as *mut c_void,
             Err(e) => {
                 ffi_debug!("DB", "doo_db_execute_sql error: {}", e);
@@ -685,9 +696,7 @@ pub extern "C" fn doo_db_query_with_params(
 
         let params: Vec<serde_json::Value> = serde_json::from_str(&params_str).unwrap_or_default();
 
-        match run_db_async(async move {
-            drv.execute_auto(&sql_str, &params).await
-        }) {
+        match run_db_async(async move { drv.execute_auto(&sql_str, &params).await }) {
             Ok(json) => string_to_c(&json) as *mut c_void,
             Err(e) => {
                 ffi_debug!("DB", "doo_db_query_with_params error: {}", e);
@@ -752,6 +761,117 @@ pub extern "C" fn doo_db_serialize_enum_array(
 }
 
 // ============================================================================
+// BATCH OPERATIONS — Single-connection multi-query and batch update
+// ============================================================================
+
+/// Execute multiple queries on a single connection, return JSON array of results.
+///
+/// Input: JSON array of `{ "sql": "...", "params": [...] }` objects.
+/// Each query returns one row. Results are concatenated: `[{row1}, {row2}, ...]`.
+///
+/// Uses a single pool checkout and `prepare_cached` for maximum throughput
+/// (TechEmpower "multiple queries" benchmark pattern).
+#[no_mangle]
+pub extern "C" fn doo_db_batch_query(
+    _db: *const c_void,
+    queries_json: *const c_char,
+) -> *mut DooResult {
+    safe_ffi("DB", || {
+        ffi_debug!("DB", "doo_db_batch_query called");
+
+        let queries_str = match c_to_string(queries_json) {
+            Ok(s) => s,
+            Err(e) => return db_result_err(400, &format!("Invalid queries JSON: {}", e)),
+        };
+
+        #[derive(serde::Deserialize)]
+        struct QueryDef {
+            sql: String,
+            #[serde(default)]
+            params: Vec<serde_json::Value>,
+        }
+
+        let query_defs: Vec<QueryDef> = match serde_json::from_str(&queries_str) {
+            Ok(v) => v,
+            Err(e) => return db_result_err(400, &format!("Invalid queries JSON array: {}", e)),
+        };
+
+        let drv = match get_driver() {
+            Some(d) => d,
+            None => return db_result_err(503, "No database driver registered"),
+        };
+
+        let queries: Vec<(String, Vec<serde_json::Value>)> =
+            query_defs.into_iter().map(|q| (q.sql, q.params)).collect();
+
+        match run_db_async(async move { drv.batch_query(&queries).await }) {
+            Ok(json) => {
+                ffi_debug!("DB", "Batch query result, json length: {}", json.len());
+                db_result_ok(string_to_c(&json) as *mut c_void)
+            }
+            Err(e) => db_result_err(500, &e),
+        }
+    })
+}
+
+/// Execute a batch UPDATE using PostgreSQL array parameters (unnest pattern).
+///
+/// `sql`: UPDATE template with `$1::int[]` and `$2::int[]` placeholders.
+/// `ids_json`: JSON array of integer IDs.
+/// `values_json`: JSON array of integer values (parallel to ids).
+///
+/// Uses a single SQL statement for all updates (TechEmpower "updates" benchmark pattern).
+#[no_mangle]
+pub extern "C" fn doo_db_batch_update(
+    _db: *const c_void,
+    sql: *const c_char,
+    ids_json: *const c_char,
+    values_json: *const c_char,
+) -> *mut DooResult {
+    safe_ffi("DB", || {
+        ffi_debug!("DB", "doo_db_batch_update called");
+
+        let sql_str = match c_to_string(sql) {
+            Ok(s) => s,
+            Err(e) => return db_result_err(400, &format!("Invalid SQL: {}", e)),
+        };
+
+        let ids_str = match c_to_string(ids_json) {
+            Ok(s) => s,
+            Err(e) => return db_result_err(400, &format!("Invalid IDs JSON: {}", e)),
+        };
+
+        let values_str = match c_to_string(values_json) {
+            Ok(s) => s,
+            Err(e) => return db_result_err(400, &format!("Invalid values JSON: {}", e)),
+        };
+
+        let ids: Vec<i32> = match serde_json::from_str(&ids_str) {
+            Ok(v) => v,
+            Err(e) => return db_result_err(400, &format!("Invalid IDs array: {}", e)),
+        };
+
+        let values: Vec<i32> = match serde_json::from_str(&values_str) {
+            Ok(v) => v,
+            Err(e) => return db_result_err(400, &format!("Invalid values array: {}", e)),
+        };
+
+        let drv = match get_driver() {
+            Some(d) => d,
+            None => return db_result_err(503, "No database driver registered"),
+        };
+
+        match run_db_async(async move { drv.batch_update(&sql_str, &ids, &values).await }) {
+            Ok(affected) => {
+                let json = format!("{{\"affected\":{}}}", affected);
+                db_result_ok(string_to_c(&json) as *mut c_void)
+            }
+            Err(e) => db_result_err(500, &e),
+        }
+    })
+}
+
+// ============================================================================
 // MIGRATION FFI
 // ============================================================================
 
@@ -782,9 +902,7 @@ pub extern "C" fn doo_db_migrate_schemas(schema_json: *const c_char) -> *mut Doo
         }
         let combined_sql = sqls.join("\n");
 
-        match run_db_async(async move {
-            drv.batch_execute(&combined_sql).await
-        }) {
+        match run_db_async(async move { drv.batch_execute(&combined_sql).await }) {
             Ok(()) => {
                 let json = format!("{{\"migrated\":{}}}", schema_count);
                 db_result_ok(string_to_c(&json) as *mut c_void)

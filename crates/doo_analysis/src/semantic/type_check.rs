@@ -893,7 +893,8 @@ impl TypeChecker {
                         || name == "print"
                         || name == "panic"
                         || name == "toString"
-                        || name == "sleep";
+                        || name == "sleep"
+                        || name == "__black_box";
 
                     // Validate argument count and types against function signature
                     if let Some(param_types) = self.functions.get(name).cloned() {

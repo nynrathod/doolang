@@ -214,11 +214,11 @@ impl RouteRegistry {
 
     /// Match a route and extract parameters
     /// NOTE: `method` is expected to be uppercase (hyper always provides uppercase)
-    pub fn match_route(
-        &self,
+    pub fn match_route<'r, 'p>(
+        &'r self,
         method: &str,
-        path: &str,
-    ) -> Option<(&RouteEntry, HashMap<String, String>)> {
+        path: &'p str,
+    ) -> Option<(&'r RouteEntry, matchit::Params<'r, 'p>)> {
         // hyper methods are already uppercase — skip to_uppercase() allocation
         ffi_debug!(
             "ROUTER",
@@ -244,19 +244,14 @@ impl RouteRegistry {
 
         match router.at(path) {
             Ok(matched) => {
-                let params: HashMap<String, String> = matched
-                    .params
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect();
                 ffi_debug!(
                     "ROUTER",
-                    "Matched: {} {} -> params: {:?}",
+                    "Matched: {} {} -> params count: {}",
                     method,
                     path,
-                    params
+                    matched.params.len()
                 );
-                Some((matched.value, params))
+                Some((matched.value, matched.params))
             }
             Err(e) => {
                 ffi_debug!("ROUTER", "No match for {} {}: {:?}", method, path, e);

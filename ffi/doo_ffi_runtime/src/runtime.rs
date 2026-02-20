@@ -71,8 +71,12 @@ fn build_runtime() -> Runtime {
         .worker_threads(workers)
         .max_blocking_threads(max_blocking)
         .thread_name("doo-worker")
-        // Default event_interval (61) optimized for HTTP latency.
-        // Higher values trade latency for throughput — wrong tradeoff for APIs.
+        // Tuned for high-throughput benchmarks:
+        // - event_interval=31: Check I/O more frequently (default 61), reduces latency
+        // - global_queue_interval=7: Check global queue more often, better work distribution
+        // Configurable via DOO_EVENT_INTERVAL / DOO_GLOBAL_QUEUE_INTERVAL
+        .event_interval(env_usize("DOO_EVENT_INTERVAL", 31) as u32)
+        .global_queue_interval(env_usize("DOO_GLOBAL_QUEUE_INTERVAL", 7) as u32)
         .enable_all()
         .build()
         .unwrap_or_else(|e| {

@@ -108,27 +108,21 @@ pub fn row_to_json_value(row: &Row) -> serde_json::Value {
 fn write_column_value(buf: &mut String, row: &Row, i: usize, col: &tokio_postgres::Column) {
     match col.type_().name() {
         "int2" => match row.try_get::<usize, Option<i16>>(i) {
-            Ok(Some(v)) => {
-                let _ = write!(buf, "{}", v);
-            }
+            Ok(Some(v)) => buf.push_str(itoa::Buffer::new().format(v)),
             _ => buf.push_str("null"),
         },
         "int4" => match row.try_get::<usize, Option<i32>>(i) {
-            Ok(Some(v)) => {
-                let _ = write!(buf, "{}", v);
-            }
+            Ok(Some(v)) => buf.push_str(itoa::Buffer::new().format(v)),
             _ => buf.push_str("null"),
         },
         "int8" => match row.try_get::<usize, Option<i64>>(i) {
-            Ok(Some(v)) => {
-                let _ = write!(buf, "{}", v);
-            }
+            Ok(Some(v)) => buf.push_str(itoa::Buffer::new().format(v)),
             _ => buf.push_str("null"),
         },
         "float4" => match row.try_get::<usize, Option<f32>>(i) {
             Ok(Some(v)) => {
                 if v.is_finite() {
-                    let _ = write!(buf, "{}", v as f64);
+                    buf.push_str(ryu::Buffer::new().format(v as f64));
                 } else {
                     buf.push_str("null");
                 }
@@ -138,7 +132,7 @@ fn write_column_value(buf: &mut String, row: &Row, i: usize, col: &tokio_postgre
         "float8" => match row.try_get::<usize, Option<f64>>(i) {
             Ok(Some(v)) => {
                 if v.is_finite() {
-                    let _ = write!(buf, "{}", v);
+                    buf.push_str(ryu::Buffer::new().format(v));
                 } else {
                     buf.push_str("null");
                 }

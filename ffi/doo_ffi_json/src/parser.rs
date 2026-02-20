@@ -1664,3 +1664,124 @@ pub extern "C" fn doo_json_object_free(obj: *mut std::ffi::c_void) {
         }));
     }
 }
+
+// ============================================================================
+// Typed Field Extraction — Zero Re-Serialization
+// ============================================================================
+// These extract primitive values directly from the cached parse without
+// converting back to JSON strings. Used by codegen for struct-from-JSON.
+
+/// Extract an integer field from a cached JSON object.
+/// Returns the value directly (zero re-serialization). Returns 0 if missing/wrong type.
+#[no_mangle]
+pub extern "C" fn doo_json_object_get_int(
+    obj: *mut std::ffi::c_void,
+    field_name: *const c_char,
+) -> i64 {
+    if obj.is_null() || field_name.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = unsafe { &*(obj as *const serde_json::Value) };
+        let field = c_to_string_lossy(field_name);
+        value
+            .as_object()
+            .and_then(|o| o.get(field.as_str()))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
+}
+
+/// Extract a float field from a cached JSON object.
+/// Returns the value directly. Returns 0.0 if missing/wrong type.
+#[no_mangle]
+pub extern "C" fn doo_json_object_get_float(
+    obj: *mut std::ffi::c_void,
+    field_name: *const c_char,
+) -> f64 {
+    if obj.is_null() || field_name.is_null() {
+        return 0.0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = unsafe { &*(obj as *const serde_json::Value) };
+        let field = c_to_string_lossy(field_name);
+        value
+            .as_object()
+            .and_then(|o| o.get(field.as_str()))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+    }))
+    .unwrap_or(0.0)
+}
+
+/// Extract a boolean field from a cached JSON object.
+/// Returns 1 for true, 0 for false/missing/wrong type.
+#[no_mangle]
+pub extern "C" fn doo_json_object_get_bool(
+    obj: *mut std::ffi::c_void,
+    field_name: *const c_char,
+) -> i32 {
+    if obj.is_null() || field_name.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = unsafe { &*(obj as *const serde_json::Value) };
+        let field = c_to_string_lossy(field_name);
+        value
+            .as_object()
+            .and_then(|o| o.get(field.as_str()))
+            .and_then(|v| v.as_bool())
+            .map(|b| if b { 1 } else { 0 })
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
+}
+
+/// Extract a string field from a cached JSON object.
+/// Returns a newly allocated C string. Caller must free.
+/// Returns empty string "" if missing/wrong type (never null).
+#[no_mangle]
+pub extern "C" fn doo_json_object_get_str(
+    obj: *mut std::ffi::c_void,
+    field_name: *const c_char,
+) -> *mut c_char {
+    if obj.is_null() || field_name.is_null() {
+        return doo_alloc_string("");
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = unsafe { &*(obj as *const serde_json::Value) };
+        let field = c_to_string_lossy(field_name);
+        value
+            .as_object()
+            .and_then(|o| o.get(field.as_str()))
+            .and_then(|v| v.as_str())
+            .map(|s| doo_alloc_string(s))
+            .unwrap_or_else(|| doo_alloc_string(""))
+    }))
+    .unwrap_or_else(|_| doo_alloc_string(""))
+}
+
+/// Extract a nested object/array field from a cached JSON object as a JSON string.
+/// For composite types (structs, arrays, maps) that need further parsing.
+/// Returns "null" if missing. Caller must free.
+#[no_mangle]
+pub extern "C" fn doo_json_object_get_json(
+    obj: *mut std::ffi::c_void,
+    field_name: *const c_char,
+) -> *mut c_char {
+    if obj.is_null() || field_name.is_null() {
+        return doo_alloc_string("null");
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = unsafe { &*(obj as *const serde_json::Value) };
+        let field = c_to_string_lossy(field_name);
+        value
+            .as_object()
+            .and_then(|o| o.get(field.as_str()))
+            .and_then(|v| serde_json::to_string(v).ok())
+            .map(|s| doo_alloc_string(&s))
+            .unwrap_or_else(|| doo_alloc_string("null"))
+    }))
+    .unwrap_or_else(|_| doo_alloc_string("null"))
+}

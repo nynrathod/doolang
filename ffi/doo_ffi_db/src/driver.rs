@@ -49,18 +49,11 @@ pub trait DbDriver: Send + Sync + 'static {
     ///
     /// `params` are passed as `serde_json::Value` — the driver handles
     /// conversion to its native parameter types (e.g., `tokio_postgres::types::ToSql`).
-    fn query(
-        &self,
-        sql: &str,
-        params: &[serde_json::Value],
-    ) -> BoxFuture<'_, DriverResult<String>>;
+    fn query(&self, sql: &str, params: &[serde_json::Value])
+        -> BoxFuture<'_, DriverResult<String>>;
 
     /// Execute a mutating statement (INSERT/UPDATE/DELETE), return affected row count.
-    fn execute(
-        &self,
-        sql: &str,
-        params: &[serde_json::Value],
-    ) -> BoxFuture<'_, DriverResult<u64>>;
+    fn execute(&self, sql: &str, params: &[serde_json::Value]) -> BoxFuture<'_, DriverResult<u64>>;
 
     /// Query expecting exactly one row, return JSON object string.
     fn query_one(
@@ -99,6 +92,57 @@ pub trait DbDriver: Send + Sync + 'static {
     /// - MySQL: `AUTO_INCREMENT`, `IF NOT EXISTS`
     /// - SQLite: `AUTOINCREMENT`, `IF NOT EXISTS`
     fn generate_create_table(&self, schema: &TableSchema) -> String;
+
+    /// Execute multiple individual queries on a single connection, return JSON array.
+    ///
+    /// Each query in `queries` is `(sql, params)`. Results are concatenated into a
+    /// single JSON array — each query contributes one JSON object.
+    /// Uses a single pool checkout for all queries (avoids N pool roundtrips).
+    ///
+    /// Default: sequential execution; drivers may override with pipelining.
+    fn batch_query(
+        &self,
+        queries: &[(String, Vec<serde_json::Value>)],
+    ) -> BoxFuture<'_, DriverResult<String>> {
+        let queries = queries.to_vec();
+        Box::pin(async move {
+            let mut results = Vec::with_capacity(queries.len());
+            for (sql, params) in &queries {
+                let json = self.query_one(sql, params).await?;
+                results.push(json);
+            }
+            // Build combined JSON array
+            let mut buf =
+                String::with_capacity(results.iter().map(|s| s.len()).sum::<usize>() + 64);
+            buf.push('[');
+            for (i, row_json) in results.iter().enumerate() {
+                if i > 0 {
+                    buf.push(',');
+                }
+                buf.push_str(row_json);
+            }
+            buf.push(']');
+            Ok(buf)
+        })
+    }
+
+    /// Execute a batch UPDATE using arrays of IDs and values.
+    ///
+    /// For PostgreSQL this uses `unnest($1::int[], $2::int[])` for single-statement
+    /// batch updates. Other drivers may use transactions with individual UPDATEs.
+    ///
+    /// `sql` should be the UPDATE template.
+    /// `ids` and `values` are parallel arrays.
+    /// Returns affected row count.
+    fn batch_update(
+        &self,
+        _sql: &str,
+        _ids: &[i32],
+        _values: &[i32],
+    ) -> BoxFuture<'_, DriverResult<u64>> {
+        // Default: not supported
+        Box::pin(async { Err("batch_update not supported by this driver".into()) })
+    }
 }
 
 // ============================================================================

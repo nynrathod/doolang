@@ -4,6 +4,7 @@
 use crate::error::*;
 use crate::helpers::*;
 use crate::types::*;
+use hyper::header::HeaderValue;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -18,28 +19,37 @@ static JWT_SECRET: OnceLock<String> = OnceLock::new();
 // FROZEN CORS — Pre-computed header values for zero-cost request-time access
 // ============================================================================
 
-/// Pre-computed CORS header values (immutable after freeze)
+/// Pre-computed CORS header values as `HeaderValue` (immutable after freeze).
+/// Avoids per-request `HeaderValue::from_str()` allocation + ASCII validation.
 pub struct FrozenCorsHeaders {
-    pub origin: String,
-    pub methods: String,
-    pub headers: String,
+    pub origin: HeaderValue,
+    pub methods: HeaderValue,
+    pub headers: HeaderValue,
     pub credentials: bool,
-    pub max_age: Option<String>,
+    pub max_age: Option<HeaderValue>,
 }
 
 /// Frozen CORS headers — lock-free access during request handling
 static FROZEN_CORS: OnceLock<Option<FrozenCorsHeaders>> = OnceLock::new();
 
-/// Freeze CORS config into pre-computed header values.
+/// Freeze CORS config into pre-computed `HeaderValue`s.
 /// Called once before the accept loop starts.
 pub fn freeze_cors() {
     let cors = get_cors_config().lock().ok().and_then(|guard| {
-        guard.as_ref().map(|config| FrozenCorsHeaders {
-            origin: config.origins.join(", "),
-            methods: config.methods.join(", "),
-            headers: config.headers.join(", "),
-            credentials: config.credentials,
-            max_age: config.max_age.map(|ma| ma.to_string()),
+        guard.as_ref().map(|config| {
+            let origin_str = config.origins.join(", ");
+            let methods_str = config.methods.join(", ");
+            let headers_str = config.headers.join(", ");
+            FrozenCorsHeaders {
+                origin: HeaderValue::from_str(&origin_str)
+                    .unwrap_or_else(|_| HeaderValue::from_static("*")),
+                methods: HeaderValue::from_str(&methods_str)
+                    .unwrap_or_else(|_| HeaderValue::from_static("GET, POST, OPTIONS")),
+                headers: HeaderValue::from_str(&headers_str)
+                    .unwrap_or_else(|_| HeaderValue::from_static("Content-Type")),
+                credentials: config.credentials,
+                max_age: config.max_age.and_then(|ma| HeaderValue::from_str(&ma.to_string()).ok()),
+            }
         })
     });
     let _ = FROZEN_CORS.set(cors);

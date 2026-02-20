@@ -20,6 +20,9 @@ pub use doo_ffi_core::helpers::{c_to_string_lossy, safe_ffi};
 /// Standard JSON content type for all API responses
 pub const CONTENT_TYPE_JSON: &str = "application/json";
 
+/// Plaintext content type for plain text responses
+pub const CONTENT_TYPE_PLAIN: &str = "text/plain";
+
 /// Size of the error response struct: { i32 status (4) + padding (4) + ptr body (8) + ptr content_type (8) }
 pub const ERROR_RESPONSE_SIZE: usize = 24;
 
@@ -145,10 +148,19 @@ thread_local! {
     static CURRENT_REQUEST_PATH: std::cell::RefCell<String> = std::cell::RefCell::new("/".to_string());
     static LAST_ERROR_STATUS: std::cell::Cell<i32> = std::cell::Cell::new(0);
     static LAST_ERROR_JSON: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+    /// Dirty flag — true when an error has been set and not yet cleared.
+    /// Avoids 3 thread-local writes on clear_last_error for the success path.
+    static ERROR_DIRTY: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 pub fn set_current_request_path(path: &str) {
-    CURRENT_REQUEST_PATH.with(|p| *p.borrow_mut() = path.to_string());
+    // Reuse existing String buffer — clear + push_str avoids allocation
+    // after the first request (capacity is retained from previous call)
+    CURRENT_REQUEST_PATH.with(|p| {
+        let mut s = p.borrow_mut();
+        s.clear();
+        s.push_str(path);
+    });
 }
 
 pub fn get_current_request_path() -> String {
@@ -158,6 +170,7 @@ pub fn get_current_request_path() -> String {
 pub fn set_last_error(status: i32, json: String) {
     LAST_ERROR_STATUS.with(|s| s.set(status));
     LAST_ERROR_JSON.with(|j| *j.borrow_mut() = json);
+    ERROR_DIRTY.with(|d| d.set(true));
 }
 
 pub fn get_last_error_status() -> i32 {
@@ -169,5 +182,13 @@ pub fn get_last_error_json() -> String {
 }
 
 pub fn clear_last_error() {
-    set_last_error(0, String::new());
+    // Only actually clear if an error was set — most requests succeed,
+    // so this is a no-op for the common case (single Cell<bool> read).
+    ERROR_DIRTY.with(|d| {
+        if d.get() {
+            LAST_ERROR_STATUS.with(|s| s.set(0));
+            LAST_ERROR_JSON.with(|j| j.borrow_mut().clear());
+            d.set(false);
+        }
+    });
 }

@@ -61,7 +61,7 @@ impl DbDriver for PostgresDriver {
                 Ok(json_utils::rows_to_json(&rows))
             } else {
                 // Prepare to get PG-inferred param types, then adapt params
-                let stmt = client.prepare(&sql).await?;
+                let stmt = client.prepare_cached(&sql).await?;
                 let pg_types = stmt.params();
                 let boxed_params = params::json_values_to_pg_params_typed(&params_vals, pg_types);
                 let param_refs = params::params_as_refs(&boxed_params);
@@ -188,7 +188,7 @@ impl DbDriver for PostgresDriver {
                     Ok(json_utils::rows_to_json(&rows))
                 }
             } else {
-                let stmt = client.prepare(&sql).await?;
+                let stmt = client.prepare_cached(&sql).await?;
                 let pg_types = stmt.params();
                 let boxed_params = params::json_values_to_pg_params_typed(&params_vals, pg_types);
                 let param_refs = params::params_as_refs(&boxed_params);
@@ -214,6 +214,61 @@ impl DbDriver for PostgresDriver {
                     Ok(json_utils::rows_to_json(&rows))
                 }
             }
+        })
+    }
+
+    /// Pipeline multiple queries on a SINGLE connection.
+    /// Each query returns exactly one row (e.g., TechEmpower's multiple-queries test).
+    /// Uses `prepare_cached` for statement reuse + single pool checkout.
+    fn batch_query(
+        &self,
+        queries: &[(String, Vec<serde_json::Value>)],
+    ) -> BoxFuture<'_, DriverResult<String>> {
+        let queries = queries.to_vec();
+        Box::pin(async move {
+            let client = get_client().await?;
+            let mut buf = String::with_capacity(queries.len() * 64);
+            buf.push('[');
+            for (qi, (sql, params_vals)) in queries.iter().enumerate() {
+                if qi > 0 {
+                    buf.push(',');
+                }
+                if params_vals.is_empty() {
+                    let row = client.query_one(&**sql, &[]).await?;
+                    buf.push_str(&json_utils::row_to_json(&row));
+                } else {
+                    let stmt = client.prepare_cached(sql).await?;
+                    let pg_types = stmt.params();
+                    let boxed_params =
+                        params::json_values_to_pg_params_typed(params_vals, pg_types);
+                    let param_refs = params::params_as_refs(&boxed_params);
+                    let row = client.query_one(&stmt, &param_refs[..]).await?;
+                    buf.push_str(&json_utils::row_to_json(&row));
+                }
+            }
+            buf.push(']');
+            Ok(buf)
+        })
+    }
+
+    /// Batch UPDATE using PostgreSQL's `unnest` — single statement for all updates.
+    /// `sql` should use `unnest($1::int[], $2::int[])` syntax.
+    /// `ids` and `values` are parallel arrays of IDs and new random numbers.
+    fn batch_update(
+        &self,
+        sql: &str,
+        ids: &[i32],
+        values: &[i32],
+    ) -> BoxFuture<'_, DriverResult<u64>> {
+        let sql = sql.to_owned();
+        let ids = ids.to_vec();
+        let values = values.to_vec();
+        Box::pin(async move {
+            let client = get_client().await?;
+            let affected = client
+                .execute(&sql, &[&ids, &values])
+                .await?;
+            Ok(affected)
         })
     }
 

@@ -18,17 +18,34 @@ impl JsonBuiltins {
         val_type: TypeId,
     ) -> Option<BasicValueEnum<'ctx>> {
         // 1. Declare FFI functions
-        let new_fn = Self::get_or_declare_new(ctx);
         let finish_fn = Self::get_or_declare_finish(ctx);
 
-        // 2. Create Writer
-        let writer_ptr = ctx
-            .builder
-            .build_call(new_fn, &[], "json_writer")
-            .ok()?
-            .try_as_basic_value()
-            .basic()?
-            .into_pointer_value();
+        // 2. Estimate buffer capacity from type info (reduces reallocs)
+        // Structs: fields * 20 + 16 (key+value+separators per field)
+        // Default: 64 bytes (covers most small JSON responses)
+        let estimated_cap = match ctx.get_type_kind(val_type) {
+            Some(TypeKind::Struct { fields, .. }) => fields.len() * 20 + 16,
+            _ => 0, // 0 signals: use default capacity
+        };
+
+        let writer_ptr = if estimated_cap > 0 {
+            let new_fn = Self::get_or_declare_new_with_cap(ctx);
+            let cap_val = ctx.context.i64_type().const_int(estimated_cap as u64, false);
+            ctx.builder
+                .build_call(new_fn, &[cap_val.into()], "json_writer")
+                .ok()?
+                .try_as_basic_value()
+                .basic()?
+                .into_pointer_value()
+        } else {
+            let new_fn = Self::get_or_declare_new(ctx);
+            ctx.builder
+                .build_call(new_fn, &[], "json_writer")
+                .ok()?
+                .try_as_basic_value()
+                .basic()?
+                .into_pointer_value()
+        };
 
         // 3. Emit recursive write
         Self::emit_write_value(ctx, writer_ptr, val, val_type)?;
@@ -208,8 +225,21 @@ impl JsonBuiltins {
         let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type();
 
-        // Get doo_json_get_field function
-        let get_field_fn = Self::get_or_declare_get_field(ctx);
+        // ── Parse-Once: parse the JSON string ONCE into an opaque object handle ──
+        let parse_object_fn = Self::get_or_declare_parse_object(ctx);
+        let obj_handle = ctx
+            .builder
+            .build_call(parse_object_fn, &[json_str.into()], "json_obj")
+            .ok()?
+            .try_as_basic_value()
+            .basic()?;
+
+        // ── Declare typed extraction functions lazily ──
+        let get_int_fn = Self::get_or_declare_object_get_int(ctx);
+        let get_float_fn = Self::get_or_declare_object_get_float(ctx);
+        let get_bool_fn = Self::get_or_declare_object_get_bool(ctx);
+        let get_str_fn = Self::get_or_declare_object_get_str(ctx);
+        let get_json_fn = Self::get_or_declare_object_get_json(ctx);
 
         // Build struct type using get_struct_type for consistency with StructCreate
         let field_types: Vec<_> = fields.iter().map(|(_, t)| ctx.get_llvm_type(*t)).collect();
@@ -257,56 +287,123 @@ impl JsonBuiltins {
             .basic()?
             .into_pointer_value();
 
-        // For each field, extract JSON and recursively parse
+        // ── For each field, use typed extraction (zero re-serialization for primitives) ──
         for (i, (fname, fty)) in fields.iter().enumerate() {
-            // Create field name string
             let field_name_str = ctx.const_string(fname);
-
-            // Call doo_json_get_field to extract the field as JSON string
-            let field_json = ctx
-                .builder
-                .build_call(
-                    get_field_fn,
-                    &[json_str.into(), field_name_str.into()],
-                    "field_json",
-                )
-                .ok()?
-                .try_as_basic_value()
-                .basic()?;
-
-            // Recursively parse the field value
-            let field_val = Self::emit_parse(ctx, field_json, Some(*fty))?;
-
-            // Get the expected LLVM type for this field
-            let field_llvm_type = ctx.get_llvm_type(*fty);
-
-            // Store in struct - handle enum fields specially
-            // Enum fields: emit_parse returns a pointer to { i32, ptr }, but we need the value
-            let field_ptr = ctx
-                .builder
-                .build_struct_gep(struct_llvm_type, struct_ptr, i as u32, "field_ptr")
-                .ok()?;
-
-            // Check if this is an enum type (returns struct type, not pointer)
             let kind = ctx.get_type_kind(*fty);
+
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                 doo_debug!("CODEGEN", "emit_parse_struct field '{}': type_id={:?}, kind={:?}",
                     fname, fty, kind
                 );
             }
-            if matches!(kind, Some(TypeKind::Enum { .. })) {
-                // Enum: emit_parse returns ptr to { i32, ptr }, need to load the value
-                let enum_ptr = field_val.into_pointer_value();
-                let enum_val = ctx
-                    .builder
-                    .build_load(field_llvm_type, enum_ptr, "enum_val")
-                    .ok()?;
-                ctx.builder.build_store(field_ptr, enum_val).ok()?;
-            } else {
-                // Non-enum: store directly
-                ctx.builder.build_store(field_ptr, field_val).ok()?;
+
+            let field_ptr = ctx
+                .builder
+                .build_struct_gep(struct_llvm_type, struct_ptr, i as u32, "field_ptr")
+                .ok()?;
+
+            match &kind {
+                // ── Primitive: direct typed extraction, zero re-serialization ──
+                Some(TypeKind::Int) => {
+                    let val = ctx
+                        .builder
+                        .build_call(
+                            get_int_fn,
+                            &[obj_handle.into(), field_name_str.into()],
+                            "field_int",
+                        )
+                        .ok()?
+                        .try_as_basic_value()
+                        .basic()?;
+                    ctx.builder.build_store(field_ptr, val).ok()?;
+                }
+                Some(TypeKind::Float) => {
+                    let val = ctx
+                        .builder
+                        .build_call(
+                            get_float_fn,
+                            &[obj_handle.into(), field_name_str.into()],
+                            "field_float",
+                        )
+                        .ok()?
+                        .try_as_basic_value()
+                        .basic()?;
+                    ctx.builder.build_store(field_ptr, val).ok()?;
+                }
+                Some(TypeKind::Bool) => {
+                    let i32_val = ctx
+                        .builder
+                        .build_call(
+                            get_bool_fn,
+                            &[obj_handle.into(), field_name_str.into()],
+                            "field_bool_i32",
+                        )
+                        .ok()?
+                        .try_as_basic_value()
+                        .basic()?;
+                    // Bool is i8 in Doo ABI — truncate from i32
+                    let i8_val = ctx
+                        .builder
+                        .build_int_truncate(
+                            i32_val.into_int_value(),
+                            ctx.context.i8_type(),
+                            "field_bool",
+                        )
+                        .ok()?;
+                    ctx.builder.build_store(field_ptr, i8_val).ok()?;
+                }
+                Some(TypeKind::Str) => {
+                    let val = ctx
+                        .builder
+                        .build_call(
+                            get_str_fn,
+                            &[obj_handle.into(), field_name_str.into()],
+                            "field_str",
+                        )
+                        .ok()?
+                        .try_as_basic_value()
+                        .basic()?;
+                    ctx.builder.build_store(field_ptr, val).ok()?;
+                }
+                // ── Composite: get as JSON string, then recursively parse ──
+                _ => {
+                    let field_json = ctx
+                        .builder
+                        .build_call(
+                            get_json_fn,
+                            &[obj_handle.into(), field_name_str.into()],
+                            "field_json",
+                        )
+                        .ok()?
+                        .try_as_basic_value()
+                        .basic()?;
+
+                    let field_val = Self::emit_parse(ctx, field_json, Some(*fty))?;
+
+                    let field_llvm_type = ctx.get_llvm_type(*fty);
+
+                    if matches!(kind, Some(TypeKind::Enum { .. })) {
+                        // Enum: emit_parse returns ptr to { i32, ptr }, need to load the value
+                        let enum_ptr = field_val.into_pointer_value();
+                        let enum_val = ctx
+                            .builder
+                            .build_load(field_llvm_type, enum_ptr, "enum_val")
+                            .ok()?;
+                        ctx.builder.build_store(field_ptr, enum_val).ok()?;
+                    } else {
+                        // Non-enum composite: store directly
+                        ctx.builder.build_store(field_ptr, field_val).ok()?;
+                    }
+                }
             }
         }
+
+        // ── Free the cached parse ──
+        let free_fn = Self::get_or_declare_object_free(ctx);
+        ctx.builder
+            .build_call(free_fn, &[obj_handle.into()], "")
+            .ok()?;
 
         // Return pointer to struct (cast to generic ptr)
         let ptr = ctx
@@ -1323,6 +1420,15 @@ impl JsonBuiltins {
             .fn_type(&[], false);
         ctx.module.add_function(ffi_names::DOO_JSON_WRITER_NEW, ft, None)
     }
+    fn get_or_declare_new_with_cap<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITER_NEW_WITH_CAP) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i64_ty = ctx.context.i64_type();
+        let ft = ptr_ty.fn_type(&[i64_ty.into()], false);
+        ctx.module.add_function(ffi_names::DOO_JSON_WRITER_NEW_WITH_CAP, ft, None)
+    }
     fn get_or_declare_free<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITER_FREE) {
             return f;
@@ -1506,7 +1612,75 @@ impl JsonBuiltins {
         ctx.module.add_function(ffi_names::DOO_JSON_WRITE_COLON, ft, None)
     }
 
-    // JSON parse helpers for struct/enum
+    // ── Parse-Once Object API helpers ──
+
+    fn get_or_declare_parse_object<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_PARSE_OBJECT) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ft = ptr_ty.fn_type(&[ptr_ty.into()], false);
+        ctx.module.add_function(ffi_names::DOO_JSON_PARSE_OBJECT, ft, None)
+    }
+
+    fn get_or_declare_object_get_int<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_INT) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i64_ty = ctx.context.i64_type();
+        let ft = i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_INT, ft, None)
+    }
+
+    fn get_or_declare_object_get_float<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_FLOAT) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let f64_ty = ctx.context.f64_type();
+        let ft = f64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_FLOAT, ft, None)
+    }
+
+    fn get_or_declare_object_get_bool<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_BOOL) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i32_ty = ctx.context.i32_type();
+        let ft = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_BOOL, ft, None)
+    }
+
+    fn get_or_declare_object_get_str<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_STR) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_STR, ft, None)
+    }
+
+    fn get_or_declare_object_get_json<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_JSON) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_JSON, ft, None)
+    }
+
+    fn get_or_declare_object_free<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_FREE) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
+        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_FREE, ft, None)
+    }
+
+    // JSON parse helpers for struct/enum (legacy — still used for enum parsing)
     fn get_or_declare_get_field<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_GET_FIELD) {
             return f;
