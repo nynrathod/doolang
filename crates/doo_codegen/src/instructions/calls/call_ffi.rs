@@ -1,21 +1,18 @@
 //! FFI call implementation — signatures, declarations, and call emission.
+//!
+//! This module is **completely package-agnostic**. All package-specific behavior
+//! (HTTP handler wrappers, WS event wrappers, DB enum conversion, middleware)
+//! is handled by the `packages/` dispatch system.
+//!
+//! Adding a new FFI package requires ZERO changes here.
 
-use super::call_metadata::{
-    emit_handler_metadata_registration, emit_struct_metadata_registration_for_auth_crud,
-};
 use super::call_utils::operand_to_value;
-use super::call_wrappers::{
-    extract_route_context, get_or_generate_handler_wrapper,
-    get_or_generate_handler_wrapper_with_context, get_or_generate_ws_event_handler_wrapper,
-    get_or_generate_ws_handler_wrapper, get_or_generate_ws_lifecycle_handler_wrapper,
-};
-use super::RouteContext;
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
-use doo_core::types::{builtin, TypeKind};
+use doo_core::types::{builtin, TypeId};
 use doo_mir::sym::resolve;
-use doo_mir::{MirConst, MirOperand};
+use doo_mir::MirOperand;
 use inkwell::module::Linkage;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
@@ -30,12 +27,20 @@ use inkwell::AddressSpace;
 /// - is_variadic: whether function accepts variable arguments
 type FfiSignature = (&'static [&'static str], &'static str, bool);
 
-/// Get FFI function signature for known functions.
-/// Returns (param_types, return_type, is_variadic).
+/// Get FFI function signature for C stdlib and runtime intrinsic functions.
+///
+/// **Package-Ready Design**: This table ONLY contains signatures for functions
+/// that have NO Doo `@extern` declaration (C stdlib, Doo runtime allocator).
+/// All Doo-declared FFI functions (http, db, auth, json, file, ws, process,
+/// config, and any third-party packages) get their signatures from the
+/// type signature registry populated from MIR FfiLinkage.
+///
+/// A third-party package author NEVER needs to add entries here.
 fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
-    // Use match for compile-time known signatures
     match symbol {
-        // Standard C Library
+        // =====================================================================
+        // C Standard Library — no Doo declarations, need hardcoded signatures
+        // =====================================================================
         ffi_names::MALLOC => Some((&["i64"], "ptr", false)),
         ffi_names::FREE => Some((&["ptr"], "void", false)),
         ffi_names::REALLOC => Some((&["ptr", "i64"], "ptr", false)),
@@ -50,197 +55,28 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::PUTS => Some((&["ptr"], "i32", false)),
         ffi_names::PUTCHAR => Some((&["i32"], "i32", false)),
 
-        // Doo Runtime
+        // =====================================================================
+        // Doo Runtime Allocator — compiler-internal, no @extern declarations
+        // =====================================================================
         ffi_names::DOO_ALLOC => Some((&["i64"], "ptr", false)),
         ffi_names::DOO_FREE => Some((&["ptr"], "void", false)),
         ffi_names::DOO_REALLOC => Some((&["ptr", "i64"], "ptr", false)),
 
-        // JSON FFI
-        ffi_names::DOO_JSON_WRITER_NEW => Some((&[], "ptr", false)),
-        ffi_names::DOO_JSON_WRITER_FREE => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITER_FINISH => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_JSON_WRITE_START_OBJECT => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_END_OBJECT => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_START_ARRAY => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_END_ARRAY => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_COMMA => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_COLON => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_KEY => Some((&["ptr", "ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_KEY_INT => Some((&["ptr", "i64"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_KEY_FLOAT => Some((&["ptr", "f64"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_KEY_BOOL => Some((&["ptr", "i1"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_INT => Some((&["ptr", "i64"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_FLOAT => Some((&["ptr", "f64"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_BOOL => Some((&["ptr", "i32"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_STRING => Some((&["ptr", "ptr"], "void", false)),
-        ffi_names::DOO_JSON_WRITE_NULL => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_JSON_PARSE => Some((&["ptr"], "ptr", false)),
-
-        // File FFI
-        ffi_names::DOO_FILE_INIT => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_READ => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_WRITE => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_APPEND => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_DELETE => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_EXISTS => Some((&["ptr"], "i32", false)),
-        ffi_names::DOO_FILE_METADATA => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_COPY => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_MOVE => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_SIZE => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_READ_LINES => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_MKDIR => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_MKDIR_ALL => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_RMDIR => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_RMDIR_ALL => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_LIST_DIR => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_FILE_IS_FILE => Some((&["ptr"], "i32", false)),
-        ffi_names::DOO_FILE_IS_DIR => Some((&["ptr"], "i32", false)),
-        ffi_names::DOO_FILE_MODIFIED_TIME => Some((&["ptr"], "i64", false)),
-        ffi_names::DOO_FILE_FREE_RESULT => Some((&["ptr"], "void", false)),
-
-        // HTTP FFI
-        ffi_names::DOO_HTTP_SERVER_NEW => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_SERVER_LISTEN => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_LISTEN => Some((&["ptr"], "ptr", false)),
-        // Function pointer versions (handler is function pointer, not string)
-        ffi_names::DOO_HTTP_GET_FN => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_POST_FN => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_PUT_FN => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_DELETE_FN => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_PATCH_FN => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        // String-based versions (legacy)
-        ffi_names::DOO_HTTP_GET => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_POST => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_PUT => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_DELETE => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_PATCH => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_USE => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_GROUP => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_CORS_CUSTOM => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_RATELIMIT_CUSTOM => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_GET_WITH_MIDDLEWARE => {
-            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
-        }
-        ffi_names::DOO_HTTP_POST_WITH_MIDDLEWARE => {
-            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
-        }
-        ffi_names::DOO_HTTP_PUT_WITH_MIDDLEWARE => {
-            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
-        }
-        ffi_names::DOO_HTTP_DELETE_WITH_MIDDLEWARE => {
-            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
-        }
-        ffi_names::DOO_HTTP_PATCH_WITH_MIDDLEWARE => {
-            Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false))
-        }
-        ffi_names::DOO_HTTP_REGISTER_ROUTE => Some((&["ptr", "ptr", "ptr", "ptr"], "void", false)),
-        ffi_names::DOO_HTTP_REQ_GET_HEADER => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_REQ_GET_BODY => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_REQ_GET_PARAM => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_REQ_GET_QUERY => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_REQ_QUERY => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_REQ_PARAM => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_REQ_HEADER => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_NEXT_CALL => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_AUTH => Some((&["ptr", "ptr", "ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_CRUD => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_PARSE_JSON => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_TO_JSON => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_HTTP_RES_SET_STATUS => Some((&["ptr", "i32"], "void", false)),
-        ffi_names::DOO_HTTP_RES_SET_HEADER => Some((&["ptr", "ptr", "ptr"], "void", false)),
-        ffi_names::DOO_HTTP_RES_SET_BODY => Some((&["ptr", "ptr"], "void", false)),
-        ffi_names::DOO_HTTP_RES_JSON => Some((&["ptr", "ptr"], "void", false)),
-
-        // Database FFI
-        ffi_names::DOO_DB_POSTGRES => Some((&["ptr"], "ptr", false)),
-        // These return *mut SimpleResult (pointer to heap-allocated result) for Windows ABI compatibility
-        ffi_names::DOO_DB_CONNECT_POSTGRES => Some((&[], "ptr", false)),
-        ffi_names::DOO_DB_GET_GLOBAL => Some((&[], "ptr", false)),
-        ffi_names::DOO_DB_RAW => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_DB_RAW_PARAM => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_DB_RESULT_FREE => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_DB_FREE_STRING => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_DB_FIND => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_DB_FIND_ALL => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_DB_INSERT => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_DB_UPDATE => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_DB_DELETE => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_DB_QUERY => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_DB_EXISTS => Some((&["ptr", "ptr", "ptr"], "i32", false)),
-
-        // Auth FFI
-        ffi_names::DOO_AUTH_HASH_PASSWORD => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_AUTH_VERIFY_PASSWORD => Some((&["ptr", "ptr"], "i32", false)),
-        ffi_names::DOO_AUTH_SIGN_TOKEN => Some((&["ptr", "ptr", "i64"], "ptr", false)),
-        ffi_names::DOO_AUTH_VERIFY_TOKEN => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_AUTH_FREE_RESULT => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_AUTH_SIGN => Some((&["ptr", "ptr", "i64"], "ptr", false)),
-        ffi_names::DOO_AUTH_VERIFY => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_AUTH_FREE_STRING => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_HTTP_JWT => Some((&[], "ptr", false)),
-
-        // String FFI
-        ffi_names::DOO_STRING_LEN_UTF8 => Some((&["ptr"], "i64", false)),
-        ffi_names::DOO_STRING_CHAR_AT_UTF8 => Some((&["ptr", "i64"], "ptr", false)),
-        ffi_names::DOO_STRING_REVERSE_UTF8 => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_STRING_SUBSTRING_UTF8 => Some((&["ptr", "i64", "i64"], "ptr", false)),
-        ffi_names::DOO_STRING_REPLACE => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_STRING_TRIM => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_STRING_TRIM_START => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_STRING_TRIM_END => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_STRING_SPLIT => Some((&["ptr", "ptr"], "ptr", false)),
-
-        // Math FFI
+        // =====================================================================
+        // Math intrinsics — linked from libm, no @extern declarations
+        // =====================================================================
         ffi_names::FABS => Some((&["f64"], "f64", false)),
         ffi_names::FLOOR => Some((&["f64"], "f64", false)),
         ffi_names::CEIL => Some((&["f64"], "f64", false)),
         ffi_names::ROUND => Some((&["f64"], "f64", false)),
         ffi_names::SQRT => Some((&["f64"], "f64", false)),
 
-        // WebSocket FFI
-        // Route registration: (server_ptr, path, handler_fn_ptr) -> result
-        ffi_names::DOO_WS_ROUTE => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_INIT => Some((&[], "void", false)),
-        // Server instance methods: (_server, ...) -> result
-        ffi_names::DOO_WS_CONFIG => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_SHUTDOWN => Some((&["ptr"], "void", false)),
-        ffi_names::DOO_WS_ACTIVE_CONNECTIONS => Some((&["ptr"], "i64", false)),
-        ffi_names::DOO_WS_IS_WS_ROUTE => Some((&["ptr", "ptr"], "i64", false)),
-        // Server instance getter
-        ffi_names::DOO_HTTP_GET_SERVER_INSTANCE => Some((&[], "ptr", false)),
-        // Connection operations: (conn_ptr, ...) -> result
-        ffi_names::DOO_WS_CONN_ID => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_EMIT => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_EMIT_BINARY => Some((&["ptr", "ptr", "i64"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_JOIN => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_LEAVE => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_CLOSE => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_IS_CLOSED => Some((&["ptr"], "i64", false)),
-        ffi_names::DOO_WS_CONN_ON => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_ON_CONNECT => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_ON_DISCONNECT => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_CONN_ON_ERROR => Some((&["ptr", "ptr"], "ptr", false)),
-        // Broadcast & room (Server instance methods): (_server, ...) -> result
-        ffi_names::DOO_WS_BROADCAST => Some((&["ptr", "ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_WS_ROOM_EMIT => Some((&["ptr", "ptr", "ptr", "ptr"], "ptr", false)),
-
-        // Process FFI
-        ffi_names::DOO_PROCESS_RUN => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_PROCESS_OUTPUT => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_PROCESS_SPAWN => Some((&["ptr", "ptr"], "ptr", false)),
-        ffi_names::DOO_PROCESS_KILL => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_PROCESS_STATUS => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_PROCESS_WAIT_OUTPUT => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_PROCESS_IS_RUNNING => Some((&["ptr"], "i64", false)),
-        ffi_names::DOO_PROCESS_READ_STDOUT => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_PROCESS_READ_STDERR => Some((&["ptr"], "ptr", false)),
-        ffi_names::DOO_PROCESS_SHUTDOWN => Some((&[], "void", false)),
-        ffi_names::DOO_PROCESS_ACTIVE_COUNT => Some((&[], "i64", false)),
-
-        // HTTP Client / Fetch FFI
-        ffi_names::DOO_HTTP_FETCH => Some((&["ptr", "ptr"], "ptr", false)),
-
-        // Unknown - use default signature
+        // =====================================================================
+        // All other FFI functions (doo_http_*, doo_db_*, doo_auth_*, doo_json_*,
+        // doo_file_*, doo_ws_*, doo_process_*, doo_config_*, and any third-party
+        // packages) are resolved via the type signature registry from their
+        // @extern Doo declarations. No entries needed here.
+        // =====================================================================
         _ => None,
     }
 }
@@ -270,8 +106,33 @@ fn ffi_type_to_llvm<'ctx>(
     }
 }
 
+/// Convert a Doo TypeId to the corresponding FFI type string.
+/// This maps Doo's type system to the C ABI types used at the FFI boundary.
+fn type_id_to_ffi_str(type_id: TypeId) -> &'static str {
+    if type_id == builtin::INT {
+        "i64"
+    } else if type_id == builtin::FLOAT {
+        "f64"
+    } else if type_id == builtin::BOOL {
+        "i32" // C ABI uses i32 for bools
+    } else if type_id == builtin::VOID {
+        "void"
+    } else {
+        // All other types (Str, structs, arrays, maps, enums, Any, etc.)
+        // are passed as pointers at the FFI boundary
+        "ptr"
+    }
+}
+
 /// Declare an FFI function with proper signature and external linkage.
-pub(super) fn declare_ffi_function<'ctx>(
+///
+/// Resolution order (package-ready):
+/// 1. **Type signature registry** — populated from MIR FfiLinkage (Doo declarations).
+///    This is the primary path and handles ALL @extern functions including third-party packages.
+/// 2. **Hardcoded table** — `get_ffi_signature()` for C stdlib/runtime functions
+///    (malloc, free, printf, etc.) that have no Doo `@extern` declaration.
+/// 3. **Fallback** — all-pointer inference (ptr params, ptr return) for unknown symbols.
+pub(crate) fn declare_ffi_function<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     symbol: &str,
     arg_count: usize,
@@ -283,20 +144,51 @@ pub(super) fn declare_ffi_function<'ctx>(
 
     let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
 
-    // Get known signature or build default
+    // === Priority 1: Type signature registry (from Doo @extern declarations) ===
+    // This is the package-ready path — works for ALL FFI functions with Doo declarations,
+    // including third-party packages. No hardcoded table entry needed.
+    if let Some((param_type_ids, return_type_id, is_result)) =
+        ctx.ffi_type_signatures.get(symbol).cloned()
+    {
+        let params: Vec<BasicTypeEnum> = param_type_ids
+            .iter()
+            .filter_map(|tid| ffi_type_to_llvm(ctx, type_id_to_ffi_str(*tid)))
+            .collect();
+
+        let ret = if is_result {
+            // Result-returning FFI functions return *mut SimpleResult (pointer)
+            Some(ptr_ty.into())
+        } else {
+            match return_type_id {
+                Some(tid) => ffi_type_to_llvm(ctx, type_id_to_ffi_str(tid)),
+                None => None, // void
+            }
+        };
+
+        let param_meta: Vec<inkwell::types::BasicMetadataTypeEnum> =
+            params.iter().map(|t| (*t).into()).collect();
+        let fn_type = match ret {
+            Some(r) => r.fn_type(&param_meta, false),
+            None => ctx.context.void_type().fn_type(&param_meta, false),
+        };
+
+        let func = ctx
+            .module
+            .add_function(symbol, fn_type, Some(Linkage::External));
+        return func;
+    }
+
+    // === Priority 2: Hardcoded table (C stdlib / Doo runtime intrinsics only) ===
     let (param_types_vec, return_type, is_variadic) =
         if let Some((param_strs, ret_str, variadic)) = get_ffi_signature(symbol) {
-            // Known function: use precise signature
             let params: Vec<BasicTypeEnum> = param_strs
                 .iter()
                 .filter_map(|s| ffi_type_to_llvm(ctx, s))
                 .collect();
-
             let ret = ffi_type_to_llvm(ctx, ret_str);
             (params, ret, variadic)
         } else {
-            // Unknown function: infer from argument count
-            // Default: ptr params, ptr return
+            // === Priority 3: Fallback — all-pointer inference ===
             let params: Vec<BasicTypeEnum> = (0..arg_count).map(|_| ptr_ty.into()).collect();
             (params, Some(ptr_ty.into()), false)
         };
@@ -314,9 +206,6 @@ pub(super) fn declare_ffi_function<'ctx>(
     let func = ctx
         .module
         .add_function(symbol, fn_type, Some(Linkage::External));
-
-    // Cache the function
-    // Note: function_cache is private, so we rely on module.get_function
     func
 }
 
@@ -458,7 +347,7 @@ fn convert_to_ffi_arg<'ctx>(
 
 /// Try to convert an enum operand to a JSON string for doo_db_raw_param.
 /// Returns Some(pointer_value) if the operand is a known enum, None otherwise.
-fn try_convert_enum_to_json_string<'ctx>(
+pub(crate) fn try_convert_enum_to_json_string<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     operand: &MirOperand,
 ) -> Option<PointerValue<'ctx>> {
@@ -565,7 +454,7 @@ fn try_convert_enum_to_json_string<'ctx>(
 /// Returns Some(pointer_value) if the operand is an array of enums, None otherwise.
 /// Handles both homogeneous enum arrays (all same type) and mixed enum arrays.
 /// Also handles EMPTY arrays by returning "[]".
-fn try_convert_enum_array_to_json_string<'ctx>(
+pub(crate) fn try_convert_enum_array_to_json_string<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     operand: &MirOperand,
 ) -> Option<PointerValue<'ctx>> {
@@ -879,7 +768,15 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
 }
 
 /// Emit an FFI call with proper type handling.
-pub(super) fn emit_ffi_call<'ctx>(
+///
+/// This function is **completely package-agnostic**. All package-specific behavior
+/// is delegated to `crate::packages` dispatch:
+/// - **Pre-call hooks**: metadata registration, middleware setup (HTTP), etc.
+/// - **FuncRef wrapping**: HTTP handler wrappers, WS event wrappers, etc.
+/// - **Arg conversion**: DB enum→JSON, etc.
+///
+/// Adding a new FFI package requires ZERO changes here.
+pub(crate) fn emit_ffi_call<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     dest: Option<&str>,
     symbol: &str,
@@ -898,195 +795,69 @@ pub(super) fn emit_ffi_call<'ctx>(
     // Declare FFI function if not already declared
     let func = declare_ffi_function(ctx, symbol, args.len());
 
-    // Get expected param types from signature (for conversion)
+    // Get expected param types from signature (for argument conversion).
+    // Priority 1: Type signature registry (from Doo @extern declarations — package-ready)
+    // Priority 2: Hardcoded table (C stdlib / runtime intrinsics)
+    // Priority 3: No type info (fall through to default conversion)
     let expected_types: Vec<Option<&str>> =
-        if let Some((param_strs, _, _)) = get_ffi_signature(symbol) {
+        if let Some((param_type_ids, _, _)) = ctx.ffi_type_signatures.get(symbol) {
+            param_type_ids
+                .iter()
+                .map(|tid| Some(type_id_to_ffi_str(*tid)))
+                .collect()
+        } else if let Some((param_strs, _, _)) = get_ffi_signature(symbol) {
             param_strs.iter().map(|s| Some(*s)).collect()
         } else {
             args.iter().map(|_| None).collect()
         };
 
-    // Special handling for auth/crud: register struct/enum metadata before calling
-    // This is needed so the FFI can validate incoming data at runtime
-    if symbol == ffi_names::DOO_HTTP_AUTH || symbol == ffi_names::DOO_HTTP_CRUD {
-        emit_struct_metadata_registration_for_auth_crud(ctx, symbol, args);
-    }
+    // ======================================================================
+    // Package dispatch: pre-call hooks
+    // ======================================================================
+    // Delegates to the appropriate package module based on library name.
+    // Each package handles its own setup (metadata, middleware, etc.).
+    // Unknown packages: no-op.
+    let library = crate::packages::resolve_library(ctx, symbol);
+    crate::packages::pre_call(ctx, &library, symbol, args);
 
-    // Special handling for *_with_middleware: register user-defined middleware functions
-    // The middleware names are passed as comma-separated string, we need to register each one
-    // IMPORTANT: Skip built-in middlewares (jwt, cors, etc.) as they have native handlers in the runtime
-    if symbol.ends_with("_with_middleware") && args.len() >= 4 {
-        // arg[2] is the middleware names string (e.g., "AuthMiddleware,AdminMiddleware")
-        if let MirOperand::Const(MirConst::Str(middleware_str)) = &args[2] {
-            // Split by comma and register each middleware function
-            for mw_name in middleware_str.split(',').map(|s| s.trim()) {
-                if !mw_name.is_empty() {
-                    // Skip built-in middlewares - they register themselves in the runtime
-                    if ffi_names::is_builtin_middleware(mw_name) {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "Skipping built-in middleware registration: {}",
-                                mw_name
-                            );
-                        }
-                        continue;
-                    }
-
-                    // Generate wrapper for user-defined middleware and register it
-                    let wrapper = get_or_generate_handler_wrapper(ctx, mw_name, symbol);
-
-                    // Call doo_http_register_middleware(name, fn_ptr)
-                    let register_fn = ctx
-                        .module
-                        .get_function(ffi_names::DOO_HTTP_REGISTER_MIDDLEWARE)
-                        .unwrap_or_else(|| {
-                            let ptr_type = ctx.ptr_type();
-                            let fn_type = ctx
-                                .context
-                                .void_type()
-                                .fn_type(&[ptr_type.into(), ptr_type.into()], false);
-                            ctx.module.add_function(
-                                ffi_names::DOO_HTTP_REGISTER_MIDDLEWARE,
-                                fn_type,
-                                None,
-                            )
-                        });
-
-                    let mw_name_str = ctx.const_string(mw_name);
-                    let _ = ctx.builder.build_call(
-                        register_fn,
-                        &[
-                            mw_name_str.into(),
-                            wrapper.as_global_value().as_pointer_value().into(),
-                        ],
-                        "register_mw",
-                    );
-
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "CODEGEN",
-                            "Registered user middleware: {} -> {}",
-                            mw_name,
-                            wrapper.get_name().to_string_lossy()
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Extract route context for handler wrapper generation
-    // For HTTP route registrations, we need to know:
-    // - Route path pattern (args[1]) to extract path param names
-    // - Middleware names (args[2] for *_with_middleware) to detect JWT
-    // - HTTP method (from symbol name)
-    let route_context = extract_route_context(symbol, args);
-
-    // Convert arguments - with automatic wrapper generation for FuncRef
+    // ======================================================================
+    // Convert arguments — generic with package dispatch for specials
+    // ======================================================================
+    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
     let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::with_capacity(args.len());
+
     for (i, a) in args.iter().enumerate() {
-        // Special handling for FuncRef - generate wrapper if needed
+        // FuncRef: generate callback wrapper via package dispatch
         if let MirOperand::FuncRef(func_name) = a {
-            // ============================================================
-            // WebSocket handler wrappers — different from HTTP handlers
-            // ============================================================
-            if symbol == ffi_names::DOO_WS_ROUTE {
-                // WS route handler: fn(*const WsConnection) -> void
-                let wrapper = get_or_generate_ws_handler_wrapper(ctx, &resolve(*func_name));
-                arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
-                continue;
-            }
-            if symbol == ffi_names::DOO_WS_CONN_ON || symbol == ffi_names::DOO_WS_CONN_ON_ERROR {
-                // Event/error handler: fn(*const c_char) -> void
-                // User function takes a Str param — direct pointer passthrough
-                let wrapper = get_or_generate_ws_event_handler_wrapper(ctx, &resolve(*func_name));
-                arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
-                continue;
-            }
-            if symbol == ffi_names::DOO_WS_CONN_ON_CONNECT
-                || symbol == ffi_names::DOO_WS_CONN_ON_DISCONNECT
-            {
-                // Lifecycle handler: fn() -> void (no params)
-                let wrapper =
-                    get_or_generate_ws_lifecycle_handler_wrapper(ctx, &resolve(*func_name));
-                arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
-                continue;
-            }
-
-            // ============================================================
-            // HTTP handler wrappers (existing logic)
-            // ============================================================
             let func_name_str = resolve(*func_name);
-            let wrapper = get_or_generate_handler_wrapper_with_context(
-                ctx,
-                &func_name_str,
-                symbol,
-                &route_context,
-            );
 
-            // If this is an HTTP route registration, register handler metadata
-            // Check for doo_http_get_fn, doo_http_post_fn, etc. AND *_with_middleware variants
-            let is_route_registration = symbol.starts_with("doo_http_")
-                && (symbol.ends_with("_fn") || symbol.ends_with("_with_middleware"));
-            if is_route_registration {
-                emit_handler_metadata_registration(ctx, &func_name_str, &wrapper);
+            // Ask the package for a specialized wrapper
+            // (HTTP → handler wrapper, WS → event wrapper, etc.)
+            if let Some(wrapper) =
+                crate::packages::wrap_func_ref(ctx, &library, symbol, &func_name_str, args)
+            {
+                arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
+                continue;
             }
 
-            arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
+            // Generic passthrough: raw function pointer for unknown packages.
+            // Third-party FFI crate must accept `extern "C" fn(...)`.
+            if let Some(user_fn) = ctx.get_function(&func_name_str) {
+                arg_vals.push(user_fn.as_global_value().as_pointer_value().into());
+            } else {
+                arg_vals.push(ptr_type.const_null().into());
+            }
             continue;
         }
 
-        // Special handling for doo_db_raw_param: convert enum/array params (index 2) to JSON string
-        if symbol == ffi_names::DOO_DB_RAW_PARAM && i == 2 {
-            // Check for empty array literal first - pass "[]" directly
-            // Empty arrays are tracked in array_element_types but NOT in array_element_temps
-            // (because they have no element temps to track)
-            if let MirOperand::Temp(name) = a {
-                let name_str = resolve(*name);
-                let has_elem_type = ctx.array_element_types.contains_key(&name_str);
-                let has_elem_temps = ctx.array_element_temps.contains_key(&name_str);
-
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "doo_db_raw_param arg[2]: temp={}, has_elem_type={}, has_elem_temps={}",
-                        name_str,
-                        has_elem_type,
-                        has_elem_temps
-                    );
-                }
-
-                // If it's tracked as an array (has element type) but has no element temps,
-                // it's an empty array - pass "[]" directly
-                if has_elem_type && !has_elem_temps {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "CODEGEN",
-                            "Converting empty array {} to JSON \"[]\"",
-                            name_str
-                        );
-                    }
-                    let empty_json = ctx.const_string("[]");
-                    arg_vals.push(empty_json.into());
-                    continue;
-                }
-            } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!("CODEGEN", "doo_db_raw_param arg[2] is not a Temp: {:?}", a);
-            }
-
-            // Try single enum conversion first
-            if let Some(converted) = try_convert_enum_to_json_string(ctx, a) {
-                arg_vals.push(converted.into());
-                continue;
-            }
-            // Try array of enums conversion
-            if let Some(converted) = try_convert_enum_array_to_json_string(ctx, a) {
-                arg_vals.push(converted.into());
-                continue;
-            }
+        // Package-specific argument conversion
+        // (e.g., DB enum→JSON for doo_db_raw_param)
+        if let Some(converted) = crate::packages::convert_arg(ctx, &library, symbol, i, a) {
+            arg_vals.push(converted);
+            continue;
         }
 
+        // Standard argument conversion (type coercion to FFI types)
         if let Some(val) = operand_to_value(ctx, a) {
             let expected = expected_types.get(i).copied().flatten();
             arg_vals.push(convert_to_ffi_arg(ctx, val, expected));

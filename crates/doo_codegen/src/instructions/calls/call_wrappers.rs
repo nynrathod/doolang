@@ -13,7 +13,7 @@ use inkwell::IntPredicate;
 /// Extract route context from FFI call arguments.
 /// For HTTP route registrations like doo_http_get_fn(server, path, handler),
 /// this extracts the route path pattern and middleware information.
-pub(super) fn extract_route_context(symbol: &str, args: &[MirOperand]) -> RouteContext {
+pub(crate) fn extract_route_context(symbol: &str, args: &[MirOperand]) -> RouteContext {
     let mut ctx = RouteContext::default();
 
     // Only process HTTP route registrations
@@ -70,7 +70,7 @@ pub(super) fn extract_route_context(symbol: &str, args: &[MirOperand]) -> RouteC
 /// Generate a wrapper for WebSocket route handlers.
 /// FFI expects: extern "C" fn(*const WsConnection)
 /// User has:    fn(conn: WsConnection) { ... } or fn(conn: WsConnection, app: Server) { ... }
-pub(super) fn get_or_generate_ws_handler_wrapper<'ctx>(
+pub(crate) fn get_or_generate_ws_handler_wrapper<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     user_func_name: &str,
 ) -> FunctionValue<'ctx> {
@@ -162,7 +162,7 @@ pub(super) fn get_or_generate_ws_handler_wrapper<'ctx>(
 /// Generate a wrapper for WebSocket event/error handlers.
 /// FFI expects: extern "C" fn(*const WsConnection, *const c_char)
 /// User has:    fn(conn: WsConnection, data: Str) { ... }
-pub(super) fn get_or_generate_ws_event_handler_wrapper<'ctx>(
+pub(crate) fn get_or_generate_ws_event_handler_wrapper<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     user_func_name: &str,
 ) -> FunctionValue<'ctx> {
@@ -265,7 +265,7 @@ pub(super) fn get_or_generate_ws_event_handler_wrapper<'ctx>(
 /// Generate a wrapper for WebSocket lifecycle handlers (onConnect/onDisconnect).
 /// FFI expects: extern "C" fn(*const WsConnection)
 /// User has:    fn(conn: WsConnection) { ... } or fn(conn: WsConnection, app: Server) { ... }
-pub(super) fn get_or_generate_ws_lifecycle_handler_wrapper<'ctx>(
+pub(crate) fn get_or_generate_ws_lifecycle_handler_wrapper<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     user_func_name: &str,
 ) -> FunctionValue<'ctx> {
@@ -366,7 +366,7 @@ pub(super) fn get_or_generate_ws_lifecycle_handler_wrapper<'ctx>(
 /// 1. Has the FFI-expected signature
 /// 2. Calls the user's function with appropriate arguments
 /// 3. Wraps the return value in DooResult format
-pub(super) fn get_or_generate_handler_wrapper<'ctx>(
+pub(crate) fn get_or_generate_handler_wrapper<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     user_func_name: &str,
     ffi_symbol: &str,
@@ -383,7 +383,7 @@ pub(super) fn get_or_generate_handler_wrapper<'ctx>(
 /// Generate or retrieve a wrapper function with route context.
 /// This version knows about the route pattern and middleware, allowing correct
 /// parameter extraction from path params, JWT claims, etc.
-pub(super) fn get_or_generate_handler_wrapper_with_context<'ctx>(
+pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     user_func_name: &str,
     ffi_symbol: &str,

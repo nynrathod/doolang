@@ -1,12 +1,7 @@
-//! Connection Pool Management
-//! Uses deadpool-postgres for connection pooling.
+//! PostgreSQL Connection Pool
 //!
-//! Production-grade configuration:
-//! - Bounded pool size (CPU-based or env override)
-//! - Connection/wait/recycle timeouts
-//! - FIFO queue mode
-//! - Fast connection recycling
-//! - Per-connection statement_timeout
+//! Uses `deadpool-postgres` for production-grade connection pooling.
+//! Configuration via environment variables.
 
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -19,55 +14,11 @@ use doo_ffi_core::ffi_debug;
 
 static POOL: OnceLock<Pool> = OnceLock::new();
 
-/// Query semaphore — bounds total in-flight DB queries to prevent overload.
-/// When the pool is full + slow, excess requests get fast 503 instead of queuing.
-static QUERY_SEMAPHORE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
-
-/// Default query timeout in seconds (individual query execution).
-const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 30;
-
-/// Default semaphore wait timeout in milliseconds.
-const DEFAULT_SEMAPHORE_WAIT_MS: u64 = 100;
-
-/// Maximum rows returned by a single query (OOM protection).
-pub const MAX_ROWS: usize = 10_000;
-
-/// Get the query concurrency semaphore.
-pub fn get_query_semaphore() -> &'static tokio::sync::Semaphore {
-    QUERY_SEMAPHORE.get_or_init(|| {
-        let limit = std::env::var(doo_ffi_core::constants::ENV_DATABASE_MAX_QUERIES)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(200);
-        ffi_debug!("DB", "Query semaphore initialized with limit: {}", limit);
-        tokio::sync::Semaphore::new(limit)
-    })
-}
-
-/// Get per-query timeout duration from env or default.
-pub fn get_query_timeout() -> Duration {
-    let secs = std::env::var(doo_ffi_core::constants::ENV_DATABASE_QUERY_TIMEOUT_SECS)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_QUERY_TIMEOUT_SECS);
-    Duration::from_secs(secs)
-}
-
-/// Get semaphore wait timeout from env or default.
-pub fn get_semaphore_wait_timeout() -> Duration {
-    let ms = std::env::var(doo_ffi_core::constants::ENV_DATABASE_SEMAPHORE_WAIT_MS)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_SEMAPHORE_WAIT_MS);
-    Duration::from_millis(ms)
-}
-
 /// Initialize the connection pool with production-grade configuration.
 ///
 /// Pool sizing: min(cpu_count * 2, 32), overridable via DATABASE_POOL_SIZE env.
 /// Timeouts: 5s wait, 5s create, 5s recycle — prevents infinite hangs.
 /// Recycling: Fast mode — checks connection liveness on checkout.
-/// Statement timeout: 30s per connection — prevents runaway queries in PG.
 pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error::Error>> {
     let pg_config = tokio_postgres::Config::from_str(connection_string)?;
 
@@ -133,15 +84,9 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
         .map_err(|_| "Connection test timed out (10s)")?
         .map_err(|e| format!("Connection test failed: {}", e))?;
 
-    // Set statement_timeout on the test connection to verify it works
-    // Each new connection from the pool will also get this via PG server config
-    // or we set it inline when we get a client
     ffi_debug!("DB", "Connection test passed, pool ready");
 
     POOL.set(pool).map_err(|_| "Pool already initialized")?;
-
-    // Pre-initialize the semaphore
-    let _ = get_query_semaphore();
 
     Ok(())
 }
@@ -151,7 +96,7 @@ pub fn is_pool_initialized() -> bool {
     POOL.get().is_some()
 }
 
-/// Get a client from the pool (with wait timeout enforced by pool config).
+/// Get a client from the pool.
 pub async fn get_client(
 ) -> Result<deadpool_postgres::Client, Box<dyn std::error::Error + Send + Sync>> {
     let pool = POOL

@@ -16,9 +16,6 @@ string-interner = "0.15"
 # For hash maps with better performance
 rustc-hash = "1.1"
 
-# FFI core - single source of truth for FFI constants
-doo_ffi_core = { path = "../../ffi/doo_ffi_core" }
-
 [dev-dependencies]
 pretty_assertions = "1.4"
 

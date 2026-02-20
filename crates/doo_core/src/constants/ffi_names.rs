@@ -38,6 +38,8 @@ pub const MODULE_CONSOLE: &str = "Console";
 pub const MODULE_WEBSOCKET: &str = "WebSocket";
 /// Process module for command/process execution
 pub const MODULE_PROCESS: &str = "Process";
+/// Config module for environment variable access
+pub const MODULE_CONFIG: &str = "Config";
 
 /// All built-in module names in a static array for iteration/lookup
 pub const BUILTIN_MODULES: &[&str] = &[
@@ -52,6 +54,7 @@ pub const BUILTIN_MODULES: &[&str] = &[
     MODULE_CONSOLE,
     MODULE_WEBSOCKET,
     MODULE_PROCESS,
+    MODULE_CONFIG,
 ];
 
 /// Check if a name is a built-in module
@@ -175,21 +178,8 @@ pub const DOO_JSON_IS_UNIT_VARIANT: &str = "doo_json_is_unit_variant";
 // Doo HTTP FFI (doo_ffi_http)
 // ============================================================================
 
-pub const DOO_HTTP_SERVER_NEW: &str = "doo_http_server_new";
-pub const DOO_HTTP_SERVER_LISTEN: &str = "doo_http_server_listen";
 pub const DOO_HTTP_GET_SERVER_INSTANCE: &str = "doo_http_get_server_instance";
-pub const DOO_HTTP_REGISTER_ROUTE: &str = "doo_http_register_route";
-pub const DOO_HTTP_REGISTER_WITH_MIDDLEWARE: &str = "doo_http_register_with_middleware";
 pub const DOO_HTTP_GROUP: &str = "doo_http_group";
-pub const DOO_HTTP_CORS: &str = "doo_http_cors";
-pub const DOO_HTTP_RATE_LIMIT: &str = "doo_http_rate_limit";
-
-// HTTP Method Routes (verb-based registration)
-pub const DOO_HTTP_GET: &str = "doo_http_get";
-pub const DOO_HTTP_POST: &str = "doo_http_post";
-pub const DOO_HTTP_PUT: &str = "doo_http_put";
-pub const DOO_HTTP_DELETE: &str = "doo_http_delete";
-pub const DOO_HTTP_PATCH: &str = "doo_http_patch";
 
 // HTTP Method Routes with function pointer
 pub const DOO_HTTP_GET_FN: &str = "doo_http_get_fn";
@@ -205,37 +195,13 @@ pub const DOO_HTTP_PUT_WITH_MIDDLEWARE: &str = "doo_http_put_with_middleware";
 pub const DOO_HTTP_DELETE_WITH_MIDDLEWARE: &str = "doo_http_delete_with_middleware";
 pub const DOO_HTTP_PATCH_WITH_MIDDLEWARE: &str = "doo_http_patch_with_middleware";
 
-// HTTP Misc
-pub const DOO_HTTP_USE: &str = "doo_http_use";
-pub const DOO_HTTP_LISTEN: &str = "doo_http_listen";
-pub const DOO_HTTP_CORS_CUSTOM: &str = "doo_http_cors_custom";
-pub const DOO_HTTP_RATELIMIT_CUSTOM: &str = "doo_http_ratelimit_custom";
-pub const DOO_HTTP_NEXT_CALL: &str = "doo_http_next_call";
+// HTTP FFI symbol constants — used by codegen for metadata/auth/crud dispatch
 pub const DOO_HTTP_AUTH: &str = "doo_http_auth";
 pub const DOO_HTTP_CRUD: &str = "doo_http_crud";
-pub const DOO_HTTP_JWT: &str = "doo_http_jwt";
-pub const DOO_HTTP_PARSE_JSON: &str = "doo_http_parse_json";
-pub const DOO_HTTP_TO_JSON: &str = "doo_http_to_json";
 pub const DOO_HTTP_REGISTER_MIDDLEWARE: &str = "doo_http_register_middleware";
 pub const DOO_HTTP_REGISTER_HANDLER_WITH_METADATA: &str = "doo_http_register_handler_with_metadata";
 pub const DOO_HTTP_REGISTER_STRUCT_METADATA: &str = "doo_http_register_struct_metadata";
 pub const DOO_HTTP_REGISTER_ENUM_METADATA: &str = "doo_http_register_enum_metadata";
-
-// Request/Response
-pub const DOO_HTTP_REQ_GET_HEADER: &str = "doo_http_req_get_header";
-pub const DOO_HTTP_REQ_GET_BODY: &str = "doo_http_req_get_body";
-pub const DOO_HTTP_REQ_GET_PARAM: &str = "doo_http_req_get_param";
-pub const DOO_HTTP_REQ_GET_QUERY: &str = "doo_http_req_get_query";
-
-// Request shorthands (aliases used in get_ffi_signature)
-pub const DOO_HTTP_REQ_QUERY: &str = "doo_http_req_query";
-pub const DOO_HTTP_REQ_PARAM: &str = "doo_http_req_param";
-pub const DOO_HTTP_REQ_HEADER: &str = "doo_http_req_header";
-
-pub const DOO_HTTP_RES_SET_STATUS: &str = "doo_http_res_set_status";
-pub const DOO_HTTP_RES_SET_HEADER: &str = "doo_http_res_set_header";
-pub const DOO_HTTP_RES_SET_BODY: &str = "doo_http_res_set_body";
-pub const DOO_HTTP_RES_JSON: &str = "doo_http_res_json";
 
 // HTTP Serialization Helpers (doohttp_ prefix — compiled into codegen wrappers)
 pub const DOOHTTP_POPULATE_STRUCT_FROM_REQUEST: &str = "doohttp_populate_struct_from_request";
@@ -353,7 +319,7 @@ pub const DOO_UNBOX_BOOL: &str = "doo_unbox_bool";
 pub const DOO_TYPEOF: &str = "doo_typeof";
 
 // ============================================================================
-// Collection Helpers (if FFI-based)
+// Collection Helpers (FFI-based)
 // ============================================================================
 
 pub const DOO_ARRAY_CREATE: &str = "doo_array_create";
@@ -441,20 +407,15 @@ pub fn is_self_returning_method(method: &str) -> bool {
 }
 
 // ============================================================================
-// Middleware Names - Re-exported from doo_ffi_core (SINGLE SOURCE OF TRUTH)
+// Middleware Names — Used by doo_analysis route transform
 // ============================================================================
-// All middleware constants are defined in doo_ffi_core::constants
-// and re-exported here for compiler crates to use.
+// Codegen has its own local copy in packages/http.rs for dispatch.
+// These are only needed by analysis (route_transform.rs).
 
-pub use doo_ffi_core::constants::{
-    is_auth_middleware, is_builtin_middleware, is_middleware_identifier_func, BUILTIN_MIDDLEWARES,
-    DOO_JWT_FUNC_NAME, MIDDLEWARE_CORS, MIDDLEWARE_JWT, MIDDLEWARE_RATELIMIT,
-};
-
-/// Auth middleware name (legacy, kept for compatibility)
-pub const MIDDLEWARE_AUTH: &str = "auth";
-/// Rate limit middleware name (legacy alias)
-pub const MIDDLEWARE_RATE_LIMIT: &str = MIDDLEWARE_RATELIMIT;
+/// JWT middleware function name (the Doo `Jwt()` function)
+pub const DOO_JWT_FUNC_NAME: &str = "Jwt";
+/// JWT middleware identifier — used by analysis for route transform
+pub const MIDDLEWARE_JWT: &str = "Jwt";
 
 // ============================================================================
 // Doo WebSocket FFI (doo_ffi_websocket) - Single Source of Truth
@@ -507,6 +468,30 @@ pub const DOO_PROCESS_READ_STDERR: &str = "doo_process_read_stderr";
 // Lifecycle
 pub const DOO_PROCESS_SHUTDOWN: &str = "doo_process_shutdown";
 pub const DOO_PROCESS_ACTIVE_COUNT: &str = "doo_process_active_count";
+
+// ============================================================================
+// Doo Config FFI (doo_ffi_core) - Single Source of Truth
+// ============================================================================
+
+/// Get environment variable by key (panics if missing)
+pub const DOO_CONFIG_GET: &str = "doo_config_get";
+/// Get environment variable by key with default fallback
+pub const DOO_CONFIG_GET_OR: &str = "doo_config_get_or";
+/// Check if environment variable exists
+pub const DOO_CONFIG_HAS: &str = "doo_config_has";
+/// Get environment variable as integer with default
+pub const DOO_CONFIG_GET_INT: &str = "doo_config_get_int";
+/// Get environment variable as boolean with default
+pub const DOO_CONFIG_GET_BOOL: &str = "doo_config_get_bool";
+/// Set environment variable at runtime
+pub const DOO_CONFIG_SET: &str = "doo_config_set";
+
+// ============================================================================
+// Doo HTTP Metrics FFI (doo_ffi_http) - Single Source of Truth
+// ============================================================================
+
+/// Enable Prometheus-compatible metrics endpoint on the server
+pub const DOO_HTTP_METRICS: &str = "doo_http_metrics";
 
 // ============================================================================
 // Doo HTTP Client / Fetch FFI (doo_ffi_http) - Single Source of Truth

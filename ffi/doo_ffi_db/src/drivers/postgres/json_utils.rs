@@ -1,6 +1,4 @@
-//! JSON Utilities — Single Source of Truth
-//!
-//! Convert PostgreSQL rows to JSON.
+//! PostgreSQL Row → JSON Conversion
 //!
 //! IMPORTANT: Doo uses PascalCase for struct fields (e.g., AuthorId),
 //! but PostgreSQL uses snake_case for column names (e.g., author_id).
@@ -37,8 +35,7 @@ fn write_pascal_case(buf: &mut String, s: &str) {
         buf.push_str("id");
         return;
     }
-    for (idx, word) in s.split('_').enumerate() {
-        let _ = idx; // suppress warning
+    for word in s.split('_') {
         let mut chars = word.chars();
         if let Some(first) = chars.next() {
             for c in first.to_uppercase() {
@@ -52,7 +49,6 @@ fn write_pascal_case(buf: &mut String, s: &str) {
 }
 
 /// Convert multiple rows to JSON array — fast direct-write path.
-/// Writes JSON directly to a String buffer, avoiding intermediate Value tree.
 pub fn rows_to_json(rows: &[Row]) -> String {
     if rows.is_empty() {
         return "[]".to_string();
@@ -108,13 +104,8 @@ pub fn row_to_json_value(row: &Row) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-/// Write a column value directly into the JSON buffer — no intermediate Value.
-fn write_column_value(
-    buf: &mut String,
-    row: &Row,
-    i: usize,
-    col: &tokio_postgres::Column,
-) {
+/// Write a column value directly into the JSON buffer.
+fn write_column_value(buf: &mut String, row: &Row, i: usize, col: &tokio_postgres::Column) {
     match col.type_().name() {
         "int2" => match row.try_get::<usize, Option<i16>>(i) {
             Ok(Some(v)) => {
@@ -176,7 +167,6 @@ fn write_column_value(
         },
         "json" | "jsonb" => match row.try_get::<usize, Option<String>>(i) {
             Ok(Some(s)) => {
-                // JSON values are already valid JSON — write directly
                 buf.push_str(&s);
             }
             _ => buf.push_str("null"),
@@ -207,7 +197,7 @@ fn write_json_string(buf: &mut String, s: &str) {
     buf.push('"');
 }
 
-/// Convert a column value to serde_json::Value (for legacy code paths).
+/// Convert a column value to serde_json::Value.
 fn row_col_to_value(row: &Row, i: usize) -> serde_json::Value {
     let col = &row.columns()[i];
 

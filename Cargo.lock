@@ -641,7 +641,6 @@ dependencies = [
 name = "doo_core"
 version = "0.1.0"
 dependencies = [
- "doo_ffi_core",
  "pretty_assertions",
  "rustc-hash 1.1.0",
  "serde",
@@ -746,12 +745,14 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "itoa",
  "jsonwebtoken",
  "libc",
  "libloading",
  "matchit",
  "mimalloc",
  "reqwest",
+ "ryu",
  "serde",
  "serde_json",
  "tokio",

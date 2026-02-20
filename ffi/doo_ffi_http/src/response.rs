@@ -207,78 +207,82 @@ pub extern "C" fn doohttp_create_response_from_result(
 
 /// Serialize a struct to JSON for HTTP response.
 /// Takes struct pointer and handler name, looks up metadata to serialize.
+///
+/// Performance: uses direct buffer writing instead of serde_json::Value tree.
+/// References frozen registry metadata — zero cloning per request.
 #[no_mangle]
 pub extern "C" fn doohttp_serialize_struct_to_json(
     struct_ptr: *const c_void,
     handler_name: *const c_char,
 ) -> *const c_char {
-    ffi_safe_cstr!({
-        if struct_ptr.is_null() || handler_name.is_null() {
-            return string_to_c("{}");
+    if struct_ptr.is_null() || handler_name.is_null() {
+        return string_to_c("{}");
+    }
+
+    let handler_name_str = unsafe { std::ffi::CStr::from_ptr(handler_name) };
+    let handler_name_str = match handler_name_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return string_to_c("{}"),
+    };
+
+    // Get handler metadata from frozen registry — no lock, NO clone
+    let registry = get_frozen_routes();
+    let metadata = match registry.handler_metadata.get(handler_name_str) {
+        Some(m) => m,
+        None => return string_to_c("{}"),
+    };
+
+    let return_type = &metadata.return_type;
+
+    // Primitives — fast path with minimal allocation
+    match return_type.as_str() {
+        "Str" => {
+            let cstr = unsafe { std::ffi::CStr::from_ptr(struct_ptr as *const c_char) };
+            let s = cstr.to_bytes();
+            // Pre-allocate: 2 quotes + escaped content
+            let mut buf = Vec::with_capacity(s.len() + 2);
+            buf.push(b'"');
+            json_escape_bytes_into(&mut buf, s);
+            buf.push(b'"');
+            return bytes_to_c(&buf);
         }
-
-        let handler_name_str = c_to_string(handler_name);
-
-        // Get handler metadata from frozen registry — no lock
-        let registry = get_frozen_routes();
-        let metadata = registry.handler_metadata.get(&handler_name_str).cloned();
-
-        let metadata = match metadata {
-            Some(m) => m,
-            None => return string_to_c("{}"),
-        };
-
-        let return_type = &metadata.return_type;
-
-        // If return type is a primitive, just return it as-is
-        if return_type == "Str" {
-            let s = c_to_string(struct_ptr as *const c_char);
-            return string_to_c(&format!("\"{}\"", s.replace("\"", "\\\"")));
-        }
-        if return_type == "Int" {
+        "Int" => {
             let i = unsafe { *(struct_ptr as *const i64) };
-            return string_to_c(&i.to_string());
+            let mut buf = itoa::Buffer::new();
+            return string_to_c(buf.format(i));
         }
-        if return_type == "Float" {
+        "Float" => {
             let f = unsafe { *(struct_ptr as *const f64) };
-            return string_to_c(&f.to_string());
+            let mut buf = ryu::Buffer::new();
+            return string_to_c(buf.format(f));
         }
-        if return_type == "Bool" {
+        "Bool" => {
             let b = unsafe { *(struct_ptr as *const i8) != 0 };
             return string_to_c(if b { "true" } else { "false" });
         }
-        if return_type == "Void" {
-            return string_to_c("null");
+        "Void" => return string_to_c("null"),
+        _ => {}
+    }
+
+    // Array check: e.g. [Post] from db.raw() returns JSON string passthrough
+    if return_type.starts_with('[') && return_type.ends_with(']') {
+        if let Some(json_str) = try_read_as_json_string(struct_ptr) {
+            let elem_type = &return_type[1..return_type.len() - 1];
+            let filtered =
+                filter_response_json_by_layout(&json_str, elem_type, &metadata.struct_layouts);
+            return string_to_c(&filtered);
         }
+    }
 
-        // CRITICAL FIX: When return type is an array (e.g., [Post]) but the actual value
-        // is a JSON string from db.raw(), detect this and pass through directly.
-        // This happens when user writes: let result: [Post] = db.raw("SELECT ...")?;
-        // The db.raw() returns a JSON string, not an in-memory struct array.
-        if return_type.starts_with('[') && return_type.ends_with(']') {
-            // Try to read as a C string first - if it's valid JSON, pass through
-            if let Some(json_str) = try_read_as_json_string(struct_ptr) {
-                // Filter out @writeOnly/@internal fields from db.raw() results
-                let elem_type = &return_type[1..return_type.len() - 1];
-                let filtered =
-                    filter_response_json_by_layout(&json_str, elem_type, &metadata.struct_layouts);
-                return string_to_c(&filtered);
-            }
-            // Otherwise, fall through to struct serialization (for actual in-memory arrays)
-        }
-
-        // Serialize struct recursively
-        let json = serialize_struct_recursive(
-            struct_ptr as *const u8,
-            return_type,
-            &metadata.struct_layouts,
-        );
-
-        // For single struct returns, the decorator filtering is already done in
-        // serialize_struct_recursive. For db.raw() single objects, apply layout filter.
-        let json_string = json.to_string();
-        string_to_c(&json_string)
-    })
+    // Serialize struct directly to buffer — no serde_json::Value intermediary
+    let mut buf = Vec::with_capacity(128);
+    write_struct_to_buf(
+        &mut buf,
+        struct_ptr as *const u8,
+        return_type,
+        &metadata.struct_layouts,
+    );
+    bytes_to_c(&buf)
 }
 
 /// Filter a JSON string by removing fields with @writeOnly or @internal decorators.
@@ -391,7 +395,221 @@ pub(crate) fn try_read_as_json_string(ptr: *const c_void) -> Option<String> {
     None
 }
 
-/// Recursively serialize a struct to JSON value.
+/// Allocate a C string directly from a byte buffer (no intermediate String).
+/// Uses doo_alloc_string-compatible allocation (libc::malloc).
+#[inline]
+fn bytes_to_c(buf: &[u8]) -> *const c_char {
+    unsafe {
+        let ptr = libc::malloc(buf.len() + 1) as *mut u8;
+        if ptr.is_null() {
+            return std::ptr::null();
+        }
+        std::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, buf.len());
+        *ptr.add(buf.len()) = 0; // null terminator
+        ptr as *const c_char
+    }
+}
+
+/// Escape a byte slice as JSON string content into a buffer (no allocation).
+#[inline]
+fn json_escape_bytes_into(buf: &mut Vec<u8>, bytes: &[u8]) {
+    for &b in bytes {
+        match b {
+            b'"' => buf.extend_from_slice(b"\\\""),
+            b'\\' => buf.extend_from_slice(b"\\\\"),
+            b'\n' => buf.extend_from_slice(b"\\n"),
+            b'\r' => buf.extend_from_slice(b"\\r"),
+            b'\t' => buf.extend_from_slice(b"\\t"),
+            b if b < 0x20 => {
+                // Control characters as \u00XX
+                buf.extend_from_slice(b"\\u00");
+                let hi = b >> 4;
+                let lo = b & 0xf;
+                buf.push(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 });
+                buf.push(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 });
+            }
+            _ => buf.push(b),
+        }
+    }
+}
+
+/// Write a struct to a buffer as JSON — zero serde_json::Value allocation.
+/// Reads field layout from pre-computed metadata and writes directly.
+pub(crate) fn write_struct_to_buf(
+    buf: &mut Vec<u8>,
+    struct_ptr: *const u8,
+    struct_name: &str,
+    struct_layouts: &HashMap<String, serde_json::Value>,
+) {
+    if struct_ptr.is_null() {
+        buf.extend_from_slice(b"null");
+        return;
+    }
+
+    let layout = match struct_layouts.get(struct_name) {
+        Some(l) => l,
+        None => {
+            buf.extend_from_slice(b"null");
+            return;
+        }
+    };
+
+    let fields = match layout.get("fields").and_then(|f| f.as_array()) {
+        Some(f) => f,
+        None => {
+            buf.extend_from_slice(b"null");
+            return;
+        }
+    };
+
+    buf.push(b'{');
+    let mut first = true;
+
+    for field in fields {
+        let field_obj = match field.as_object() {
+            Some(obj) => obj,
+            None => continue,
+        };
+
+        let field_name = match field_obj.get("name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Skip @writeOnly / @internal fields
+        if let Some(decorators) = field_obj.get("decorators").and_then(|v| v.as_array()) {
+            if decorators.iter().any(|d| {
+                d.as_str()
+                    .map_or(false, |s| s == "writeOnly" || s == "internal")
+            }) {
+                continue;
+            }
+        }
+
+        let field_type = match field_obj.get("type").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let offset = match field_obj.get("offset").and_then(|v| v.as_u64()) {
+            Some(o) => o as usize,
+            None => continue,
+        };
+
+        if !first {
+            buf.push(b',');
+        }
+        first = false;
+
+        // Write key
+        buf.push(b'"');
+        buf.extend_from_slice(field_name.as_bytes());
+        buf.push(b'"');
+        buf.push(b':');
+
+        // Write value
+        unsafe {
+            let field_ptr = struct_ptr.add(offset);
+            write_value_to_buf(buf, field_ptr, field_type, struct_layouts);
+        }
+    }
+
+    buf.push(b'}');
+}
+
+/// Write a single value to the buffer based on its type.
+#[inline]
+unsafe fn write_value_to_buf(
+    buf: &mut Vec<u8>,
+    field_ptr: *const u8,
+    field_type: &str,
+    struct_layouts: &HashMap<String, serde_json::Value>,
+) {
+    match field_type {
+        "Str" => {
+            let str_ptr = *(field_ptr as *const *const c_char);
+            if str_ptr.is_null() {
+                buf.extend_from_slice(b"\"\"");
+            } else {
+                let cstr = std::ffi::CStr::from_ptr(str_ptr);
+                let bytes = cstr.to_bytes();
+                buf.push(b'"');
+                json_escape_bytes_into(buf, bytes);
+                buf.push(b'"');
+            }
+        }
+        "Int" => {
+            let i = *(field_ptr as *const i64);
+            let mut tmp = itoa::Buffer::new();
+            buf.extend_from_slice(tmp.format(i).as_bytes());
+        }
+        "Float" => {
+            let f = *(field_ptr as *const f64);
+            let mut tmp = ryu::Buffer::new();
+            buf.extend_from_slice(tmp.format(f).as_bytes());
+        }
+        "Bool" => {
+            let b = *(field_ptr as *const i8) != 0;
+            buf.extend_from_slice(if b { b"true" } else { b"false" });
+        }
+        t if t.starts_with('[') && t.ends_with(']') => {
+            let arr_data = *(field_ptr as *const *const u8);
+            if arr_data.is_null() {
+                buf.extend_from_slice(b"[]");
+            } else {
+                let elem_type = &t[1..t.len() - 1];
+                write_array_to_buf(buf, arr_data, elem_type, struct_layouts);
+            }
+        }
+        _ if struct_layouts.contains_key(field_type) => {
+            let nested_ptr = *(field_ptr as *const *const u8);
+            write_struct_to_buf(buf, nested_ptr, field_type, struct_layouts);
+        }
+        _ => buf.extend_from_slice(b"null"),
+    }
+}
+
+/// Write an array to the buffer as JSON.
+pub(crate) fn write_array_to_buf(
+    buf: &mut Vec<u8>,
+    arr_data_ptr: *const u8,
+    elem_type: &str,
+    struct_layouts: &HashMap<String, serde_json::Value>,
+) {
+    if arr_data_ptr.is_null() {
+        buf.extend_from_slice(b"[]");
+        return;
+    }
+
+    unsafe {
+        let header_ptr = arr_data_ptr.offset(-16);
+        let len = *(header_ptr as *const i64) as usize;
+
+        if len == 0 {
+            buf.extend_from_slice(b"[]");
+            return;
+        }
+
+        let elem_size: usize = match elem_type {
+            "Str" | "Int" | "Float" => 8,
+            "Bool" => 1,
+            _ if struct_layouts.contains_key(elem_type) => 8,
+            _ => 8,
+        };
+
+        buf.push(b'[');
+        for i in 0..len {
+            if i > 0 {
+                buf.push(b',');
+            }
+            let elem_ptr = arr_data_ptr.add(i * elem_size);
+            write_value_to_buf(buf, elem_ptr, elem_type, struct_layouts);
+        }
+        buf.push(b']');
+    }
+}
+
+/// Recursively serialize a struct to JSON value (kept for filter_response_json_by_layout compatibility).
 pub(crate) fn serialize_struct_recursive(
     struct_ptr: *const u8,
     struct_name: &str,
@@ -525,7 +743,7 @@ pub(crate) fn get_type_size_align(
     }
 }
 
-/// Serialize array to JSON.
+/// Serialize array to JSON (legacy — delegates to buffer writer for new code paths).
 pub(crate) fn serialize_array(
     arr_data_ptr: *const u8,
     elem_type: &str,
@@ -535,64 +753,10 @@ pub(crate) fn serialize_array(
         return serde_json::Value::Array(vec![]);
     }
 
-    // The arr_data_ptr points to the data section
-    // The header (len, cap) is 16 bytes before the data
-    unsafe {
-        let header_ptr = arr_data_ptr.offset(-16);
-        let len = *(header_ptr as *const i64) as usize;
-
-        if len == 0 {
-            return serde_json::Value::Array(vec![]);
-        }
-
-        let mut arr = Vec::with_capacity(len);
-
-        // Get element size for iteration
-        let elem_size = match elem_type {
-            "Str" => 8,                                       // pointer
-            "Int" => 8,                                       // i64
-            "Float" => 8,                                     // double
-            "Bool" => 1,                                      // i1/i8
-            _ if struct_layouts.contains_key(elem_type) => 8, // pointer
-            _ => 8,
-        };
-
-        for i in 0..len {
-            let elem_offset = i * elem_size;
-            let elem_ptr = arr_data_ptr.add(elem_offset);
-
-            let elem = match elem_type {
-                "Str" => {
-                    let str_ptr = *(elem_ptr as *const *const c_char);
-                    let s = if str_ptr.is_null() {
-                        String::new()
-                    } else {
-                        c_to_string(str_ptr)
-                    };
-                    serde_json::Value::String(s)
-                }
-                "Int" => {
-                    let val = *(elem_ptr as *const i64);
-                    serde_json::json!(val)
-                }
-                "Float" => {
-                    let val = *(elem_ptr as *const f64);
-                    serde_json::json!(val)
-                }
-                "Bool" => {
-                    let val = *(elem_ptr as *const i8) != 0;
-                    serde_json::json!(val)
-                }
-                _ if struct_layouts.contains_key(elem_type) => {
-                    // Array of structs (each element is a pointer)
-                    let nested_ptr = *(elem_ptr as *const *const u8);
-                    serialize_struct_recursive(nested_ptr, elem_type, struct_layouts)
-                }
-                _ => serde_json::Value::Null,
-            };
-            arr.push(elem);
-        }
-
-        serde_json::Value::Array(arr)
-    }
+    // Use buffer writer and parse back — avoids duplicating logic
+    let mut buf = Vec::with_capacity(256);
+    write_array_to_buf(&mut buf, arr_data_ptr, elem_type, struct_layouts);
+    // Safety: write_array_to_buf produces valid UTF-8 JSON
+    let json_str = unsafe { std::str::from_utf8_unchecked(&buf) };
+    serde_json::from_str(json_str).unwrap_or(serde_json::Value::Array(vec![]))
 }

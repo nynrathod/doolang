@@ -2,19 +2,36 @@
 name = "doo_ffi_db"
 version = "0.1.0"
 edition = "2021"
+description = "Database FFI layer with pluggable driver architecture"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["postgres"]
+postgres = [
+	"dep:tokio-postgres",
+	"dep:deadpool-postgres",
+	"dep:deadpool",
+	"dep:chrono",
+	"dep:num_cpus",
+]
+
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
-deadpool-postgres = { version = "0.14.1", features = ["rt_tokio_1"] }
-deadpool = "0.12.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
 libc = "0.2"
-num_cpus = "1.17.0"
 doo_ffi_core = { path = "../doo_ffi_core" }
 doo_ffi_runtime = { path = "../doo_ffi_runtime" }
+
+# PostgreSQL driver (feature-gated: only compiled when "postgres" feature is active)
+tokio-postgres = { version = "0.7", features = [
+	"with-chrono-0_4",
+], optional = true }
+deadpool-postgres = { version = "0.14.1", features = [
+	"rt_tokio_1",
+], optional = true }
+deadpool = { version = "0.12.3", optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+num_cpus = { version = "1.17.0", optional = true }

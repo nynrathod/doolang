@@ -8,44 +8,11 @@ use doo_core::types::{TypeKind, TypeId, TypeRegistry};
 use doo_mir::{MirConst, MirOperand};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use std::sync::Arc;
-pub(super) fn emit_panic<'ctx>(ctx: &mut CodegenContext<'ctx>, message: &str) -> Option<()> {
-    // Get or declare printf
-    let printf_type = ctx.i32_type().fn_type(&[ctx.ptr_type().into()], true);
-    let printf = ctx
-        .module
-        .get_function(ffi_names::PRINTF)
-        .unwrap_or_else(|| ctx.module.add_function(ffi_names::PRINTF, printf_type, None));
 
-    // Print panic message
-    let panic_fmt = ctx.const_string("panic: %s\n");
-    let panic_msg = ctx.const_string(message);
-    ctx.builder
-        .build_call(printf, &[panic_fmt.into(), panic_msg.into()], "print_panic")
-        .ok()?;
-
-    // Get or declare exit
-    let exit_type = ctx
-        .context
-        .void_type()
-        .fn_type(&[ctx.i32_type().into()], false);
-    let exit_fn = ctx
-        .module
-        .get_function(ffi_names::EXIT)
-        .unwrap_or_else(|| ctx.module.add_function(ffi_names::EXIT, exit_type, None));
-
-    // Exit with code 1
-    let exit_code = ctx.i32_type().const_int(1, false);
-    ctx.builder
-        .build_call(exit_fn, &[exit_code.into()], "exit_on_panic")
-        .ok()?;
-
-    ctx.builder.build_unreachable().ok()?;
-    Some(())
-}
 /// Emit a call to doo_http_register_handler_with_metadata to register handler metadata.
 /// This is called when an HTTP route is registered, allowing the FFI to validate
 /// request bodies against the expected struct types.
-pub(super) fn emit_handler_metadata_registration<'ctx>(
+pub(crate) fn emit_handler_metadata_registration<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     handler_name: &str,
     wrapper_fn: &FunctionValue<'ctx>,
@@ -116,7 +83,7 @@ pub(super) fn emit_handler_metadata_registration<'ctx>(
 /// When app.auth() or app.crud() is called with a struct type, we need to register
 /// the struct's field layout and any enum types it references so the FFI can
 /// validate incoming requests at runtime.
-pub(super) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
+pub(crate) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     symbol: &str,
     args: &[MirOperand],
@@ -194,7 +161,7 @@ pub(super) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
 }
 
 /// Emit enum metadata registration if the type is an enum.
-pub(super) fn emit_enum_metadata_if_needed<'ctx>(
+pub(crate) fn emit_enum_metadata_if_needed<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     type_id: doo_core::types::TypeId,
 ) {
@@ -243,7 +210,7 @@ pub(super) fn emit_enum_metadata_if_needed<'ctx>(
 
 /// Emit struct metadata registration if the type is a struct.
 /// Also registers any enum types referenced by the struct fields.
-pub(super) fn emit_struct_metadata_if_needed<'ctx>(
+pub(crate) fn emit_struct_metadata_if_needed<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     type_id: doo_core::types::TypeId,
 ) {

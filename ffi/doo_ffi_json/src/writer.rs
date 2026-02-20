@@ -3,7 +3,6 @@
 //! Provides a streaming JSON writer with zero-allocation number formatting
 //! via itoa/ryu. NaN/Infinity floats are serialized as null (JSON spec compliant).
 
-use doo_ffi_core::helpers::c_to_string_lossy;
 use doo_ffi_core::memory::doo_alloc_string;
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -31,7 +30,7 @@ impl JsonWriter {
 /// Create a new JSON writer
 #[no_mangle]
 pub extern "C" fn doo_json_writer_new() -> *mut JsonWriter {
-    catch_unwind(|| Box::into_raw(Box::new(JsonWriter::new()))).unwrap_or(std::ptr::null_mut())
+    Box::into_raw(Box::new(JsonWriter::new()))
 }
 
 /// Create a new JSON writer with a capacity hint (avoids reallocations)
@@ -65,8 +64,10 @@ pub extern "C" fn doo_json_writer_finish(writer: *mut JsonWriter) -> *mut c_char
     }
     catch_unwind(AssertUnwindSafe(|| unsafe {
         let writer_box = Box::from_raw(writer);
-        let s = String::from_utf8_lossy(&writer_box.buffer);
-        doo_alloc_string(&s)
+        // SAFETY: Buffer only contains valid UTF-8 — we write ASCII JSON syntax and
+        // strings that came from valid Doo strings (via CStr). No lossy conversion needed.
+        let s = std::str::from_utf8_unchecked(&writer_box.buffer);
+        doo_alloc_string(s)
     }))
     .unwrap_or_else(|_| doo_alloc_string("null"))
 }
@@ -157,7 +158,11 @@ pub extern "C" fn doo_json_write_bool(writer: *mut JsonWriter, val: bool) {
     }
 }
 
-/// Write string value (with proper escaping, catch_unwind protected)
+/// Write string value with inline JSON escaping — zero allocation.
+///
+/// Instead of calling serde_json::to_string (which allocates a String),
+/// this writes the quoted+escaped string directly into the writer buffer.
+/// Most strings have no special chars, so the fast path is just memcpy.
 #[no_mangle]
 pub extern "C" fn doo_json_write_string(writer: *mut JsonWriter, val: *const c_char) {
     if let Some(w) = unsafe { writer.as_mut() } {
@@ -165,14 +170,39 @@ pub extern "C" fn doo_json_write_string(writer: *mut JsonWriter, val: *const c_c
             w.write_raw(b"null");
             return;
         }
-        let s = c_to_string_lossy(val);
-        let s = std::borrow::Cow::Owned(s);
-        match catch_unwind(AssertUnwindSafe(|| {
-            serde_json::to_string(&s as &str).unwrap_or_else(|_| "null".to_owned())
-        })) {
-            Ok(escaped) => w.write_raw(escaped.as_bytes()),
-            Err(_) => w.write_raw(b"null"),
+        // Read the C string directly — no intermediate String allocation.
+        // SAFETY: val is a valid null-terminated C string from Doo's allocator.
+        let cstr = unsafe { std::ffi::CStr::from_ptr(val) };
+        let bytes = cstr.to_bytes();
+
+        // Fast path: check if any escaping is needed (most strings don't need it)
+        let needs_escape = bytes
+            .iter()
+            .any(|&b| b == b'"' || b == b'\\' || b < 0x20);
+
+        w.write_raw(b"\"");
+        if !needs_escape {
+            // Fast path — no escaping needed, direct copy
+            w.write_raw(bytes);
+        } else {
+            // Slow path — escape special characters inline
+            for &b in bytes {
+                match b {
+                    b'"' => w.write_raw(b"\\\""),
+                    b'\\' => w.write_raw(b"\\\\"),
+                    b'\n' => w.write_raw(b"\\n"),
+                    b'\r' => w.write_raw(b"\\r"),
+                    b'\t' => w.write_raw(b"\\t"),
+                    b if b < 0x20 => {
+                        // Control character — \u00XX
+                        let hex = b"0123456789abcdef";
+                        w.write_raw(&[b'\\', b'u', b'0', b'0', hex[(b >> 4) as usize], hex[(b & 0xf) as usize]]);
+                    }
+                    _ => w.write_raw(&[b]),
+                }
+            }
         }
+        w.write_raw(b"\"");
     }
 }
 

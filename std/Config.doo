@@ -1,0 +1,62 @@
+// Config module for Doo
+// Read environment variables from .env files and system environment.
+//
+// Usage:
+//   import std::Config;
+//
+//   let apiKey = Config::get("API_KEY");              // Panics if missing
+//   let port = Config::get("PORT", "3100");           // With default fallback
+//   let exists = Config::has("FEATURE_FLAG");         // Check existence
+//   let portNum = Config::getInt("PORT", 3100);       // Parse as Int
+//   let debug = Config::getBool("DEBUG", false);      // Parse as Bool
+//
+// Note: DATABASE_URL and JWT_SECRET are auto-consumed by Database::Postgres()
+// and app.auth() — you don't need Config::get() for those.
+
+// === Structs ===
+
+// Config namespace struct
+struct Config {}
+
+// Config error struct
+struct ConfigError {
+    Code: Int,
+    Message: Str,
+}
+
+// === Config Methods ===
+
+// Get an environment variable by key.
+// Panics with a clear error message if the key is not set.
+// Use this for required configuration values.
+@extern("doo_config", "doo_config_get")
+fn Config.get(key: Str) -> Str !ConfigError {}
+
+// Get an environment variable by key, with a default fallback.
+// Returns the env var value if set, or the default if not set.
+// Use this for optional configuration with sensible defaults.
+@extern("doo_config", "doo_config_get_or")
+fn Config.getOr(key: Str, default: Str) -> Str {}
+
+// Check if an environment variable exists.
+// Returns "true" if the key is set, "false" otherwise.
+@extern("doo_config", "doo_config_has")
+fn Config.has(key: Str) -> Str {}
+
+// Get an environment variable as an integer with a default.
+// Parses the value as Int. Returns default if missing or unparseable.
+@extern("doo_config", "doo_config_get_int")
+fn Config.getInt(key: Str, default: Int) -> Int {}
+
+// Get an environment variable as a boolean with a default.
+// Recognizes "true", "1", "yes", "on" as true.
+// Recognizes "false", "0", "no", "off" as false.
+// Returns default if missing or unrecognized.
+@extern("doo_config", "doo_config_get_bool")
+fn Config.getBool(key: Str, default: Bool) -> Bool {}
+
+// Set an environment variable at runtime.
+// Useful for tests and dynamic configuration.
+// Typically called before server starts.
+@extern("doo_config", "doo_config_set")
+fn Config.set(key: Str, value: Str) -> Str {}

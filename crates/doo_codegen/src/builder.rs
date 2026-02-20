@@ -545,6 +545,22 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
             // Register FFI symbol mapping for wrapper generation
             ctx.register_ffi_symbol(&func_name, &ffi_lib, &symbol);
+
+            // Register FFI library mapping for package dispatch.
+            // Maps external symbol → library name so the codegen dispatch system
+            // can route FFI calls to the correct package hooks.
+            ctx.register_ffi_library(&symbol, &ffi_lib);
+
+            // Register FFI type signature from MIR FfiLinkage (package-ready).
+            // This allows codegen to generate correct LLVM types for any @extern
+            // function, including third-party packages, without needing a
+            // hardcoded match table entry.
+            ctx.register_ffi_type_signature(
+                &symbol,
+                ffi.param_types.clone(),
+                ffi.return_type,
+                ffi.is_result,
+            );
         } else {
             ctx.declare_function(&func_name, &param_types, return_type);
         }

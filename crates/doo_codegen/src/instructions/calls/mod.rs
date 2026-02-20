@@ -9,11 +9,11 @@
 //! - call_wrappers: HTTP and WebSocket handler wrapper generation
 //! - call_metadata: metadata registration and error helpers
 
-mod call_utils;
+pub(crate) mod call_utils;
 mod call_print;
-mod call_ffi;
-mod call_wrappers;
-mod call_metadata;
+pub(crate) mod call_ffi;
+pub(crate) mod call_wrappers;
+pub(crate) mod call_metadata;
 
 use call_utils::{operand_to_value, coerce_arg_to_param_type, value_to_ptr, load_result_struct};
 use call_print::{emit_print_value, emit_print_array, emit_print_map, emit_print_struct, emit_print_enum, emit_print_enum_value};
@@ -35,7 +35,7 @@ use inkwell::IntPredicate;
 /// Provides information about the route pattern and middleware to determine
 /// how to extract handler parameters from the request.
 #[derive(Debug, Clone, Default)]
-pub(super) struct RouteContext {
+pub(crate) struct RouteContext {
     /// Route path pattern (e.g., "/api/user/:authorId/posts")
     pub route_path: Option<String>,
     /// Middleware names (e.g., "jwt", "auth")
@@ -76,7 +76,7 @@ impl RouteContext {
     pub fn has_jwt_middleware(&self) -> bool {
         self.middleware_names
             .iter()
-            .any(|m| ffi_names::is_auth_middleware(m))
+            .any(|m| crate::packages::http::is_auth_middleware(m))
     }
 
     /// Determine the source field index in DooRequest for a given parameter.

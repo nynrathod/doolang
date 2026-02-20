@@ -757,6 +757,8 @@ fn normalize_ffi_lib_name(name: &str) -> String {
         "doo_ws" | "doo_websocket" => "doo_ffi_http".to_string(),
         // Process module
         "doo_process" => "doo_ffi_process".to_string(),
+        // Config module — lives in doo_ffi_core (always linked)
+        "doo_config" => "doo_ffi_core".to_string(),
         // Already normalized or unknown - pass through
         _ if name.starts_with("doo_ffi_") => name.to_string(),
         _ => name.to_string(),

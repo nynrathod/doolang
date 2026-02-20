@@ -157,6 +157,27 @@ pub struct CodegenContext<'ctx> {
     pub ffi_symbols: FxHashMap<String, (String, String)>,
 
     // ========================================================================
+    // FFI Type Signature Registry (Package-Ready — Single Source of Truth)
+    // ========================================================================
+    /// FFI type signatures: ffi_symbol_name -> (param_type_ids, return_type_id, is_result).
+    /// Populated from MIR FfiLinkage which carries the full Doo declaration types.
+    /// Used by `declare_ffi_function` to generate correct LLVM signatures
+    /// WITHOUT the hardcoded `get_ffi_signature()` match table.
+    /// Third-party packages get correct signatures automatically because
+    /// their `@extern` declarations flow types through this path.
+    pub ffi_type_signatures: FxHashMap<String, (Vec<TypeId>, Option<TypeId>, bool)>,
+
+    // ========================================================================
+    // FFI Library Map (Package Dispatch — Symbol → Library)
+    // ========================================================================
+    /// Reverse mapping: external_symbol → library_name.
+    /// Used by the package dispatch system to route FFI calls to the
+    /// correct package hooks (http, websocket, database, generic).
+    /// Populated from @extern declarations: `@extern("doo_http", "server_new")`
+    /// → maps "doo_http_server_new" → "doo_http".
+    pub ffi_library_map: FxHashMap<String, String>,
+
+    // ========================================================================
     // Array Element Type Tracking (for enum serialization in FFI calls)
     // ========================================================================
     /// Array element types: temp_name -> element TypeId.
@@ -211,6 +232,8 @@ impl<'ctx> CodegenContext<'ctx> {
             borrow_origins: FxHashMap::default(),
             is_closure_function: false,
             ffi_symbols: FxHashMap::default(),
+            ffi_type_signatures: FxHashMap::default(),
+            ffi_library_map: FxHashMap::default(),
             array_element_types: FxHashMap::default(),
             array_element_temps: FxHashMap::default(),
             has_async: false,
@@ -328,6 +351,50 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Check if a function is an FFI function.
     pub fn is_ffi_function(&self, func_name: &str) -> bool {
         self.ffi_symbols.contains_key(func_name)
+    }
+
+    // ========================================================================
+    // FFI Type Signature Registry (Package-Ready)
+    // ========================================================================
+
+    /// Register FFI type signature from MIR FfiLinkage.
+    /// This is populated during function declaration from the Doo declaration types.
+    /// Third-party packages automatically get correct signatures through this path.
+    pub fn register_ffi_type_signature(
+        &mut self,
+        symbol: &str,
+        param_types: Vec<TypeId>,
+        return_type: Option<TypeId>,
+        is_result: bool,
+    ) {
+        self.ffi_type_signatures
+            .insert(symbol.to_string(), (param_types, return_type, is_result));
+    }
+
+    /// Get FFI type signature for a symbol (if registered from Doo declarations).
+    /// Returns Some((param_types, return_type, is_result)) if found.
+    pub fn get_ffi_type_signature(
+        &self,
+        symbol: &str,
+    ) -> Option<&(Vec<TypeId>, Option<TypeId>, bool)> {
+        self.ffi_type_signatures.get(symbol)
+    }
+
+    // ========================================================================
+    // FFI Library Map (Package Dispatch)
+    // ========================================================================
+
+    /// Register the library name for an FFI symbol.
+    /// Maps external_symbol → library_name for package dispatch.
+    pub fn register_ffi_library(&mut self, symbol: &str, library: &str) {
+        self.ffi_library_map
+            .insert(symbol.to_string(), library.to_string());
+    }
+
+    /// Get the library name for an FFI symbol.
+    /// Returns the library from @extern declaration, or None for C stdlib/unknown.
+    pub fn get_ffi_library(&self, symbol: &str) -> Option<&str> {
+        self.ffi_library_map.get(symbol).map(|s| s.as_str())
     }
 
     // ========================================================================
@@ -523,7 +590,9 @@ impl<'ctx> CodegenContext<'ctx> {
 
     /// Create a global string constant.
     pub fn const_string(&self, val: &str) -> PointerValue<'ctx> {
-        let global = self.builder.build_global_string_ptr(val, "str")
+        let global = self
+            .builder
+            .build_global_string_ptr(val, "str")
             .expect("ICE: failed to create global string constant");
         global.as_pointer_value()
     }

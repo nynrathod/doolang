@@ -64,6 +64,7 @@ mod dispatch;
 mod fetch;
 mod map_ops;
 mod metadata;
+pub mod metrics;
 mod middleware_ffi;
 mod request;
 mod response;

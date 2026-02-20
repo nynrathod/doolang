@@ -20,6 +20,8 @@ urlencoding = "2"
 doo_ffi_core = { path = "../doo_ffi_core" }
 doo_ffi_json = { path = "../doo_ffi_json" }
 doo_ffi_runtime = { path = "../doo_ffi_runtime" }
+itoa = "1"
+ryu = "1"
 bcrypt = "0.18"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 libloading = "0.8"

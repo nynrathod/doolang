@@ -6,9 +6,15 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["jwt"]
+jwt = ["dep:jsonwebtoken"]
+
 [dependencies]
 bcrypt = "0.18"
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.3.0", features = [
+	"rust_crypto",
+], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 libc = "0.2"

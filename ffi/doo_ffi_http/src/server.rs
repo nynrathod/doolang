@@ -25,6 +25,7 @@ use crate::types::*;
 use doo_ffi_core::ffi_debug;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -41,6 +42,14 @@ use tokio::sync::Semaphore;
 static STARTUP_INSTANT: OnceLock<Instant> = OnceLock::new();
 const VERSION: &str = "0.4.0";
 
+/// Get uptime in seconds (used by metrics module)
+pub fn startup_uptime_secs() -> u64 {
+    STARTUP_INSTANT
+        .get()
+        .map(|s| s.elapsed().as_secs())
+        .unwrap_or(0)
+}
+
 /// Server is in draining state (shutting down, rejecting new requests)
 static DRAINING: AtomicBool = AtomicBool::new(false);
 
@@ -52,6 +61,12 @@ static MAX_BODY_SIZE: AtomicUsize = AtomicUsize::new(1_048_576);
 
 /// Per-request timeout (ms). Default 30s. Configurable via DOO_REQUEST_TIMEOUT.
 static REQUEST_TIMEOUT_MS: AtomicUsize = AtomicUsize::new(30_000);
+
+/// Static C strings for common empty values — zero per-request allocation.
+/// Used by handle_request (to set) and free_doo_request (to skip freeing).
+/// MUST be module-level so both functions share the same address.
+static EMPTY_C_STR: &[u8] = b"\0";
+static EMPTY_JSON_C_STR: &[u8] = b"{}\0";
 
 /// Read env var as usize with default
 fn env_usize(name: &str, default: usize) -> usize {
@@ -222,6 +237,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let path = req.uri().path().to_string();
     let query_raw = req.uri().query().unwrap_or("").to_string();
 
+    // Start timing for metrics (only if metrics enabled — branch-predicted fast path)
+    let request_start = if crate::metrics::is_metrics_enabled() {
+        Some(Instant::now())
+    } else {
+        None
+    };
+
     // Built-in health check endpoints for container orchestration (fast path)
     // /health and /live — liveness probe: is the process alive?
     // /ready — readiness probe: is the server ready to accept traffic?
@@ -255,6 +277,21 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                     VERSION, uptime
                 );
                 return Ok(build_response(200, &body));
+            }
+            "/metrics" if crate::metrics::is_metrics_enabled() => {
+                // Prometheus-compatible metrics endpoint (enabled via app.metrics())
+                let body = crate::metrics::render_metrics();
+                let mut response = build_response(200, &body);
+                // Set Content-Type to text/plain for Prometheus scraper
+                *response.headers_mut() = {
+                    let mut headers = hyper::HeaderMap::new();
+                    headers.insert(
+                        hyper::header::CONTENT_TYPE,
+                        "text/plain; version=0.0.4; charset=utf-8".parse().unwrap(),
+                    );
+                    headers
+                };
+                return Ok(response);
             }
             _ => {}
         }
@@ -306,7 +343,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         crate::ws::upgrade::handle_ws_connection(ws_stream, &path_clone).await;
                     }
                     Err(e) => {
-                        doo_ffi_core::ffi_fatal!("WebSocket upgrade failed for {}: {}", path_clone, e);
+                        doo_ffi_core::ffi_fatal!(
+                            "WebSocket upgrade failed for {}: {}",
+                            path_clone,
+                            e
+                        );
                     }
                 }
             });
@@ -355,12 +396,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     let middleware = &route_entry.middleware;
 
     // ========================================================================
-    // Extract headers into HashMap
+    // Extract headers into HashMap — sized to actual header count
     // ========================================================================
-    let mut headers_map = HashMap::with_capacity(16);
+    let header_count = req.headers().len();
+    let mut headers_map = HashMap::with_capacity(header_count);
     for (name, value) in req.headers() {
         if let Ok(v) = value.to_str() {
-            headers_map.insert(name.to_string().to_lowercase(), v.to_string());
+            headers_map.insert(name.as_str().to_owned(), v.to_owned());
         }
     }
 
@@ -409,8 +451,8 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             }
         }
     } else {
-        // Consume the body stream (empty for GET/DELETE/HEAD)
-        let _ = req.collect().await?;
+        // GET/DELETE/HEAD — no body to consume.
+        // Do NOT call req.collect() — it's an unnecessary async poll per request.
         String::new()
     };
 
@@ -435,12 +477,22 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     // ========================================================================
     // Build DooRequest — direct heap allocation via libc::malloc
-    // No stack intermediate, no memcpy — writes directly to heap pointer.
+    // Uses static C strings for empty values to avoid per-request allocations.
     // ========================================================================
-    let params_json = if params.is_empty() {
-        "{}".to_string()
+    let params_json_c: *const c_char;
+    let params_owned: String; // keep alive for params_json_c
+    if params.is_empty() {
+        params_json_c = EMPTY_JSON_C_STR.as_ptr() as *const c_char;
+        params_owned = String::new(); // unused, no alloc
     } else {
-        serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string())
+        params_owned = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
+        params_json_c = string_to_c(&params_owned);
+    };
+
+    let body_c = if body_str.is_empty() {
+        EMPTY_C_STR.as_ptr() as *const c_char
+    } else {
+        string_to_c(&body_str)
     };
 
     let doo_request = unsafe {
@@ -453,9 +505,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         }
         (*req_ptr).method = string_to_c(&method);
         (*req_ptr).path = string_to_c(&path);
-        (*req_ptr).body = string_to_c(&body_str);
+        (*req_ptr).body = body_c;
         (*req_ptr).headers = Box::into_raw(Box::new(headers_map)) as *mut std::ffi::c_void;
-        (*req_ptr).params = string_to_c(&params_json) as *mut std::ffi::c_void;
+        (*req_ptr).params = params_json_c as *mut std::ffi::c_void;
         (*req_ptr).query = Box::into_raw(Box::new(query_map)) as *mut std::ffi::c_void;
         (*req_ptr).user_id = std::ptr::null();
         req_ptr
@@ -499,13 +551,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         res.data.is_null()
                     );
                     if res.tag == 0 {
-                        // Success
-                        let body = if res.data.is_null() {
-                            "{}".to_string()
+                        // Success — zero-copy: read C string as bytes, pass directly
+                        if res.data.is_null() {
+                            build_response_bytes(200, b"{}")
                         } else {
-                            c_to_string(res.data as *const i8)
-                        };
-                        build_response(200, &body)
+                            let cstr = std::ffi::CStr::from_ptr(res.data as *const i8);
+                            build_response_bytes(200, cstr.to_bytes())
+                        }
                     } else {
                         // Error
                         if !res.data.is_null() {
@@ -538,6 +590,15 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         free_doo_request(doo_request);
     }
 
+    // ========================================================================
+    // Record metrics (if enabled) — after cleanup to include full request time
+    // ========================================================================
+    if let Some(start) = request_start {
+        let duration_us = start.elapsed().as_micros() as u64;
+        let status = response.status().as_u16();
+        crate::metrics::record_request(&method, &path, status, duration_us);
+    }
+
     Ok(response)
 }
 
@@ -545,10 +606,19 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 /// String fields freed via doo_free (matching doo_alloc_string allocation).
 /// HashMap fields freed via Box::from_raw.
 /// DooRequest struct freed via libc::free (allocated with libc::malloc).
+///
+/// IMPORTANT: body and params may point to static C strings (EMPTY_C / EMPTY_JSON_C)
+/// when they were empty — these must NOT be freed. We detect this by checking if
+/// the pointer falls within the program's static data range (simple null/known-address check).
 unsafe fn free_doo_request(req: *mut DooRequest) {
     if req.is_null() {
         return;
     }
+
+    // Use module-level static addresses for comparison
+    let empty_ptr = EMPTY_C_STR.as_ptr() as *const c_char;
+    let empty_json_ptr = EMPTY_JSON_C_STR.as_ptr() as *const c_char;
+
     // Free string fields (allocated via string_to_c → doo_alloc_string → libc::malloc)
     if !(*req).method.is_null() {
         doo_ffi_core::doo_free((*req).method as *mut u8);
@@ -556,7 +626,8 @@ unsafe fn free_doo_request(req: *mut DooRequest) {
     if !(*req).path.is_null() {
         doo_ffi_core::doo_free((*req).path as *mut u8);
     }
-    if !(*req).body.is_null() {
+    // body might be a static pointer — only free if heap-allocated
+    if !(*req).body.is_null() && (*req).body != empty_ptr {
         doo_ffi_core::doo_free((*req).body as *mut u8);
     }
     if !(*req).user_id.is_null() {
@@ -566,8 +637,8 @@ unsafe fn free_doo_request(req: *mut DooRequest) {
     if !(*req).headers.is_null() {
         let _ = Box::from_raw((*req).headers as *mut HashMap<String, String>);
     }
-    // Params is a string (via string_to_c → doo_alloc_string), cast to *mut c_void
-    if !(*req).params.is_null() {
+    // Params might be a static pointer — only free if heap-allocated
+    if !(*req).params.is_null() && (*req).params != empty_json_ptr as *mut std::ffi::c_void {
         doo_ffi_core::doo_free((*req).params as *mut u8);
     }
     // Query is a Box<HashMap>
@@ -580,6 +651,12 @@ unsafe fn free_doo_request(req: *mut DooRequest) {
 
 /// Build HTTP response with frozen CORS headers (zero lock contention)
 fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
+    build_response_bytes(status, body.as_bytes())
+}
+
+/// Build HTTP response from raw bytes — avoids intermediate String allocation.
+/// Used on the hot path where we already have bytes (e.g. from CStr::to_bytes()).
+fn build_response_bytes(status: i32, body: &[u8]) -> Response<Full<Bytes>> {
     let status_code =
         StatusCode::from_u16(status as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
@@ -600,9 +677,8 @@ fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
         }
     }
 
-    // Zero-copy: Bytes::copy_from_slice avoids the body.to_string() allocation
     builder
-        .body(Full::new(Bytes::copy_from_slice(body.as_bytes())))
+        .body(Full::new(Bytes::copy_from_slice(body)))
         .unwrap_or_else(|_| {
             Response::new(Full::new(Bytes::from_static(
                 b"{\"error\":\"Response build failed\"}",
@@ -668,6 +744,7 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
         let registry = get_frozen_routes();
         let total_routes = registry.count();
         let ws_routes = crate::ws::get_ws_registry().count();
+        let has_ws_routes = ws_routes > 0;
 
         // Print banner (suppressible via DOO_NO_BANNER=1)
         let no_banner = std::env::var(doo_ffi_core::constants::ENV_DOO_NO_BANNER).map(|v| v == "1").unwrap_or(false);
@@ -683,11 +760,13 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             println!("  Boot Time:            {} ms", boot_time);
             println!("  Listening on:         http://{}:{}", addr.ip(), port);
             println!("  Handlers Loaded:      {}", total_routes);
-            println!("  WebSocket Routes:     {}", ws_routes);
+            if ws_routes > 0 {
+                println!("  WebSocket Routes:     {}", ws_routes);
+            }
             println!("  Process ID:           {}", std::process::id());
-            println!("  Max Connections:      {}", max_connections);
-            println!("  Max Body Size:        {} bytes", MAX_BODY_SIZE.load(Ordering::Relaxed));
-            println!("  Request Timeout:      {} ms", REQUEST_TIMEOUT_MS.load(Ordering::Relaxed));
+            // println!("  Max Connections:      {}", max_connections);
+            // println!("  Max Body Size:        {} bytes", MAX_BODY_SIZE.load(Ordering::Relaxed));
+            // println!("  Request Timeout:      {} ms", REQUEST_TIMEOUT_MS.load(Ordering::Relaxed));
             println!("-------------------------------------------");
         }
         // Always print the server started line (useful for container health checks)
@@ -793,22 +872,26 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
                     };
 
                     let io = TokioIo::new(stream);
-                    let request_timeout = Duration::from_millis(
-                        REQUEST_TIMEOUT_MS.load(Ordering::Relaxed) as u64
-                    );
 
                     tokio::spawn(async move {
-                        // Track active request for drain
+                        // Track active connection for graceful drain
                         ACTIVE_REQUESTS.fetch_add(1, Ordering::Relaxed);
 
-                        // Wrap the connection with a timeout
                         let conn = http1::Builder::new()
                             .keep_alive(true)
-                            .serve_connection(io, service_fn(handle_request))
-                            .with_upgrades();
+                            .serve_connection(io, service_fn(handle_request));
 
-                        // Per-connection timeout prevents slow clients from holding resources
-                        let _ = tokio::time::timeout(request_timeout, conn).await;
+                        // PERF: Only add .with_upgrades() when WebSocket routes exist.
+                        // .with_upgrades() switches hyper to UpgradeableConnection which
+                        // disables internal optimizations — ~20-30% RPS cost.
+                        // Also: Do NOT wrap in tokio::time::timeout — it kills keep-alive
+                        // connections after the timeout, causing socket read errors and
+                        // thundering herd reconnects under load.
+                        if has_ws_routes {
+                            let _ = conn.with_upgrades().await;
+                        } else {
+                            let _ = conn.await;
+                        }
 
                         // Release connection tracking
                         ACTIVE_REQUESTS.fetch_sub(1, Ordering::Relaxed);

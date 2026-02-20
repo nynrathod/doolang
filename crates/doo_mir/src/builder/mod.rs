@@ -19,7 +19,7 @@ use doo_hir::{
 
 use rustc_hash::FxHashMap;
 
-use crate::sym::{Sym, sym, resolve};
+use crate::sym::{resolve, sym, Sym};
 use crate::types::*;
 
 /// FFI function information extracted from @extern decorator.
@@ -526,9 +526,17 @@ impl<'a> MirBuilder<'a> {
 
         // Set FFI linkage info if this is an FFI function
         if let Some(ffi_info) = self.ffi_functions.get(&hir.name) {
+            let param_types: Vec<doo_core::types::TypeId> = hir
+                .params
+                .iter()
+                .map(|p| p.type_id.unwrap_or(builtin::ANY))
+                .collect();
             func.ffi = Some(FfiLinkage {
                 library: sym(&ffi_info.library),
                 symbol: Some(sym(&ffi_info.symbol)),
+                param_types,
+                return_type: hir.return_type,
+                is_result: hir.error_type.is_some(),
             });
         }
 

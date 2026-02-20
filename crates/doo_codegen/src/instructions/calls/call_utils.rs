@@ -8,7 +8,7 @@ use doo_mir::{MirConst, MirOperand};
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, PointerValue};
 /// Convert MirOperand to LLVM value.
-pub(super) fn operand_to_value<'ctx>(
+pub(crate) fn operand_to_value<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     operand: &MirOperand,
 ) -> Option<BasicValueEnum<'ctx>> {
@@ -43,7 +43,7 @@ pub(super) fn operand_to_value<'ctx>(
 ///
 /// This handles type mismatches between how values are produced (e.g., enum StructValues)
 /// and how function parameters are declared (e.g., pointers for composite types).
-pub(super) fn coerce_arg_to_param_type<'ctx>(
+pub(crate) fn coerce_arg_to_param_type<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     val: BasicValueEnum<'ctx>,
     expected_type: Option<BasicTypeEnum<'ctx>>,
@@ -101,7 +101,7 @@ pub(super) fn coerce_arg_to_param_type<'ctx>(
 }
 
 /// Convert MirConst to LLVM value.
-pub(super) fn const_to_value<'ctx>(ctx: &CodegenContext<'ctx>, c: &MirConst) -> BasicValueEnum<'ctx> {
+pub(crate) fn const_to_value<'ctx>(ctx: &CodegenContext<'ctx>, c: &MirConst) -> BasicValueEnum<'ctx> {
     match c {
         MirConst::Int(v) => ctx.const_i64(*v).into(),
         MirConst::Float(v) => ctx.const_f64(*v).into(),
@@ -119,7 +119,7 @@ pub(super) fn const_to_value<'ctx>(ctx: &CodegenContext<'ctx>, c: &MirConst) -> 
 /// - Pointers: pass through as-is
 /// - Integers: use inttoptr
 /// - Floats: bitcast to i64, then inttoptr
-pub(super) fn value_to_ptr<'ctx>(
+pub(crate) fn value_to_ptr<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     val: BasicValueEnum<'ctx>,
 ) -> Option<PointerValue<'ctx>> {
@@ -170,7 +170,7 @@ pub(super) fn value_to_ptr<'ctx>(
 }
 
 /// Load a Result struct from a value that may be a pointer or struct.
-pub(super) fn load_result_struct<'ctx>(
+pub(crate) fn load_result_struct<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     result_val: BasicValueEnum<'ctx>,
 ) -> Option<inkwell::values::StructValue<'ctx>> {

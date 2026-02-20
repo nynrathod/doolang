@@ -21,8 +21,8 @@
 //!
 //! **NO IncRef/DecRef** - the compiler decides ownership at analysis time.
 
+use crate::sym::{resolve, sym, Sym};
 use std::collections::HashMap;
-use crate::sym::{Sym, sym, resolve};
 
 use doo_core::doo_debug;
 use doo_core::types::TypeId;
@@ -223,11 +223,26 @@ pub struct LocalDef {
     pub mutable: bool,
 }
 
-/// FFI linkage information
+/// FFI linkage information.
+///
+/// Carries the full type signature from the Doo declaration so codegen can
+/// generate correct LLVM types **without** a hardcoded symbol→signature table.
+/// This is the key enabler for package-readiness: any third-party `@extern`
+/// function automatically gets the right LLVM signature because the types
+/// flow through MIR from the Doo source.
 #[derive(Debug, Clone)]
 pub struct FfiLinkage {
     pub library: Sym,
     pub symbol: Option<Sym>,
+    /// Parameter types from the Doo declaration (already resolved in HIR/analysis).
+    /// Used by codegen to emit correct LLVM parameter types instead of defaulting to `ptr`.
+    pub param_types: Vec<TypeId>,
+    /// Return type from the Doo declaration (None = void).
+    /// Used by codegen to emit correct LLVM return type instead of defaulting to `ptr`.
+    pub return_type: Option<TypeId>,
+    /// Whether this function returns a Result (has error_type).
+    /// When true, FFI returns `*mut SimpleResult` (pointer) on the ABI boundary.
+    pub is_result: bool,
 }
 
 impl MirFunction {
@@ -420,11 +435,7 @@ pub enum MirInstrKind {
     Drop { value: Sym },
 
     /// Borrow value (create reference for function call)
-    Borrow {
-        dest: Sym,
-        src: Sym,
-        mutable: bool,
-    },
+    Borrow { dest: Sym, src: Sym, mutable: bool },
 
     // ========================================================================
     // Assignment
@@ -705,9 +716,9 @@ pub enum MirInstrKind {
     ManualErrorExtract {
         ok_names: Vec<Sym>, // Names for Ok values (single or tuple)
         error_name: Sym,    // Name for error variable (or "_" to ignore)
-        result: MirOperand,    // Result to extract from
-        ok_type: TypeId,       // Type of the Ok value
-        err_type: TypeId,      // Type of the Error value
+        result: MirOperand, // Result to extract from
+        ok_type: TypeId,    // Type of the Ok value
+        err_type: TypeId,   // Type of the Error value
     },
 
     // ========================================================================
@@ -967,7 +978,12 @@ impl std::fmt::Display for MirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UndefinedValue { name, block } => {
-                write!(f, "undefined value '{}' in block '{}'", resolve(*name), resolve(*block))
+                write!(
+                    f,
+                    "undefined value '{}' in block '{}'",
+                    resolve(*name),
+                    resolve(*block)
+                )
             }
             Self::TypeMismatch { expected, found } => {
                 write!(f, "type mismatch: expected {}, found {}", expected, found)
@@ -1007,9 +1023,7 @@ mod tests {
         assert_eq!(clone_instr.destination(), Some(&sym("%2")));
 
         // Drop - cleanup
-        let drop_instr = MirInstr::new(MirInstrKind::Drop {
-            value: sym("z"),
-        });
+        let drop_instr = MirInstr::new(MirInstrKind::Drop { value: sym("z") });
         assert_eq!(drop_instr.destination(), None);
     }
 
