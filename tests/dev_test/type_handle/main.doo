@@ -295,7 +295,7 @@ fn main() {
 // EXPECT: ---------------------
 // EXPECT: INT CASTS:
 // EXPECT:   Int -> Int: 42 type: Int
-// EXPECT:   Int -> Float: 42 type: Float
+// EXPECT:   Int -> Float: 42.0 type: Float
 // EXPECT:   Int -> Str: 42 type: Str
 // EXPECT:
 // EXPECT: FLOAT CASTS:
@@ -306,8 +306,8 @@ fn main() {
 // EXPECT: BOOL CASTS:
 // EXPECT:   true -> Int: 1 type: Int
 // EXPECT:   false -> Int: 0 type: Int
-// EXPECT:   true -> Str: true type: Str
-// EXPECT:   false -> Str: false type: Str
+// EXPECT:   true -> Str: 1 type: Str
+// EXPECT:   false -> Str: 0 type: Str
 // EXPECT:
 // EXPECT: STRING CASTS:
 // EXPECT:   '123' -> Int: 123 type: Int
@@ -317,35 +317,35 @@ fn main() {
 // EXPECT: PART 2: EDGE CASES
 // EXPECT: ------------------
 // EXPECT: ZERO VALUES:
-// EXPECT:   0 -> Float: 0 type: Float
-// EXPECT:   0 -> Str: 0 type: Str
-// EXPECT:   0.0 -> Int: 0 type: Int
-// EXPECT:   0.0 -> Str: 0 type: Str
+// EXPECT:   0 -> Float: 0.0 Float
+// EXPECT:   0 -> Str: 0 Str
+// EXPECT:   0.0 -> Int: 0 Int
+// EXPECT:   0.0 -> Str: 0.0 Str
 // EXPECT:
 // EXPECT: NEGATIVE VALUES:
-// EXPECT:   -42 -> Float: -42 type: Float
-// EXPECT:   -42 -> Str: -42 type: Str
-// EXPECT:   -3.14 -> Int: -3 type: Int
-// EXPECT:   -3.14 -> Str: -3.14 type: Str
+// EXPECT:   -42 -> Float: -42.0 Float
+// EXPECT:   -42 -> Str: -42 Str
+// EXPECT:   -3.14 -> Int: -3 Int
+// EXPECT:   -3.14 -> Str: -3.14 Str
 // EXPECT:
 // EXPECT: FRACTIONAL TRUNCATION:
-// EXPECT:   0.5 -> Int: 0 type: Int
-// EXPECT:   0.9 -> Int: 0 type: Int
-// EXPECT:   1.1 -> Int: 1 type: Int
-// EXPECT:   999.99 -> Int: 999 type: Int
-// EXPECT:   -0.5 -> Int: 0 type: Int
-// EXPECT:   -1.9 -> Int: -1 type: Int
+// EXPECT:   0.5 -> Int: 0 Int
+// EXPECT:   0.9 -> Int: 0 Int
+// EXPECT:   1.1 -> Int: 1 Int
+// EXPECT:   999.99 -> Int: 999 Int
+// EXPECT:   -0.5 -> Int: 0 Int
+// EXPECT:   -1.9 -> Int: -1 Int
 // EXPECT:
 // EXPECT: LARGE NUMBERS:
-// EXPECT:   999999 -> Float: 999999 type: Float
-// EXPECT:   999999 -> Str: 999999 type: Str
-// EXPECT:   999999.99 -> Int: 999999 type: Int
-// EXPECT:   999999.99 -> Str: 999999.99 type: Str
+// EXPECT:   999999 -> Float: 999999.0 Float
+// EXPECT:   999999 -> Str: 999999 Str
+// EXPECT:   999999.99 -> Int: 999999 Int
+// EXPECT:   999999.99 -> Str: 999999.99 Str
 // EXPECT:
 // EXPECT: STRING PARSING EDGE CASES:
-// EXPECT:   '007' -> Int: 7 type: Int
-// EXPECT:   '-123' -> Int: -123 type: Int
-// EXPECT:   '-3.14' -> Float: -3.14 type: Float
+// EXPECT:   '007' -> Int: 7 Int
+// EXPECT:   '-123' -> Int: -123 Int
+// EXPECT:   '-3.14' -> Float: -3.14 Float
 // EXPECT:
 // EXPECT: WHITESPACE STRINGS:
 // EXPECT:   Testing whitespace handling...

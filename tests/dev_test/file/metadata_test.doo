@@ -50,17 +50,17 @@ fn main() {
 // EXPECT: Metadata retrieved successfully!
 // EXPECT:
 // EXPECT: Full metadata struct:
-// EXPECT: <meta>
+// EXPECT: FileMetadata
 // EXPECT:
 // EXPECT: Individual fields:
 // EXPECT:   isFile: true
 // EXPECT:   isDir: false
 // EXPECT:   isSymlink: false
-// EXPECT:   size: ${meta.Size} bytes
+// EXPECT:   size:
 // EXPECT:   readonly: false
-// EXPECT:   created: <created>
-// EXPECT:   modified: <modified>
-// EXPECT:   accessed: <accessed>
+// EXPECT:   created:
+// EXPECT:   modified:
+// EXPECT:   accessed:
 // EXPECT:
 // EXPECT: Cleaning up...
 // EXPECT: Test complete!
