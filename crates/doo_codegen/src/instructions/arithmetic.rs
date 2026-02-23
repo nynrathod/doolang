@@ -598,12 +598,37 @@ fn emit_unaryop<'ctx>(
         }
         UnaryOp::Not => {
             if val.is_int_value() {
-                Some(
-                    ctx.builder
-                        .build_not(val.into_int_value(), "not")
-                        .ok()?
-                        .into(),
-                )
+                let int_val = val.into_int_value();
+                let int_type = int_val.get_type();
+                if int_type.get_bit_width() == 8 {
+                    // Bool (i8): logical NOT via comparison with 0
+                    // !true (1) → 0, !false (0) → 1
+                    let zero = int_type.const_zero();
+                    let cmp = ctx
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            int_val,
+                            zero,
+                            "lnot",
+                        )
+                        .ok()?;
+                    // Extend i1 result back to i8
+                    Some(
+                        ctx.builder
+                            .build_int_z_extend(cmp, int_type, "lnot_i8")
+                            .ok()?
+                            .into(),
+                    )
+                } else {
+                    // Integer: bitwise NOT
+                    Some(
+                        ctx.builder
+                            .build_not(int_val, "not")
+                            .ok()?
+                            .into(),
+                    )
+                }
             } else {
                 None
             }
@@ -611,7 +636,7 @@ fn emit_unaryop<'ctx>(
     }
 }
 /// Convert a value to a string for interpolation.
-/// Uses snprintf to format integers and floats.
+/// Uses snprintf for ints, doo_format_float (ryu) for floats.
 fn value_to_string<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     val: BasicValueEnum<'ctx>,
@@ -619,6 +644,30 @@ fn value_to_string<'ctx>(
     // If it's already a pointer (string), just return it
     if val.is_pointer_value() {
         return Some(val);
+    }
+
+    // For floats, use doo_format_float (ryu) for clean shortest representation
+    if val.is_float_value() {
+        let ptr_ty = ctx
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default());
+        let f64_ty = ctx.f64_type();
+        let format_fn = ctx
+            .module
+            .get_function(ffi_names::DOO_FORMAT_FLOAT)
+            .unwrap_or_else(|| {
+                let fn_ty = ptr_ty.fn_type(&[f64_ty.into()], false);
+                ctx.module
+                    .add_function(ffi_names::DOO_FORMAT_FLOAT, fn_ty, None)
+            });
+        let result = ctx
+            .builder
+            .build_call(format_fn, &[val.into()], "fmt_float")
+            .ok()?
+            .try_as_basic_value()
+            .basic()?;
+        return Some(result);
     }
 
     let snprintf = ctx
@@ -648,7 +697,7 @@ fn value_to_string<'ctx>(
             ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
         });
 
-    // Determine format string and value based on type
+    // Determine format string and value based on type (floats handled above via ryu)
     let (fmt_str, args): (&str, Vec<BasicValueEnum>) = if val.is_int_value() {
         let int_val = val.into_int_value();
         // Check if it's a boolean (i1 or i8) or integer
@@ -658,8 +707,6 @@ fn value_to_string<'ctx>(
         } else {
             ("%lld", vec![val])
         }
-    } else if val.is_float_value() {
-        ("%g", vec![val]) // Use %g for more compact float representation
     } else {
         // Unknown type, try as integer
         ("%lld", vec![val])

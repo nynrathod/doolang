@@ -274,12 +274,13 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // Copy query string only if present — avoids allocating for empty queries
     let query_owned: Option<String> = req.uri().query().map(|q| q.to_string());
 
-    // Start timing for metrics (only if metrics enabled — branch-predicted fast path)
-    let request_start = if crate::metrics::is_metrics_enabled() {
-        Some(Instant::now())
-    } else {
-        None
-    };
+    // Start timing for metrics/logger (only if either enabled — branch-predicted fast path)
+    let request_start =
+        if crate::metrics::is_metrics_enabled() || crate::middleware::is_logger_enabled() {
+            Some(Instant::now())
+        } else {
+            None
+        };
 
     // Built-in health check endpoints for container orchestration (fast path)
     // /health and /live — liveness probe: is the process alive?
@@ -416,295 +417,351 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // ========================================================================
 
     // ========================================================================
-    // Route matching FIRST — fail fast before doing any expensive work.
-    // Uses frozen registry, ZERO lock contention.
+    // ALL user-facing request processing — wrapped in a block so EVERY path
+    // flows to a SINGLE generic logging point at the end.
+    // Infrastructure paths (health/cors/ws) already returned above.
     // ========================================================================
-    let registry = get_frozen_routes();
+    let response = 'user_request: {
+        // Route matching FIRST — fail fast before doing any expensive work.
+        // Uses frozen registry, ZERO lock contention.
+        let registry = get_frozen_routes();
 
-    let (route_entry, params) = match registry.match_route(&method, &path) {
-        Some(r) => r,
-        None => {
-            // Check if path exists with other methods → 405 vs 404
-            let allowed = registry.find_allowed_methods(&path);
-            if !allowed.is_empty() {
-                let err = Rfc7807Error::method_not_allowed(&*method, &path, allowed);
-                return Ok(build_response(405, &err.to_json()));
+        let (route_entry, params) = match registry.match_route(&method, &path) {
+            Some(r) => r,
+            None => {
+                // Check if path exists with other methods → 405 vs 404
+                let allowed = registry.find_allowed_methods(&path);
+                if !allowed.is_empty() {
+                    let err = Rfc7807Error::method_not_allowed(&*method, &path, allowed);
+                    break 'user_request build_response(405, &err.to_json());
+                }
+                let err = Rfc7807Error::route_not_found(&*method, &path);
+                break 'user_request build_response(404, &err.to_json());
             }
-            let err = Rfc7807Error::route_not_found(&*method, &path);
-            return Ok(build_response(404, &err.to_json()));
+        };
+
+        // Get handler and middleware from frozen route entry
+        let handler = route_entry.handler;
+        let middleware = &route_entry.middleware;
+
+        // Compute early: needed for both header and body decisions
+        let has_body_method = matches!(&*method, "POST" | "PUT" | "PATCH");
+
+        // ========================================================================
+        // Set error tracking state ONLY when needed — deferred from hot path.
+        // For GET /json with no middleware, this saves ~25-30ns per request.
+        // Middleware routes call request.rs FFI functions that need get_current_request_path().
+        // Body methods need it for content-length/type validation errors.
+        // ========================================================================
+        let needs_headers = !middleware.is_empty() || has_body_method;
+        if needs_headers {
+            set_current_request_path(&path);
+            clear_last_error();
         }
-    };
 
-    // Get handler and middleware from frozen route entry
-    let handler = route_entry.handler;
-    let middleware = &route_entry.middleware;
-
-    // Compute early: needed for both header and body decisions
-    let has_body_method = matches!(&*method, "POST" | "PUT" | "PATCH");
-
-    // ========================================================================
-    // Set error tracking state ONLY when needed — deferred from hot path.
-    // For GET /json with no middleware, this saves ~25-30ns per request.
-    // Middleware routes call request.rs FFI functions that need get_current_request_path().
-    // Body methods need it for content-length/type validation errors.
-    // ========================================================================
-    let needs_headers = !middleware.is_empty() || has_body_method;
-    if needs_headers {
-        set_current_request_path(&path);
-        clear_last_error();
-    }
-
-    // ========================================================================
-    // Extract headers ONLY when needed — biggest single optimization.
-    // For GET /json with no middleware (benchmark case), this saves 5-10
-    // heap allocations per request (~130-160ns).
-    // Headers are needed when: (a) middleware exists (JWT reads Authorization),
-    // or (b) body methods need content-length/content-type validation.
-    // ========================================================================
-    let headers_map: Option<HashMap<String, String>> = if needs_headers {
-        let header_count = req.headers().len();
-        let mut map = HashMap::with_capacity(header_count);
-        for (name, value) in req.headers() {
-            if let Ok(v) = value.to_str() {
-                map.insert(name.as_str().to_owned(), v.to_owned());
-            }
-        }
-        Some(map)
-    } else {
-        None
-    };
-
-    // ========================================================================
-    // Conditional body collection — skip for methods that don't send a body
-    // Enforces DOO_MAX_BODY_SIZE to prevent OOM from malicious POSTs
-    // ========================================================================
-    let body_str = if has_body_method {
-        let max_body = MAX_BODY_SIZE.load(Ordering::Relaxed);
-        // Check Content-Length header first for early rejection (before reading body)
-        // headers_map is guaranteed Some when has_body_method is true
-        if let Some(cl) = headers_map.as_ref().and_then(|m| m.get("content-length")) {
-            if let Ok(len) = cl.parse::<usize>() {
-                if len > max_body {
-                    let err = Rfc7807Error::new(
-                        413,
-                        format!(
-                            "Request body size {} exceeds limit of {} bytes",
-                            len, max_body
-                        ),
-                    )
-                    .with_instance(&path);
-                    return Ok(build_response(413, &err.to_json()));
+        // ========================================================================
+        // Extract headers ONLY when needed — biggest single optimization.
+        // For GET /json with no middleware (benchmark case), this saves 5-10
+        // heap allocations per request (~130-160ns).
+        // Headers are needed when: (a) middleware exists (JWT reads Authorization),
+        // or (b) body methods need content-length/content-type validation.
+        // ========================================================================
+        let headers_map: Option<HashMap<String, String>> = if needs_headers {
+            let header_count = req.headers().len();
+            let mut map = HashMap::with_capacity(header_count);
+            for (name, value) in req.headers() {
+                if let Ok(v) = value.to_str() {
+                    map.insert(name.as_str().to_owned(), v.to_owned());
                 }
             }
-        }
-        let body_bytes = req.collect().await?.to_bytes();
-        if body_bytes.len() > max_body {
-            let err = Rfc7807Error::new(
-                413,
-                format!(
-                    "Request body size {} exceeds limit of {} bytes",
-                    body_bytes.len(),
-                    max_body
-                ),
-            )
-            .with_instance(&path);
-            return Ok(build_response(413, &err.to_json()));
-        }
-        if body_bytes.is_empty() {
+            Some(map)
+        } else {
+            None
+        };
+
+        // ========================================================================
+        // Conditional body collection — skip for methods that don't send a body
+        // Enforces DOO_MAX_BODY_SIZE to prevent OOM from malicious POSTs
+        // ========================================================================
+        let body_str = if has_body_method {
+            let max_body = MAX_BODY_SIZE.load(Ordering::Relaxed);
+            // Check Content-Length header first for early rejection (before reading body)
+            // headers_map is guaranteed Some when has_body_method is true
+            if let Some(cl) = headers_map.as_ref().and_then(|m| m.get("content-length")) {
+                if let Ok(len) = cl.parse::<usize>() {
+                    if len > max_body {
+                        let err = Rfc7807Error::new(
+                            413,
+                            format!(
+                                "Request body size {} exceeds limit of {} bytes",
+                                len, max_body
+                            ),
+                        )
+                        .with_instance(&path);
+                        break 'user_request build_response(413, &err.to_json());
+                    }
+                }
+            }
+            let body_bytes = match req.collect().await {
+                Ok(b) => b.to_bytes(),
+                Err(e) => return Err(e), // Transport error — not a user request error
+            };
+            if body_bytes.len() > max_body {
+                let err = Rfc7807Error::new(
+                    413,
+                    format!(
+                        "Request body size {} exceeds limit of {} bytes",
+                        body_bytes.len(),
+                        max_body
+                    ),
+                )
+                .with_instance(&path);
+                break 'user_request build_response(413, &err.to_json());
+            }
+            if body_bytes.is_empty() {
+                String::new()
+            } else {
+                match String::from_utf8(body_bytes.to_vec()) {
+                    Ok(s) => s,
+                    Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                }
+            }
+        } else {
+            // GET/DELETE/HEAD — no body to consume.
+            // Do NOT call req.collect() — it's an unnecessary async poll per request.
             String::new()
-        } else {
-            match String::from_utf8(body_bytes.to_vec()) {
-                Ok(s) => s,
-                Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-            }
-        }
-    } else {
-        // GET/DELETE/HEAD — no body to consume.
-        // Do NOT call req.collect() — it's an unnecessary async poll per request.
-        String::new()
-    };
+        };
 
-    // Parse query parameters
-    let query_map: HashMap<String, String> = match query_owned.as_deref() {
-        Some(q) if !q.is_empty() => parse_query(q),
-        _ => HashMap::new(), // HashMap::new() doesn't allocate until first insert
-    };
+        // Parse query parameters
+        let query_map: HashMap<String, String> = match query_owned.as_deref() {
+            Some(q) if !q.is_empty() => parse_query(q),
+            _ => HashMap::new(), // HashMap::new() doesn't allocate until first insert
+        };
 
-    // ========================================================================
-    // Content-Type validation (POST/PUT/PATCH only)
-    // ========================================================================
-    if has_body_method && !body_str.is_empty() {
-        if let Some(ct) = headers_map.as_ref().and_then(|m| m.get("content-type")) {
-            if !ct.contains("application/json") {
-                let err = Rfc7807Error::wrong_content_type(&path, ct);
-                return Ok(build_response(400, &err.to_json()));
-            }
-        }
-    }
-
-    // ========================================================================
-    // Build DooRequest — direct heap allocation via libc::malloc
-    // Uses static C strings for empty values to avoid per-request allocations.
-    // ========================================================================
-    let params_json_c: *const c_char;
-    let params_owned: String; // keep alive for params_json_c
-    if params.is_empty() {
-        params_json_c = EMPTY_JSON_C_STR.as_ptr() as *const c_char;
-        params_owned = String::new(); // unused, no alloc
-    } else {
-        // Direct JSON writer — avoids serde_json::to_string overhead (no Value tree)
-        let mut buf = String::with_capacity(64);
-        buf.push('{');
-        for (i, (key, value)) in params.iter().enumerate() {
-            if i > 0 {
-                buf.push(',');
-            }
-            buf.push('"');
-            buf.push_str(key);
-            buf.push_str("\":\"");
-            // Escape special JSON characters in the value
-            for b in value.bytes() {
-                match b {
-                    b'"' => buf.push_str("\\\""),
-                    b'\\' => buf.push_str("\\\\"),
-                    _ => buf.push(b as char),
+        // ========================================================================
+        // Content-Type validation (POST/PUT/PATCH only)
+        // ========================================================================
+        if has_body_method && !body_str.is_empty() {
+            if let Some(ct) = headers_map.as_ref().and_then(|m| m.get("content-type")) {
+                if !ct.contains("application/json") {
+                    let err = Rfc7807Error::wrong_content_type(&path, ct);
+                    break 'user_request build_response(400, &err.to_json());
                 }
             }
-            buf.push('"');
         }
-        buf.push('}');
-        params_owned = buf;
-        params_json_c = string_to_c(&params_owned);
-    };
 
-    let body_c = if body_str.is_empty() {
-        EMPTY_C_STR.as_ptr() as *const c_char
-    } else {
-        string_to_c(&body_str)
-    };
-
-    // ========================================================================
-    // Build DooRequest on the STACK — eliminates libc::malloc+free per request.
-    // The struct lives on the async task's stack (heap-backed by Tokio, but reused).
-    // SAFETY: The pointer is only used synchronously within execute_middleware_chain.
-    // ========================================================================
-    let mut doo_request_storage = std::mem::MaybeUninit::<DooRequest>::uninit();
-    let doo_request: *mut DooRequest = doo_request_storage.as_mut_ptr();
-    unsafe {
-        // Static C strings for standard methods — no malloc/memcpy per request
-        (*doo_request).method = match &*method {
-            "GET" => METHOD_GET_C.as_ptr() as *const c_char,
-            "POST" => METHOD_POST_C.as_ptr() as *const c_char,
-            "PUT" => METHOD_PUT_C.as_ptr() as *const c_char,
-            "DELETE" => METHOD_DELETE_C.as_ptr() as *const c_char,
-            "PATCH" => METHOD_PATCH_C.as_ptr() as *const c_char,
-            "HEAD" => METHOD_HEAD_C.as_ptr() as *const c_char,
-            "OPTIONS" => METHOD_OPTIONS_C.as_ptr() as *const c_char,
-            _ => string_to_c(&method), // exotic methods still allocate
-        };
-        (*doo_request).path = string_to_c(&path);
-        (*doo_request).body = body_c;
-        (*doo_request).headers = match headers_map {
-            Some(map) => Box::into_raw(Box::new(map)) as *mut std::ffi::c_void,
-            None => std::ptr::null_mut(),
-        };
-        (*doo_request).params = params_json_c as *mut std::ffi::c_void;
-        // Skip Box allocation for empty query — null pointer means no query params
-        (*doo_request).query = if query_map.is_empty() {
-            std::ptr::null_mut()
+        // ========================================================================
+        // Build DooRequest — direct heap allocation via libc::malloc
+        // Uses static C strings for empty values to avoid per-request allocations.
+        // ========================================================================
+        let params_json_c: *const c_char;
+        let params_owned: String; // keep alive for params_json_c
+        if params.is_empty() {
+            params_json_c = EMPTY_JSON_C_STR.as_ptr() as *const c_char;
+            params_owned = String::new(); // unused, no alloc
         } else {
-            Box::into_raw(Box::new(query_map)) as *mut std::ffi::c_void
-        };
-        (*doo_request).user_id = std::ptr::null();
-    }
+            // Direct JSON writer — avoids serde_json::to_string overhead (no Value tree)
+            let mut buf = String::with_capacity(64);
+            buf.push('{');
+            for (i, (key, value)) in params.iter().enumerate() {
+                if i > 0 {
+                    buf.push(',');
+                }
+                buf.push('"');
+                buf.push_str(key);
+                buf.push_str("\":");
+                // Emit native JSON type so emit_parse works correctly for typed struct fields:
+                //   Int/Float params → JSON number (unquoted) so atoi/atof works
+                //   Bool params      → JSON boolean (true/false)
+                //   Str params       → JSON string (quoted)
+                let is_int = !value.is_empty()
+                    && value
+                        .bytes()
+                        .enumerate()
+                        .all(|(i, b)| b.is_ascii_digit() || (i == 0 && b == b'-'));
+                let is_float = !is_int
+                    && !value.is_empty()
+                    && value.parse::<f64>().is_ok();
+                let is_bool = value == "true" || value == "false";
 
-    // ========================================================================
-    // Execute middleware chain + handler
-    // ========================================================================
-    doo_ffi_json::doo_json_clear_parse_error();
-
-    let response = {
-        ffi_debug!("SERVER", "About to execute handler for {} {}", method, path);
-        let result = execute_middleware_chain(doo_request, middleware, handler);
-        ffi_debug!(
-            "SERVER",
-            "Handler returned, result is_null={}",
-            result.is_null()
-        );
-
-        // Check for JSON parse errors (type mismatches in arrays, etc.)
-        if doo_ffi_json::doo_json_has_parse_error() {
-            let status = doo_ffi_json::doo_json_get_parse_error_status();
-            let error_json_ptr = doo_ffi_json::doo_json_get_parse_error_json();
-            let body = c_to_string(error_json_ptr as *const i8);
-            doo_ffi_json::doo_json_clear_parse_error();
-            build_response(status, &body)
-        } else {
-            unsafe {
-                if result.is_null() {
-                    ffi_debug!("SERVER", "Handler returned null!");
-                    let err = internal_error("Handler returned null", &path);
-                    build_response(500, &err.to_json())
+                if is_int || is_float || is_bool {
+                    // Emit as native JSON value — no quotes
+                    buf.push_str(value);
                 } else {
-                    // CRITICAL: Read result using doo_ffi_core::DooResult layout
-                    // { i64 tag, *mut c_void data } — matches codegen output exactly.
-                    let res = &*(result as *const doo_ffi_core::DooResult);
-                    ffi_debug!(
-                        "SERVER",
-                        "Result tag={}, data_is_null={}",
-                        res.tag,
-                        res.data.is_null()
-                    );
-                    if res.tag == 0 {
-                        // Success — zero-copy: read C string as bytes, pass directly
-                        if res.data.is_null() {
-                            build_response_bytes(200, b"{}")
-                        } else {
-                            let cstr = std::ffi::CStr::from_ptr(res.data as *const i8);
-                            build_response_bytes(200, cstr.to_bytes())
+                    // Emit as JSON string — escape special characters
+                    buf.push('"');
+                    for b in value.bytes() {
+                        match b {
+                            b'"' => buf.push_str("\\\""),
+                            b'\\' => buf.push_str("\\\\"),
+                            _ => buf.push(b as char),
                         }
+                    }
+                    buf.push('"');
+                }
+            }
+            buf.push('}');
+            params_owned = buf;
+            params_json_c = string_to_c(&params_owned);
+        };
+
+        let body_c = if body_str.is_empty() {
+            EMPTY_C_STR.as_ptr() as *const c_char
+        } else {
+            string_to_c(&body_str)
+        };
+
+        // ========================================================================
+        // Build DooRequest on the STACK — eliminates libc::malloc+free per request.
+        // The struct lives on the async task's stack (heap-backed by Tokio, but reused).
+        // SAFETY: The pointer is only used synchronously within execute_middleware_chain.
+        // ========================================================================
+        let mut doo_request_storage = std::mem::MaybeUninit::<DooRequest>::uninit();
+        let doo_request: *mut DooRequest = doo_request_storage.as_mut_ptr();
+        unsafe {
+            // Static C strings for standard methods — no malloc/memcpy per request
+            (*doo_request).method = match &*method {
+                "GET" => METHOD_GET_C.as_ptr() as *const c_char,
+                "POST" => METHOD_POST_C.as_ptr() as *const c_char,
+                "PUT" => METHOD_PUT_C.as_ptr() as *const c_char,
+                "DELETE" => METHOD_DELETE_C.as_ptr() as *const c_char,
+                "PATCH" => METHOD_PATCH_C.as_ptr() as *const c_char,
+                "HEAD" => METHOD_HEAD_C.as_ptr() as *const c_char,
+                "OPTIONS" => METHOD_OPTIONS_C.as_ptr() as *const c_char,
+                _ => string_to_c(&method), // exotic methods still allocate
+            };
+            (*doo_request).path = string_to_c(&path);
+            (*doo_request).body = body_c;
+            (*doo_request).headers = match headers_map {
+                Some(map) => Box::into_raw(Box::new(map)) as *mut std::ffi::c_void,
+                None => std::ptr::null_mut(),
+            };
+            (*doo_request).params = params_json_c as *mut std::ffi::c_void;
+            // Skip Box allocation for empty query — null pointer means no query params
+            (*doo_request).query = if query_map.is_empty() {
+                std::ptr::null_mut()
+            } else {
+                Box::into_raw(Box::new(query_map)) as *mut std::ffi::c_void
+            };
+            (*doo_request).user_id = std::ptr::null();
+        }
+
+        // ========================================================================
+        // Execute middleware chain + handler
+        // ========================================================================
+        doo_ffi_json::doo_json_clear_parse_error();
+
+        let handler_response = {
+            ffi_debug!("SERVER", "About to execute handler for {} {}", method, path);
+            let result = execute_middleware_chain(doo_request, middleware, handler);
+            ffi_debug!(
+                "SERVER",
+                "Handler returned, result is_null={}",
+                result.is_null()
+            );
+
+            // Check for JSON parse errors (type mismatches in arrays, etc.)
+            if doo_ffi_json::doo_json_has_parse_error() {
+                let status = doo_ffi_json::doo_json_get_parse_error_status();
+                let error_json_ptr = doo_ffi_json::doo_json_get_parse_error_json();
+                let body = c_to_string(error_json_ptr as *const i8);
+                doo_ffi_json::doo_json_clear_parse_error();
+                build_response(status, &body)
+            } else {
+                unsafe {
+                    if result.is_null() {
+                        ffi_debug!("SERVER", "Handler returned null!");
+                        let err = internal_error("Handler returned null", &path);
+                        build_response(500, &err.to_json())
                     } else {
-                        // Error — lazily set request path if not already set
-                        if !needs_headers {
-                            set_current_request_path(&path);
-                        }
-                        if !res.data.is_null() {
-                            let error_struct = res.data as *const i8;
-                            let error_status = *(error_struct as *const i32);
-                            let body_ptr =
-                                *((error_struct as *const u8).add(8) as *const *const i8);
-                            let body = if body_ptr.is_null() {
-                                get_last_error_json()
+                        // CRITICAL: Read result using doo_ffi_core::DooResult layout
+                        // { i64 tag, *mut c_void data } — matches codegen output exactly.
+                        let res = &*(result as *const doo_ffi_core::DooResult);
+                        ffi_debug!(
+                            "SERVER",
+                            "Result tag={}, data_is_null={}",
+                            res.tag,
+                            res.data.is_null()
+                        );
+                        if res.tag == 0 {
+                            // Success — zero-copy: read C string as bytes, pass directly
+                            if res.data.is_null() {
+                                build_response_bytes(200, b"{}")
                             } else {
-                                c_to_string(body_ptr)
-                            };
-                            build_response(error_status, &body)
+                                let cstr = std::ffi::CStr::from_ptr(res.data as *const i8);
+                                build_response_bytes(200, cstr.to_bytes())
+                            }
                         } else {
-                            let status = get_last_error_status();
-                            let body = get_last_error_json();
-                            build_response(if status > 0 { status } else { 500 }, &body)
+                            // Error — lazily set request path if not already set
+                            if !needs_headers {
+                                set_current_request_path(&path);
+                            }
+                            if !res.data.is_null() {
+                                let error_struct = res.data as *const i8;
+                                let error_status = *(error_struct as *const i32);
+                                let body_ptr =
+                                    *((error_struct as *const u8).add(8) as *const *const i8);
+                                let body = if body_ptr.is_null() {
+                                    get_last_error_json()
+                                } else {
+                                    c_to_string(body_ptr)
+                                };
+                                // 3xx redirect: body is raw URL → build Location header
+                                if error_status >= 300 && error_status < 400 {
+                                    build_redirect(error_status, &body)
+                                } else {
+                                    build_response(error_status, &body)
+                                }
+                            } else {
+                                let status = get_last_error_status();
+                                let body = get_last_error_json();
+                                build_response(if status > 0 { status } else { 500 }, &body)
+                            }
                         }
                     }
                 }
             }
+        };
+
+        // Cleanup DooRequest FIELDS — the struct itself is stack-allocated.
+        // At high RPS, leaked field memory causes OOM within minutes.
+        unsafe {
+            free_doo_request_fields(doo_request);
         }
-    };
+
+        handler_response
+    }; // end 'user_request block
 
     // ========================================================================
-    // Cleanup DooRequest FIELDS — the struct itself is stack-allocated.
-    // At high RPS, leaked field memory causes OOM within minutes.
+    // APPLY PENDING COOKIES — Auth sets cookies, server writes Set-Cookie headers.
+    // This is the SINGLE point where all Set-Cookie headers are applied.
+    // Any auth strategy (OAuth, JWT login, refresh) pushes cookies via
+    // doo_ffi_core::cookies::set_response_cookie() — we collect them here.
     // ========================================================================
-    unsafe {
-        free_doo_request_fields(doo_request);
+    let mut response = response;
+    let pending_cookies = doo_ffi_core::cookies::take_response_cookies();
+    for cookie in &pending_cookies {
+        if let Ok(val) = hyper::header::HeaderValue::from_str(&cookie.to_header_value()) {
+            response.headers_mut().append(hyper::header::SET_COOKIE, val);
+        }
     }
 
     // ========================================================================
-    // Record metrics (if enabled) — after cleanup to include full request time
+    // SINGLE GENERIC logging point — reads status from the response itself.
+    // No hardcoded status codes. Automatically classifies:
+    //   < 400 → Info | 400–499 → Warn | >= 500 → Error
+    // All user-facing paths (200, 404, 405, 413, 400, 500…) flow here.
+    // Infrastructure paths (health, CORS, WS) already returned above.
     // ========================================================================
     if let Some(start) = request_start {
         let duration_us = start.elapsed().as_micros() as u64;
         let status = response.status().as_u16();
-        crate::metrics::record_request(&method, &path, status, duration_us);
+        if crate::metrics::is_metrics_enabled() {
+            crate::metrics::record_request(&method, &path, status, duration_us);
+        }
+        if crate::middleware::is_logger_enabled() {
+            crate::middleware::log_request(&method, &path, status, duration_us / 1000);
+        }
     }
 
     Ok(response)
@@ -771,6 +828,29 @@ fn build_response_bytes(status: i32, body: &[u8]) -> Response<Full<Bytes>> {
     build_response_bytes_typed(status, body, CONTENT_TYPE_JSON)
 }
 
+/// Build a 3xx redirect response with Location header.
+/// Used by OAuth and any handler that returns a redirect via DooResult(tag>0, status=3xx).
+fn build_redirect(status: i32, url: &str) -> Response<Full<Bytes>> {
+    let status_code =
+        StatusCode::from_u16(status as u16).unwrap_or(StatusCode::FOUND);
+
+    let mut builder = Response::builder()
+        .status(status_code)
+        .header("Location", url);
+
+    // Add CORS headers for redirect responses too
+    if let Some(cors) = crate::middleware::get_frozen_cors() {
+        builder = builder.header("Access-Control-Allow-Origin", cors.origin.clone());
+        if cors.credentials {
+            builder = builder.header("Access-Control-Allow-Credentials", "true");
+        }
+    }
+
+    builder
+        .body(Full::new(Bytes::new()))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
 /// Build a plaintext HTTP response — for benchmarks and non-JSON endpoints.
 #[allow(dead_code)]
 fn build_response_plaintext(status: i32, body: &[u8]) -> Response<Full<Bytes>> {
@@ -834,6 +914,7 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
     // ========================================================================
     freeze_routes();
     crate::middleware::freeze_cors();
+    crate::middleware::freeze_logger();
 
     // Use the global Tokio runtime from doo_ffi_runtime (single source of truth).
     let local_runtime;
@@ -897,11 +978,18 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
         // Print banner (suppressible via DOO_NO_BANNER=1)
         let no_banner = std::env::var(doo_ffi_core::constants::ENV_DOO_NO_BANNER).map(|v| v == "1").unwrap_or(false);
         if !no_banner {
-            println!("\x1b[36m  ____              ");
+            // ANSI color: follows NO_COLOR standard (https://no-color.org/)
+            use std::io::IsTerminal;
+            let (cyan, rst) = if std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal() {
+                ("\x1b[36m", "\x1b[0m")
+            } else {
+                ("", "")
+            };
+            println!("{}  ____              ", cyan);
             println!(" |  _ \\  ___   ___  ");
             println!(" | | | |/ _ \\ / _ \\ ");
             println!(" | |_| | (_) | (_) |");
-            println!(" |____/ \\___/ \\___/          Doo v{}\x1b[0m", VERSION);
+            println!(" |____/ \\___/ \\___/          Doo v{}{}", VERSION, rst);
             println!("-------------------------------------------");
             println!("Info Server Online");
             println!("-------------------------------------------");
@@ -910,6 +998,14 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             println!("  Handlers Loaded:      {}", total_routes);
             if ws_routes > 0 {
                 println!("  WebSocket Routes:     {}", ws_routes);
+            }
+            if crate::middleware::is_logger_enabled() {
+                let cfg = crate::middleware::get_frozen_logger().unwrap();
+                let mut levels = Vec::new();
+                if cfg.info { levels.push("Info"); }
+                if cfg.warn { levels.push("Warn"); }
+                if cfg.error { levels.push("Error"); }
+                println!("  Logger:               {}", levels.join(", "));
             }
             println!("  Process ID:           {}", std::process::id());
             // println!("  Max Connections:      {}", max_connections);

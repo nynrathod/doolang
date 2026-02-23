@@ -105,6 +105,51 @@ struct AuthUser {
 }
 
 // ============================================================================
+// RESPONSE HELPERS — Single Source of Truth
+// ============================================================================
+
+/// Wrap any data in the standard `{ "data": ... }` envelope.
+/// ALL auth success responses MUST use this — single format, single place.
+fn wrap_data_response(data: serde_json::Value) -> String {
+    serde_json::json!({ "data": data }).to_string()
+}
+
+/// Build auth response from a DB row: adds token, strips password, wraps in envelope.
+/// Used by BOTH signup and login (DB path) — zero duplication.
+fn build_db_auth_response(token: &str, user_row: &serde_json::Value) -> String {
+    let mut data = serde_json::json!({ "token": token });
+    if let (Some(obj), Some(row_obj)) = (data.as_object_mut(), user_row.as_object()) {
+        for (k, v) in row_obj {
+            if !k.eq_ignore_ascii_case("password") {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    wrap_data_response(data)
+}
+
+/// Build auth response from in-memory user: adds token, merges extra fields, wraps in envelope.
+/// Used by BOTH signup and login (in-memory path) — zero duplication.
+fn build_memory_auth_response(
+    token: &str,
+    email: &str,
+    user_id: i64,
+    extra_fields: &serde_json::Value,
+) -> String {
+    let mut data = serde_json::json!({
+        "token": token,
+        "email": email,
+        "id": user_id,
+    });
+    if let (Some(obj), Some(extras)) = (data.as_object_mut(), extra_fields.as_object()) {
+        for (k, v) in extras {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    wrap_data_response(data)
+}
+
+// ============================================================================
 // SIGNUP HANDLER
 // ============================================================================
 
@@ -247,21 +292,10 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                         // Generate JWT token with user_id in claims
                         let token = generate_jwt_token(&email, user_id);
 
-                        // Build response with all fields from the database row (except password)
-                        let mut response_data = serde_json::json!({
-                            "token": token,
-                        });
-                        if let (Some(obj), Some(row_obj)) =
-                            (response_data.as_object_mut(), user_row.as_object())
-                        {
-                            for (k, v) in row_obj {
-                                if !k.eq_ignore_ascii_case("password") {
-                                    obj.insert(k.clone(), v.clone());
-                                }
-                            }
-                        }
+                        // Push httpOnly cookie — centralized
+                        doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
 
-                        let response = serde_json::json!({ "data": response_data }).to_string();
+                        let response = build_db_auth_response(&token, &user_row);
                         ffi_debug!("AUTH", "Signup success (DB): {}", response);
                         return make_ok_json(&response);
                     } else {
@@ -334,18 +368,16 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     let token = generate_jwt_token(&email, user_id as i64);
     ffi_debug!("AUTH", "JWT token generated for: {}", email);
 
-    // Build response with id, email and any extra fields (but not password)
-    let mut response_data = serde_json::json!({
-        "token": token,
-        "email": email,
-        "id": user_id,
-    });
-    if let Some(obj) = response_data.as_object_mut() {
-        for (k, v) in extra_fields {
-            obj.insert(k, v);
-        }
-    }
-    let response = serde_json::json!({ "data": response_data }).to_string();
+    // Push httpOnly cookie — centralized, works for both app.auth and OAuth
+    // app.auth uses access token only (no refresh token)
+    doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
+
+    let response = build_memory_auth_response(
+        &token,
+        &email,
+        user_id as i64,
+        &serde_json::Value::Object(extra_fields),
+    );
     ffi_debug!("AUTH", "Signup success response: {}", response);
     make_ok_json(&response)
 }
@@ -434,21 +466,10 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                     user_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
                                 let token = generate_jwt_token(&email, user_id);
 
-                                let mut response_data = serde_json::json!({
-                                    "token": token,
-                                });
-                                if let (Some(obj), Some(row_obj)) =
-                                    (response_data.as_object_mut(), user_row.as_object())
-                                {
-                                    for (k, v) in row_obj {
-                                        if !k.eq_ignore_ascii_case("password") {
-                                            obj.insert(k.clone(), v.clone());
-                                        }
-                                    }
-                                }
+                                // Push httpOnly cookie — centralized
+                                doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
 
-                                let response =
-                                    serde_json::json!({ "data": response_data }).to_string();
+                                let response = build_db_auth_response(&token, &user_row);
                                 return make_ok_json(&response);
                             }
                             _ => {
@@ -509,20 +530,10 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
     // Generate JWT token with user_id in claims
     let token = generate_jwt_token(&email, user.id as i64);
 
-    // Build response with id, email, token, and any extra fields stored during signup
-    let mut response_data = serde_json::json!({
-        "token": token,
-        "email": email,
-        "id": user.id,
-    });
-    if let Some(obj) = response_data.as_object_mut() {
-        if let serde_json::Value::Object(extras) = &user.extra_fields {
-            for (k, v) in extras {
-                obj.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    let response = serde_json::json!({ "data": response_data }).to_string();
+    // Push httpOnly cookie — centralized, works for both app.auth and OAuth
+    doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
+
+    let response = build_memory_auth_response(&token, &email, user.id as i64, &user.extra_fields);
     make_ok_json(&response)
 }
 
@@ -600,6 +611,119 @@ fn generate_jwt_token(sub: &str, user_id: i64) -> String {
 // AUTH ROUTE REGISTRATION
 // ============================================================================
 
+/// Derive the /auth/me path from signup/login paths.
+/// If both share a common prefix (e.g., "/auth/signup" and "/auth/login" → "/auth/me"),
+/// use that. Otherwise default to "/auth/me".
+fn derive_auth_me_path(signup_path: &str, login_path: &str) -> String {
+    // Find common prefix
+    let common: String = signup_path
+        .chars()
+        .zip(login_path.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a)
+        .collect();
+
+    // Trim to last slash to get the base path
+    if let Some(pos) = common.rfind('/') {
+        let base = &common[..pos];
+        if !base.is_empty() {
+            return format!("{}/me", base);
+        }
+    }
+
+    "/auth/me".to_string()
+}
+
+/// Handler for GET /auth/me — returns current user identity from JWT.
+///
+/// Reads the user_id set by JWT middleware (from cookie or header),
+/// then returns the user record. For DB-backed auth, queries the users table.
+/// For in-memory auth, reads from the auth store.
+///
+/// Response format (consistent for ALL paths):
+/// `{ "data": { id, email, ...fields } }` — same envelope as signup/login
+extern "C" fn auth_me_handler(req: *const DooRequest) -> *mut DooResult {
+    if req.is_null() {
+        return make_err_http(401, "Invalid request");
+    }
+
+    unsafe {
+        let user_id_ptr = (*req).user_id;
+        if user_id_ptr.is_null() {
+            return make_err_http(401, "Not authenticated");
+        }
+
+        let user_id_str = c_to_string(user_id_ptr);
+        if user_id_str.is_empty() {
+            return make_err_http(401, "Not authenticated");
+        }
+
+        ffi_debug!("AUTH", "/auth/me called for user_id={}", user_id_str);
+
+        // Build user data from the best available source
+        let user_data: Option<serde_json::Value> = build_user_data(&user_id_str);
+
+        match user_data {
+            Some(data) => {
+                let response = wrap_data_response(data);
+                make_ok_json(&response)
+            }
+            None => make_err_http(404, "User not found"),
+        }
+    }
+}
+
+/// Build user data from DB or in-memory auth store.
+/// Returns a clean JSON value with NO password field.
+/// Single function, single format — no duplicate JSON building.
+fn build_user_data(user_id_str: &str) -> Option<serde_json::Value> {
+    // Strategy 1: DB query (if available)
+    if is_pool_initialized() && is_auth_db_backed() {
+        let query = "SELECT * FROM users WHERE id = $1";
+        if let Ok(json) = execute_db_query_with_string_param(query, user_id_str) {
+            let rows: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
+            if let Some(mut user_row) = rows.into_iter().next() {
+                // Strip sensitive fields (case-insensitive — DB column may be "Password" or "password")
+                if let Some(obj) = user_row.as_object_mut() {
+                    let keys_to_remove: Vec<String> = obj
+                        .keys()
+                        .filter(|k| k.eq_ignore_ascii_case("password"))
+                        .cloned()
+                        .collect();
+                    for k in keys_to_remove {
+                        obj.remove(&k);
+                    }
+                }
+                return Some(user_row);
+            }
+        }
+    }
+
+    // Strategy 2: In-memory auth store
+    if let Ok(uid) = user_id_str.parse::<i64>() {
+        let users = get_auth_users().lock().unwrap_or_else(|e| e.into_inner());
+        for user in users.values() {
+            if user.id == uid {
+                let mut data = serde_json::json!({
+                    "id": user.id,
+                    "email": user.email,
+                });
+                // Merge extra_fields into the response (flatten, not nest)
+                if let (Some(data_obj), Some(extras_obj)) =
+                    (data.as_object_mut(), user.extra_fields.as_object())
+                {
+                    for (k, v) in extras_obj {
+                        data_obj.insert(k.clone(), v.clone());
+                    }
+                }
+                return Some(data);
+            }
+        }
+    }
+
+    None
+}
+
 /// Set up authentication routes for a user struct.
 /// Creates /signup and /login endpoints that handle user registration and authentication.
 /// If database is connected, creates the users table and uses DB-backed auth.
@@ -670,10 +794,22 @@ pub extern "C" fn doo_http_auth(
         registry.register("POST", &login_str, auth_login_handler);
 
         registry.auth_config = Some(AuthConfig {
-            signup_path: signup_str,
-            login_path: login_str,
+            signup_path: signup_str.clone(),
+            login_path: login_str.clone(),
             user_struct: struct_name,
         });
+
+        // Auto-register /auth/me — returns current user identity from JWT claims.
+        // Derives the me_path from the common prefix of signup/login paths, or defaults to /auth/me.
+        // Protected by JWT middleware so user_id is always available.
+        let me_path = derive_auth_me_path(&signup_str, &login_str);
+        registry.register_with_middleware(
+            "GET",
+            &me_path,
+            auth_me_handler,
+            vec![crate::middleware::jwt_middleware_handler],
+        );
+        ffi_debug!("HTTP", "Auto-registered GET {} for auth identity (JWT protected)", me_path);
 
         make_ok_void()
     })

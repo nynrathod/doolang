@@ -1,12 +1,25 @@
 // Auth module for Doo
 // Supports JWT-based authentication with bcrypt password hashing
+// Supports OAuth 2.0 with Google and GitHub providers
 //
-// Usage:
-//   import std::Auth;
+// Usage (JWT auth for route protection):
+//   import std::Auth::Jwt
 //
 //   fn main() {
 //       let app = Server::new(":3000");
 //       app.get("/profile", Jwt(), ProfileHandler);
+//   }
+//
+// Usage (OAuth login — coexists with JWT):
+//   fn main() {
+//       let app = Server::new(":3000");
+//       app.oauth({Providers: ["Google", "GitHub"]})
+//       // Auto-generated routes:
+//       //   GET /auth/google          → redirect to Google
+//       //   GET /auth/google/callback  → exchange code → JWT session
+//       //   GET /auth/github          → redirect to GitHub
+//       //   GET /auth/github/callback  → exchange code → JWT session
+//       app.get("/profile", Jwt(), ProfileHandler);  // Jwt() works with OAuth sessions
 //   }
 //
 // Or with auth/crud:
@@ -27,6 +40,25 @@ struct JwtClaims {
 struct AuthError {
     Code: Int,
     Message: Str,
+}
+
+// OAuth user info (normalized across providers)
+struct OAuthUser {
+    Id: Str,
+    Email: Str,
+    Name: Str,
+    Avatar: Str,
+    Provider: Str,
+    EmailVerified: Bool,
+}
+
+// OAuth exchange result (tokens + user + session)
+struct OAuthResult {
+    AccessToken: Str,
+    RefreshToken: Str,
+    ExpiresIn: Int,
+    SessionToken: Str,
+    User: OAuthUser,
 }
 
 // === Password Hashing Functions ===
@@ -52,6 +84,43 @@ fn signJwt(sub: Str, dataJson: Str, expiresSeconds: Int) -> Str !AuthError {}
 @extern("doo_auth", "doo_auth_verify")
 fn verifyJwt(token: Str) -> Str !AuthError {}
 
+// === OAuth Functions ===
+
+// Initialize OAuth with providers (reads credentials from env vars)
+// configJson: '["google", "github"]' or '{"providers": ["google"]}'
+// Env vars required per provider:
+//   OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET, OAUTH_GOOGLE_REDIRECT_URI
+//   OAUTH_GITHUB_CLIENT_ID, OAUTH_GITHUB_CLIENT_SECRET, OAUTH_GITHUB_REDIRECT_URI
+@extern("doo_auth", "doo_auth_oauth_init")
+fn OAuth.init(configJson: Str) -> Str !AuthError {}
+
+// Get authorization URL for a provider (with PKCE + CSRF state)
+// Returns JSON: {"url": "https://...", "state": "...", "provider": "..."}
+@extern("doo_auth", "doo_auth_oauth_get_auth_url")
+fn OAuth.getAuthUrl(provider: Str) -> Str !AuthError {}
+
+// Exchange authorization code for tokens + user info + session JWT
+// provider: "google" or "github"
+// code: authorization code from OAuth callback
+// state: CSRF state from OAuth callback
+// Returns JSON with access_token, refresh_token, session_token, user info
+@extern("doo_auth", "doo_auth_oauth_exchange")
+fn OAuth.exchange(provider: Str, code: Str, state: Str) -> Str !AuthError {}
+
+// Refresh an access token using a refresh token
+// Returns JSON with new token response
+@extern("doo_auth", "doo_auth_oauth_refresh")
+fn OAuth.refresh(provider: Str, refreshToken: Str) -> Str !AuthError {}
+
+// Get user info from provider using access token
+// Returns JSON with normalized user info
+@extern("doo_auth", "doo_auth_oauth_get_user")
+fn OAuth.getUser(provider: Str, accessToken: Str) -> Str !AuthError {}
+
+// Revoke a token with a provider
+@extern("doo_auth", "doo_auth_oauth_revoke")
+fn OAuth.revoke(provider: Str, token: Str) -> Str !AuthError {}
+
 // === Helper Functions ===
 
 // Free auth result
@@ -62,9 +131,33 @@ fn freeAuthResult(ptr: Ptr) {}
 @extern("doo_auth", "doo_auth_free_string")
 fn freeAuthString(ptr: Ptr) {}
 
-// === JWT Middleware ===
+// === Auth Middleware ===
 
 // JWT middleware function for route protection
-// Usage: import Auth::Jwt; app.get("/profile", Jwt(), handler)
+// Usage: import std::Auth::Jwt; app.get("/profile", Jwt(), handler)
+// Works with both password-based auth and OAuth login sessions
 @extern("doo_http", "doo_http_jwt")
 fn Jwt() -> Str {}
+
+// === OAuth Server Setup ===
+
+// Set up OAuth login with external providers (Google, GitHub, etc.)
+// Auto-registers redirect + callback routes per provider:
+//   GET /auth/google          → redirect to Google OAuth
+//   GET /auth/google/callback → exchange code → return JWT session
+//   GET /auth/github          → redirect to GitHub OAuth
+//   GET /auth/github/callback → exchange code → return JWT session
+//
+// Usage:
+//   app.oauth({Providers: ["Google", "GitHub"]})
+//   // or with custom base path:
+//   app.oauth({Providers: ["Google"], BasePath: "/oauth"})
+//
+// Env vars required per provider:
+//   OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET, OAUTH_GOOGLE_REDIRECT_URI
+//   OAUTH_GITHUB_CLIENT_ID, OAUTH_GITHUB_CLIENT_SECRET, OAUTH_GITHUB_REDIRECT_URI
+//
+// Note: app.auth and app.oauth are mutually exclusive — use one or the other.
+// JWT middleware (Jwt()) works with both systems for API route protection.
+@extern("doo_auth", "doo_auth_oauth_setup")
+fn Server.oauth(self, options: {Str: Str}?) -> !AuthError {}

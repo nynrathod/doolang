@@ -292,41 +292,28 @@ fn convert_to_ffi_arg<'ctx>(
 
                 return buffer.into();
             } else if val.is_float_value() {
-                // Convert f64 to string using sprintf
-                let i8_type = ctx.context.i8_type();
-                let i64_type = ctx.i64_type();
+                // Float → string: use doo_format_float (ryu) for clean formatting
                 let ptr_type = ctx.ptr_type();
-
-                // Allocate 32 bytes for float string
-                let buffer = ctx
-                    .builder
-                    .build_array_alloca(i8_type, i64_type.const_int(32, false), "float_to_str_buf")
-                    .unwrap();
-
-                // Get or declare sprintf
-                let sprintf = ctx
+                let f64_type = ctx.f64_type();
+                let format_fn = ctx
                     .module
-                    .get_function(ffi_names::SPRINTF)
+                    .get_function(ffi_names::DOO_FORMAT_FLOAT)
                     .unwrap_or_else(|| {
-                        let i32_type = ctx.i32_type();
-                        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
-                        ctx.module.add_function(ffi_names::SPRINTF, fn_type, None)
+                        let fn_ty = ptr_type.fn_type(&[f64_type.into()], false);
+                        ctx.module
+                            .add_function(ffi_names::DOO_FORMAT_FLOAT, fn_ty, None)
                     });
 
-                // Format string: "%g" (compact float format)
-                let fmt = ctx.const_string("%g");
-
-                // Call sprintf(buffer, "%g", value)
                 let float_val = val.into_float_value();
-                ctx.builder
-                    .build_call(
-                        sprintf,
-                        &[buffer.into(), fmt.into(), float_val.into()],
-                        "sprintf_float",
-                    )
-                    .ok();
-
-                return buffer.into();
+                let result = ctx
+                    .builder
+                    .build_call(format_fn, &[float_val.into()], "fmt_float")
+                    .ok()
+                    .and_then(|v| v.try_as_basic_value().basic());
+                if let Some(str_ptr) = result {
+                    return str_ptr.into();
+                }
+                return val.into();
             } else if val.is_struct_value() {
                 // Struct value (e.g., enum { i32, ptr }) needs to be boxed to pointer
                 // This handles single enum values passed to FFI functions like doo_db_raw_param

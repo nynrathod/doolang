@@ -277,6 +277,30 @@ fn emit_string_from_value<'ctx>(
         return Some(val);
     }
 
+    // For floats, use doo_format_float (ryu) instead of snprintf("%f")
+    if val.is_float_value() {
+        let ptr_ty = ctx
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default());
+        let f64_ty = ctx.f64_type();
+        let format_fn = ctx
+            .module
+            .get_function(ffi_names::DOO_FORMAT_FLOAT)
+            .unwrap_or_else(|| {
+                let fn_ty = ptr_ty.fn_type(&[f64_ty.into()], false);
+                ctx.module
+                    .add_function(ffi_names::DOO_FORMAT_FLOAT, fn_ty, None)
+            });
+        let result = ctx
+            .builder
+            .build_call(format_fn, &[val.into()], "fmt_float")
+            .ok()?
+            .try_as_basic_value()
+            .basic()?;
+        return Some(result);
+    }
+
     let snprintf = ctx
         .module
         .get_function(ffi_names::SNPRINTF)

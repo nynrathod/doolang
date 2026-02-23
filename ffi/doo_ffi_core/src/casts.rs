@@ -89,27 +89,32 @@ pub extern "C" fn doo_cast_int_to_str(value: i64) -> *mut c_char {
     doo_alloc_string(&s)
 }
 
-/// Convert a float to a C string.
+/// Convert a float to a C string using ryu for clean shortest representation.
 /// OWNERSHIP: Caller owns the returned string and must call doo_free.
 /// Handles NaN and Infinity edge cases explicitly.
 #[no_mangle]
 pub extern "C" fn doo_cast_float_to_str(value: f64) -> *mut c_char {
-    let s = if value.is_nan() {
-        "NaN".to_string()
-    } else if value.is_infinite() {
-        if value.is_sign_positive() {
-            "Infinity".to_string()
+    doo_format_float(value)
+}
+
+/// Format a float using ryu — shortest decimal representation.
+/// Used by print, cast, and anywhere a float needs clean display.
+/// OWNERSHIP: Caller owns the returned string and must call doo_free.
+#[no_mangle]
+pub extern "C" fn doo_format_float(value: f64) -> *mut c_char {
+    if value.is_nan() {
+        return doo_alloc_string("NaN");
+    }
+    if value.is_infinite() {
+        return doo_alloc_string(if value.is_sign_positive() {
+            "Infinity"
         } else {
-            "-Infinity".to_string()
-        }
-    } else if value.fract() == 0.0 {
-        // Whole number - format with one decimal place
-        format!("{:.1}", value)
-    } else {
-        // Has fractional part - format with full precision
-        format!("{}", value)
-    };
-    doo_alloc_string(&s)
+            "-Infinity"
+        });
+    }
+    let mut buf = ryu::Buffer::new();
+    let s = buf.format(value);
+    doo_alloc_string(s)
 }
 
 /// Convert a boolean to a C string.

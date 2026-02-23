@@ -282,6 +282,28 @@ pub extern "C" fn doohttp_populate_struct_from_request(
             None => return 0, // No metadata, skip validation
         };
 
+        // Look up the expected type for a field from struct metadata.
+        // Returns "Str" if unknown.
+        fn get_field_type(key: &str, metadata: &HandlerMetadata) -> String {
+            for (_struct_name, layout) in &metadata.struct_layouts {
+                if let Some(fields) = layout.get("fields").and_then(|f| f.as_array()) {
+                    for field in fields {
+                        if let Some(obj) = field.as_object() {
+                            let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            if name == key {
+                                return obj
+                                    .get("type")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Str")
+                                    .to_string();
+                            }
+                        }
+                    }
+                }
+            }
+            "Str".to_string()
+        }
+
         // Helper to coerce string values to typed JSON based on struct layout from metadata
         // Searches ALL struct layouts to find the field type (for multi-param handlers)
         fn coerce_string_to_typed_value(
@@ -350,12 +372,30 @@ pub extern "C" fn doohttp_populate_struct_from_request(
                     serde_json::from_str::<serde_json::Value>(&params_json_str)
                 {
                     for (k, v) in params_obj {
-                        // Path params values are strings in JSON, coerce them to typed values
-                        let value_str = v.as_str().unwrap_or_default();
-                        source_data.insert(
-                            k.clone(),
-                            coerce_string_to_typed_value(&k, value_str, &metadata),
-                        );
+                        // Path params may be pre-typed by the server (numbers, bools)
+                        // or strings that need coercion to the struct field type.
+                        if v.is_string() {
+                            let value_str = v.as_str().unwrap_or_default();
+                            source_data.insert(
+                                k.clone(),
+                                coerce_string_to_typed_value(&k, value_str, &metadata),
+                            );
+                        } else {
+                            // Already typed (number, bool) by server.
+                            // But if the struct field expects Str, convert to string.
+                            let expected_type = get_field_type(&k, &metadata);
+                            if expected_type == "Str" {
+                                // Field expects string — stringify the value
+                                let s = match &v {
+                                    serde_json::Value::Bool(b) => b.to_string(),
+                                    serde_json::Value::Number(n) => n.to_string(),
+                                    other => other.to_string(),
+                                };
+                                source_data.insert(k, serde_json::Value::String(s));
+                            } else {
+                                source_data.insert(k, v);
+                            }
+                        }
                     }
                 }
             }

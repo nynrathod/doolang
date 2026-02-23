@@ -91,6 +91,26 @@ pub struct RateLimitEntry {
     pub window_start: std::time::Instant,
 }
 
+/// Logger configuration
+/// Levels: Info (200-399), Warn (400-499), Error (500+)
+/// Default: all three levels enabled
+#[derive(Clone)]
+pub struct LoggerConfig {
+    pub info: bool,
+    pub warn: bool,
+    pub error: bool,
+}
+
+impl Default for LoggerConfig {
+    fn default() -> Self {
+        Self {
+            info: true,
+            warn: true,
+            error: true,
+        }
+    }
+}
+
 /// Handler metadata for serialization
 #[derive(Clone, Default)]
 pub struct HandlerMetadata {

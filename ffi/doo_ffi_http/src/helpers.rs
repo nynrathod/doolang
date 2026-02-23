@@ -10,6 +10,8 @@
 use std::ffi::c_void;
 use std::os::raw::c_char;
 
+use doo_ffi_core::DooResult;
+
 // Re-export core helpers for use across this crate
 pub use doo_ffi_core::helpers::{c_to_string_lossy, safe_ffi};
 
@@ -83,6 +85,38 @@ impl RawErrorResponse {
 #[inline]
 pub fn alloc_error_response(status: i32, body: &str) -> *mut c_void {
     RawErrorResponse::new(status, body).into_raw()
+}
+
+/// Allocate a redirect response struct for 3xx redirects.
+/// Body is stored as raw URL string (NOT wrapped in RFC 7807).
+/// The server detects 3xx status and builds a proper HTTP redirect with Location header.
+#[inline]
+pub fn alloc_redirect_response(status: i32, url: &str) -> *mut c_void {
+    RawErrorResponse {
+        status,
+        _padding: 0,
+        body: doo_ffi_core::helpers::string_to_c(url),
+        content_type: std::ptr::null(),
+    }
+    .into_raw()
+}
+
+/// Create a 302 Found redirect DooResult.
+/// Returns a DooResult with error tag and a redirect response struct.
+/// The server's response builder detects 3xx status and adds Location header.
+pub fn make_redirect(url: &str) -> *mut DooResult {
+    unsafe {
+        let redirect = alloc_redirect_response(302, url);
+        if redirect.is_null() {
+            return std::ptr::null_mut();
+        }
+        let ptr = libc::malloc(std::mem::size_of::<DooResult>()) as *mut DooResult;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        std::ptr::write(ptr, DooResult::err(302, redirect, 0));
+        ptr
+    }
 }
 
 /// Free an error response allocated by alloc_error_response

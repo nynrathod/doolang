@@ -8,6 +8,59 @@ use doo_core::types::{builtin, TypeKind};
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
+
+/// Emit a call to `doo_format_float(f64) -> *mut c_char` then `printf("%s", result)`,
+/// then `doo_free(result)`. Uses ryu for clean shortest-representation float formatting.
+fn emit_print_float_ryu<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    printf: FunctionValue<'ctx>,
+    float_val: BasicValueEnum<'ctx>,
+    newline: bool,
+) {
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let f64_ty = ctx.f64_type();
+
+    // Get or declare doo_format_float(f64) -> *mut c_char
+    let format_fn = ctx
+        .module
+        .get_function(ffi_names::DOO_FORMAT_FLOAT)
+        .unwrap_or_else(|| {
+            let fn_ty = ptr_ty.fn_type(&[f64_ty.into()], false);
+            ctx.module
+                .add_function(ffi_names::DOO_FORMAT_FLOAT, fn_ty, None)
+        });
+
+    // Get or declare doo_free(*mut c_char)
+    let free_fn = ctx
+        .module
+        .get_function(ffi_names::DOO_FREE)
+        .unwrap_or_else(|| {
+            let fn_ty = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
+            ctx.module
+                .add_function(ffi_names::DOO_FREE, fn_ty, None)
+        });
+
+    // Call doo_format_float(val) → str_ptr
+    if let Some(str_ptr) = ctx
+        .builder
+        .build_call(format_fn, &[float_val.into()], "fmt_float")
+        .ok()
+        .and_then(|v| v.try_as_basic_value().basic())
+    {
+        // printf("%s" or "%s\n", str_ptr)
+        let fmt = if newline { "%s\n" } else { "%s" };
+        let fmt = ctx.const_string(fmt);
+        ctx.builder
+            .build_call(printf, &[fmt.into(), str_ptr.into()], "print_f")
+            .ok();
+
+        // doo_free(str_ptr)
+        ctx.builder
+            .build_call(free_fn, &[str_ptr.into()], "free_fmt")
+            .ok();
+    }
+}
+
 pub(super) fn emit_print_value<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     printf: FunctionValue<'ctx>,
@@ -33,12 +86,8 @@ pub(super) fn emit_print_value<'ctx>(
             }
             return;
         } else if val.is_float_value() {
-            // Float - print as decimal
-            let fmt = if newline { "%f\n" } else { "%f" };
-            let fmt = ctx.const_string(fmt);
-            ctx.builder
-                .build_call(printf, &[fmt.into(), val.into()], "print_f")
-                .ok();
+            // Float - print using ryu for clean formatting
+            emit_print_float_ryu(ctx, printf, val, newline);
             return;
         } else if val.is_pointer_value() {
             // Pointer - assume string (most common case for ANY)
@@ -145,11 +194,7 @@ pub(super) fn emit_print_value<'ctx>(
 
     if type_id == builtin::FLOAT {
         if val.is_float_value() {
-            let fmt = if newline { "%f\n" } else { "%f" };
-            let fmt = ctx.const_string(fmt);
-            ctx.builder
-                .build_call(printf, &[fmt.into(), val.into()], "print_f")
-                .ok();
+            emit_print_float_ryu(ctx, printf, val, newline);
         } else if val.is_pointer_value() {
             // Pointer holding a float (e.g., from ManualErrorExtract) — convert ptr→i64→f64
             let i64_val = ctx
@@ -171,11 +216,7 @@ pub(super) fn emit_print_value<'ctx>(
                     if let Some(f_ptr) = f_ptr {
                         let f_val = ctx.builder.build_load(ctx.f64_type(), f_ptr, "f_val").ok();
                         if let Some(f_val) = f_val {
-                            let fmt = if newline { "%f\n" } else { "%f" };
-                            let fmt = ctx.const_string(fmt);
-                            ctx.builder
-                                .build_call(printf, &[fmt.into(), f_val.into()], "print_f")
-                                .ok();
+                            emit_print_float_ryu(ctx, printf, f_val, newline);
                         }
                     }
                 }

@@ -19,6 +19,7 @@ pub mod macros;
 pub mod casts;
 pub mod config;
 pub mod constants;
+pub mod cookies;
 pub mod debug;
 pub mod errors;
 pub mod helpers;

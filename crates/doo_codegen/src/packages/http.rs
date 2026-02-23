@@ -38,10 +38,18 @@ const MIDDLEWARE_CORS: &str = "cors";
 /// Rate limit middleware identifier
 const MIDDLEWARE_RATELIMIT: &str = "ratelimit";
 
+/// Logger middleware identifier
+const MIDDLEWARE_LOGGER: &str = "logger";
+
 /// All built-in HTTP middleware names that the runtime handles natively.
 /// The compiler skips wrapper generation for these — they don't need
 /// user-defined function pointers.
-const BUILTIN_MIDDLEWARES: &[&str] = &[MIDDLEWARE_JWT, MIDDLEWARE_CORS, MIDDLEWARE_RATELIMIT];
+const BUILTIN_MIDDLEWARES: &[&str] = &[
+    MIDDLEWARE_JWT,
+    MIDDLEWARE_CORS,
+    MIDDLEWARE_RATELIMIT,
+    MIDDLEWARE_LOGGER,
+];
 
 /// Check if a middleware name is handled natively by the HTTP runtime.
 #[inline]
@@ -77,8 +85,7 @@ pub(crate) fn wrap_func_ref<'ctx>(
 
     // Register handler metadata for route registrations
     // (enables runtime request validation against Doo struct schemas)
-    let is_route_registration =
-        symbol.ends_with("_fn") || symbol.ends_with("_with_middleware");
+    let is_route_registration = symbol.ends_with("_fn") || symbol.ends_with("_with_middleware");
     if is_route_registration {
         call_metadata::emit_handler_metadata_registration(ctx, func_name, &wrapper);
     }
@@ -93,11 +100,7 @@ pub(crate) fn wrap_func_ref<'ctx>(
 ///    so the HTTP runtime can validate incoming request data.
 /// 2. Middleware registration — registers user-defined middleware function
 ///    pointers with the HTTP runtime.
-pub(crate) fn pre_call<'ctx>(
-    ctx: &mut CodegenContext<'ctx>,
-    symbol: &str,
-    args: &[MirOperand],
-) {
+pub(crate) fn pre_call<'ctx>(ctx: &mut CodegenContext<'ctx>, symbol: &str, args: &[MirOperand]) {
     // Struct metadata for auth/crud endpoints
     if symbol == ffi_names::DOO_HTTP_AUTH || symbol == ffi_names::DOO_HTTP_CRUD {
         call_metadata::emit_struct_metadata_registration_for_auth_crud(ctx, symbol, args);
@@ -142,8 +145,7 @@ fn register_user_middleware<'ctx>(
             }
 
             // Generate wrapper for user-defined middleware and register it
-            let wrapper =
-                call_wrappers::get_or_generate_handler_wrapper(ctx, mw_name, symbol);
+            let wrapper = call_wrappers::get_or_generate_handler_wrapper(ctx, mw_name, symbol);
 
             // Call doo_http_register_middleware(name, fn_ptr)
             let register_fn = ctx

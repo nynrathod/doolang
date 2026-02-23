@@ -267,6 +267,62 @@ pub extern "C" fn doo_http_group(
 }
 
 // ============================================================================
+// LOGGER CONFIGURATION
+// ============================================================================
+
+/// Enable logger with default config (all levels: Info, Warn, Error).
+/// Called when user writes `app.logger()` with no arguments.
+/// Returns server pointer for chaining.
+#[no_mangle]
+pub extern "C" fn doo_http_logger_custom(
+    server: *mut c_void,
+    options: *mut c_void,
+) -> *mut c_void {
+    ffi_safe_ptr!({
+        let config = if options.is_null() {
+            // Default: all levels enabled
+            LoggerConfig::default()
+        } else {
+            // Parse Level array from options map
+            // Doo code: app.logger({Level: ["Error", "Warn"]})
+            let level_ptr = doo_map_get_str(options, "Level");
+
+            if level_ptr.is_null() {
+                // No Level key → all levels enabled (default)
+                LoggerConfig::default()
+            } else {
+                // Parse the Level value — it's a JSON array string like ["Error","Warn"]
+                let level_str = parse_json_string_or_default(level_ptr, "");
+
+                // Start with all disabled, enable only specified levels
+                let mut info = false;
+                let mut warn = false;
+                let mut error = false;
+
+                // Parse comma-separated or JSON array
+                let cleaned = level_str
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .replace('"', "");
+                for level in cleaned.split(',') {
+                    match level.trim().to_lowercase().as_str() {
+                        "info" => info = true,
+                        "warn" | "warning" => warn = true,
+                        "error" | "err" => error = true,
+                        _ => {}
+                    }
+                }
+
+                LoggerConfig { info, warn, error }
+            }
+        };
+
+        *get_logger_config().lock().unwrap_or_else(|e| e.into_inner()) = Some(config);
+        server
+    })
+}
+
+// ============================================================================
 // MIDDLEWARE NEXT CALL
 // ============================================================================
 

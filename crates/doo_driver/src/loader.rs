@@ -267,10 +267,15 @@ pub fn resolve_imports(
     }
 
     // Build import requests: module_key -> set of (symbol_name, (optional_alias, span))
+    // IMPORTANT: Use a separate Vec to preserve source-order for processing.
+    // HashMap iteration order is non-deterministic, which would break cross-module
+    // extension methods (e.g., Server.oauth from Auth.doo needs Server from Http.doo
+    // to be imported first).
     let mut std_import_requests: HashMap<
         String,
         HashMap<String, (Option<String>, doo_core::Span)>,
     > = HashMap::new();
+    let mut std_import_order: Vec<String> = Vec::new();
     // (import_decl, module_path, path_symbols) - path_symbols are symbols extracted
     // from the import path when the last segment is a symbol name, not a file.
     // e.g., `import Models::Task;` → module=Models.doo, path_symbols=["Task"]
@@ -288,6 +293,9 @@ pub fn resolve_imports(
             }
             let module_name = &import.path[1];
             let module_key = format!("std::{}", module_name);
+            if !std_import_requests.contains_key(&module_key) {
+                std_import_order.push(module_key.clone());
+            }
             let symbols = std_import_requests.entry(module_key).or_default();
 
             // Determine what symbols are requested
@@ -396,8 +404,15 @@ pub fn resolve_imports(
     let mut result = ImportResolution::default();
     let mut imported_names: HashSet<String> = HashSet::new();
 
-    // Process standard library imports
-    for (module_key, requested) in &std_import_requests {
+    // Process standard library imports (in source order — NOT HashMap order!)
+    // Source order ensures that cross-module extension methods work correctly:
+    // e.g., `import std::Http::{Server}` must be processed before `import std::Auth::{Jwt}`
+    // so that Server.oauth from Auth.doo is found via the cross-module type check.
+    for module_key in &std_import_order {
+        let requested = match std_import_requests.get(module_key) {
+            Some(r) => r,
+            None => continue,
+        };
         // Load the module
         let module_program = match loader.load_module(module_key) {
             Ok(p) => p,
@@ -495,6 +510,22 @@ pub fn resolve_imports(
                     if is_wanted {
                         imported_type_names.insert(e.name.clone());
                     }
+                }
+                _ => {}
+            }
+        }
+
+        // Also include types from previously imported modules so that
+        // cross-module extension methods get imported automatically.
+        // E.g., `Server` from Http.doo should allow `Server.oauth` from Auth.doo
+        // to be imported when `import std::Auth::{Jwt}` is used.
+        for item in &result.items {
+            match item {
+                Item::Struct(s) => {
+                    imported_type_names.insert(s.name.clone());
+                }
+                Item::Enum(e) => {
+                    imported_type_names.insert(e.name.clone());
                 }
                 _ => {}
             }

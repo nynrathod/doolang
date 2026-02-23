@@ -1136,7 +1136,13 @@ fn link_unix(
 
     // Platform-specific system libraries
     #[cfg(target_os = "linux")]
-    cmd.arg("-lpthread").arg("-ldl");
+    {
+        cmd.arg("-lpthread").arg("-ldl");
+        // Export all symbols to the dynamic symbol table so that
+        // cross-library runtime resolution (dlsym/libloading) works.
+        // Required for OAuth (doo_ffi_auth) to find HTTP FFI symbols.
+        cmd.arg("-rdynamic");
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -1146,14 +1152,16 @@ fn link_unix(
     }
 
     // Link FFI libraries in dependency order
+    // Names must match the normalized names in ffi_libs (doo_ffi_* format)
     let lib_order = [
-        "doo_http",
-        "doo_auth",
-        "doo_db",
-        "doo_file",
-        "doo_process",
-        "doo_runtime",
-        "doo",
+        "doo_ffi_http",
+        "doo_ffi_auth",
+        "doo_ffi_db",
+        "doo_ffi_file",
+        "doo_ffi_process",
+        "doo_ffi_runtime",
+        "doo_ffi_core",
+        "doo_ffi_json",
     ];
 
     let mut sorted_libs: Vec<&String> = lib_order
@@ -1177,7 +1185,20 @@ fn link_unix(
                 }
                 cmd.arg(format!("-l{}", lib));
             } else {
-                cmd.arg(lib_file.to_str().unwrap());
+                // Static archive (.a): use --whole-archive to include ALL symbols,
+                // not just those with direct compile-time references.
+                // Required for symbols resolved at runtime via dlsym (e.g.,
+                // doo_http_register_package_route used by OAuth route registration).
+                #[cfg(target_os = "linux")]
+                {
+                    cmd.arg("-Wl,--whole-archive");
+                    cmd.arg(lib_file.to_str().unwrap());
+                    cmd.arg("-Wl,--no-whole-archive");
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    cmd.arg(lib_file.to_str().unwrap());
+                }
             }
         } else {
             #[cfg(target_os = "macos")]

@@ -2,6 +2,12 @@
 //!
 //! All HTTP method route registration functions (GET, POST, PUT, DELETE, PATCH)
 //! with optional middleware support. Uses centralized helpers for consistent behavior.
+//!
+//! ## Package Route Registration
+//!
+//! External FFI packages (e.g., doo_ffi_auth for OAuth) can register routes at runtime
+//! via `doo_http_register_package_route`. This generic API allows any package to add
+//! HTTP routes without coupling to the HTTP FFI crate.
 
 use std::ffi::c_void;
 use std::os::raw::c_char;
@@ -306,5 +312,54 @@ pub extern "C" fn doo_http_patch_with_middleware(
 ) -> *mut DooResult {
     ffi_safe_result!({
         register_route_with_middleware_fn("PATCH", path, middleware_names, handler)
+    })
+}
+
+// ============================================================================
+// GENERIC PACKAGE ROUTE REGISTRATION
+// ============================================================================
+
+/// Register a route from an external FFI package at runtime.
+///
+/// This is the public API for package-based route registration. Any external
+/// FFI library (e.g., doo_ffi_auth for OAuth) can call this function via
+/// `libloading` to register HTTP routes without coupling to doo_ffi_http.
+///
+/// The handler receives a raw pointer to the HTTP request struct (`DooRequest`)
+/// as `*const c_void` and must return `*mut DooResult`. The request struct layout
+/// is `#[repr(C)]`: `{ method: *const c_char, path: *const c_char, body: *const c_char,
+/// headers: *mut c_void, params: *mut c_void, query: *mut c_void, user_id: *const c_char }`.
+///
+/// The `query` field points to a `HashMap<String, String>` (boxed).
+///
+/// For redirect responses (e.g., OAuth), return a DooResult with error tag and
+/// an error struct containing status 302 + URL as body. The server automatically
+/// builds a proper HTTP 302 redirect with Location header for any 3xx status.
+#[no_mangle]
+pub extern "C" fn doo_http_register_package_route(
+    method: *const c_char,
+    path: *const c_char,
+    handler: extern "C" fn(*const c_void) -> *mut DooResult,
+) -> *mut DooResult {
+    ffi_safe_result!({
+        let method_str = c_to_string(method);
+        let path_str = c_to_string(path);
+
+        doo_ffi_core::ffi_debug!(
+            "HTTP",
+            "Package route registered: {} {}",
+            method_str,
+            path_str
+        );
+
+        let routes = get_routes();
+        let mut registry = routes.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Cast void handler to DooHandlerFn — same C ABI layout
+        // *const c_void and *const DooRequest are both raw pointers (identical ABI)
+        let handler_fn: DooHandlerFn = unsafe { std::mem::transmute(handler) };
+        registry.register(&method_str, &path_str, handler_fn);
+
+        make_ok_void()
     })
 }

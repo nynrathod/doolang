@@ -14,6 +14,7 @@ static CORS_CONFIG: OnceLock<Mutex<Option<CorsConfig>>> = OnceLock::new();
 static RATELIMIT_CONFIG: OnceLock<Mutex<Option<RateLimitConfig>>> = OnceLock::new();
 static RATELIMIT_STATE: OnceLock<Mutex<HashMap<String, RateLimitEntry>>> = OnceLock::new();
 static JWT_SECRET: OnceLock<String> = OnceLock::new();
+static LOGGER_CONFIG: OnceLock<Mutex<Option<LoggerConfig>>> = OnceLock::new();
 
 // ============================================================================
 // FROZEN CORS — Pre-computed header values for zero-cost request-time access
@@ -48,7 +49,9 @@ pub fn freeze_cors() {
                 headers: HeaderValue::from_str(&headers_str)
                     .unwrap_or_else(|_| HeaderValue::from_static("Content-Type")),
                 credentials: config.credentials,
-                max_age: config.max_age.and_then(|ma| HeaderValue::from_str(&ma.to_string()).ok()),
+                max_age: config
+                    .max_age
+                    .and_then(|ma| HeaderValue::from_str(&ma.to_string()).ok()),
             }
         })
     });
@@ -115,13 +118,34 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
             return make_err_response(401, "Missing Authorization header");
         }
 
+        // Strategy 1: Authorization: Bearer <token> header
         let auth_header = (*headers)
             .get("authorization")
             .or_else(|| (*headers).get("Authorization"));
 
-        let token = match auth_header {
-            Some(h) if h.starts_with("Bearer ") => &h[7..],
-            _ => return make_err_response(401, "Invalid Authorization header format"),
+        let token_from_header = match auth_header {
+            Some(h) if h.starts_with("Bearer ") => Some(&h[7..]),
+            _ => None,
+        };
+
+        // Strategy 2: Cookie fallback — read access token from httpOnly cookie
+        // This is the CORE auth pattern: auth sets cookies, middleware reads them
+        let cookie_token_owned: Option<String> = if token_from_header.is_none() {
+            let cookie_header = (*headers)
+                .get("cookie")
+                .or_else(|| (*headers).get("Cookie"));
+            cookie_header.and_then(|h| {
+                doo_ffi_core::cookies::extract_cookie_value(h, doo_ffi_core::cookies::COOKIE_ACCESS_TOKEN)
+                    .map(|s| s.to_string())
+            })
+        } else {
+            None
+        };
+
+        // Use header token first, then cookie token
+        let token = match token_from_header.or(cookie_token_owned.as_deref()) {
+            Some(t) => t,
+            None => return make_err_response(401, "No authentication token provided"),
         };
 
         // Token size limit — prevent DoS via oversized tokens
@@ -334,6 +358,120 @@ fn ratelimit_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut D
 
     drop(state);
     next(req)
+}
+
+// ============================================================================
+// LOGGER — Server-level request/response logging
+// ============================================================================
+
+pub fn get_logger_config() -> &'static Mutex<Option<LoggerConfig>> {
+    LOGGER_CONFIG.get_or_init(|| Mutex::new(None))
+}
+
+/// Frozen logger config — immutable after freeze, zero-lock access at request time.
+/// `None` = logger disabled (no `app.logger()` call).
+/// `Some(config)` = logger enabled with the specified level filters.
+static FROZEN_LOGGER: OnceLock<Option<LoggerConfig>> = OnceLock::new();
+
+/// Freeze logger config into lock-free static.
+/// Called once before the accept loop starts, alongside freeze_cors()/freeze_routes().
+pub fn freeze_logger() {
+    let config = get_logger_config()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    let _ = FROZEN_LOGGER.set(config);
+}
+
+/// Get frozen logger config (zero-cost, no lock).
+/// Returns `None` if logger was never enabled.
+#[inline]
+pub fn get_frozen_logger() -> Option<&'static LoggerConfig> {
+    FROZEN_LOGGER.get().and_then(|opt| opt.as_ref())
+}
+
+/// Check if logger is enabled (lock-free after freeze).
+#[inline]
+pub fn is_logger_enabled() -> bool {
+    FROZEN_LOGGER
+        .get()
+        .map(|opt| opt.is_some())
+        .unwrap_or(false)
+}
+
+/// Log a request/response in the Doo format.
+/// Format: `[Doo] HH:MM:SS | STATUS | DURATIONms | METHOD /path`
+/// Color-coded: green=2xx, yellow=4xx, red=5xx, cyan=3xx
+///
+/// Level classification:
+/// - Info:  1xx, 2xx, 3xx (success / redirect)
+/// - Warn:  4xx (client error)
+/// - Error: 5xx (server error)
+///
+/// This is intentionally NOT a middleware — it runs at the server level
+/// to avoid adding function pointer overhead to the middleware chain.
+/// Cost: only the string formatting + eprintln when the level is enabled.
+#[inline]
+pub fn log_request(method: &str, path: &str, status: u16, duration_ms: u64) {
+    let config = match get_frozen_logger() {
+        Some(c) => c,
+        None => return,
+    };
+
+    // Classify by status code — generic, no hardcoded status values
+    let is_info = status < 400;
+    let is_warn = (400..500).contains(&status);
+    let is_error = status >= 500;
+
+    // Check if this level is enabled
+    if (is_info && !config.info) || (is_warn && !config.warn) || (is_error && !config.error) {
+        return;
+    }
+
+    // Get current time HH:MM:SS
+    // Use system time directly — no chrono dependency needed
+    let now = std::time::SystemTime::now();
+    let since_epoch = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let total_secs = since_epoch.as_secs();
+    let hours = (total_secs % 86400) / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+
+    // ANSI color: follows NO_COLOR standard (https://no-color.org/)
+    // Whole line is colored like Gin/Fiber/Express — not just the status code
+    use std::io::IsTerminal;
+    let use_color = std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal();
+
+    let (color, reset) = if use_color {
+        let c = if is_error {
+            "\x1b[31m" // red   — 5xx
+        } else if is_warn {
+            "\x1b[33m" // yellow — 4xx
+        } else if status >= 300 {
+            "\x1b[36m" // cyan  — 3xx
+        } else {
+            "\x1b[32m" // green — 2xx
+        };
+        (c, "\x1b[0m")
+    } else {
+        ("", "")
+    };
+
+    // Right-align duration for clean columns
+    let dur_str = if duration_ms < 1000 {
+        format!("{:>4}ms", duration_ms)
+    } else {
+        format!("{:>4.1}s ", duration_ms as f64 / 1000.0)
+    };
+
+    // Format: [Doo] HH:MM:SS | STATUS | DURATION | METHOD /path
+    // Entire line colored by status level (like Gin/Fiber/Express)
+    eprintln!(
+        "{}[Doo] {:02}:{:02}:{:02} | {:>3} | {} | {} {}{}",
+        color, hours, minutes, seconds, status, dur_str, method, path, reset
+    );
 }
 
 // ============================================================================

@@ -316,6 +316,7 @@ pub const DOO_CAST_STR_TO_INT: &str = "doo_cast_str_to_int";
 pub const DOO_CAST_STR_TO_FLOAT: &str = "doo_cast_str_to_float";
 pub const DOO_CAST_INT_TO_STR: &str = "doo_cast_int_to_str";
 pub const DOO_CAST_FLOAT_TO_STR: &str = "doo_cast_float_to_str";
+pub const DOO_FORMAT_FLOAT: &str = "doo_format_float";
 
 // ============================================================================
 // Runtime Type Information (for Any/JSON support)

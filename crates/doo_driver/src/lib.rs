@@ -294,6 +294,60 @@ pub fn run_command_with_compiler(
         }
     }
 
+    // Linux/macOS shared library path management
+    // Same as Windows DLL path above — allows dlopen() from within loaded libraries
+    // (e.g., doo_ffi_auth using libloading to find doo_ffi_http symbols)
+    #[cfg(not(windows))]
+    {
+        let mut lib_dirs: Vec<PathBuf> = Vec::new();
+
+        #[cfg(target_os = "linux")]
+        {
+            lib_dirs.push(doo_compiler_root.join("target-linux").join("release"));
+            lib_dirs.push(doo_compiler_root.join("target").join("release"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            lib_dirs.push(doo_compiler_root.join("target").join("release"));
+        }
+
+        // Also check ffi_libs subdirectories
+        let ffi_root = doo_compiler_root.join("ffi_libs");
+        if let Ok(entries) = fs::read_dir(&ffi_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let rel = path.join("target").join("release");
+                    if rel.exists() {
+                        lib_dirs.push(rel);
+                    }
+                }
+            }
+        }
+
+        lib_dirs.retain(|p| p.exists());
+
+        if !lib_dirs.is_empty() {
+            let mut new_ld_path = String::new();
+            for d in &lib_dirs {
+                if let Some(s) = d.to_str() {
+                    new_ld_path.push_str(s);
+                    new_ld_path.push(':');
+                }
+            }
+
+            #[cfg(target_os = "linux")]
+            let env_key = "LD_LIBRARY_PATH";
+            #[cfg(target_os = "macos")]
+            let env_key = "DYLD_LIBRARY_PATH";
+
+            if let Ok(existing) = env::var(env_key) {
+                new_ld_path.push_str(&existing);
+            }
+            cmd.env(env_key, new_ld_path);
+        }
+    }
+
     // Load .env file
     let env_file = run_root.join(".env");
     let env_vars = read_env_vars_from_file(&env_file);

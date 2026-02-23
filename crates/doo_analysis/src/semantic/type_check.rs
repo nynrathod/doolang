@@ -428,7 +428,10 @@ impl TypeChecker {
             if ret_type != builtin::VOID && !found_return && func.name != "main" {
                 // Check if the last statement is a return (basic check)
                 let last_returns = func.body.last().map_or(false, |s| Self::stmt_is_return(s));
-                if !last_returns && !func.body.is_empty() {
+                // Also check if the last statement is a value-producing expression
+                // (match, if/else, block) that serves as implicit return
+                let last_is_value = func.body.last().map_or(false, |s| Self::stmt_is_value_expr(s));
+                if !last_returns && !last_is_value && !func.body.is_empty() {
                     self.direct_errors.push(
                         doo_core::errors::codes::CompilerError::new(
                             ErrorCode::MissingReturn,
@@ -486,8 +489,13 @@ impl TypeChecker {
     fn expr_is_return(expr: &HirExpr) -> bool {
         match &expr.kind {
             HirExprKind::Ok(_) | HirExprKind::Err(_) => true,
-            // Match expression as last statement = implicit return (each arm produces a value)
-            HirExprKind::Match { .. } => true,
+            // Match expression → only counts as return if ALL arms return
+            HirExprKind::Match { arms, .. } => {
+                !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| Self::expr_is_return(&arm.body))
+            }
             // Block expression — check if its last expression/stmt returns
             HirExprKind::Block { stmts, expr } => {
                 if let Some(tail_expr) = expr {
@@ -509,6 +517,37 @@ impl TypeChecker {
                 then_returns && else_returns
             }
             // Regular expressions are NOT implicit returns — they are just expression statements
+            _ => false,
+        }
+    }
+
+    /// Check if a statement is a value-producing expression suitable as
+    /// an implicit return in the last position of a function body.
+    /// Unlike `stmt_is_return`, this does NOT require explicit `return`/`Ok`/`Err` —
+    /// it considers match/if/block expressions that produce values.
+    fn stmt_is_value_expr(stmt: &HirStmt) -> bool {
+        match &stmt.kind {
+            HirStmtKind::Expr(expr) => Self::expr_is_value(expr),
+            _ => false,
+        }
+    }
+
+    /// Check if an expression produces a value (suitable as implicit return
+    /// when in the last position of a function body).
+    fn expr_is_value(expr: &HirExpr) -> bool {
+        match &expr.kind {
+            // Match with arms produces a value
+            HirExprKind::Match { arms, .. } => !arms.is_empty(),
+            // If/else produces a value when both branches exist
+            HirExprKind::If {
+                else_expr: Some(_), ..
+            } => true,
+            // Block with a tail expression produces a value
+            HirExprKind::Block { expr: Some(_), .. } => true,
+            // Block without tail — check last stmt
+            HirExprKind::Block { stmts, expr: None } => {
+                stmts.last().map_or(false, |s| Self::stmt_is_value_expr(s))
+            }
             _ => false,
         }
     }
@@ -894,6 +933,7 @@ impl TypeChecker {
                         || name == "panic"
                         || name == "toString"
                         || name == "sleep"
+                        || name == "typeOf"
                         || name == "__black_box";
 
                     // Validate argument count and types against function signature
@@ -1567,6 +1607,7 @@ impl TypeChecker {
                 | "use"
                 | "auth"
                 | "cors"
+                | "logger"
                 | "static"
                 | "middleware"
         )
@@ -2052,7 +2093,13 @@ impl TypeChecker {
                 }
 
                 // Type compatibility: types must match, UNLESS it's Str + X for Add (auto-coercion)
-                if lhs_type != rhs_type && !(matches!(op, HirBinOp::Add) && lhs_str) {
+                // Also allow Int/Float mixing (auto-coerce Int → Float via sitofp)
+                let both_numeric = (lhs_type == builtin::INT || lhs_type == builtin::FLOAT)
+                    && (rhs_type == builtin::INT || rhs_type == builtin::FLOAT);
+                if lhs_type != rhs_type
+                    && !both_numeric
+                    && !(matches!(op, HirBinOp::Add) && lhs_str)
+                {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::Incompatible {
                             left: lhs_type,
@@ -2063,14 +2110,16 @@ impl TypeChecker {
                     });
                 }
             }
-            // Comparison: operands must be same type
+            // Comparison: operands must be same type (allow Int/Float mixing)
             HirBinOp::Eq
             | HirBinOp::NotEq
             | HirBinOp::Lt
             | HirBinOp::Gt
             | HirBinOp::LtEq
             | HirBinOp::GtEq => {
-                if lhs_type != rhs_type {
+                let both_numeric = (lhs_type == builtin::INT || lhs_type == builtin::FLOAT)
+                    && (rhs_type == builtin::INT || rhs_type == builtin::FLOAT);
+                if lhs_type != rhs_type && !both_numeric {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::Incompatible {
                             left: lhs_type,

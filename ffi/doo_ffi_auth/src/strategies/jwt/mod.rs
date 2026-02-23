@@ -1,6 +1,7 @@
 //! JWT Authentication Strategy
 //!
 //! Implements `crate::strategy::AuthStrategy` for JSON Web Tokens.
+//! Delegates all token operations to `crate::session` (single source of truth).
 //!
 //! ## Security
 //! - Algorithm: HS256 (explicit, pinned)
@@ -10,100 +11,20 @@
 //! - Token size limit: 8KB max
 //! - 30s clock skew tolerance
 
-use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use serde::{Deserialize, Serialize};
-
+use crate::session;
 use crate::strategy::AuthStrategy;
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
-/// Maximum JWT token size in bytes (8KB) — prevents DoS via oversized tokens
-const MAX_TOKEN_SIZE: usize = 8192;
-
-/// JWT issuer claim — identifies tokens as Doo-issued
-const JWT_ISSUER: &str = "doo";
-
-/// Minimum secret length for HMAC-SHA256 (256 bits = 32 bytes)
-const MIN_SECRET_LENGTH: usize = 32;
+// Re-export Claims for backward compatibility
+pub use crate::session::Claims;
 
 // ============================================================================
-// UNIFIED JWT Claims — Single Source of Truth
-// ============================================================================
-
-/// JWT Claims structure — used for ALL token operations.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Claims {
-    /// Subject (email or user identifier)
-    pub sub: String,
-    /// User ID (database primary key)
-    #[serde(default)]
-    pub user_id: i64,
-    /// Expiration time (Unix timestamp)
-    pub exp: usize,
-    /// Issued at (Unix timestamp)
-    pub iat: usize,
-    /// Issuer
-    #[serde(default = "default_issuer")]
-    pub iss: String,
-    /// Optional embedded JSON data for custom claims
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<String>,
-}
-
-fn default_issuer() -> String {
-    JWT_ISSUER.to_string()
-}
-
-// ============================================================================
-// KEY MANAGEMENT — Single OnceLock, Read Once, No Race
-// ============================================================================
-
-/// Encoding + Decoding keys stored together in a single OnceLock.
-static KEYS: OnceLock<(EncodingKey, DecodingKey)> = OnceLock::new();
-
-/// Initialize JWT keys from JWT_SECRET env var.
-fn ensure_keys() -> Result<&'static (EncodingKey, DecodingKey), &'static str> {
-    // Fast path: keys already initialized
-    if let Some(keys) = KEYS.get() {
-        return Ok(keys);
-    }
-
-    // Slow path: initialize keys (first call only)
-    let secret = std::env::var(doo_ffi_core::constants::ENV_JWT_SECRET)
-        .map_err(|_| "JWT_SECRET environment variable must be set")?;
-
-    if secret.len() < MIN_SECRET_LENGTH {
-        return Err("JWT_SECRET must be at least 32 bytes for HMAC-SHA256 security");
-    }
-
-    // Reject known insecure secrets in release builds
-    #[cfg(not(debug_assertions))]
-    {
-        if secret == "test-secret" || secret == "secret" || secret == "password" {
-            return Err("JWT_SECRET is a known insecure value — use a strong random secret");
-        }
-    }
-
-    Ok(KEYS.get_or_init(|| {
-        (
-            EncodingKey::from_secret(secret.as_bytes()),
-            DecodingKey::from_secret(secret.as_bytes()),
-        )
-    }))
-}
-
-// ============================================================================
-// JWT Strategy
+// JWT Strategy — Thin wrapper over session module
 // ============================================================================
 
 /// JWT authentication strategy.
 ///
-/// Stateless — all state lives in the `KEYS` OnceLock.
+/// Stateless — all state lives in `session` module static OnceLocks.
+/// This is a thin wrapper that delegates to the shared session module.
 pub struct JwtStrategy;
 
 impl AuthStrategy for JwtStrategy {
@@ -117,55 +38,11 @@ impl AuthStrategy for JwtStrategy {
         data_json: Option<&str>,
         expires_seconds: i64,
     ) -> Result<String, String> {
-        let (enc, _) = ensure_keys().map_err(|e| e.to_string())?;
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as usize)
-            .unwrap_or(0);
-
-        let expires_secs = expires_seconds.max(1) as usize;
-
-        let claims = Claims {
-            sub: sub.to_string(),
-            user_id: 0,
-            exp: now.saturating_add(expires_secs),
-            iat: now,
-            iss: JWT_ISSUER.to_string(),
-            data: data_json.map(|s| s.to_string()),
-        };
-
-        encode(&Header::new(Algorithm::HS256), &claims, enc)
-            .map_err(|e| format!("JWT sign failed: {}", e))
+        session::sign_token(sub, data_json, expires_seconds)
     }
 
     fn verify(&self, token: &str) -> Result<String, String> {
-        let (_, dec) = ensure_keys().map_err(|e| e.to_string())?;
-
-        // Token size limit
-        if token.len() > MAX_TOKEN_SIZE {
-            return Err("Token too large".to_string());
-        }
-
-        // Strict validation: HS256 only, validate exp, 30s clock skew
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.set_required_spec_claims(&["exp", "sub", "iat"]);
-        validation.leeway = 30;
-
-        match decode::<Claims>(token, dec, &validation) {
-            Ok(token_data) => serde_json::to_string(&token_data.claims)
-                .map_err(|e| format!("Claims serialization failed: {}", e)),
-            Err(e) => {
-                let err_str = e.to_string().to_lowercase();
-                if err_str.contains("expired") {
-                    Err("Token has expired".to_string())
-                } else if err_str.contains("signature") {
-                    Err("Invalid token signature".to_string())
-                } else {
-                    Err("Invalid token".to_string())
-                }
-            }
-        }
+        session::verify_token(token)
     }
 }
 

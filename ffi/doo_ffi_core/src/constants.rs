@@ -20,6 +20,9 @@ pub const MIDDLEWARE_CORS: &str = "cors";
 /// Rate limit middleware identifier
 pub const MIDDLEWARE_RATELIMIT: &str = "ratelimit";
 
+/// Logger middleware identifier
+pub const MIDDLEWARE_LOGGER: &str = "logger";
+
 // ============================================================================
 // DOO FUNCTION NAMES (as they appear in Doo source code)
 // ============================================================================
@@ -32,7 +35,12 @@ pub const DOO_JWT_FUNC_NAME: &str = "Jwt";
 // ============================================================================
 
 /// All built-in middleware names that the compiler and FFI recognize
-pub const BUILTIN_MIDDLEWARES: &[&str] = &[MIDDLEWARE_JWT, MIDDLEWARE_CORS, MIDDLEWARE_RATELIMIT];
+pub const BUILTIN_MIDDLEWARES: &[&str] = &[
+    MIDDLEWARE_JWT,
+    MIDDLEWARE_CORS,
+    MIDDLEWARE_RATELIMIT,
+    MIDDLEWARE_LOGGER,
+];
 
 // ============================================================================
 // ENVIRONMENT VARIABLE NAMES — SINGLE SOURCE OF TRUTH
@@ -46,6 +54,21 @@ pub const ENV_DOO_NO_BANNER: &str = "DOO_NO_BANNER";
 
 /// JWT secret key for token signing/verification.
 pub const ENV_JWT_SECRET: &str = "JWT_SECRET";
+
+/// Access token expiry override (e.g., "15m", "1h", "900").
+/// Default: 15 minutes. Used by both JWT and OAuth session tokens.
+pub const ENV_ACCESS_TOKEN_EXPIRY: &str = "ACCESS_TOKEN_EXPIRY";
+
+/// Refresh token expiry override (e.g., "7d", "30d", "604800").
+/// Default: 7 days.
+pub const ENV_REFRESH_TOKEN_EXPIRY: &str = "REFRESH_TOKEN_EXPIRY";
+
+/// Auth base path (for cookie path scoping and route registration).
+/// Default: "/auth". Set by OAuth setup or manually.
+pub const ENV_AUTH_BASE_PATH: &str = "DOO_AUTH_BASE_PATH";
+
+/// Dev mode flag — disables Secure flag on cookies for HTTP (not HTTPS).
+pub const ENV_DOO_DEV: &str = "DOO_DEV";
 
 /// PostgreSQL connection URL.
 pub const ENV_DATABASE_URL: &str = "DATABASE_URL";

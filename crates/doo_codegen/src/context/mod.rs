@@ -19,6 +19,9 @@ use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
+use inkwell::targets::{
+    CodeModel, InitializationConfig, RelocMode, Target, TargetMachine,
+};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
@@ -207,6 +210,28 @@ impl<'ctx> CodegenContext<'ctx> {
     ) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
+
+        // Set target triple and data layout on the module at creation time.
+        // This ensures all struct layout computations (GEPs, struct_gep, size_of)
+        // use the correct target-specific alignment from the start.
+        // Without this, LLVM defaults to i64 ABI-align=4, but the backend uses
+        // the target's i64 ABI-align=8, causing mismatched offsets in mixed-size
+        // structs like {i8, i64} (Bool:Int map entries).
+        let _ = Target::initialize_native(&InitializationConfig::default());
+        let triple = TargetMachine::get_default_triple();
+        module.set_triple(&triple);
+        if let Ok(target) = Target::from_triple(&triple) {
+            if let Some(tm) = target.create_target_machine(
+                &triple,
+                "generic",
+                "",
+                inkwell::OptimizationLevel::None,
+                RelocMode::Default,
+                CodeModel::Default,
+            ) {
+                module.set_data_layout(&tm.get_target_data().get_data_layout());
+            }
+        }
 
         Self {
             context,

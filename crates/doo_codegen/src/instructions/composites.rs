@@ -387,31 +387,46 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                         )
                                         .ok();
                                 } else {
-                                    // Float or other: convert via sprintf %g
-                                    let i8_type = ctx.context.i8_type();
-                                    let buffer = ctx
+                                    // Float or other: convert via doo_format_float (ryu)
+                                    let ptr_type = ctx
+                                        .context
+                                        .i8_type()
+                                        .ptr_type(inkwell::AddressSpace::default());
+                                    let f64_type = ctx.f64_type();
+                                    let format_fn = ctx
+                                        .module
+                                        .get_function(ffi_names::DOO_FORMAT_FLOAT)
+                                        .unwrap_or_else(|| {
+                                            let fn_ty =
+                                                ptr_type.fn_type(&[f64_type.into()], false);
+                                            ctx.module.add_function(
+                                                ffi_names::DOO_FORMAT_FLOAT,
+                                                fn_ty,
+                                                None,
+                                            )
+                                        });
+                                    let str_ptr = ctx
                                         .builder
-                                        .build_array_alloca(
-                                            i8_type,
-                                            i64_type.const_int(32, false),
-                                            "float_buf",
-                                        )
-                                        .unwrap();
-                                    let fmt = ctx.const_string("%g");
-                                    ctx.builder
                                         .build_call(
-                                            sprintf_fn,
-                                            &[buffer.into(), fmt.into(), val.into()],
-                                            "",
+                                            format_fn,
+                                            &[val.into()],
+                                            "fmt_float",
                                         )
-                                        .ok();
-                                    ctx.builder
-                                        .build_call(
-                                            map_set_fn,
-                                            &[map_ptr.into(), key_str.into(), buffer.into()],
-                                            "",
-                                        )
-                                        .ok();
+                                        .ok()
+                                        .and_then(|v| v.try_as_basic_value().basic());
+                                    if let Some(str_ptr) = str_ptr {
+                                        ctx.builder
+                                            .build_call(
+                                                map_set_fn,
+                                                &[
+                                                    map_ptr.into(),
+                                                    key_str.into(),
+                                                    str_ptr.into(),
+                                                ],
+                                                "",
+                                            )
+                                            .ok();
+                                    }
                                 }
                             }
                         }

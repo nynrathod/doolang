@@ -235,8 +235,14 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
         }
     };
 
-    // Set module target triple
+    // Set module target triple and data layout
+    // CRITICAL: The data layout MUST be set before optimization.
+    // Without it, LLVM uses a default layout where i64 has 4-byte ABI alignment,
+    // but the backend uses the target's 8-byte alignment. This causes struct field
+    // offset mismatches for types like {i8, i64} (Bool:Int maps), where the
+    // optimizer resolves GEPs at offset 4 but the backend reads at offset 8.
     module.set_triple(&target_triple);
+    module.set_data_layout(&target_machine.get_target_data().get_data_layout());
 
     // Verify module before optimization (catch errors early)
     if let Err(e) = module.verify() {

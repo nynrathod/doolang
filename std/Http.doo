@@ -155,6 +155,15 @@ fn Server.cors(self, options: {Str: Str}?) -> Server {}
 @extern("doo_http", "doo_http_ratelimit_custom")
 fn Server.ratelimit(self, options: {Str: Str}?) -> Server {}
 
+// Request logger — ON by default (all levels: Info, Warn, Error)
+// Format: [Doo] HH:MM:SS | STATUS | DURATIONms | METHOD /path
+// Usage:
+//   app.logger()                                  # all levels (default)
+//   app.logger({Level: ["Error", "Warn"]})         # only errors + warnings
+//   app.cors({...}).ratelimit({...}).logger()       # chainable
+@extern("doo_http", "doo_http_logger_custom")
+fn Server.logger(self, options: {Str: Str}?) -> Server {}
+
 // Prometheus-compatible metrics endpoint at /metrics
 // Enables request counting, latency tracking, and error rate monitoring.
 // Usage: app.metrics()

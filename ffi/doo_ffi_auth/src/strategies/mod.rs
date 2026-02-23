@@ -5,6 +5,7 @@
 //! ## Current Strategies
 //!
 //! - `jwt` — JSON Web Tokens via HS256 (jsonwebtoken crate)
+//! - `oauth` — OAuth 2.0 with Google and GitHub providers
 //!
 //! ## Adding a new strategy
 //!
@@ -14,3 +15,6 @@
 
 #[cfg(feature = "jwt")]
 pub mod jwt;
+
+#[cfg(feature = "oauth")]
+pub mod oauth;
