@@ -9,14 +9,20 @@ fn intHandler(p: IntPath) -> Str => "hello + ${p.id}";
 fn strHandler(p: StrPath) -> Str => "hello + ${p.id}";
 fn boolHandler(p: BoolPath) -> Str => "hello + ${p.id}";
 fn floatHandler(p: FloatPath) -> Str => "hello + ${p.id}";
+fn Crash(req: Request) -> ! Str {
+    Err "sadas";
+}
 
 fn main() {
-    let app = Server::new(":3105");
+    // Custom logger: only Warn (4xx) and Error (5xx)
+    // Info (2xx) should NOT be logged
+    let app = Server::new(":3105")
+        .logger({ Level: "Warn, Error" });
 
     app.get("/api/users/int/:id", intHandler);
     app.get("/api/users/str/:id", strHandler);
     app.get("/api/users/bool/:id", boolHandler);
     app.get("/api/users/float/:id", floatHandler);
-
+     app.get("/crash", Crash);
     app.start();
 }

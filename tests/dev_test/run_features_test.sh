@@ -68,6 +68,35 @@ run_test() {
 
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
+    # Pre-check: if file has no EXPECT lines, use fast compile-only check.
+    # Server tests (fetch, metrics, websocket) call app.start() which blocks
+    # forever, making doo run hang until timeout. Since they have no EXPECT
+    # lines to verify, compile-check is sufficient and instant.
+    local has_expects
+    has_expects=$(grep -c '// EXPECT:' "$file" 2>/dev/null || true)
+
+    if [ "$has_expects" -eq 0 ]; then
+        local check_output
+        check_output=$("$BIN" check "$file" 2>&1 | tr -d '\r')
+        local check_exit=$?
+        if [ "$check_exit" -eq 0 ]; then
+            PASSED_TESTS=$((PASSED_TESTS + 1))
+            if [ "$VERBOSE" -eq 1 ]; then
+                echo -e "  ${GREEN}PASS${NC} $rel_path ${DIM}(no expects, compile check)${NC}"
+            else
+                echo -e "  ${GREEN}PASS${NC} $rel_path"
+            fi
+        else
+            FAILED_TESTS=$((FAILED_TESTS + 1))
+            FAILED_TEST_LIST+=("$rel_path (compile error)")
+            echo ""
+            echo -e "  ${RED}FAIL${NC} ${BOLD}$rel_path${NC}"
+            echo -e "       ${RED}Compile check failed (exit: $check_exit)${NC}"
+            echo "$check_output" | head -10 | sed 's/^/       /'
+        fi
+        return
+    fi
+
     # Capture actual output (also strip \r from output for consistency)
     local actual
     actual=$(timeout 30s "$BIN" run "$file" 2>&1 | tr -d '\r')
@@ -98,18 +127,6 @@ run_test() {
     # Extract expected output lines
     local expected
     expected=$(extract_expected "$file")
-
-    # --- NO EXPECT LINES (backward compatible: just check exit code) ---
-    if [ -z "$expected" ]; then
-        PASSED_TESTS=$((PASSED_TESTS + 1))
-        if [ "$VERBOSE" -eq 1 ]; then
-            echo -e "  ${GREEN}PASS${NC} $rel_path ${DIM}(no expects, exit 0)${NC}"
-            echo "$actual" | sed 's/^/       /'
-        else
-            echo -e "  ${GREEN}PASS${NC} $rel_path"
-        fi
-        return
-    fi
 
     # --- VERIFY OUTPUT: Go-style ordered sequential matching ---
     # Each EXPECT line must appear in the output, in order, searching forward

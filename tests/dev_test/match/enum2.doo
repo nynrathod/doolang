@@ -136,17 +136,14 @@ fn main() {
 // EXPECT: Code: 200 Msg: Success
 // EXPECT: Wrapped Active
 // EXPECT: Array: [1, 2, 3]
-// EXPECT: Map: {name: Alice, role: admin}
+// EXPECT: Map: {"name": "Alice", "role": "admin"}
 // EXPECT: Other success: 404
 // EXPECT: Other success: 200
 // EXPECT: active
 // EXPECT: inactive
 // EXPECT: pending
-// EXPECT: Active
 // EXPECT: Inactive
-// EXPECT: Pending
 // EXPECT: Full Ok: 100 Partial
-// EXPECT: Non-fatal Error: Error
 // EXPECT: Non-fatal Error: Error
 // EXPECT: ========================================
 // EXPECT: ALL ADVANCED ENUM MATCHING TESTS COMPLETED

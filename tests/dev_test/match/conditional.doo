@@ -9,7 +9,7 @@ fn main() {
         x > 0 && x < 100 => print("Positive and less than 100"),
         x >= 100 => print("Large"),
         _ => print("Other")
-    }a
+    }
 
     // Float comparisons
     print("\n--- Float comparisons ---");
@@ -151,7 +151,7 @@ fn main() {
 // EXPECT: --- Array length check ---
 // EXPECT: Two elements
 // EXPECT: --- Map key/value check ---
-// EXPECT: Adult user
+// EXPECT: User is Alice
 // EXPECT: --- Multiple logical operators ---
 // EXPECT: Good and passed
 // EXPECT: --- Test 1: Age condition ---

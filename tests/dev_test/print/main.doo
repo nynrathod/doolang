@@ -155,7 +155,7 @@ fn main() {
 // EXPECT: Map {Bool: Bool}: {true: false, false: true}
 // EXPECT: Map {Bool: Str}: {true: "yes", false: "no"}
 // EXPECT: Struct Point: Point { x: 10, y: 20 }
-// EXPECT: Enum Status: Active
+// EXPECT: Enum Status: Status::Active
 // EXPECT: Line1
 // EXPECT: Line2	Tabbed
 // EXPECT: Emoji: 🚀

@@ -16,9 +16,9 @@ fn Divide(a: Int, b: Int) -> Int ! Str {
    Ok a / b;
 }
 
-// Rule 1b: Only return type -> Must use Ok only
+// Rule 1b: Only return type -> Must use return
 fn GetValue() -> Int {
-   Ok 42;
+   return 42;
 }
 
 // Rule 1c: Only error type -> Must use Err only (or empty Ok)
@@ -101,7 +101,7 @@ fn TestIgnoreSuccess() -> Int ! Str {
 // Ignore error (but use success value) - note: no error type since we never return error
 fn TestIgnoreError() -> Int {
    let result, _ = Divide(10, 2);
-   Ok result;
+   return result;
 }
 
 // ============================================================================

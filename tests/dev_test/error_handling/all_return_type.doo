@@ -756,7 +756,7 @@ fn main() {
 // EXPECT:   Result: success
 // EXPECT:   Error array: [true, false, true]
 // EXPECT:   Result: 5
-// EXPECT:   Error array: [error1, error2, error3]
+// EXPECT:   Error array: ["error1", "error2", "error3"]
 // EXPECT:   Result: success
 // EXPECT:   Error map: {"code": 500, "status": 1}
 // EXPECT:   Result: success
@@ -764,7 +764,7 @@ fn main() {
 // EXPECT:   Result: success
 // EXPECT:   Error map: {"enabled": true, "valid": false}
 // EXPECT:   Result: 5
-// EXPECT:   Error map: {"error": occurred, "type": negative}
+// EXPECT:   Error map: {"error": "occurred", "type": "negative"}
 // EXPECT:   Result: success
 // EXPECT:   Error map: {1: 100, 2: 200}
 // EXPECT:   Result: success
@@ -772,7 +772,7 @@ fn main() {
 // EXPECT:   Result: success
 // EXPECT:   Error map: {0: false, 1: true}
 // EXPECT:   Result: 5
-// EXPECT:   Error map: {1: first, 2: second}
+// EXPECT:   Error map: {1: "first", 2: "second"}
 // EXPECT:   Result: success
 // EXPECT:   Error map: {1.5: 100, 2.5: 200}
 // EXPECT:   Result: success
@@ -780,7 +780,7 @@ fn main() {
 // EXPECT:   Result: success
 // EXPECT:   Error map: {0.0: false, 1.0: true}
 // EXPECT:   Result: 5
-// EXPECT:   Error map: {1.0: first, 2.0: second}
+// EXPECT:   Error map: {1.0: "first", 2.0: "second"}
 // EXPECT:   Result: success
 // EXPECT:   Error map: {true: 100, false: 200}
 // EXPECT:   Result: success
@@ -788,5 +788,5 @@ fn main() {
 // EXPECT:   Result: success
 // EXPECT:   Error map: {true: false, false: true}
 // EXPECT:   Result: 5
-// EXPECT:   Error map: {true: yes, false: no}
+// EXPECT:   Error map: {true: "yes", false: "no"}
 // EXPECT: === All tests completed! ===

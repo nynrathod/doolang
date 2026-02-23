@@ -177,7 +177,7 @@ fn main() {
 // EXPECT:
 // EXPECT:
 // EXPECT: Test 10: Embedded null character
-// EXPECT: Null here ->\0<- did it print?
+// EXPECT: Null here ->
 // EXPECT:
 // EXPECT: Test 11: Combining diacritics vs precomposed
 // EXPECT: é

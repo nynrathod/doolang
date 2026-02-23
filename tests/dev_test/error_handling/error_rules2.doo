@@ -109,7 +109,7 @@ fn TestValidIgnoreSuccess() -> Str ! Str {
 // Valid: Ignore error value - note: no error type since we never return error
 fn TestValidIgnoreError() -> Int {
     let result, _ = GetData();
-    Ok result;
+    return result;
 }
 
 // INVALID: Can't ignore both (this should fail compilation)
@@ -132,13 +132,13 @@ fn GetCriticalValue() -> Int ! Str {
 fn TestUnwrapOrPanic() -> Int {
     // Use ?? to unwrap or panic with a custom message
     let value = GetCriticalValue() ?? panic("Critical value required!");
-    Ok value * 2;
+    return value * 2;
 }
 
 fn TestMultiplePanics() -> Int {
     let a = GetCriticalValue() ?? panic("First value required");
     let b = GetCriticalValue() ?? panic("Second value required");
-    Ok a + b;
+    return a + b;
 }
 
 // ============================================================================

@@ -141,11 +141,3 @@ fn main() {
 // EXPECT: ========================================
 // EXPECT: ALL ENUM MATCHING TESTS COMPLETED
 // EXPECT: ========================================
-// EXPECT: Unknown
-// EXPECT: Unknown
-// EXPECT: Unknown
-// EXPECT: Unknown
-// EXPECT: Unknown
-// EXPECT: Unknown
-// EXPECT: Unknown
-// EXPECT: Unknown

@@ -132,4 +132,20 @@ echo "Test 12: Public route"
 RESPONSE=$(http_get "/public")
 assert_status "$RESPONSE" 200 "public"
 
+# =========================================================
+# /auth/me — auto-registered by app.auth()
+# =========================================================
+echo ""
+echo "Test 13: GET /auth/me without token (401)"
+RESPONSE=$(http_get "/auth/me")
+assert_status "$RESPONSE" 401 "GET /auth/me no auth"
+
+echo ""
+echo "Test 14: GET /auth/me with Bearer token (200)"
+RESPONSE=$(http_get "/auth/me" "Authorization: Bearer $TOKEN")
+assert_status "$RESPONSE" 200 "GET /auth/me with JWT"
+assert_json_exists "$RESPONSE" ".data" "/auth/me returns data envelope"
+assert_json_exists "$RESPONSE" ".data.Email" "/auth/me returns email"
+assert_json_not_has "$RESPONSE" "Password" "/auth/me strips password"
+
 print_http_summary

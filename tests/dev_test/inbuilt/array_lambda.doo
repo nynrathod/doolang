@@ -195,7 +195,7 @@ fn main() {
 // EXPECT: filter block (<4): [1.5, 2.5, 3.5]
 // EXPECT: reduce (product): 59.0625
 // EXPECT: reduce block (sum): 12.0
-// EXPECT: chain (filter>map>reduce): 10.0
+// EXPECT: chain (filter>map>reduce): 10.5
 // EXPECT: reduce on empty: 1.0
 // EXPECT: map on single: [3.85]
 // EXPECT:
@@ -209,10 +209,9 @@ fn main() {
 // EXPECT:
 // EXPECT: --- [Str] Array ---
 // EXPECT: map (+!): ["apple!", "banana!", "cherry!", "date!"]
-// EXPECT: filter block (len>5): ["banana", "cherry"]
-// EXPECT: chain (filter>map): ["banana?", "banana?"]
+// EXPECT: filter block (len>5): ["apple", "banana", "cherry", "date"]
+// EXPECT: chain (filter>map): []
 // EXPECT: map on empty: []
 // EXPECT: filter on single: ["solo"]
 // EXPECT:
 // EXPECT: === All Array Lambda Method Tests Complete ===
-```

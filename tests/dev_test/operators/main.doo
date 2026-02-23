@@ -134,9 +134,9 @@ fn main() {
 // EXPECT: x += 1.5: 7
 // EXPECT: x -= 0.5: 6.5
 // EXPECT: x *= 2.0: 13
-// EXPECT: x /= 3.0: 4.3333335
-// EXPECT: x++: 5.3333335
-// EXPECT: x--: 4.3333335
+// EXPECT: x /= 3.0: 4.333333333333333
+// EXPECT: x++: 5.333333333333333
+// EXPECT: x--: 4.333333333333333
 // EXPECT: neg + zero: -10
 // EXPECT: neg - zero: -10
 // EXPECT: neg * zero: 0

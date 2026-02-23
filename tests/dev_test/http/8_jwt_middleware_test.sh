@@ -79,4 +79,47 @@ echo "Test 10: API group LIST with JWT (200)"
 RESPONSE=$(http_get "/api/list" "Authorization: Bearer $TOKEN")
 assert_status "$RESPONSE" 200 "GET /api/list with JWT"
 
+# =====================================================================
+# /auth/me endpoint — auto-registered by app.auth()
+# =====================================================================
+
+echo ""
+echo "Test 11: GET /auth/me without token (401)"
+RESPONSE=$(http_get "/auth/me")
+assert_status "$RESPONSE" 401 "GET /auth/me no auth"
+
+echo ""
+echo "Test 12: GET /auth/me with Bearer token (200)"
+RESPONSE=$(http_get "/auth/me" "Authorization: Bearer $TOKEN")
+assert_status "$RESPONSE" 200 "GET /auth/me with JWT"
+assert_json_exists "$RESPONSE" ".data" "/auth/me returns data"
+
+echo ""
+echo "Test 13: GET /auth/me with cookie (200)"
+# Send token via cookie instead of header — cookie fallback
+COOKIE_RESPONSE=$(curl -s -w "\n%{http_code}" -b "doo_access_token=$TOKEN" "http://127.0.0.1:$PORT/auth/me")
+COOKIE_STATUS=$(echo "$COOKIE_RESPONSE" | tail -n1)
+HTTP_TESTS_TOTAL=$((HTTP_TESTS_TOTAL + 1))
+if [ "$COOKIE_STATUS" = "200" ]; then
+    HTTP_TESTS_PASSED=$((HTTP_TESTS_PASSED + 1))
+    echo -e "  ${_AGREEN}PASS${_ANC} status=200 GET /auth/me (cookie auth)"
+else
+    HTTP_TESTS_FAILED=$((HTTP_TESTS_FAILED + 1))
+    echo -e "  ${_ARED}FAIL${_ANC} status: expected=200 actual=$COOKIE_STATUS GET /auth/me (cookie auth)"
+fi
+
+echo ""
+echo "Test 14: Signup response sets Set-Cookie header"
+SIGNUP_HEADERS=$(curl -s -D - -o /dev/null -X POST "http://127.0.0.1:$PORT/signup" \
+    -H "Content-Type: application/json" \
+    -d "{\"Email\":\"cookie_$(date +%s)@t.com\",\"Password\":\"testpass123\",\"Name\":\"Cookie\",\"Role\":\"user\"}")
+HTTP_TESTS_TOTAL=$((HTTP_TESTS_TOTAL + 1))
+if echo "$SIGNUP_HEADERS" | grep -qi "set-cookie:.*doo_access_token"; then
+    HTTP_TESTS_PASSED=$((HTTP_TESTS_PASSED + 1))
+    echo -e "  ${_AGREEN}PASS${_ANC} Set-Cookie: doo_access_token present on signup"
+else
+    HTTP_TESTS_FAILED=$((HTTP_TESTS_FAILED + 1))
+    echo -e "  ${_ARED}FAIL${_ANC} Missing Set-Cookie: doo_access_token on signup"
+fi
+
 print_http_summary
