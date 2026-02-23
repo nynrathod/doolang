@@ -1,0 +1,38 @@
+import std::Http::{Server, Request, Response};
+
+struct OkResponse {
+    ok: Bool,
+    path: Str,
+}
+
+struct StatusMsg {
+    message: Str,
+}
+
+// --- Info category: 2xx responses ---
+fn GetOk(req: Request) -> OkResponse {
+    return OkResponse { ok: true, path: req.Path };
+}
+
+fn PostCreate(req: Request) -> StatusMsg {
+    return StatusMsg { message: "created" };
+}
+
+// --- Error category: 5xx responses ---
+fn Crash(req: Request) -> ! Str {
+    Err "intentional server error";
+}
+
+
+fn main() {
+    // Logger default: all levels (Info, Warn, Error) — chained with cors
+    let app = Server.new(":3120")
+        .cors()
+        .logger();
+
+    app.get("/ok", GetOk);
+    app.post("/create", PostCreate);
+    app.get("/crash", Crash);
+
+    app.start();
+}
