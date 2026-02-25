@@ -30,7 +30,10 @@ impl JsonBuiltins {
 
         let writer_ptr = if estimated_cap > 0 {
             let new_fn = Self::get_or_declare_new_with_cap(ctx);
-            let cap_val = ctx.context.i64_type().const_int(estimated_cap as u64, false);
+            let cap_val = ctx
+                .context
+                .i64_type()
+                .const_int(estimated_cap as u64, false);
             ctx.builder
                 .build_call(new_fn, &[cap_val.into()], "json_writer")
                 .ok()?
@@ -77,8 +80,11 @@ impl JsonBuiltins {
         if let Some(ty) = target_type {
             let kind = ctx.get_type_kind(ty);
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!("CODEGEN", "emit_parse: target_type={:?}, kind={:?}",
-                    ty, kind
+                doo_debug!(
+                    "CODEGEN",
+                    "emit_parse: target_type={:?}, kind={:?}",
+                    ty,
+                    kind
                 );
             }
             match kind {
@@ -87,7 +93,8 @@ impl JsonBuiltins {
                         doo_debug!("CODEGEN", "emit_parse -> emit_parse_struct for '{}'", name);
                     }
                     // Extract just name and type for parsing (visibility not needed)
-                    let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                    let field_pairs: Vec<_> =
+                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
                     return Self::emit_parse_struct(ctx, val, ty, &name, &field_pairs);
                 }
                 Some(TypeKind::Enum { name, variants }) => {
@@ -95,6 +102,42 @@ impl JsonBuiltins {
                         doo_debug!("CODEGEN", "emit_parse -> emit_parse_enum for '{}'", name);
                     }
                     return Self::emit_parse_enum(ctx, val, ty, &name, &variants);
+                }
+                Some(TypeKind::Array { element: elem_type }) => {
+                    let elem_kind = ctx.get_type_kind(elem_type);
+                    match elem_kind {
+                        Some(TypeKind::Struct { name, fields }) => {
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                                doo_debug!(
+                                    "CODEGEN",
+                                    "emit_parse -> emit_parse_array_struct for '[{}]'",
+                                    name
+                                );
+                            }
+                            let field_pairs: Vec<_> =
+                                fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                            return Self::emit_parse_array_struct(
+                                ctx,
+                                val,
+                                elem_type,
+                                &name,
+                                &field_pairs,
+                            );
+                        }
+                        Some(TypeKind::Enum { name, variants }) => {
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                                doo_debug!(
+                                    "CODEGEN",
+                                    "emit_parse -> emit_parse_array_enum for '[{}]'",
+                                    name
+                                );
+                            }
+                            return Self::emit_parse_array_enum(
+                                ctx, val, elem_type, &name, &variants,
+                            );
+                        }
+                        _ => {} // Fall through to FFI dispatch for primitive arrays
+                    }
                 }
                 _ => {}
             }
@@ -197,8 +240,12 @@ impl JsonBuiltins {
         };
 
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!("CODEGEN", "JSON.parse: target_type={:?}, fn_name={}, ret_type={:?}",
-                target_type, fn_name, ret_type
+            doo_debug!(
+                "CODEGEN",
+                "JSON.parse: target_type={:?}, fn_name={}, ret_type={:?}",
+                target_type,
+                fn_name,
+                ret_type
             );
         }
 
@@ -277,11 +324,7 @@ impl JsonBuiltins {
         // Heap allocate the struct
         let struct_ptr = ctx
             .builder
-            .build_call(
-                malloc_fn,
-                &[struct_size_val.into()],
-                "parsed_struct",
-            )
+            .build_call(malloc_fn, &[struct_size_val.into()], "parsed_struct")
             .ok()?
             .try_as_basic_value()
             .basic()?
@@ -293,8 +336,12 @@ impl JsonBuiltins {
             let kind = ctx.get_type_kind(*fty);
 
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!("CODEGEN", "emit_parse_struct field '{}': type_id={:?}, kind={:?}",
-                    fname, fty, kind
+                doo_debug!(
+                    "CODEGEN",
+                    "emit_parse_struct field '{}': type_id={:?}, kind={:?}",
+                    fname,
+                    fty,
+                    kind
                 );
             }
 
@@ -411,6 +458,198 @@ impl JsonBuiltins {
             .build_pointer_cast(struct_ptr, i8_ptr, "struct_ptr")
             .ok()?;
         Some(ptr.into())
+    }
+
+    /// Emit code to parse a JSON array of structs.
+    /// Generates an LLVM IR loop that calls emit_parse_struct for each element.
+    /// Returns the data pointer (after the 16-byte Doo array header).
+    fn emit_parse_array_struct<'ctx>(
+        ctx: &mut CodegenContext<'ctx>,
+        json_str: BasicValueEnum<'ctx>,
+        elem_ty: TypeId,
+        struct_name: &str,
+        struct_fields: &[(String, TypeId)],
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let i64_type = ctx.i64_type();
+        let ptr_type = ctx.ptr_type();
+
+        // ── Get or declare helper FFI functions ──
+        let array_count_fn = Self::get_or_declare_array_count(ctx);
+        let array_get_element_fn = Self::get_or_declare_array_get_element(ctx);
+
+        // ── Get array element count ──
+        let count = ctx
+            .builder
+            .build_call(array_count_fn, &[json_str.into()], "arr_count")
+            .ok()?
+            .try_as_basic_value()
+            .basic()?
+            .into_int_value();
+
+        // ── Allocate Doo array (header[16] + count * ptr_size) ──
+        let data_ptr = crate::layout::alloc_with_header(ctx, count, ptr_type, "struct_arr")?;
+
+        // ── Loop: for i = 0; i < count; i++ ──
+        let func = ctx.builder.get_insert_block()?.get_parent()?;
+        let loop_preheader = ctx.builder.get_insert_block()?;
+        let loop_body = ctx.context.append_basic_block(func, "arr_struct_loop");
+        let loop_end = ctx.context.append_basic_block(func, "arr_struct_done");
+
+        // Skip loop if empty
+        let has_elements = ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                count,
+                i64_type.const_zero(),
+                "has_elements",
+            )
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(has_elements, loop_body, loop_end)
+            .ok()?;
+
+        // ── Loop body ──
+        ctx.builder.position_at_end(loop_body);
+        let idx_phi = ctx.builder.build_phi(i64_type, "idx").ok()?;
+        idx_phi.add_incoming(&[(&i64_type.const_zero(), loop_preheader)]);
+        let idx = idx_phi.as_basic_value().into_int_value();
+
+        // Get element JSON string: doo_json_array_get_element(json_str, idx)
+        let elem_json = ctx
+            .builder
+            .build_call(
+                array_get_element_fn,
+                &[json_str.into(), idx.into()],
+                "elem_json",
+            )
+            .ok()?
+            .try_as_basic_value()
+            .basic()?;
+
+        // Parse element into typed struct (this generates inline codegen, may create basic blocks)
+        let struct_ptr =
+            Self::emit_parse_struct(ctx, elem_json, elem_ty, struct_name, struct_fields)?;
+
+        // Store struct pointer at data[idx]
+        let elem_slot = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ptr_type, data_ptr, &[idx], "elem_slot")
+                .ok()?
+        };
+        ctx.builder.build_store(elem_slot, struct_ptr).ok()?;
+
+        // CRITICAL: Capture current block AFTER all operations
+        // (emit_parse_struct may have created nested basic blocks for recursive parsing)
+        let loop_back_block = ctx.builder.get_insert_block()?;
+
+        // Increment index
+        let next_idx = ctx
+            .builder
+            .build_int_add(idx, i64_type.const_int(1, false), "next_idx")
+            .ok()?;
+        idx_phi.add_incoming(&[(&next_idx, loop_back_block)]);
+
+        // Check loop condition
+        let continue_loop = ctx
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, next_idx, count, "continue")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(continue_loop, loop_body, loop_end)
+            .ok()?;
+
+        // ── Loop end: return data pointer ──
+        ctx.builder.position_at_end(loop_end);
+        Some(data_ptr.into())
+    }
+
+    /// Emit code to parse a JSON array of enums.
+    /// Same loop pattern as array-of-struct but calls emit_parse_enum per element.
+    fn emit_parse_array_enum<'ctx>(
+        ctx: &mut CodegenContext<'ctx>,
+        json_str: BasicValueEnum<'ctx>,
+        elem_ty: TypeId,
+        enum_name: &str,
+        variants: &[(String, Option<TypeId>)],
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let i64_type = ctx.i64_type();
+        let ptr_type = ctx.ptr_type();
+
+        let array_count_fn = Self::get_or_declare_array_count(ctx);
+        let array_get_element_fn = Self::get_or_declare_array_get_element(ctx);
+
+        let count = ctx
+            .builder
+            .build_call(array_count_fn, &[json_str.into()], "arr_count")
+            .ok()?
+            .try_as_basic_value()
+            .basic()?
+            .into_int_value();
+
+        let data_ptr = crate::layout::alloc_with_header(ctx, count, ptr_type, "enum_arr")?;
+
+        let func = ctx.builder.get_insert_block()?.get_parent()?;
+        let loop_preheader = ctx.builder.get_insert_block()?;
+        let loop_body = ctx.context.append_basic_block(func, "arr_enum_loop");
+        let loop_end = ctx.context.append_basic_block(func, "arr_enum_done");
+
+        let has_elements = ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                count,
+                i64_type.const_zero(),
+                "has_elements",
+            )
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(has_elements, loop_body, loop_end)
+            .ok()?;
+
+        ctx.builder.position_at_end(loop_body);
+        let idx_phi = ctx.builder.build_phi(i64_type, "idx").ok()?;
+        idx_phi.add_incoming(&[(&i64_type.const_zero(), loop_preheader)]);
+        let idx = idx_phi.as_basic_value().into_int_value();
+
+        let elem_json = ctx
+            .builder
+            .build_call(
+                array_get_element_fn,
+                &[json_str.into(), idx.into()],
+                "elem_json",
+            )
+            .ok()?
+            .try_as_basic_value()
+            .basic()?;
+
+        let enum_ptr = Self::emit_parse_enum(ctx, elem_json, elem_ty, enum_name, variants)?;
+
+        let elem_slot = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(ptr_type, data_ptr, &[idx], "elem_slot")
+                .ok()?
+        };
+        ctx.builder.build_store(elem_slot, enum_ptr).ok()?;
+
+        let loop_back_block = ctx.builder.get_insert_block()?;
+
+        let next_idx = ctx
+            .builder
+            .build_int_add(idx, i64_type.const_int(1, false), "next_idx")
+            .ok()?;
+        idx_phi.add_incoming(&[(&next_idx, loop_back_block)]);
+
+        let continue_loop = ctx
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, next_idx, count, "continue")
+            .ok()?;
+        ctx.builder
+            .build_conditional_branch(continue_loop, loop_body, loop_end)
+            .ok()?;
+
+        ctx.builder.position_at_end(loop_end);
+        Some(data_ptr.into())
     }
 
     /// Emit code to parse JSON into an enum
@@ -1418,16 +1657,21 @@ impl JsonBuiltins {
             .i8_type()
             .ptr_type(AddressSpace::default())
             .fn_type(&[], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITER_NEW, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITER_NEW, ft, None)
     }
     fn get_or_declare_new_with_cap<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITER_NEW_WITH_CAP) {
+        if let Some(f) = ctx
+            .module
+            .get_function(ffi_names::DOO_JSON_WRITER_NEW_WITH_CAP)
+        {
             return f;
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let i64_ty = ctx.context.i64_type();
         let ft = ptr_ty.fn_type(&[i64_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITER_NEW_WITH_CAP, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITER_NEW_WITH_CAP, ft, None)
     }
     fn get_or_declare_free<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITER_FREE) {
@@ -1435,7 +1679,8 @@ impl JsonBuiltins {
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITER_FREE, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITER_FREE, ft, None)
     }
     fn get_or_declare_finish<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITER_FINISH) {
@@ -1444,7 +1689,8 @@ impl JsonBuiltins {
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         // Returns DooString* (treat as i8* for now)
         let ft = ptr_ty.fn_type(&[ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITER_FINISH, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITER_FINISH, ft, None)
     }
 
     // Writers
@@ -1457,7 +1703,8 @@ impl JsonBuiltins {
             .context
             .void_type()
             .fn_type(&[ptr_ty.into(), ctx.context.i64_type().into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITE_INT, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITE_INT, ft, None)
     }
     fn get_or_declare_write_float<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_FLOAT) {
@@ -1468,7 +1715,8 @@ impl JsonBuiltins {
             .context
             .void_type()
             .fn_type(&[ptr_ty.into(), ctx.context.f64_type().into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITE_FLOAT, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITE_FLOAT, ft, None)
     }
     fn get_or_declare_write_bool<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_BOOL) {
@@ -1479,7 +1727,8 @@ impl JsonBuiltins {
             .context
             .void_type()
             .fn_type(&[ptr_ty.into(), ctx.context.i8_type().into()], false); // Bool is i8 for C ABI
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITE_BOOL, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITE_BOOL, ft, None)
     }
     fn get_or_declare_write_string<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_STRING) {
@@ -1490,7 +1739,8 @@ impl JsonBuiltins {
             .context
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITE_STRING, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITE_STRING, ft, None)
     }
     fn get_or_declare_write_key<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_KEY) {
@@ -1501,7 +1751,8 @@ impl JsonBuiltins {
             .context
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITE_KEY, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITE_KEY, ft, None)
     }
 
     /// Get or declare write_key_int (writes int as quoted string key for JSON compliance)
@@ -1555,12 +1806,16 @@ impl JsonBuiltins {
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITE_NULL, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITE_NULL, ft, None)
     }
 
     // Structure
     fn get_or_declare_start_object<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_START_OBJECT) {
+        if let Some(f) = ctx
+            .module
+            .get_function(ffi_names::DOO_JSON_WRITE_START_OBJECT)
+        {
             return f;
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
@@ -1569,7 +1824,10 @@ impl JsonBuiltins {
             .add_function(ffi_names::DOO_JSON_WRITE_START_OBJECT, ft, None)
     }
     fn get_or_declare_end_object<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_END_OBJECT) {
+        if let Some(f) = ctx
+            .module
+            .get_function(ffi_names::DOO_JSON_WRITE_END_OBJECT)
+        {
             return f;
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
@@ -1578,7 +1836,10 @@ impl JsonBuiltins {
             .add_function(ffi_names::DOO_JSON_WRITE_END_OBJECT, ft, None)
     }
     fn get_or_declare_start_array<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_START_ARRAY) {
+        if let Some(f) = ctx
+            .module
+            .get_function(ffi_names::DOO_JSON_WRITE_START_ARRAY)
+        {
             return f;
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
@@ -1601,7 +1862,8 @@ impl JsonBuiltins {
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITE_COMMA, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITE_COMMA, ft, None)
     }
     fn get_or_declare_colon<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_COLON) {
@@ -1609,7 +1871,8 @@ impl JsonBuiltins {
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_WRITE_COLON, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_WRITE_COLON, ft, None)
     }
 
     // ── Parse-Once Object API helpers ──
@@ -1620,7 +1883,8 @@ impl JsonBuiltins {
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_PARSE_OBJECT, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_PARSE_OBJECT, ft, None)
     }
 
     fn get_or_declare_object_get_int<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
@@ -1630,17 +1894,24 @@ impl JsonBuiltins {
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let i64_ty = ctx.context.i64_type();
         let ft = i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_INT, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_OBJECT_GET_INT, ft, None)
     }
 
-    fn get_or_declare_object_get_float<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_FLOAT) {
+    fn get_or_declare_object_get_float<'ctx>(
+        ctx: &mut CodegenContext<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx
+            .module
+            .get_function(ffi_names::DOO_JSON_OBJECT_GET_FLOAT)
+        {
             return f;
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let f64_ty = ctx.context.f64_type();
         let ft = f64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_FLOAT, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_OBJECT_GET_FLOAT, ft, None)
     }
 
     fn get_or_declare_object_get_bool<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
@@ -1650,7 +1921,8 @@ impl JsonBuiltins {
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let i32_ty = ctx.context.i32_type();
         let ft = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_BOOL, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_OBJECT_GET_BOOL, ft, None)
     }
 
     fn get_or_declare_object_get_str<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
@@ -1659,7 +1931,8 @@ impl JsonBuiltins {
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_STR, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_OBJECT_GET_STR, ft, None)
     }
 
     fn get_or_declare_object_get_json<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
@@ -1668,7 +1941,8 @@ impl JsonBuiltins {
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_GET_JSON, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_OBJECT_GET_JSON, ft, None)
     }
 
     fn get_or_declare_object_free<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
@@ -1677,7 +1951,38 @@ impl JsonBuiltins {
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
-        ctx.module.add_function(ffi_names::DOO_JSON_OBJECT_FREE, ft, None)
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_OBJECT_FREE, ft, None)
+    }
+
+    // ── Array helper functions (for codegen-driven struct/enum array parsing) ──
+
+    fn get_or_declare_array_count<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_ARRAY_COUNT) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i64_ty = ctx.context.i64_type();
+        let ft = i64_ty.fn_type(&[ptr_ty.into()], false);
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_ARRAY_COUNT, ft, None)
+    }
+
+    fn get_or_declare_array_get_element<'ctx>(
+        ctx: &mut CodegenContext<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx
+            .module
+            .get_function(ffi_names::DOO_JSON_ARRAY_GET_ELEMENT)
+        {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i64_ty = ctx.context.i64_type();
+        // (json_str: ptr, index: i64) -> ptr
+        let ft = ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_ARRAY_GET_ELEMENT, ft, None)
     }
 
     // JSON parse helpers for struct/enum (legacy — still used for enum parsing)

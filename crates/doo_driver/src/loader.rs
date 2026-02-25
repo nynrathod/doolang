@@ -697,6 +697,14 @@ pub fn resolve_imports(
         }
     }
 
+    // Track std imports discovered in nested local modules
+    // These need to be processed after the local module loop
+    let mut nested_std_import_requests: HashMap<
+        String,
+        HashMap<String, (Option<String>, doo_core::Span)>,
+    > = HashMap::new();
+    let mut nested_std_import_order: Vec<String> = Vec::new();
+
     while let Some((module_path, path_symbols, import_chain, origin_span)) = pending_modules.pop() {
         // Skip if already visited
         let canonical_path = module_path
@@ -779,10 +787,52 @@ pub fn resolve_imports(
                     continue;
                 }
 
-                // Skip std library imports (they're handled separately)
+                // Collect std library imports from nested modules for deferred processing
                 if nested_import.path[0] == "std" {
-                    // Queue std import handling - add to std_import_requests would need refactoring
-                    // For now, std imports from nested modules inherit the parent's type definitions
+                    if nested_import.path.len() >= 2 {
+                        let module_name = &nested_import.path[1];
+                        let module_key = format!("std::{}", module_name);
+                        if !nested_std_import_requests.contains_key(&module_key)
+                            && !std_import_requests.contains_key(&module_key)
+                        {
+                            nested_std_import_order.push(module_key.clone());
+                        }
+                        let symbols = nested_std_import_requests.entry(module_key).or_default();
+
+                        let path_symbol = if nested_import.path.len() >= 3 {
+                            Some(nested_import.path[2].clone())
+                        } else {
+                            None
+                        };
+
+                        if let Some(sym) = path_symbol {
+                            if nested_import.wildcard {
+                                symbols.insert("*".to_string(), (None, nested_import.span));
+                            } else {
+                                symbols.insert(sym, (nested_import.alias.clone(), nested_import.span));
+                            }
+                        } else if nested_import.alias.is_some() {
+                            symbols.insert("*".to_string(), (nested_import.alias.clone(), nested_import.span));
+                        } else if nested_import.wildcard {
+                            symbols.insert("*".to_string(), (None, nested_import.span));
+                        } else if nested_import.items.is_empty() {
+                            symbols.insert("*".to_string(), (None, nested_import.span));
+                        } else {
+                            for item_sym in &nested_import.items {
+                                match item_sym {
+                                    ImportItem::Symbol(name) => {
+                                        symbols.insert(name.clone(), (None, nested_import.span));
+                                    }
+                                    ImportItem::Alias { name, alias } => {
+                                        symbols.insert(name.clone(), (Some(alias.clone()), nested_import.span));
+                                    }
+                                    ImportItem::Wildcard => {
+                                        symbols.insert("*".to_string(), (None, nested_import.span));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     continue;
                 }
 
@@ -984,6 +1034,164 @@ pub fn resolve_imports(
                 }
                 Item::Import(_) | Item::Statement(_) => {
                     // Don't re-export
+                }
+            }
+        }
+    }
+
+    // Process std imports discovered in nested local modules
+    if !nested_std_import_order.is_empty() {
+        if debug {
+            doo_debug!(
+                "LOADER",
+                "Processing {} nested std imports from sub-modules",
+                nested_std_import_order.len()
+            );
+        }
+        for module_key in &nested_std_import_order {
+            let requested = match nested_std_import_requests.get(module_key) {
+                Some(r) => r,
+                None => continue,
+            };
+            // Load the std module
+            let module_program = match loader.load_module(module_key) {
+                Ok(p) => p,
+                Err(e) => {
+                    let code = if e.contains("not found") {
+                        ErrorCode::ModuleNotFound
+                    } else if e.contains("Invalid module key") {
+                        ErrorCode::InvalidImportPath
+                    } else {
+                        ErrorCode::IoError
+                    };
+                    result.errors.push(CompilerError::new(
+                        code,
+                        format!("failed to load '{}': {}", module_key, e),
+                        doo_core::Span::new(0, 0, 0),
+                    ));
+                    continue;
+                }
+            };
+
+            let import_all = requested.contains_key("*");
+
+            // First pass: collect struct/enum type names for associated function resolution
+            let mut imported_type_names: HashSet<String> = HashSet::new();
+            for item in &module_program.items {
+                match item {
+                    Item::Struct(s) => {
+                        let is_primary_struct = s.name == *module_key;
+                        let is_wanted =
+                            import_all || requested.contains_key(&s.name) || is_primary_struct;
+                        if is_wanted {
+                            imported_type_names.insert(s.name.clone());
+                        }
+                    }
+                    Item::Enum(e) => {
+                        let is_wanted = import_all || requested.contains_key(&e.name);
+                        if is_wanted {
+                            imported_type_names.insert(e.name.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Include types from previously imported items for cross-module methods
+            for item in &result.items {
+                match item {
+                    Item::Struct(s) => {
+                        imported_type_names.insert(s.name.clone());
+                    }
+                    Item::Enum(e) => {
+                        imported_type_names.insert(e.name.clone());
+                    }
+                    _ => {}
+                }
+            }
+
+            // Second pass: extract requested items
+            for item in &module_program.items {
+                match item {
+                    Item::Function(f) => {
+                        let is_public = f
+                            .name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_uppercase())
+                            .unwrap_or(false);
+
+                        let is_associated_with_imported_type = f
+                            .associated_type
+                            .as_ref()
+                            .map(|t| imported_type_names.contains(t))
+                            .unwrap_or(false);
+
+                        let is_explicitly_requested = requested.contains_key(&f.name);
+
+                        let is_wanted =
+                            import_all || is_explicitly_requested || is_associated_with_imported_type;
+
+                        let func_key = if let Some(ref assoc_type) = f.associated_type {
+                            format!("{}.{}", assoc_type, f.name)
+                        } else {
+                            f.name.clone()
+                        };
+
+                        if (is_explicitly_requested || is_public || is_associated_with_imported_type)
+                            && is_wanted
+                            && !imported_names.contains(&func_key)
+                        {
+                            if debug {
+                                doo_debug!(
+                                    "LOADER",
+                                    "  Importing nested-std function: {}",
+                                    func_key
+                                );
+                            }
+                            imported_names.insert(func_key);
+
+                            if let Some((Some(alias), _)) = requested.get(&f.name) {
+                                result.items.push(item.clone());
+                                let mut aliased_func = f.clone();
+                                aliased_func.name = alias.clone();
+                                result.items.push(Item::Function(aliased_func));
+                            } else {
+                                result.items.push(item.clone());
+                            }
+                        }
+                    }
+                    Item::Struct(s) => {
+                        let is_primary_struct = s.name == *module_key;
+                        let is_wanted =
+                            import_all || requested.contains_key(&s.name) || is_primary_struct;
+                        if is_wanted && !imported_names.contains(&s.name) {
+                            if debug {
+                                doo_debug!(
+                                    "LOADER",
+                                    "  Importing nested-std struct: {}",
+                                    s.name
+                                );
+                            }
+                            imported_names.insert(s.name.clone());
+                            result.items.push(item.clone());
+                        }
+                    }
+                    Item::Enum(e) => {
+                        let is_wanted = import_all || requested.contains_key(&e.name);
+                        if is_wanted && !imported_names.contains(&e.name) {
+                            if debug {
+                                doo_debug!(
+                                    "LOADER",
+                                    "  Importing nested-std enum: {}",
+                                    e.name
+                                );
+                            }
+                            imported_names.insert(e.name.clone());
+                            result.items.push(item.clone());
+                        }
+                    }
+                    Item::Import(_) | Item::Statement(_) => {}
                 }
             }
         }

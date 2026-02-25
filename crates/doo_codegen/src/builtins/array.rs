@@ -147,9 +147,10 @@ impl ArrayBuiltins {
                 "is_empty",
             )
             .ok()?;
+        // Bool is i8 in Doo — must match so `!` (logical NOT) works correctly
         let result = ctx
             .builder
-            .build_int_z_extend(is_zero, ctx.context.i32_type(), "bool")
+            .build_int_z_extend(is_zero, ctx.context.i8_type(), "bool")
             .ok()?;
         Some(result.into())
     }
@@ -1202,7 +1203,8 @@ impl ArrayBuiltins {
         // CRITICAL: Use checked arithmetic to prevent overflow → heap buffer overflow
         let total_size = crate::layout::checked_mul_or_abort(ctx, len_i64, elem_size, "data_size")?;
         let header_size = ctx.context.i64_type().const_int(16, false); // length (i64) + capacity (i64)
-        let alloc_size = crate::layout::checked_add_or_abort(ctx, header_size, total_size, "alloc_size")?;
+        let alloc_size =
+            crate::layout::checked_add_or_abort(ctx, header_size, total_size, "alloc_size")?;
 
         let result_heap = ctx
             .builder
@@ -1322,7 +1324,8 @@ impl ArrayBuiltins {
         // CRITICAL: Use checked arithmetic to prevent overflow → heap buffer overflow
         let total_size = crate::layout::checked_mul_or_abort(ctx, len_i64, elem_size, "data_size")?;
         let header_size = ctx.context.i64_type().const_int(16, false); // length (i64) + capacity (i64)
-        let alloc_size = crate::layout::checked_add_or_abort(ctx, header_size, total_size, "alloc_size")?;
+        let alloc_size =
+            crate::layout::checked_add_or_abort(ctx, header_size, total_size, "alloc_size")?;
 
         let result_heap = ctx
             .builder
@@ -1596,16 +1599,18 @@ fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx
 }
 
 fn get_or_declare_snprintf<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-    ctx.module.get_function(ffi_names::SNPRINTF).unwrap_or_else(|| {
-        let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
-        let i64_type = ctx.context.i64_type();
-        // snprintf(char *str, size_t size, const char *format, ...)
-        let fn_type = ctx
-            .context
-            .i32_type()
-            .fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], true);
-        ctx.module.add_function(ffi_names::SNPRINTF, fn_type, None)
-    })
+    ctx.module
+        .get_function(ffi_names::SNPRINTF)
+        .unwrap_or_else(|| {
+            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let i64_type = ctx.context.i64_type();
+            // snprintf(char *str, size_t size, const char *format, ...)
+            let fn_type = ctx
+                .context
+                .i32_type()
+                .fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], true);
+            ctx.module.add_function(ffi_names::SNPRINTF, fn_type, None)
+        })
 }
 
 /// Call a closure with given arguments

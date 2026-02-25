@@ -103,10 +103,15 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             if ffi_names::is_builtin_module(name) {
                 return MirOperand::Global(sym(name));
             }
+
+            // CRITICAL: Check if name is a known local variable/parameter FIRST.
+            // Local variables shadow function aliases (e.g., a param named "auth"
+            // must NOT resolve to _method_Server_auth via function_aliases).
+            let is_local = builder.get_local_type(name).is_some();
             
             // Check if this is a function reference (not a variable)
             // Function references are used when passing functions to FFI (e.g., handlers)
-            if builder.is_function_name(name) {
+            if !is_local && builder.is_function_name(name) {
                 return MirOperand::FuncRef(sym(name));
             }
 
@@ -114,7 +119,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Type names are converted to their string representation for FFI
             // This handles cases like `app.auth("/signup", "/login", User, db)`
             // where `User` is a struct name passed to FFI expecting its string name
-            if builder.is_type_name(name) {
+            if !is_local && builder.is_type_name(name) {
                 return MirOperand::Const(MirConst::Str(name.clone()));
             }
             

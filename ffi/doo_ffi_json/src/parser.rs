@@ -11,11 +11,16 @@
 
 use doo_ffi_core::ffi_debug;
 use doo_ffi_core::helpers::c_to_string_lossy;
-use doo_ffi_core::memory::{doo_alloc, doo_alloc_empty_string, doo_alloc_string, MIN_ALLOCATION_SIZE};
+use doo_ffi_core::memory::{
+    doo_alloc, doo_alloc_empty_string, doo_alloc_string, MIN_ALLOCATION_SIZE,
+};
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::{alloc_empty_array, alloc_empty_map, check_json_size, json_value_type_name, set_parse_error_rfc7807};
+use crate::{
+    alloc_empty_array, alloc_empty_map, check_json_size, json_value_type_name,
+    set_parse_error_rfc7807,
+};
 
 // ============================================================================
 // Type-Specific JSON Parse Functions
@@ -132,6 +137,83 @@ pub extern "C" fn doo_json_parse_str(json_str: *const c_char) -> *mut c_char {
     }))
     .unwrap_or_else(|_| doo_alloc_empty_string())
 }
+
+// ============================================================================
+// Array Helper Functions (for codegen-driven struct/enum array parsing)
+// ============================================================================
+
+/// Get the number of elements in a JSON array.
+/// Returns 0 for null input, parse errors, or non-array JSON.
+#[no_mangle]
+pub extern "C" fn doo_json_array_count(json_str: *const c_char) -> i64 {
+    if json_str.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = c_to_string_lossy(json_str);
+        if check_json_size(&s).is_err() {
+            return 0;
+        }
+        match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(serde_json::Value::Array(arr)) => {
+                ffi_debug!("FFI", "doo_json_array_count: {} elements", arr.len());
+                arr.len() as i64
+            }
+            _ => {
+                ffi_debug!("FFI", "doo_json_array_count: not an array -> 0");
+                0
+            }
+        }
+    }))
+    .unwrap_or(0)
+}
+
+/// Get the JSON string representation of an element at a given index in a JSON array.
+/// Returns null for out-of-bounds, null input, or non-array JSON.
+/// OWNERSHIP: Caller owns the returned string.
+#[no_mangle]
+pub extern "C" fn doo_json_array_get_element(json_str: *const c_char, index: i64) -> *mut c_char {
+    if json_str.is_null() {
+        return std::ptr::null_mut();
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = c_to_string_lossy(json_str);
+        if check_json_size(&s).is_err() {
+            return std::ptr::null_mut();
+        }
+        match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(serde_json::Value::Array(arr)) => {
+                if index < 0 || (index as usize) >= arr.len() {
+                    ffi_debug!(
+                        "FFI",
+                        "doo_json_array_get_element: index {} out of bounds (len={})",
+                        index,
+                        arr.len()
+                    );
+                    return std::ptr::null_mut();
+                }
+                let elem = &arr[index as usize];
+                let elem_str = elem.to_string();
+                ffi_debug!(
+                    "FFI",
+                    "doo_json_array_get_element[{}]: {}",
+                    index,
+                    &elem_str[..elem_str.len().min(100)]
+                );
+                doo_alloc_string(&elem_str)
+            }
+            _ => {
+                ffi_debug!("FFI", "doo_json_array_get_element: not an array -> null");
+                std::ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
+// ============================================================================
+// Type-Specific Array Parse Functions
+// ============================================================================
 
 /// Parse JSON array to [Int]
 /// Layout: [Len: i64][Cap: i64][elements...]

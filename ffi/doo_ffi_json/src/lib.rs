@@ -84,7 +84,7 @@ pub(crate) fn set_parse_error_rfc7807(field: &str, expected: &str, received: &st
             field, expected, received
         ))
         .with_errors(vec![FieldError::type_mismatch(field, expected, received)]);
-    PARSE_ERROR.with(|e| {
+    PARSE_ERROR.with(|e: &RefCell<Option<Rfc7807Error>>| {
         *e.borrow_mut() = Some(error);
     });
 }
@@ -92,7 +92,7 @@ pub(crate) fn set_parse_error_rfc7807(field: &str, expected: &str, received: &st
 /// Clear the parse error
 #[no_mangle]
 pub extern "C" fn doo_json_clear_parse_error() {
-    PARSE_ERROR.with(|e| {
+    PARSE_ERROR.with(|e: &RefCell<Option<Rfc7807Error>>| {
         *e.borrow_mut() = None;
     });
 }
@@ -100,13 +100,13 @@ pub extern "C" fn doo_json_clear_parse_error() {
 /// Check if there's a parse error
 #[no_mangle]
 pub extern "C" fn doo_json_has_parse_error() -> bool {
-    PARSE_ERROR.with(|e| e.borrow().is_some())
+    PARSE_ERROR.with(|e: &RefCell<Option<Rfc7807Error>>| e.borrow().is_some())
 }
 
 /// Get the parse error status (0 if no error)
 #[no_mangle]
 pub extern "C" fn doo_json_get_parse_error_status() -> i32 {
-    PARSE_ERROR.with(|e| {
+    PARSE_ERROR.with(|e: &RefCell<Option<Rfc7807Error>>| {
         e.borrow()
             .as_ref()
             .map(|err| err.status as i32)
@@ -118,10 +118,10 @@ pub extern "C" fn doo_json_get_parse_error_status() -> i32 {
 /// OWNERSHIP: Caller owns the returned string
 #[no_mangle]
 pub extern "C" fn doo_json_get_parse_error_json() -> *mut c_char {
-    PARSE_ERROR.with(|e| {
+    PARSE_ERROR.with(|e: &RefCell<Option<Rfc7807Error>>| {
         e.borrow()
             .as_ref()
-            .map(|err| doo_alloc_string(&err.to_json()))
+            .map(|err: &Rfc7807Error| doo_alloc_string(&err.to_json()))
             .unwrap_or_else(doo_alloc_empty_string)
     })
 }

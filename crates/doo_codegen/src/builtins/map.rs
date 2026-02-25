@@ -4,12 +4,12 @@
 //! This file handles MethodCall dispatch for additional map operations.
 
 use crate::context::CodegenContext;
-use doo_core::constants::ffi_names;
-use inkwell::types::BasicType;
-use inkwell::values::{BasicValueEnum, PointerValue, IntValue};
-use inkwell::{AddressSpace, IntPredicate};
-use doo_core::types::{TypeId, TypeKind};
 use crate::utils::emit_eq;
+use doo_core::constants::ffi_names;
+use doo_core::types::{TypeId, TypeKind};
+use inkwell::types::BasicType;
+use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
+use inkwell::{AddressSpace, IntPredicate};
 
 pub struct MapBuiltins;
 
@@ -35,14 +35,16 @@ impl MapBuiltins {
             "clear" => Self::emit_clear(ctx, receiver_ptr),
             "keys" => Self::emit_keys(ctx, key_type, val_type, receiver_ptr),
             "values" => Self::emit_values(ctx, key_type, val_type, receiver_ptr),
-            "remove" => Self::emit_remove(ctx, receiver_name, key_type, val_type, receiver_ptr, args),
+            "remove" => {
+                Self::emit_remove(ctx, receiver_name, key_type, val_type, receiver_ptr, args)
+            }
             _ => None,
         };
-        
+
         if let (Some(val), Some(dest_name)) = (result, dest) {
             ctx.set_temp(dest_name, val);
         }
-        
+
         result
     }
 
@@ -54,7 +56,10 @@ impl MapBuiltins {
         map_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let len_i32 = load_len_i32(ctx, map_ptr)?;
-        let len_i64 = ctx.builder.build_int_z_extend(len_i32, ctx.context.i64_type(), "size").ok()?;
+        let len_i64 = ctx
+            .builder
+            .build_int_z_extend(len_i32, ctx.context.i64_type(), "size")
+            .ok()?;
         Some(len_i64.into())
     }
 
@@ -66,10 +71,20 @@ impl MapBuiltins {
         map_ptr: PointerValue<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let len_i32 = load_len_i32(ctx, map_ptr)?;
-        let is_zero = ctx.builder.build_int_compare(
-            IntPredicate::EQ, len_i32, ctx.context.i32_type().const_zero(), "is_empty"
-        ).ok()?;
-        let result = ctx.builder.build_int_z_extend(is_zero, ctx.context.i32_type(), "bool").ok()?;
+        let is_zero = ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                len_i32,
+                ctx.context.i32_type().const_zero(),
+                "is_empty",
+            )
+            .ok()?;
+        // Bool is i8 in Doo — must match so `!` (logical NOT) works correctly
+        let result = ctx
+            .builder
+            .build_int_z_extend(is_zero, ctx.context.i8_type(), "bool")
+            .ok()?;
         Some(result.into())
     }
 
@@ -98,7 +113,9 @@ impl MapBuiltins {
         let len_i32 = load_len_i32(ctx, map_ptr)?;
         let key_llvm = ctx.get_llvm_type(key_type);
         let val_llvm = ctx.get_llvm_type(val_type);
-        let pair_ty = ctx.context.struct_type(&[key_llvm.into(), val_llvm.into()], false);
+        let pair_ty = ctx
+            .context
+            .struct_type(&[key_llvm.into(), val_llvm.into()], false);
         let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
         let map_base = ctx
             .builder
@@ -108,7 +125,11 @@ impl MapBuiltins {
         let out_data = alloc_with_header(ctx, len_i32, key_llvm, "map_keys")?;
         let out_base = ctx
             .builder
-            .build_pointer_cast(out_data, key_llvm.ptr_type(AddressSpace::default()), "keys_cast")
+            .build_pointer_cast(
+                out_data,
+                key_llvm.ptr_type(AddressSpace::default()),
+                "keys_cast",
+            )
             .ok()?;
 
         let len_i64 = ctx
@@ -119,7 +140,10 @@ impl MapBuiltins {
         let loop_bb = ctx.context.append_basic_block(current_fn, "keys_loop");
         let body_bb = ctx.context.append_basic_block(current_fn, "keys_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "keys_end");
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -135,13 +159,20 @@ impl MapBuiltins {
             .builder
             .build_int_compare(IntPredicate::ULT, idx, len_i64, "cond")
             .ok()?;
-        ctx.builder.build_conditional_branch(cond, body_bb, end_bb).ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, end_bb)
+            .ok()?;
 
         ctx.builder.position_at_end(body_bb);
-        let pair_ptr = unsafe { ctx.builder.build_gep(pair_ty, map_base, &[idx], "pair_ptr") }.ok()?;
-        let key_ptr = ctx.builder.build_struct_gep(pair_ty, pair_ptr, 0, "key_ptr").ok()?;
+        let pair_ptr =
+            unsafe { ctx.builder.build_gep(pair_ty, map_base, &[idx], "pair_ptr") }.ok()?;
+        let key_ptr = ctx
+            .builder
+            .build_struct_gep(pair_ty, pair_ptr, 0, "key_ptr")
+            .ok()?;
         let keyv = ctx.builder.build_load(key_llvm, key_ptr, "key").ok()?;
-        let out_ptr = unsafe { ctx.builder.build_gep(key_llvm, out_base, &[idx], "out_ptr") }.ok()?;
+        let out_ptr =
+            unsafe { ctx.builder.build_gep(key_llvm, out_base, &[idx], "out_ptr") }.ok()?;
         ctx.builder.build_store(out_ptr, keyv).ok()?;
         let next = ctx
             .builder
@@ -166,7 +197,9 @@ impl MapBuiltins {
         let len_i32 = load_len_i32(ctx, map_ptr)?;
         let key_llvm = ctx.get_llvm_type(key_type);
         let val_llvm = ctx.get_llvm_type(val_type);
-        let pair_ty = ctx.context.struct_type(&[key_llvm.into(), val_llvm.into()], false);
+        let pair_ty = ctx
+            .context
+            .struct_type(&[key_llvm.into(), val_llvm.into()], false);
         let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
         let map_base = ctx
             .builder
@@ -176,7 +209,11 @@ impl MapBuiltins {
         let out_data = alloc_with_header(ctx, len_i32, val_llvm, "map_values")?;
         let out_base = ctx
             .builder
-            .build_pointer_cast(out_data, val_llvm.ptr_type(AddressSpace::default()), "values_cast")
+            .build_pointer_cast(
+                out_data,
+                val_llvm.ptr_type(AddressSpace::default()),
+                "values_cast",
+            )
             .ok()?;
 
         let len_i64 = ctx
@@ -187,7 +224,10 @@ impl MapBuiltins {
         let loop_bb = ctx.context.append_basic_block(current_fn, "values_loop");
         let body_bb = ctx.context.append_basic_block(current_fn, "values_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "values_end");
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -203,13 +243,20 @@ impl MapBuiltins {
             .builder
             .build_int_compare(IntPredicate::ULT, idx, len_i64, "cond")
             .ok()?;
-        ctx.builder.build_conditional_branch(cond, body_bb, end_bb).ok()?;
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, end_bb)
+            .ok()?;
 
         ctx.builder.position_at_end(body_bb);
-        let pair_ptr = unsafe { ctx.builder.build_gep(pair_ty, map_base, &[idx], "pair_ptr") }.ok()?;
-        let val_ptr = ctx.builder.build_struct_gep(pair_ty, pair_ptr, 1, "val_ptr").ok()?;
+        let pair_ptr =
+            unsafe { ctx.builder.build_gep(pair_ty, map_base, &[idx], "pair_ptr") }.ok()?;
+        let val_ptr = ctx
+            .builder
+            .build_struct_gep(pair_ty, pair_ptr, 1, "val_ptr")
+            .ok()?;
         let valv = ctx.builder.build_load(val_llvm, val_ptr, "val").ok()?;
-        let out_ptr = unsafe { ctx.builder.build_gep(val_llvm, out_base, &[idx], "out_ptr") }.ok()?;
+        let out_ptr =
+            unsafe { ctx.builder.build_gep(val_llvm, out_base, &[idx], "out_ptr") }.ok()?;
         ctx.builder.build_store(out_ptr, valv).ok()?;
         let next = ctx
             .builder
@@ -233,12 +280,16 @@ impl MapBuiltins {
         map_ptr: PointerValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
-        if args.is_empty() { return None; }
+        if args.is_empty() {
+            return None;
+        }
         let needle = args[0];
 
         let key_llvm = ctx.get_llvm_type(key_type);
         let val_llvm = ctx.get_llvm_type(val_type);
-        let pair_ty = ctx.context.struct_type(&[key_llvm.into(), val_llvm.into()], false);
+        let pair_ty = ctx
+            .context
+            .struct_type(&[key_llvm.into(), val_llvm.into()], false);
         let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
 
         let len_i32 = load_len_i32(ctx, map_ptr)?;
@@ -253,22 +304,39 @@ impl MapBuiltins {
             .ok()?;
 
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
-        let loop_bb = ctx.context.append_basic_block(current_fn, "map_remove_loop");
-        let check_bb = ctx.context.append_basic_block(current_fn, "map_remove_check");
+        let loop_bb = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_loop");
+        let check_bb = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_check");
         let inc_bb = ctx.context.append_basic_block(current_fn, "map_remove_inc");
-        let found_bb = ctx.context.append_basic_block(current_fn, "map_remove_found");
-        let not_found_bb = ctx.context.append_basic_block(current_fn, "map_remove_not_found");
+        let found_bb = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_found");
+        let not_found_bb = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_not_found");
         let end_bb = ctx.context.append_basic_block(current_fn, "map_remove_end");
 
-        let idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "idx").ok()?;
+        let idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "idx")
+            .ok()?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
-        let found_idx_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "found_idx").ok()?;
+        let found_idx_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.i64_type(), "found_idx")
+            .ok()?;
         ctx.builder
             .build_store(found_idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
-        let found_flag_alloca = ctx.builder.build_alloca(ctx.context.bool_type(), "found").ok()?;
+        let found_flag_alloca = ctx
+            .builder
+            .build_alloca(ctx.context.bool_type(), "found")
+            .ok()?;
         ctx.builder
             .build_store(found_flag_alloca, ctx.context.bool_type().const_zero())
             .ok()?;
@@ -290,16 +358,28 @@ impl MapBuiltins {
             .ok()?;
 
         ctx.builder.position_at_end(check_bb);
-        let pair_ptr = unsafe { ctx.builder.build_gep(pair_ty, old_base, &[idx], "pair_ptr") }.ok()?;
-        let key_ptr = ctx.builder.build_struct_gep(pair_ty, pair_ptr, 0, "key_ptr").ok()?;
-        let stored_key = ctx.builder.build_load(key_llvm, key_ptr, "stored_key").ok()?;
+        let pair_ptr =
+            unsafe { ctx.builder.build_gep(pair_ty, old_base, &[idx], "pair_ptr") }.ok()?;
+        let key_ptr = ctx
+            .builder
+            .build_struct_gep(pair_ty, pair_ptr, 0, "key_ptr")
+            .ok()?;
+        let stored_key = ctx
+            .builder
+            .build_load(key_llvm, key_ptr, "stored_key")
+            .ok()?;
         let is_eq = emit_eq(ctx, key_type, stored_key, needle)?;
         ctx.builder
             .build_conditional_branch(is_eq, found_bb, inc_bb)
             .ok()?;
 
         ctx.builder.position_at_end(found_bb);
-        ctx.builder.build_store(found_flag_alloca, ctx.context.bool_type().const_int(1, false)).ok()?;
+        ctx.builder
+            .build_store(
+                found_flag_alloca,
+                ctx.context.bool_type().const_int(1, false),
+            )
+            .ok()?;
         ctx.builder.build_store(found_idx_alloca, idx).ok()?;
         ctx.builder.build_unconditional_branch(not_found_bb).ok()?;
 
@@ -319,7 +399,12 @@ impl MapBuiltins {
             .into_int_value();
         let should_remove = ctx
             .builder
-            .build_int_compare(IntPredicate::NE, found, ctx.context.bool_type().const_zero(), "should_remove")
+            .build_int_compare(
+                IntPredicate::NE,
+                found,
+                ctx.context.bool_type().const_zero(),
+                "should_remove",
+            )
             .ok()?;
 
         let do_remove_bb = ctx.context.append_basic_block(current_fn, "map_remove_do");
@@ -341,7 +426,11 @@ impl MapBuiltins {
             .into_int_value();
         let new_len_i32 = ctx
             .builder
-            .build_int_sub(len_i32, ctx.context.i32_type().const_int(1, false), "new_len")
+            .build_int_sub(
+                len_i32,
+                ctx.context.i32_type().const_int(1, false),
+                "new_len",
+            )
             .ok()?;
         let new_len_i64 = ctx
             .builder
@@ -358,9 +447,15 @@ impl MapBuiltins {
         ctx.builder
             .build_store(idx2_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
-        let pre_loop = ctx.context.append_basic_block(current_fn, "map_remove_pre_copy_loop");
-        let pre_body = ctx.context.append_basic_block(current_fn, "map_remove_pre_copy_body");
-        let pre_end = ctx.context.append_basic_block(current_fn, "map_remove_pre_copy_end");
+        let pre_loop = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_pre_copy_loop");
+        let pre_body = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_pre_copy_body");
+        let pre_end = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_pre_copy_end");
         ctx.builder.build_unconditional_branch(pre_loop).ok()?;
 
         ctx.builder.position_at_end(pre_loop);
@@ -392,12 +487,29 @@ impl MapBuiltins {
             .ok()?
             .into_int_value();
 
-        let src_pair = unsafe { ctx.builder.build_gep(pair_ty, old_base, &[src_i], "src_pair") }.ok()?;
-        let dst_pair = unsafe { ctx.builder.build_gep(pair_ty, tmp_alloca, &[i], "dst_pair") }.ok()?;
-        let sk = ctx.builder.build_struct_gep(pair_ty, src_pair, 0, "sk").ok()?;
-        let sv = ctx.builder.build_struct_gep(pair_ty, src_pair, 1, "sv").ok()?;
-        let dk = ctx.builder.build_struct_gep(pair_ty, dst_pair, 0, "dk").ok()?;
-        let dv = ctx.builder.build_struct_gep(pair_ty, dst_pair, 1, "dv").ok()?;
+        let src_pair = unsafe {
+            ctx.builder
+                .build_gep(pair_ty, old_base, &[src_i], "src_pair")
+        }
+        .ok()?;
+        let dst_pair =
+            unsafe { ctx.builder.build_gep(pair_ty, tmp_alloca, &[i], "dst_pair") }.ok()?;
+        let sk = ctx
+            .builder
+            .build_struct_gep(pair_ty, src_pair, 0, "sk")
+            .ok()?;
+        let sv = ctx
+            .builder
+            .build_struct_gep(pair_ty, src_pair, 1, "sv")
+            .ok()?;
+        let dk = ctx
+            .builder
+            .build_struct_gep(pair_ty, dst_pair, 0, "dk")
+            .ok()?;
+        let dv = ctx
+            .builder
+            .build_struct_gep(pair_ty, dst_pair, 1, "dv")
+            .ok()?;
         let kval = ctx.builder.build_load(key_llvm, sk, "kval").ok()?;
         let vval = ctx.builder.build_load(val_llvm, sv, "vval").ok()?;
         ctx.builder.build_store(dk, kval).ok()?;
@@ -413,7 +525,8 @@ impl MapBuiltins {
         // shrink + copy from tmp into new data
         ctx.builder.position_at_end(pre_end);
         // Use standard realloc (fallback from DOO_REALLOC)
-        let realloc_fn = ctx.module
+        let realloc_fn = ctx
+            .module
             .get_function(ffi_names::DOO_REALLOC)
             .or_else(|| ctx.module.get_function(ffi_names::REALLOC))?;
         let header_ptr = header_ptr_from_data(ctx, map_ptr)?;
@@ -425,7 +538,11 @@ impl MapBuiltins {
         // Header is 16 bytes (2 x i64: length + capacity)
         let total = ctx
             .builder
-            .build_int_add(ctx.context.i64_type().const_int(16, false), data_bytes, "total")
+            .build_int_add(
+                ctx.context.i64_type().const_int(16, false),
+                data_bytes,
+                "total",
+            )
             .ok()?;
         let new_header = ctx
             .builder
@@ -450,9 +567,15 @@ impl MapBuiltins {
         ctx.builder
             .build_store(idx2_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
-        let copy_loop = ctx.context.append_basic_block(current_fn, "map_remove_copy_loop");
-        let copy_body = ctx.context.append_basic_block(current_fn, "map_remove_copy_body");
-        let copy_end = ctx.context.append_basic_block(current_fn, "map_remove_copy_end");
+        let copy_loop = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_copy_loop");
+        let copy_body = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_copy_body");
+        let copy_end = ctx
+            .context
+            .append_basic_block(current_fn, "map_remove_copy_end");
         ctx.builder.build_unconditional_branch(copy_loop).ok()?;
 
         ctx.builder.position_at_end(copy_loop);
@@ -470,12 +593,26 @@ impl MapBuiltins {
             .ok()?;
 
         ctx.builder.position_at_end(copy_body);
-        let src_pair = unsafe { ctx.builder.build_gep(pair_ty, tmp_alloca, &[i], "src_pair") }.ok()?;
-        let dst_pair = unsafe { ctx.builder.build_gep(pair_ty, new_base, &[i], "dst_pair") }.ok()?;
-        let sk = ctx.builder.build_struct_gep(pair_ty, src_pair, 0, "sk").ok()?;
-        let sv = ctx.builder.build_struct_gep(pair_ty, src_pair, 1, "sv").ok()?;
-        let dk = ctx.builder.build_struct_gep(pair_ty, dst_pair, 0, "dk").ok()?;
-        let dv = ctx.builder.build_struct_gep(pair_ty, dst_pair, 1, "dv").ok()?;
+        let src_pair =
+            unsafe { ctx.builder.build_gep(pair_ty, tmp_alloca, &[i], "src_pair") }.ok()?;
+        let dst_pair =
+            unsafe { ctx.builder.build_gep(pair_ty, new_base, &[i], "dst_pair") }.ok()?;
+        let sk = ctx
+            .builder
+            .build_struct_gep(pair_ty, src_pair, 0, "sk")
+            .ok()?;
+        let sv = ctx
+            .builder
+            .build_struct_gep(pair_ty, src_pair, 1, "sv")
+            .ok()?;
+        let dk = ctx
+            .builder
+            .build_struct_gep(pair_ty, dst_pair, 0, "dk")
+            .ok()?;
+        let dv = ctx
+            .builder
+            .build_struct_gep(pair_ty, dst_pair, 1, "dv")
+            .ok()?;
         let kval = ctx.builder.build_load(key_llvm, sk, "kval").ok()?;
         let vval = ctx.builder.build_load(val_llvm, sv, "vval").ok()?;
         ctx.builder.build_store(dk, kval).ok()?;
@@ -509,8 +646,7 @@ impl MapBuiltins {
 // =============================================================================
 
 use crate::layout::{
-    alloc_with_header, get_map_length, get_map_data_ptr, set_map_length,
-    set_map_length_from_data,
-    load_len_i32, data_ptr_from_header, header_ptr_from_data, store_len, store_len_at_header
+    alloc_with_header, data_ptr_from_header, get_map_data_ptr, get_map_length,
+    header_ptr_from_data, load_len_i32, set_map_length, set_map_length_from_data, store_len,
+    store_len_at_header,
 };
-

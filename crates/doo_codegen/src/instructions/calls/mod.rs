@@ -9,15 +9,18 @@
 //! - call_wrappers: HTTP and WebSocket handler wrapper generation
 //! - call_metadata: metadata registration and error helpers
 
-pub(crate) mod call_utils;
-mod call_print;
 pub(crate) mod call_ffi;
-pub(crate) mod call_wrappers;
 pub(crate) mod call_metadata;
+mod call_print;
+pub(crate) mod call_utils;
+pub(crate) mod call_wrappers;
 
-use call_utils::{operand_to_value, coerce_arg_to_param_type, value_to_ptr, load_result_struct};
-use call_print::{emit_print_value, emit_print_array, emit_print_map, emit_print_struct, emit_print_enum, emit_print_enum_value};
 use call_ffi::emit_ffi_call;
+use call_print::{
+    emit_print_array, emit_print_enum, emit_print_enum_value, emit_print_map, emit_print_struct,
+    emit_print_value,
+};
+use call_utils::{coerce_arg_to_param_type, load_result_struct, operand_to_value, value_to_ptr};
 
 use super::InstructionHandler;
 use crate::builtins::{ArrayBuiltins, JsonBuiltins, MapBuiltins, StringBuiltins};
@@ -26,8 +29,8 @@ use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
 use doo_core::types::builtin;
 use doo_core::types::TypeKind;
-use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use doo_mir::sym::resolve;
+use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::BasicValueEnum;
 use inkwell::IntPredicate;
@@ -175,7 +178,17 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     .iter()
                     .enumerate()
                     .filter_map(|(i, a)| {
-                        let val = operand_to_value(ctx, a)?;
+                        let val = match operand_to_value(ctx, a) {
+                            Some(v) => v,
+                            None => {
+                                doo_debug!(
+                                    "CODEGEN",
+                                    "WARNING: Call to '{}' — arg {} ({:?}) resolved to None, dropping",
+                                    func_s, i, a
+                                );
+                                return None;
+                            }
+                        };
                         // Get expected parameter type from function signature
                         // Convert BasicMetadataTypeEnum to BasicTypeEnum if possible
                         let param_type: Option<BasicTypeEnum> =
@@ -253,7 +266,9 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 let is_json_module = matches!(receiver,
                     MirOperand::Local(name) | MirOperand::Global(name) if resolve(*name) == ffi_names::MODULE_JSON);
 
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() && method_s == "parse" {
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
+                    && method_s == "parse"
+                {
                     doo_debug!(
                         "CODEGEN",
                         "JSON.parse check: is_json_module={}, receiver={:?}",
@@ -291,7 +306,9 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 }
 
                 let recv_val = operand_to_value(ctx, receiver);
-                if recv_val.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                if recv_val.is_none()
+                    && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
+                {
                     doo_debug!(
                         "CODEGEN",
                         "MethodCall: failed to get receiver value for {:?}",
@@ -867,13 +884,15 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     // (not the freed pointer). This prevents 16-byte leaks per FFI call.
                     if result_val.is_pointer_value() && !result_val.is_struct_value() {
                         // Free the heap-allocated DooResult outer shell
-                        let doo_free_fn = ctx.get_function(ffi_names::DOO_FREE).unwrap_or_else(|| {
-                            let free_type = ctx
-                                .context
-                                .void_type()
-                                .fn_type(&[ctx.ptr_type().into()], false);
-                            ctx.module.add_function(ffi_names::DOO_FREE, free_type, None)
-                        });
+                        let doo_free_fn =
+                            ctx.get_function(ffi_names::DOO_FREE).unwrap_or_else(|| {
+                                let free_type = ctx
+                                    .context
+                                    .void_type()
+                                    .fn_type(&[ctx.ptr_type().into()], false);
+                                ctx.module
+                                    .add_function(ffi_names::DOO_FREE, free_type, None)
+                            });
                         let _ = ctx.builder.build_call(
                             doo_free_fn,
                             &[result_val.into_pointer_value().into()],
@@ -906,7 +925,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         let printf = ctx.get_function(ffi_names::PRINTF).unwrap_or_else(|| {
                             let printf_type =
                                 ctx.i32_type().fn_type(&[ctx.ptr_type().into()], true);
-                            ctx.module.add_function(ffi_names::PRINTF, printf_type, None)
+                            ctx.module
+                                .add_function(ffi_names::PRINTF, printf_type, None)
                         });
                         let fmt = ctx.const_string("[DEBUG] IsOk: tag=%lld\n");
                         let _ = ctx.builder.build_call(
@@ -1124,7 +1144,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                             .context
                             .void_type()
                             .fn_type(&[ctx.ptr_type().into()], false);
-                        ctx.module.add_function(ffi_names::DOO_FREE, free_type, None)
+                        ctx.module
+                            .add_function(ffi_names::DOO_FREE, free_type, None)
                     });
                     let _ = ctx.builder.build_call(
                         doo_free_fn,

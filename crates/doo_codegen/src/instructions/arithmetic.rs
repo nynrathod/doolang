@@ -41,7 +41,9 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
                     );
                 }
                 let lhs_val = operand_to_value(ctx, lhs);
-                if lhs_val.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                if lhs_val.is_none()
+                    && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
+                {
                     doo_debug!(
                         "CODEGEN",
                         "BinaryOp: lhs operand_to_value failed for {:?}",
@@ -52,7 +54,9 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
                 let lhs_val = lhs_val?;
 
                 let rhs_val = operand_to_value(ctx, rhs);
-                if rhs_val.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                if rhs_val.is_none()
+                    && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
+                {
                     doo_debug!(
                         "CODEGEN",
                         "BinaryOp: rhs operand_to_value failed for {:?}",
@@ -63,7 +67,9 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
                 let rhs_val = rhs_val?;
 
                 let result = emit_binop(ctx, *op, lhs_val, rhs_val);
-                if result.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                if result.is_none()
+                    && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
+                {
                     doo_debug!(
                         "CODEGEN",
                         "BinaryOp: emit_binop failed for {:?} {:?} {:?}",
@@ -600,35 +606,21 @@ fn emit_unaryop<'ctx>(
             if val.is_int_value() {
                 let int_val = val.into_int_value();
                 let int_type = int_val.get_type();
-                if int_type.get_bit_width() == 8 {
-                    // Bool (i8): logical NOT via comparison with 0
-                    // !true (1) → 0, !false (0) → 1
-                    let zero = int_type.const_zero();
-                    let cmp = ctx
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::EQ,
-                            int_val,
-                            zero,
-                            "lnot",
-                        )
-                        .ok()?;
-                    // Extend i1 result back to i8
-                    Some(
-                        ctx.builder
-                            .build_int_z_extend(cmp, int_type, "lnot_i8")
-                            .ok()?
-                            .into(),
-                    )
-                } else {
-                    // Integer: bitwise NOT
-                    Some(
-                        ctx.builder
-                            .build_not(int_val, "not")
-                            .ok()?
-                            .into(),
-                    )
-                }
+                // Logical NOT for all integer widths: value == 0
+                // Works correctly for Bool (i8) and any method returning
+                // bool-like values in wider types (e.g. isEmpty returning i32)
+                let zero = int_type.const_zero();
+                let cmp = ctx
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, int_val, zero, "lnot")
+                    .ok()?;
+                // Extend i1 result back to original type
+                Some(
+                    ctx.builder
+                        .build_int_z_extend(cmp, int_type, "lnot_ext")
+                        .ok()?
+                        .into(),
+                )
             } else {
                 None
             }
