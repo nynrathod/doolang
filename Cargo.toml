@@ -17,6 +17,7 @@ members = [
 	"ffi/doo_ffi_file",
 	"ffi/doo_ffi_runtime",
 	"ffi/doo_ffi_process",
+	"ffi/doo_ffi_git",
 ]
 resolver = "2"
 

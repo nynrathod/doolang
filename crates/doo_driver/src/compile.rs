@@ -497,7 +497,10 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     doo_debug!("DEBUG", "MIR validation passed");
 
     // Check for main function
-    let has_main = mir_program.functions.iter().any(|f| resolve(f.name) == "main");
+    let has_main = mir_program
+        .functions
+        .iter()
+        .any(|f| resolve(f.name) == "main");
     if !has_main {
         return Err(
             "Error: main() function not found. Every program must have a main() function."
@@ -757,6 +760,8 @@ fn normalize_ffi_lib_name(name: &str) -> String {
         "doo_ws" | "doo_websocket" => "doo_ffi_http".to_string(),
         // Process module
         "doo_process" => "doo_ffi_process".to_string(),
+        // Git module — native libgit2 operations
+        "doo_git" => "doo_ffi_git".to_string(),
         // Config module — lives in doo_ffi_core (always linked)
         "doo_config" => "doo_ffi_core".to_string(),
         // Already normalized or unknown - pass through
@@ -776,7 +781,11 @@ fn link_object_file(
     let mut ffi_libs: HashSet<String> = mir_program
         .functions
         .iter()
-        .filter_map(|f| f.ffi.as_ref().map(|l| normalize_ffi_lib_name(&resolve(l.library))))
+        .filter_map(|f| {
+            f.ffi
+                .as_ref()
+                .map(|l| normalize_ffi_lib_name(&resolve(l.library)))
+        })
         .collect();
 
     // Always include core runtime library (new naming: doo_ffi_core)
@@ -791,7 +800,10 @@ fn link_object_file(
         let fname = resolve(f.name);
         f.ffi
             .as_ref()
-            .map(|l| { let lib = resolve(l.library); lib == "doo_ffi_http" || lib == "doo_http" })
+            .map(|l| {
+                let lib = resolve(l.library);
+                lib == "doo_ffi_http" || lib == "doo_http"
+            })
             .unwrap_or(false)
             || fname.starts_with("Server::")
             || fname.contains("::get")
@@ -828,7 +840,10 @@ fn link_object_file(
         let fname = resolve(f.name);
         f.ffi
             .as_ref()
-            .map(|l| { let lib = resolve(l.library); lib == "doo_ffi_db" || lib == "doo_db" })
+            .map(|l| {
+                let lib = resolve(l.library);
+                lib == "doo_ffi_db" || lib == "doo_db"
+            })
             .unwrap_or(false)
             || fname.starts_with("Database::")
     });
@@ -846,7 +861,10 @@ fn link_object_file(
     let has_process = mir_program.functions.iter().any(|f| {
         f.ffi
             .as_ref()
-            .map(|l| { let lib = resolve(l.library); lib == "doo_ffi_process" || lib == "doo_process" })
+            .map(|l| {
+                let lib = resolve(l.library);
+                lib == "doo_ffi_process" || lib == "doo_process"
+            })
             .unwrap_or(false)
     });
     if has_process {

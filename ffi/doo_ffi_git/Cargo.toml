@@ -1,0 +1,13 @@
+[package]
+name = "doo_ffi_git"
+version = "0.1.0"
+edition = "2021"
+description = "Native git operations FFI for Doo — powered by libgit2 via git2-rs. Zero subprocess overhead."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+git2 = "0.20"
+doo_ffi_core = { path = "../doo_ffi_core" }
+libc = "0.2"

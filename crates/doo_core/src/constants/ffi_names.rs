@@ -40,6 +40,8 @@ pub const MODULE_WEBSOCKET: &str = "WebSocket";
 pub const MODULE_PROCESS: &str = "Process";
 /// Config module for environment variable access
 pub const MODULE_CONFIG: &str = "Config";
+/// Git module for native git operations (libgit2)
+pub const MODULE_GIT: &str = "Git";
 
 /// All built-in module names in a static array for iteration/lookup
 pub const BUILTIN_MODULES: &[&str] = &[
@@ -55,6 +57,7 @@ pub const BUILTIN_MODULES: &[&str] = &[
     MODULE_WEBSOCKET,
     MODULE_PROCESS,
     MODULE_CONFIG,
+    MODULE_GIT,
 ];
 
 /// Check if a name is a built-in module
@@ -152,6 +155,10 @@ pub const DOO_JSON_PARSE_ARRAY_INT: &str = "doo_json_parse_array_int";
 pub const DOO_JSON_PARSE_ARRAY_FLOAT: &str = "doo_json_parse_array_float";
 pub const DOO_JSON_PARSE_ARRAY_BOOL: &str = "doo_json_parse_array_bool";
 pub const DOO_JSON_PARSE_ARRAY_STR: &str = "doo_json_parse_array_str";
+
+// Array helper functions (for codegen-driven struct/enum array parsing)
+pub const DOO_JSON_ARRAY_COUNT: &str = "doo_json_array_count";
+pub const DOO_JSON_ARRAY_GET_ELEMENT: &str = "doo_json_array_get_element";
 pub const DOO_JSON_PARSE_MAP_STR_INT: &str = "doo_json_parse_map_str_int";
 pub const DOO_JSON_PARSE_MAP_STR_FLOAT: &str = "doo_json_parse_map_str_float";
 pub const DOO_JSON_PARSE_MAP_STR_BOOL: &str = "doo_json_parse_map_str_bool";
@@ -481,6 +488,22 @@ pub const DOO_PROCESS_READ_STDERR: &str = "doo_process_read_stderr";
 // Lifecycle
 pub const DOO_PROCESS_SHUTDOWN: &str = "doo_process_shutdown";
 pub const DOO_PROCESS_ACTIVE_COUNT: &str = "doo_process_active_count";
+
+// ============================================================================
+// Doo Git FFI (doo_ffi_git) — Native libgit2 operations
+// ============================================================================
+
+pub const DOO_GIT_INIT: &str = "doo_git_init";
+pub const DOO_GIT_CLONE: &str = "doo_git_clone";
+pub const DOO_GIT_COMMIT_ALL: &str = "doo_git_commit_all";
+pub const DOO_GIT_PUSH: &str = "doo_git_push";
+pub const DOO_GIT_PULL: &str = "doo_git_pull";
+pub const DOO_GIT_IS_DIRTY: &str = "doo_git_is_dirty";
+pub const DOO_GIT_STASH: &str = "doo_git_stash";
+pub const DOO_GIT_STASH_POP: &str = "doo_git_stash_pop";
+pub const DOO_GIT_HAS_REMOTE: &str = "doo_git_has_remote";
+pub const DOO_GIT_HEAD_SHORT: &str = "doo_git_head_short";
+pub const DOO_GIT_COMMIT_ALL_BG: &str = "doo_git_commit_all_bg";
 
 // ============================================================================
 // Doo Config FFI (doo_ffi_core) - Single Source of Truth
