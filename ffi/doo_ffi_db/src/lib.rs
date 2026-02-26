@@ -359,12 +359,16 @@ pub extern "C" fn doo_db_raw_param(
             }
         };
 
+        let params_debug = format!("{:?}", params_array);
         match run_db_async(async move { drv.query(&sql_str, &params_array).await }) {
             Ok(json) => {
                 ffi_debug!("DB", "Query result, json length: {}", json.len());
                 db_result_ok(string_to_c(&json) as *mut c_void)
             }
-            Err(e) => db_result_err(500, &e),
+            Err(e) => {
+                ffi_debug!("DB", "Query error: {} | params were: {}", e, params_debug);
+                db_result_err(500, &format!("{} (params: {})", e, params_debug))
+            }
         }
     })
 }

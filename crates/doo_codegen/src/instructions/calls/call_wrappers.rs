@@ -2188,7 +2188,8 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 ctx.builder.position_at_end(err_block);
 
                 // Call doohttp_format_error_as_json to format the error message from the result
-                // The 'value' variable contains the error message pointer
+                // DooResult::err_str() wraps: data → wrapper → error_string_ptr
+                // Must dereference the wrapper to get the actual C string pointer
                 let format_error_fn = ctx
                     .module
                     .get_function(ffi_names::DOOHTTP_FORMAT_ERROR_AS_JSON)
@@ -2198,9 +2199,16 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                             .add_function(ffi_names::DOOHTTP_FORMAT_ERROR_AS_JSON, fn_type, None)
                     });
 
+                // Dereference wrapper pointer: load ptr from wrapper to get actual string
+                let error_msg_ptr = ctx
+                    .builder
+                    .build_load(ptr_type, value, "error_msg_deref")
+                    .map(|v| v.into_pointer_value())
+                    .unwrap_or(value);
+
                 let error_json_str = ctx
                     .builder
-                    .build_call(format_error_fn, &[value.into()], "formatted_error_json")
+                    .build_call(format_error_fn, &[error_msg_ptr.into()], "formatted_error_json")
                     .ok()
                     .and_then(|cs| cs.try_as_basic_value().basic())
                     .map(|v| v.into_pointer_value())
