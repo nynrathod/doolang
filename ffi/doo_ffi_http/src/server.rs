@@ -282,6 +282,15 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             None
         };
 
+    // Extract Origin header for CORS dynamic origin reflection (proper ownership, no RefCell).
+    // This is read once and borrowed through the response lifecycle.
+    let request_origin: String = req
+        .headers()
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
     // Built-in health check endpoints for container orchestration (fast path)
     // /health and /live — liveness probe: is the process alive?
     // /ready — readiness probe: is the server ready to accept traffic?
@@ -339,7 +348,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // Uses frozen CORS — zero lock contention
     if method == "OPTIONS" {
         if crate::middleware::has_frozen_cors() {
-            return Ok(build_response(204, ""));
+            let mut response = build_response(204, "");
+            apply_cors_headers(&mut response, &request_origin);
+            return Ok(response);
         }
     }
 
@@ -453,7 +464,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
         // Middleware routes call request.rs FFI functions that need get_current_request_path().
         // Body methods need it for content-length/type validation errors.
         // ========================================================================
-        let needs_headers = !middleware.is_empty() || has_body_method;
+        let needs_headers = !middleware.is_empty() || has_body_method || route_entry.needs_headers;
         if needs_headers {
             set_current_request_path(&path);
             clear_last_error();
@@ -579,9 +590,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         .bytes()
                         .enumerate()
                         .all(|(i, b)| b.is_ascii_digit() || (i == 0 && b == b'-'));
-                let is_float = !is_int
-                    && !value.is_empty()
-                    && value.parse::<f64>().is_ok();
+                let is_float = !is_int && !value.is_empty() && value.parse::<f64>().is_ok();
                 let is_bool = value == "true" || value == "false";
 
                 if is_int || is_float || is_bool {
@@ -737,14 +746,35 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // This is the SINGLE point where all Set-Cookie headers are applied.
     // Any auth strategy (OAuth, JWT login, refresh) pushes cookies via
     // doo_ffi_core::cookies::set_response_cookie() — we collect them here.
+    //
+    // Two sources of cookies:
+    // 1. Structured cookies (same DLL) — from code running in doo_ffi_http
+    // 2. Raw cookie headers (cross-DLL bridge) — from doo_ffi_auth via doo_http_push_cookie
     // ========================================================================
     let mut response = response;
     let pending_cookies = doo_ffi_core::cookies::take_response_cookies();
     for cookie in &pending_cookies {
         if let Ok(val) = hyper::header::HeaderValue::from_str(&cookie.to_header_value()) {
-            response.headers_mut().append(hyper::header::SET_COOKIE, val);
+            response
+                .headers_mut()
+                .append(hyper::header::SET_COOKIE, val);
         }
     }
+    // Cross-DLL cookies: auth DLL pushes raw Set-Cookie header strings via FFI bridge
+    let raw_cookies = doo_ffi_core::cookies::take_raw_cookies();
+    for raw in &raw_cookies {
+        if let Ok(val) = hyper::header::HeaderValue::from_str(raw) {
+            response
+                .headers_mut()
+                .append(hyper::header::SET_COOKIE, val);
+        }
+    }
+
+    // ========================================================================
+    // APPLY CORS HEADERS — Dynamic origin reflection.
+    // Single post-processing point: request_origin is borrowed, no RefCell.
+    // ========================================================================
+    apply_cors_headers(&mut response, &request_origin);
 
     // ========================================================================
     // SINGLE GENERIC logging point — reads status from the response itself.
@@ -817,6 +847,33 @@ unsafe fn free_doo_request_fields(req: *mut DooRequest) {
     // NOTE: Struct itself is NOT freed — it lives on the stack (MaybeUninit)
 }
 
+/// Apply CORS headers to a response using dynamic origin reflection.
+/// Takes the request's Origin header as a borrowed &str (proper ownership, no RefCell).
+/// Called at a single post-processing point in handle_request().
+fn apply_cors_headers(response: &mut Response<Full<Bytes>>, request_origin: &str) {
+    if let Some(cors) = crate::middleware::get_frozen_cors() {
+        if let Some(origin_val) = cors.get_origin_for_request(request_origin) {
+            let headers = response.headers_mut();
+            headers.insert("Access-Control-Allow-Origin", origin_val);
+            headers.insert("Access-Control-Allow-Methods", cors.methods.clone());
+            headers.insert("Access-Control-Allow-Headers", cors.headers.clone());
+            if cors.credentials {
+                headers.insert(
+                    "Access-Control-Allow-Credentials",
+                    hyper::header::HeaderValue::from_static("true"),
+                );
+            }
+            if let Some(ref max_age) = cors.max_age {
+                headers.insert("Access-Control-Max-Age", max_age.clone());
+            }
+            // Vary: Origin — required when origin changes per request (not wildcard)
+            if !cors.allow_all {
+                headers.insert("Vary", hyper::header::HeaderValue::from_static("Origin"));
+            }
+        }
+    }
+}
+
 /// Build HTTP response with frozen CORS headers (zero lock contention)
 fn build_response(status: i32, body: &str) -> Response<Full<Bytes>> {
     build_response_bytes(status, body.as_bytes())
@@ -831,20 +888,14 @@ fn build_response_bytes(status: i32, body: &[u8]) -> Response<Full<Bytes>> {
 /// Build a 3xx redirect response with Location header.
 /// Used by OAuth and any handler that returns a redirect via DooResult(tag>0, status=3xx).
 fn build_redirect(status: i32, url: &str) -> Response<Full<Bytes>> {
-    let status_code =
-        StatusCode::from_u16(status as u16).unwrap_or(StatusCode::FOUND);
+    let status_code = StatusCode::from_u16(status as u16).unwrap_or(StatusCode::FOUND);
 
     let mut builder = Response::builder()
         .status(status_code)
         .header("Location", url);
 
-    // Add CORS headers for redirect responses too
-    if let Some(cors) = crate::middleware::get_frozen_cors() {
-        builder = builder.header("Access-Control-Allow-Origin", cors.origin.clone());
-        if cors.credentials {
-            builder = builder.header("Access-Control-Allow-Credentials", "true");
-        }
-    }
+    // CORS headers are NOT added here — they're applied once in handle_request()
+    // via apply_cors_headers() with the request's Origin (proper ownership, no RefCell).
 
     builder
         .body(Full::new(Bytes::new()))
@@ -871,18 +922,8 @@ fn build_response_bytes_typed(
         .status(status_code)
         .header("Content-Type", content_type);
 
-    // Add CORS headers from frozen config — pre-computed HeaderValues, zero per-request alloc
-    if let Some(cors) = crate::middleware::get_frozen_cors() {
-        builder = builder.header("Access-Control-Allow-Origin", cors.origin.clone());
-        builder = builder.header("Access-Control-Allow-Methods", cors.methods.clone());
-        builder = builder.header("Access-Control-Allow-Headers", cors.headers.clone());
-        if cors.credentials {
-            builder = builder.header("Access-Control-Allow-Credentials", "true");
-        }
-        if let Some(ref max_age) = cors.max_age {
-            builder = builder.header("Access-Control-Max-Age", max_age.clone());
-        }
-    }
+    // CORS headers are NOT added here — they're applied once in handle_request()
+    // via apply_cors_headers() with the request's Origin (proper ownership, no RefCell).
 
     builder
         .body(Full::new(Bytes::copy_from_slice(body)))

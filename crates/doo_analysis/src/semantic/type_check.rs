@@ -112,6 +112,10 @@ pub struct TypeChecker {
     current_function: String,
     /// Routes seen for DuplicateRoute detection: (method, path).
     routes_seen: HashSet<(String, String)>,
+    /// Span of `app.auth()` call (tracking only, both auth methods allowed).
+    auth_call_span: Option<Span>,
+    /// Span of `app.oauth()` call (tracking only, both auth methods allowed).
+    oauth_call_span: Option<Span>,
     /// Function signatures: name -> param types.
     functions: HashMap<String, Vec<Option<TypeId>>>,
     /// Struct fields that are optional or have defaults (not required in constructors).
@@ -131,6 +135,8 @@ impl TypeChecker {
             current_return_type: None,
             current_function: String::new(),
             routes_seen: HashSet::new(),
+            auth_call_span: None,
+            oauth_call_span: None,
             functions: HashMap::new(),
             struct_optional_fields: HashMap::new(),
         }
@@ -1079,6 +1085,17 @@ impl TypeChecker {
 
                 self.check_method_receiver_type(recv_type, method, expr.span);
 
+                // Track auth method calls (both app.auth() and app.oauth() are allowed simultaneously)
+                match method.as_str() {
+                    "auth" => {
+                        self.auth_call_span = Some(expr.span);
+                    }
+                    "oauth" => {
+                        self.oauth_call_span = Some(expr.span);
+                    }
+                    _ => {}
+                }
+
                 // Compile-time route validation: detect duplicate routes
                 let is_http_method = matches!(
                     method.as_str(),
@@ -1606,6 +1623,7 @@ impl TypeChecker {
                 | "head"
                 | "use"
                 | "auth"
+                | "oauth"
                 | "cors"
                 | "logger"
                 | "static"

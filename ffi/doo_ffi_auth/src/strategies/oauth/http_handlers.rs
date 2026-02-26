@@ -66,6 +66,9 @@ struct OAuthConfig {
     providers: Vec<String>,
     /// Base path for OAuth routes (default: "/auth")
     base_path: String,
+    /// URL to redirect to after successful OAuth login.
+    /// Read from: app.oauth({CallbackUrl: "..."}) > OAUTH_CALLBACK_URL env var > None (returns JSON).
+    callback_url: Option<String>,
 }
 
 static OAUTH_CONFIG: OnceLock<OAuthConfig> = OnceLock::new();
@@ -114,6 +117,24 @@ fn make_redirect(url: &str) -> *mut DooResult {
         let result = DooResult::err(302, ptr as *mut c_void, 0);
         result.into_raw()
     }
+}
+
+/// Simple percent-encoding for URL query parameters.
+/// Encodes non-unreserved characters as %HH.
+fn percent_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 2);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push('%');
+                result.push_str(&format!("{:02X}", byte));
+            }
+        }
+    }
+    result
 }
 
 /// Create an HTTP error response using the centralized RFC 7807 format.
@@ -301,15 +322,38 @@ extern "C" fn oauth_callback_handler(req: *const c_void) -> *mut DooResult {
         match exchange_code(&provider, &code, &state) {
             Ok(json) => {
                 ffi_debug!("OAUTH", "OAuth exchange successful");
-                make_ok_json(&json)
+
+                // Cookies are already pushed to PENDING_COOKIES by exchange_code()
+                // via push_auth_cookies(). The HTTP server will add Set-Cookie headers
+                // to whatever response we return — including redirects.
+
+                // If callback URL is configured, redirect browser to that exact URL.
+                // The URL is used as-is — no path appended (user controls the full URL).
+                // If not configured, return JSON (backward compatible for API consumers).
+                let config = OAUTH_CONFIG.get();
+                if let Some(url) = config.and_then(|c| c.callback_url.as_deref()) {
+                    ffi_debug!("OAUTH", "Redirecting to: {}", url);
+                    make_redirect(url)
+                } else {
+                    make_ok_json(&json)
+                }
             }
             Err(e) => {
                 ffi_debug!("OAUTH", "OAuth exchange failed: {}", e);
-                let err_lower = e.to_lowercase();
-                if err_lower.contains("state") || err_lower.contains("csrf") {
-                    make_err_http(403, &format!("OAuth security error: {}", e), &path)
-                } else if err_lower.contains("invalid_grant") || err_lower.contains("expired") {
-                    make_err_http(401, &format!("OAuth grant error: {}", e), &path)
+
+                // If callback URL is configured, redirect with error query param
+                // so the frontend can handle it. URL is used as-is with ?error= appended.
+                let config = OAUTH_CONFIG.get();
+                if let Some(url) = config.and_then(|c| c.callback_url.as_deref()) {
+                    let separator = if url.contains('?') { "&" } else { "?" };
+                    let redirect_url = format!(
+                        "{}{}error={}",
+                        url,
+                        separator,
+                        percent_encode(&e)
+                    );
+                    ffi_debug!("OAUTH", "Redirecting to error: {}", redirect_url);
+                    make_redirect(&redirect_url)
                 } else {
                     make_err_http(500, &format!("OAuth exchange error: {}", e), &path)
                 }
@@ -441,8 +485,8 @@ extern "C" fn oauth_refresh_handler(req: *const c_void) -> *mut DooResult {
         })
         .to_string();
 
-        // Push rotated cookies — single centralized function
-        doo_ffi_core::cookies::push_auth_cookies(
+        // Push rotated cookies via cross-DLL bridge
+        push_cookies_via_http_bridge(
             &new_access,
             Some(&new_refresh),
             access_expiry as i64,
@@ -576,7 +620,81 @@ fn extract_provider_from_callback_path(path: &str) -> Option<String> {
 }
 
 // ============================================================================
-// RUNTIME ROUTE REGISTRATION — finds HTTP FFI symbol in process
+// GENERIC PROCESS-WIDE SYMBOL RESOLVER — zero hardcoded DLL names
+// ============================================================================
+
+/// Resolve a symbol by name from ANY loaded module in the current process.
+///
+/// Fully generic — zero hardcoded DLL names. Enumerates all loaded modules.
+///
+/// On Unix: `dlsym(RTLD_DEFAULT)` already searches everything.
+/// On Windows: `K32EnumProcessModules` iterates every loaded DLL + exe.
+fn resolve_symbol_in_process<T: Copy>(symbol_name: &[u8]) -> Option<T> {
+    #[cfg(unix)]
+    {
+        let addr = unsafe {
+            libc::dlsym(
+                libc::RTLD_DEFAULT,
+                symbol_name.as_ptr() as *const libc::c_char,
+            )
+        };
+        if !addr.is_null() {
+            return Some(unsafe { std::mem::transmute_copy(&addr) });
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let sym = symbol_name.as_ptr() as *const i8;
+
+        // Enumerate ALL loaded modules in the current process.
+        // K32EnumProcessModules is in kernel32.dll (available since Windows 7).
+        // Returns handles for every DLL + exe loaded, no names needed.
+        let process = unsafe { GetCurrentProcess() };
+        let mut modules: [*mut std::ffi::c_void; 512] = [std::ptr::null_mut(); 512];
+        let mut needed: u32 = 0;
+        let ok = unsafe {
+            K32EnumProcessModules(
+                process,
+                modules.as_mut_ptr(),
+                (modules.len() * std::mem::size_of::<*mut std::ffi::c_void>()) as u32,
+                &mut needed,
+            )
+        };
+
+        if ok != 0 {
+            let count = (needed as usize) / std::mem::size_of::<*mut std::ffi::c_void>();
+            for i in 0..count.min(modules.len()) {
+                if !modules[i].is_null() {
+                    let addr = unsafe { GetProcAddress(modules[i], sym) };
+                    if !addr.is_null() {
+                        return Some(unsafe { std::mem::transmute_copy(&addr) });
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn GetProcAddress(
+        hModule: *mut std::ffi::c_void,
+        lpProcName: *const i8,
+    ) -> *mut std::ffi::c_void;
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn K32EnumProcessModules(
+        hProcess: *mut std::ffi::c_void,
+        lphModule: *mut *mut std::ffi::c_void,
+        cb: u32,
+        lpcbNeeded: *mut u32,
+    ) -> i32;
+}
+
+// ============================================================================
+// RUNTIME ROUTE REGISTRATION — uses generic resolver
 // ============================================================================
 
 /// Type alias for the generic route registration function in HTTP FFI
@@ -587,78 +705,101 @@ type RegisterPackageRouteFn = extern "C" fn(
 ) -> *mut DooResult;
 
 /// Cached function pointer to `doo_http_register_package_route`.
-///
-/// Resolution: Search the current process symbol table via dlsym/GetProcAddress.
-/// Both doo_ffi_http and doo_ffi_auth are linked into the same final binary,
-/// so the symbol is always available in the process image.
 static REGISTER_FN: OnceLock<Option<RegisterPackageRouteFn>> = OnceLock::new();
 
-/// Resolve `doo_http_register_package_route` from the running process.
-///
-/// Uses raw platform APIs (libc::dlsym on Unix, GetProcAddress on Windows)
-/// to avoid third-party library indirection.
+/// Resolve `doo_http_register_package_route` from any loaded module.
 fn get_register_fn() -> Option<RegisterPackageRouteFn> {
     *REGISTER_FN.get_or_init(|| {
-        const SYMBOL_NAME: &[u8] = b"doo_http_register_package_route\0";
-
-        #[cfg(unix)]
-        {
-            // dlsym(RTLD_DEFAULT) searches: main binary → all loaded shared libraries
-            // Both static and dynamic linking make the symbol visible here.
-            let addr = unsafe {
-                libc::dlsym(
-                    libc::RTLD_DEFAULT,
-                    SYMBOL_NAME.as_ptr() as *const libc::c_char,
-                )
-            };
-
-            if !addr.is_null() {
-                ffi_debug!("OAUTH", "Found HTTP register fn via dlsym(RTLD_DEFAULT)");
-                let f: RegisterPackageRouteFn = unsafe { std::mem::transmute(addr) };
-                return Some(f);
-            }
-
-            // Log the dlsym error for diagnostics (always visible, even in release)
-            let err = unsafe { libc::dlerror() };
-            let err_msg = if err.is_null() {
-                "symbol not found (no dlerror detail)".to_string()
-            } else {
-                unsafe { std::ffi::CStr::from_ptr(err).to_string_lossy().to_string() }
-            };
+        let result: Option<RegisterPackageRouteFn> =
+            resolve_symbol_in_process(b"doo_http_register_package_route\0");
+        if result.is_some() {
+            ffi_debug!("OAUTH", "Found HTTP register fn via process symbol resolution");
+        } else {
             eprintln!(
-                "[doo_ffi_auth] ERROR: Could not find doo_http_register_package_route: {}",
-                err_msg
+                "[doo_ffi_auth] ERROR: Could not find doo_http_register_package_route in any loaded module"
             );
         }
-
-        #[cfg(windows)]
-        {
-            let sym_name = SYMBOL_NAME.as_ptr() as *const i8;
-            let module = unsafe { GetModuleHandleA(std::ptr::null()) };
-            if !module.is_null() {
-                let addr = unsafe { GetProcAddress(module, sym_name) };
-                if !addr.is_null() {
-                    ffi_debug!("OAUTH", "Found HTTP register fn via GetProcAddress");
-                    let f: RegisterPackageRouteFn = unsafe { std::mem::transmute(addr) };
-                    return Some(f);
-                }
-            }
-            eprintln!(
-                "[doo_ffi_auth] ERROR: Could not find doo_http_register_package_route via GetProcAddress"
-            );
-        }
-
-        None
+        result
     })
 }
 
-#[cfg(windows)]
-extern "system" {
-    fn GetModuleHandleA(lpModuleName: *const i8) -> *mut std::ffi::c_void;
-    fn GetProcAddress(
-        hModule: *mut std::ffi::c_void,
-        lpProcName: *const i8,
-    ) -> *mut std::ffi::c_void;
+// ============================================================================
+// CROSS-DLL COOKIE BRIDGE — Push cookies into the HTTP DLL's thread-local
+// ============================================================================
+
+/// Type alias for the cookie push function in HTTP FFI
+type PushCookieFn = extern "C" fn(cookie_header_value: *const c_char);
+
+/// Cached function pointer to `doo_http_push_cookie`.
+static PUSH_COOKIE_FN: OnceLock<Option<PushCookieFn>> = OnceLock::new();
+
+/// Resolve `doo_http_push_cookie` from any loaded module.
+fn get_push_cookie_fn() -> Option<PushCookieFn> {
+    *PUSH_COOKIE_FN.get_or_init(|| {
+        let result: Option<PushCookieFn> =
+            resolve_symbol_in_process(b"doo_http_push_cookie\0");
+        if result.is_some() {
+            ffi_debug!("OAUTH", "Found HTTP push cookie fn via process symbol resolution");
+        } else {
+            eprintln!(
+                "[doo_ffi_auth] WARNING: Could not find doo_http_push_cookie, falling back to local cookies"
+            );
+        }
+        result
+    })
+}
+
+/// Push auth cookies through the HTTP DLL's cookie bridge.
+///
+/// This is the cross-DLL replacement for `doo_ffi_core::cookies::push_auth_cookies()`.
+/// Each cookie is built as a Set-Cookie header string and sent to the HTTP DLL
+/// via `doo_http_push_cookie()`, which stores it in the HTTP DLL's thread-local.
+///
+/// Falls back to local push_auth_cookies if the HTTP bridge isn't available
+/// (e.g., running outside the HTTP server context).
+pub fn push_cookies_via_http_bridge(
+    access_token: &str,
+    refresh_token: Option<&str>,
+    access_expiry_secs: i64,
+    refresh_expiry_secs: i64,
+) {
+    if let Some(push_fn) = get_push_cookie_fn() {
+        // Build cookie header strings using doo_ffi_core cookie builders
+        let access_cookie = doo_ffi_core::cookies::ResponseCookie::access_token(
+            access_token,
+            access_expiry_secs,
+        );
+        let access_header = access_cookie.to_header_value();
+        let access_c = string_to_c(&access_header);
+        push_fn(access_c);
+        doo_ffi_core::doo_free(access_c as *mut u8);
+
+        if let Some(refresh) = refresh_token {
+            let refresh_path = std::env::var("AUTH_BASE_PATH")
+                .unwrap_or_else(|_| "/auth".to_string())
+                + "/refresh";
+            let refresh_cookie = doo_ffi_core::cookies::ResponseCookie::refresh_token(
+                refresh,
+                refresh_expiry_secs,
+                &refresh_path,
+            );
+            let refresh_header = refresh_cookie.to_header_value();
+            let refresh_c = string_to_c(&refresh_header);
+            push_fn(refresh_c);
+            doo_ffi_core::doo_free(refresh_c as *mut u8);
+        }
+
+        ffi_debug!("OAUTH", "Pushed cookies via HTTP bridge (cross-DLL)");
+    } else {
+        // Fallback: push locally (works when running in same DLL or testing)
+        ffi_debug!("OAUTH", "HTTP bridge unavailable, pushing cookies locally");
+        doo_ffi_core::cookies::push_auth_cookies(
+            access_token,
+            refresh_token,
+            access_expiry_secs,
+            refresh_expiry_secs,
+        );
+    }
 }
 
 /// Register a route with the HTTP server via runtime symbol resolution.
@@ -758,7 +899,14 @@ fn parse_oauth_config(json: &str) -> Result<(Vec<String>, String), String> {
 ///
 /// `providers`: Provider names (e.g., ["Google", "GitHub"])
 /// `base_path`: Base path for routes (e.g., "/auth")
-pub fn setup_from_map(providers: &[String], base_path: &str) -> Result<(), String> {
+/// `callback_url`: Optional URL to redirect to after successful OAuth exchange.
+///   - If set: redirect browser to this URL after setting cookies.
+///   - If None: return JSON response (API-style, no redirect).
+pub fn setup_from_map(
+    providers: &[String],
+    base_path: &str,
+    callback_url: Option<&str>,
+) -> Result<(), String> {
     if providers.is_empty() {
         return Err("At least one OAuth provider must be specified".to_string());
     }
@@ -778,20 +926,25 @@ pub fn setup_from_map(providers: &[String], base_path: &str) -> Result<(), Strin
         serde_json::to_string(&providers_lower).unwrap_or_else(|_| "[]".to_string());
     oauth_init(Some(&providers_json))?;
 
-    // Store config for handler use
+    // Get providers that were actually initialized (some may have been skipped
+    // due to missing credentials — init() now skips instead of failing entirely)
+    let initialized_providers = list_providers();
+
+    // Store config with only initialized providers for handler use
     let config = OAuthConfig {
-        providers: providers_lower.clone(),
+        providers: initialized_providers.clone(),
         base_path: base_path.to_string(),
+        callback_url: callback_url.map(|s| s.to_string()),
     };
 
     OAUTH_CONFIG
         .set(config)
         .map_err(|_| "OAuth already initialized".to_string())?;
 
-    // Register routes for each provider via runtime symbol resolution
+    // Register routes only for providers that were actually initialized
     let base = base_path.trim_end_matches('/');
 
-    for provider in &providers_lower {
+    for provider in &initialized_providers {
         let redirect_path = format!("{}/{}", base, provider);
         let callback_path = format!("{}/{}/callback", base, provider);
 
@@ -839,5 +992,6 @@ pub fn setup_from_map(providers: &[String], base_path: &str) -> Result<(), Strin
 pub fn setup(config_json: &str) -> Result<(), String> {
     // Parse configuration
     let (providers, base_path) = parse_oauth_config(config_json)?;
-    setup_from_map(&providers, &base_path)
+    let callback_url = std::env::var("OAUTH_CALLBACK_URL").ok();
+    setup_from_map(&providers, &base_path, callback_url.as_deref())
 }

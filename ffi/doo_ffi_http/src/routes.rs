@@ -358,8 +358,43 @@ pub extern "C" fn doo_http_register_package_route(
         // Cast void handler to DooHandlerFn — same C ABI layout
         // *const c_void and *const DooRequest are both raw pointers (identical ABI)
         let handler_fn: DooHandlerFn = unsafe { std::mem::transmute(handler) };
-        registry.register(&method_str, &path_str, handler_fn);
+
+        // Package routes are standalone handlers that need headers (cookies, auth, etc.)
+        // Use register_package() which sets needs_headers=true so the server extracts
+        // headers even for GET requests (unlike Doo-defined routes that may skip this).
+        registry.register_package(&method_str, &path_str, handler_fn);
 
         make_ok_void()
     })
+}
+
+/// Push a cookie from an external DLL (e.g., doo_ffi_auth) into the HTTP server's
+/// thread-local pending cookies.
+///
+/// # Why this exists
+///
+/// Each DLL gets its own copy of doo_ffi_core's thread-local `PENDING_COOKIES`.
+/// When doo_ffi_auth (in its DLL) pushes cookies via `doo_ffi_core::cookies::push_auth_cookies()`,
+/// those cookies go into doo_ffi_auth's thread-local — NOT doo_ffi_http's.
+/// The server post-processing reads from doo_ffi_http's thread-local → cookies lost.
+///
+/// This function bridges the gap: auth DLL calls this exported symbol to push cookies
+/// into the HTTP DLL's doo_ffi_core thread-local, where the server will find them.
+///
+/// # Parameters
+/// - `cookie_header_value`: C string containing the full Set-Cookie header value
+///   (e.g., "doo_access_token=eyJ...; Max-Age=3600; Path=/; HttpOnly; SameSite=Lax")
+#[no_mangle]
+pub extern "C" fn doo_http_push_cookie(cookie_header_value: *const c_char) {
+    if cookie_header_value.is_null() {
+        return;
+    }
+    let header_val = c_to_string(cookie_header_value);
+    if header_val.is_empty() {
+        return;
+    }
+
+    // Parse the Set-Cookie header value and push as a ResponseCookie
+    // into the HTTP DLL's thread-local pending cookies.
+    doo_ffi_core::cookies::push_raw_cookie_header(header_val);
 }

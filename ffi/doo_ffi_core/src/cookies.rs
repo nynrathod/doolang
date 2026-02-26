@@ -17,6 +17,26 @@
 //! - Path scoping: refresh token only sent to /auth/refresh
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// ============================================================================
+// RUNTIME COOKIE SECURITY OVERRIDE
+// ============================================================================
+
+/// Set by doo_ffi_http during CORS freeze when non-HTTPS origins are detected.
+/// When true, cookies will NOT have the Secure flag (allows HTTP in dev).
+/// This provides a runtime fallback independent of DOO_DEV env var propagation.
+static INSECURE_COOKIES: AtomicBool = AtomicBool::new(false);
+static INSECURE_COOKIES_SET: AtomicBool = AtomicBool::new(false);
+
+/// Called by doo_ffi_http during CORS freeze to inform the cookie system
+/// whether cookies should omit the Secure flag (e.g., when CORS origins use http://).
+///
+/// This is a runtime signal that doesn't depend on env var propagation.
+pub fn set_insecure_cookies(insecure: bool) {
+    INSECURE_COOKIES.store(insecure, Ordering::Relaxed);
+    INSECURE_COOKIES_SET.store(true, Ordering::Relaxed);
+}
 
 // ============================================================================
 // COOKIE NAMES — Single Source of Truth
@@ -65,7 +85,7 @@ impl ResponseCookie {
             max_age: None,
             path: Some("/".to_string()),
             domain: None,
-            secure: !is_dev_mode(),
+            secure: should_secure_cookie(),
             http_only: true,
             same_site: SameSite::Lax,
         }
@@ -79,7 +99,7 @@ impl ResponseCookie {
             max_age: Some(max_age_secs),
             path: Some("/".to_string()),
             domain: None,
-            secure: !is_dev_mode(),
+            secure: should_secure_cookie(),
             http_only: true,
             same_site: SameSite::Lax, // allows navigation (OAuth redirects)
         }
@@ -93,7 +113,7 @@ impl ResponseCookie {
             max_age: Some(max_age_secs),
             path: Some(refresh_path.to_string()),
             domain: None,
-            secure: !is_dev_mode(),
+            secure: should_secure_cookie(),
             http_only: true,
             same_site: SameSite::Strict, // only same-site (no cross-site refresh)
         }
@@ -107,7 +127,7 @@ impl ResponseCookie {
             max_age: Some(0),
             path: Some(path.to_string()),
             domain: None,
-            secure: !is_dev_mode(),
+            secure: should_secure_cookie(),
             http_only: true,
             same_site: SameSite::Lax,
         }
@@ -191,6 +211,31 @@ pub fn clear_pending_cookies() {
     PENDING_COOKIES.with(|c| c.borrow_mut().clear());
 }
 
+/// Push a pre-built Set-Cookie header value into the pending cookies.
+///
+/// This is used by the cross-DLL cookie bridge: auth DLL builds the cookie header
+/// string, passes it via FFI to the HTTP DLL, which calls this function to store
+/// it in the HTTP DLL's thread-local where the server can find it.
+///
+/// The header value is stored as-is in a RawCookie. The server writes it directly
+/// as a Set-Cookie response header without reparsing.
+pub fn push_raw_cookie_header(header_value: String) {
+    PENDING_RAW_COOKIES.with(|c| c.borrow_mut().push(header_value));
+}
+
+/// Take all pending raw cookie headers and clear the list.
+pub fn take_raw_cookies() -> Vec<String> {
+    PENDING_RAW_COOKIES.with(|c| {
+        let mut cookies = c.borrow_mut();
+        std::mem::take(&mut *cookies)
+    })
+}
+
+/// Thread-local raw cookie headers pushed via cross-DLL bridge.
+thread_local! {
+    static PENDING_RAW_COOKIES: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
 // ============================================================================
 // COOKIE PARSING — Extract token from Cookie header
 // ============================================================================
@@ -215,20 +260,31 @@ pub fn extract_cookie_value<'a>(cookie_header: &'a str, cookie_name: &str) -> Op
 // HELPERS
 // ============================================================================
 
-/// Check if running in development mode (not release build or DOO_DEV set).
-/// In dev mode, Secure flag is not set (allows HTTP, not just HTTPS).
+/// Determine whether cookie Secure flag should be set.
+///
+/// Returns false (no Secure flag) when ANY of these is true:
+/// - Debug build (`cfg!(debug_assertions)`)
+/// - DOO_DEV=1 or DOO_DEV=true env var
+/// - Runtime flag set by doo_ffi_http when CORS origins use http://
+///
+/// Returns true only in production (release build, no DOO_DEV, HTTPS origins).
+fn should_secure_cookie() -> bool {
+    !is_dev_mode()
+}
+
 fn is_dev_mode() -> bool {
     cfg!(debug_assertions)
         || std::env::var(crate::constants::ENV_DOO_DEV)
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false)
+        || (INSECURE_COOKIES_SET.load(Ordering::Relaxed)
+            && INSECURE_COOKIES.load(Ordering::Relaxed))
 }
 
 /// Get the auth base path from env (single source of truth).
 /// Used for cookie path scoping on refresh tokens.
 fn get_auth_base_path() -> String {
-    std::env::var(crate::constants::ENV_AUTH_BASE_PATH)
-        .unwrap_or_else(|_| "/auth".to_string())
+    std::env::var(crate::constants::ENV_AUTH_BASE_PATH).unwrap_or_else(|_| "/auth".to_string())
 }
 
 /// Get the refresh endpoint path (base_path + "/refresh").
@@ -255,7 +311,10 @@ pub fn push_auth_cookies(
     access_expiry_secs: i64,
     refresh_expiry_secs: i64,
 ) {
-    set_response_cookie(ResponseCookie::access_token(access_token, access_expiry_secs));
+    set_response_cookie(ResponseCookie::access_token(
+        access_token,
+        access_expiry_secs,
+    ));
 
     if let Some(refresh) = refresh_token {
         set_response_cookie(ResponseCookie::refresh_token(
@@ -272,7 +331,10 @@ pub fn push_auth_cookies(
 /// to delete them. **This is the ONE logout cookie function.**
 pub fn push_clear_cookies() {
     set_response_cookie(ResponseCookie::clear(COOKIE_ACCESS_TOKEN, "/"));
-    set_response_cookie(ResponseCookie::clear(COOKIE_REFRESH_TOKEN, &get_refresh_path()));
+    set_response_cookie(ResponseCookie::clear(
+        COOKIE_REFRESH_TOKEN,
+        &get_refresh_path(),
+    ));
 }
 
 #[cfg(test)]
@@ -309,8 +371,14 @@ mod tests {
     #[test]
     fn test_extract_cookie_value() {
         let header = "doo_access_token=abc123; doo_refresh_token=xyz789; other=val";
-        assert_eq!(extract_cookie_value(header, "doo_access_token"), Some("abc123"));
-        assert_eq!(extract_cookie_value(header, "doo_refresh_token"), Some("xyz789"));
+        assert_eq!(
+            extract_cookie_value(header, "doo_access_token"),
+            Some("abc123")
+        );
+        assert_eq!(
+            extract_cookie_value(header, "doo_refresh_token"),
+            Some("xyz789")
+        );
         assert_eq!(extract_cookie_value(header, "nonexistent"), None);
     }
 
@@ -318,7 +386,11 @@ mod tests {
     fn test_pending_cookies() {
         clear_pending_cookies();
         set_response_cookie(ResponseCookie::access_token("token1", 3600));
-        set_response_cookie(ResponseCookie::refresh_token("token2", 604800, "/auth/refresh"));
+        set_response_cookie(ResponseCookie::refresh_token(
+            "token2",
+            604800,
+            "/auth/refresh",
+        ));
 
         let cookies = take_response_cookies();
         assert_eq!(cookies.len(), 2);

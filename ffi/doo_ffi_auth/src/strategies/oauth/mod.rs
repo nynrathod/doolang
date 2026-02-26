@@ -96,21 +96,53 @@ pub fn init(config_json: Option<&str>) -> Result<(), String> {
     }
 
     let mut providers: HashMap<String, Box<dyn OAuthProvider>> = HashMap::new();
+    let mut skipped: Vec<(String, String)> = Vec::new();
 
     for name in &provider_names {
-        let provider: Box<dyn OAuthProvider> = match name.as_str() {
-            "google" => Box::new(google::GoogleProvider::from_env()?),
-            "github" => Box::new(github::GitHubProvider::from_env()?),
+        let result: Result<Box<dyn OAuthProvider>, String> = match name.as_str() {
+            "google" => google::GoogleProvider::from_env().map(|p| Box::new(p) as Box<dyn OAuthProvider>),
+            "github" => github::GitHubProvider::from_env().map(|p| Box::new(p) as Box<dyn OAuthProvider>),
             _ => {
-                return Err(format!(
-                    "Unknown OAuth provider: '{}'. Available: google, github",
-                    name
-                ))
+                skipped.push((name.clone(), format!("Unknown provider: '{}'", name)));
+                continue;
             }
         };
 
-        doo_ffi_core::ffi_debug!("OAuth", "Registered provider: {}", name);
-        providers.insert(name.clone(), provider);
+        match result {
+            Ok(provider) => {
+                doo_ffi_core::ffi_debug!("OAuth", "Registered provider: {}", name);
+                providers.insert(name.clone(), provider);
+            }
+            Err(reason) => {
+                doo_ffi_core::ffi_debug!(
+                    "OAuth",
+                    "Skipping provider '{}': {} (credentials not configured)",
+                    name,
+                    reason
+                );
+                skipped.push((name.clone(), reason));
+            }
+        }
+    }
+
+    if providers.is_empty() {
+        let reasons: Vec<String> = skipped
+            .iter()
+            .map(|(name, reason)| format!("{}: {}", name, reason))
+            .collect();
+        return Err(format!(
+            "No OAuth providers could be initialized. All failed:\n  {}",
+            reasons.join("\n  ")
+        ));
+    }
+
+    if !skipped.is_empty() {
+        for (name, reason) in &skipped {
+            eprintln!(
+                "[OAuth] Warning: Provider '{}' skipped — {}. Routes will not be registered for this provider.",
+                name, reason
+            );
+        }
     }
 
     PROVIDERS
@@ -123,8 +155,9 @@ pub fn init(config_json: Option<&str>) -> Result<(), String> {
 
     doo_ffi_core::ffi_debug!(
         "OAuth",
-        "Initialized with {} providers",
-        provider_names.len()
+        "Initialized with {} providers ({} skipped)",
+        provider_names.len() - skipped.len(),
+        skipped.len()
     );
     Ok(())
 }
@@ -280,9 +313,9 @@ pub fn exchange_code(provider_name: &str, code: &str, state: &str) -> Result<Str
         provider_refresh_token: token_response.refresh_token,
     };
 
-    // Push httpOnly cookies — the HTTP server adds Set-Cookie headers automatically.
-    // Uses the single centralized cookie function (no manual cookie building here).
-    doo_ffi_core::cookies::push_auth_cookies(
+    // Push httpOnly cookies via the cross-DLL bridge — ensures cookies land in the
+    // HTTP DLL's thread-local (not auth DLL's), where the server can find them.
+    http_handlers::push_cookies_via_http_bridge(
         &access_token,
         Some(&refresh_token),
         access_expiry as i64,

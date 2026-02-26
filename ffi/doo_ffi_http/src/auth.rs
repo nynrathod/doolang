@@ -801,15 +801,17 @@ pub extern "C" fn doo_http_auth(
 
         // Auto-register /auth/me — returns current user identity from JWT claims.
         // Derives the me_path from the common prefix of signup/login paths, or defaults to /auth/me.
-        // Protected by JWT middleware so user_id is always available.
+        // Uses deferred registration: if a package (e.g., OAuth) later registers the same path,
+        // the package route takes priority. Otherwise, this route is registered with JWT middleware
+        // at freeze time. This avoids route conflicts between app.auth() and app.oauth().
         let me_path = derive_auth_me_path(&signup_str, &login_str);
-        registry.register_with_middleware(
+        registry.defer_route(
             "GET",
             &me_path,
             auth_me_handler,
             vec![crate::middleware::jwt_middleware_handler],
         );
-        ffi_debug!("HTTP", "Auto-registered GET {} for auth identity (JWT protected)", me_path);
+        ffi_debug!("HTTP", "Deferred GET {} for auth identity (JWT protected, yields to packages)", me_path);
 
         make_ok_void()
     })

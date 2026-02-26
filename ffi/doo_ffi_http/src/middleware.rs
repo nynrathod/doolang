@@ -21,9 +21,13 @@ static LOGGER_CONFIG: OnceLock<Mutex<Option<LoggerConfig>>> = OnceLock::new();
 // ============================================================================
 
 /// Pre-computed CORS header values as `HeaderValue` (immutable after freeze).
-/// Avoids per-request `HeaderValue::from_str()` allocation + ASCII validation.
+/// Uses dynamic origin reflection — the industry-standard approach for CORS with credentials.
+/// Instead of a static origin header, the request's Origin is matched against allowed origins.
 pub struct FrozenCorsHeaders {
-    pub origin: HeaderValue,
+    /// Allowed origins — matched against the request's Origin header at request time.
+    pub allowed_origins: Vec<String>,
+    /// True if origins includes "*" (allow all).
+    pub allow_all: bool,
     pub methods: HeaderValue,
     pub headers: HeaderValue,
     pub credentials: bool,
@@ -35,15 +39,42 @@ static FROZEN_CORS: OnceLock<Option<FrozenCorsHeaders>> = OnceLock::new();
 
 /// Freeze CORS config into pre-computed `HeaderValue`s.
 /// Called once before the accept loop starts.
+/// Uses exactly what was configured via `.cors()` or `.cors({...})` — no env var reading.
 pub fn freeze_cors() {
     let cors = get_cors_config().lock().ok().and_then(|guard| {
         guard.as_ref().map(|config| {
-            let origin_str = config.origins.join(", ");
+            // Strip paths from origin URLs (CORS origins must be scheme://host[:port] only)
+            let origins: Vec<String> = config
+                .origins
+                .iter()
+                .map(|o| {
+                    if o.starts_with("http://") || o.starts_with("https://") {
+                        if let Some(scheme_end) = o.find("://") {
+                            let after_scheme = &o[scheme_end + 3..];
+                            if let Some(path_start) = after_scheme.find('/') {
+                                return o[..scheme_end + 3 + path_start].to_string();
+                            }
+                        }
+                    }
+                    o.clone()
+                })
+                .collect();
+
+            // If any CORS origin uses http:// (not https://), inform the cookie
+            // system that Secure flag should be omitted. This is a runtime signal
+            // that doesn't depend on DOO_DEV env var propagation.
+            let has_http_origin = origins.iter().any(|o| o.starts_with("http://"));
+            if has_http_origin && config.credentials {
+                doo_ffi_core::cookies::set_insecure_cookies(true);
+            }
+
+            let allow_all = origins.iter().any(|o| o == "*");
             let methods_str = config.methods.join(", ");
             let headers_str = config.headers.join(", ");
+
             FrozenCorsHeaders {
-                origin: HeaderValue::from_str(&origin_str)
-                    .unwrap_or_else(|_| HeaderValue::from_static("*")),
+                allowed_origins: origins,
+                allow_all,
                 methods: HeaderValue::from_str(&methods_str)
                     .unwrap_or_else(|_| HeaderValue::from_static("GET, POST, OPTIONS")),
                 headers: HeaderValue::from_str(&headers_str)
@@ -62,6 +93,38 @@ pub fn freeze_cors() {
 #[inline]
 pub fn get_frozen_cors() -> Option<&'static FrozenCorsHeaders> {
     FROZEN_CORS.get().and_then(|opt| opt.as_ref())
+}
+
+impl FrozenCorsHeaders {
+    /// Get the correct `Access-Control-Allow-Origin` header value for a given request origin.
+    /// This implements dynamic origin reflection — the industry standard for CORS with credentials.
+    ///
+    /// Rules:
+    /// - If allow_all and no credentials: returns "*"
+    /// - If allow_all and credentials: reflects the request origin (wildcard + credentials is invalid per spec)
+    /// - If specific origins: reflects the request origin only if it matches the allowed list
+    /// - If no match: returns None (CORS headers should not be set)
+    pub fn get_origin_for_request(&self, request_origin: &str) -> Option<HeaderValue> {
+        if self.allow_all {
+            if self.credentials && !request_origin.is_empty() {
+                // Wildcard + credentials: reflect the request origin
+                HeaderValue::from_str(request_origin).ok()
+            } else {
+                Some(HeaderValue::from_static("*"))
+            }
+        } else if request_origin.is_empty() {
+            // No Origin header (same-origin request) — use first allowed origin
+            self.allowed_origins
+                .first()
+                .and_then(|o| HeaderValue::from_str(o).ok())
+        } else if self.allowed_origins.iter().any(|o| o == request_origin) {
+            // Origin matches allowed list — reflect it
+            HeaderValue::from_str(request_origin).ok()
+        } else {
+            // Origin not in allowed list — no CORS headers
+            None
+        }
+    }
 }
 
 /// Check if CORS is configured (lock-free after freeze)
@@ -135,8 +198,11 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
                 .get("cookie")
                 .or_else(|| (*headers).get("Cookie"));
             cookie_header.and_then(|h| {
-                doo_ffi_core::cookies::extract_cookie_value(h, doo_ffi_core::cookies::COOKIE_ACCESS_TOKEN)
-                    .map(|s| s.to_string())
+                doo_ffi_core::cookies::extract_cookie_value(
+                    h,
+                    doo_ffi_core::cookies::COOKIE_ACCESS_TOKEN,
+                )
+                .map(|s| s.to_string())
             })
         } else {
             None
@@ -211,6 +277,19 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
             doo_ffi_core::doo_free((*req_mut).user_id as *mut u8);
         }
         (*req_mut).user_id = string_to_c(&user_id_str);
+
+        // Also inject user_id into request headers so handlers can use
+        // req.header("X-User-Id") to retrieve the authenticated user's ID.
+        // This enables multi-param handlers (e.g., needing both userId and body)
+        // without requiring compiler changes for multi-param JWT injection.
+        let headers_ptr = (*req_mut).headers as *mut HashMap<String, String>;
+        if !headers_ptr.is_null() {
+            (*headers_ptr).insert("x-user-id".to_string(), user_id_str.clone());
+        } else {
+            let mut map = HashMap::new();
+            map.insert("x-user-id".to_string(), user_id_str.clone());
+            (*req_mut).headers = Box::into_raw(Box::new(map)) as *mut std::ffi::c_void;
+        }
 
         // Call next handler with the verified request
         next(req)

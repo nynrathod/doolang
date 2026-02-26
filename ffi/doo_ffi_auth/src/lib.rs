@@ -662,7 +662,16 @@ pub extern "C" fn doo_auth_oauth_setup(
         // Store base path for cookie path scoping (used by refresh handler + FFI functions)
         std::env::set_var(doo_ffi_core::constants::ENV_AUTH_BASE_PATH, &base_path);
 
-        match strategies::oauth::http_handlers::setup_from_map(&providers, &base_path) {
+        // Read optional "CallbackUrl" key — where to redirect after successful OAuth login.
+        // Falls back to OAUTH_CALLBACK_URL env var if not set in config.
+        let callback_url = map
+            .get("CallbackUrl")
+            .or_else(|| map.get("callbackUrl"))
+            .or_else(|| map.get("callback_url"))
+            .cloned()
+            .or_else(|| std::env::var("OAUTH_CALLBACK_URL").ok());
+
+        match strategies::oauth::http_handlers::setup_from_map(&providers, &base_path, callback_url.as_deref()) {
             Ok(()) => make_ok_string("ok"),
             Err(e) => make_err(AuthErrorCode::InvalidRequest, &e),
         }
@@ -758,8 +767,8 @@ pub extern "C" fn doo_auth_refresh(
         })
         .to_string();
 
-        // Push rotated cookies — single centralized function
-        doo_ffi_core::cookies::push_auth_cookies(
+        // Push rotated cookies via cross-DLL bridge
+        crate::strategies::oauth::http_handlers::push_cookies_via_http_bridge(
             &new_access,
             Some(&new_refresh),
             access_expiry as i64,
@@ -806,8 +815,8 @@ pub extern "C" fn doo_auth_set_cookies(
             None
         };
 
-        // Single centralized function — no manual cookie building
-        doo_ffi_core::cookies::push_auth_cookies(
+        // Push cookies via cross-DLL bridge — ensures they reach the HTTP DLL's thread-local
+        crate::strategies::oauth::http_handlers::push_cookies_via_http_bridge(
             &access,
             refresh.as_deref(),
             access_expiry as i64,

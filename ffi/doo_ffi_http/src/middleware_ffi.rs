@@ -13,7 +13,10 @@ use doo_ffi_core::{ffi_safe_cstr, ffi_safe_ptr, ffi_safe_void};
 
 use crate::helpers::{c_to_string, string_to_c};
 use crate::make_ok_void;
-use crate::map_ops::{doo_map_get_str, parse_json_bool_or_default, parse_json_i64_or_default, parse_json_string_or_default};
+use crate::map_ops::{
+    doo_map_get_str, parse_json_bool_or_default, parse_json_i64_or_default,
+    parse_json_string_or_default,
+};
 use crate::middleware::*;
 use crate::router::get_routes;
 use crate::types::*;
@@ -76,7 +79,10 @@ pub extern "C" fn doo_http_jwt() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn doo_http_cors(server: *mut c_void) -> *mut c_void {
     ffi_safe_ptr!({
+        // Default CORS: wildcard origin, no credentials.
+        // For specific origins or credentials, use .cors({origins: "...", credentials: "true"})
         let config = CorsConfig::default();
+
         *get_cors_config().lock().unwrap_or_else(|e| e.into_inner()) = Some(config);
 
         let routes = get_routes();
@@ -274,10 +280,7 @@ pub extern "C" fn doo_http_group(
 /// Called when user writes `app.logger()` with no arguments.
 /// Returns server pointer for chaining.
 #[no_mangle]
-pub extern "C" fn doo_http_logger_custom(
-    server: *mut c_void,
-    options: *mut c_void,
-) -> *mut c_void {
+pub extern "C" fn doo_http_logger_custom(server: *mut c_void, options: *mut c_void) -> *mut c_void {
     ffi_safe_ptr!({
         let config = if options.is_null() {
             // Default: all levels enabled
@@ -317,7 +320,9 @@ pub extern "C" fn doo_http_logger_custom(
             }
         };
 
-        *get_logger_config().lock().unwrap_or_else(|e| e.into_inner()) = Some(config);
+        *get_logger_config()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(config);
         server
     })
 }

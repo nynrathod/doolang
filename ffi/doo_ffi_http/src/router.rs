@@ -4,7 +4,7 @@
 use crate::types::*;
 use doo_ffi_core::ffi_debug;
 use matchit::Router as MatchitRouter;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 /// Route entry with handler and middleware
@@ -12,6 +12,10 @@ pub struct RouteEntry {
     pub handler: DooHandlerFn,
     pub handler_name: Option<String>,
     pub middleware: Vec<DooMiddlewareFn>,
+    /// Package routes (OAuth, etc.) need headers extracted even without middleware.
+    /// Without this, GET package routes skip header extraction and handlers
+    /// can't read cookies or Authorization headers.
+    pub needs_headers: bool,
 }
 
 /// Configuration for auth routes
@@ -27,6 +31,16 @@ pub struct CrudConfig {
     pub resource_struct: String,
 }
 
+/// A deferred route registration — registered at freeze time only if no package
+/// has already claimed the same method+path. This lets packages (OAuth, etc.)
+/// take priority over system-registered routes without route conflicts.
+struct DeferredRoute {
+    method: String,
+    path: String,
+    handler: DooHandlerFn,
+    middleware: Vec<DooMiddlewareFn>,
+}
+
 /// Route registry with method-based routing
 pub struct RouteRegistry {
     routers: HashMap<String, MatchitRouter<RouteEntry>>,
@@ -37,6 +51,11 @@ pub struct RouteRegistry {
     pub route_count: usize,
     pub auth_config: Option<AuthConfig>,
     pub crud_configs: Vec<CrudConfig>,
+    /// Paths registered by packages (format: "METHOD:PATH"), used to check
+    /// whether a deferred route should be skipped at freeze time.
+    package_paths: HashSet<String>,
+    /// Routes deferred until freeze — only registered if no package claimed the path.
+    deferred_routes: Vec<DeferredRoute>,
 }
 
 impl RouteRegistry {
@@ -50,12 +69,64 @@ impl RouteRegistry {
             route_count: 0,
             auth_config: None,
             crud_configs: Vec::new(),
+            package_paths: HashSet::new(),
+            deferred_routes: Vec::new(),
         }
     }
 
     /// Register a route with handler function
     pub fn register(&mut self, method: &str, path: &str, handler: DooHandlerFn) {
         self.register_with_name(method, path, handler, None);
+    }
+
+    /// Register a package route — always extracts headers (cookies, auth, etc.)
+    ///
+    /// Package routes are STANDALONE — they do NOT inherit global middleware.
+    /// This is critical because:
+    /// - OAuth routes handle their own auth (cookies, tokens)
+    /// - JWT middleware would incorrectly block auth routes like /auth/me
+    /// - CORS headers are applied in post-processing, not via middleware
+    /// - Packages manage their own security context
+    pub fn register_package(&mut self, method: &str, path: &str, handler: DooHandlerFn) {
+        let method_upper = method.to_uppercase();
+
+        // Track this path so deferred routes know a package claimed it
+        self.package_paths
+            .insert(format!("{}:{}", method_upper, path));
+
+        let router = self
+            .routers
+            .entry(method_upper.clone())
+            .or_insert_with(MatchitRouter::new);
+
+        let entry = RouteEntry {
+            handler,
+            handler_name: None,
+            middleware: Vec::new(), // No global middleware — package handles its own auth
+            needs_headers: true,
+        };
+
+        match router.insert(path, entry) {
+            Ok(_) => {
+                self.route_count += 1;
+                ffi_debug!(
+                    "ROUTER",
+                    "Registered (package): {} {} (total: {})",
+                    method_upper,
+                    path,
+                    self.route_count
+                );
+            }
+            Err(e) => {
+                ffi_debug!(
+                    "ROUTER",
+                    "Failed to register package {} {}: {:?}",
+                    method_upper,
+                    path,
+                    e
+                );
+            }
+        }
     }
 
     /// Register a route with handler function and name
@@ -76,6 +147,7 @@ impl RouteRegistry {
             handler,
             handler_name: handler_name.clone(),
             middleware: self.global_middleware.clone(),
+            needs_headers: false,
         };
 
         match router.insert(path, entry) {
@@ -160,6 +232,7 @@ impl RouteRegistry {
             handler,
             handler_name: handler_name.clone(),
             middleware: mw,
+            needs_headers: false,
         };
 
         match router.insert(path, entry) {
@@ -183,6 +256,30 @@ impl RouteRegistry {
                 );
             }
         }
+    }
+
+    /// Defer a route registration until freeze time.
+    /// At freeze, the route is only registered if no package has claimed the same path.
+    /// This lets packages (e.g., OAuth) override system routes without conflicts.
+    pub fn defer_route(
+        &mut self,
+        method: &str,
+        path: &str,
+        handler: DooHandlerFn,
+        middleware: Vec<DooMiddlewareFn>,
+    ) {
+        self.deferred_routes.push(DeferredRoute {
+            method: method.to_uppercase(),
+            path: path.to_string(),
+            handler,
+            middleware,
+        });
+        ffi_debug!(
+            "ROUTER",
+            "Deferred: {} {} (will register at freeze if no package claims it)",
+            method.to_uppercase(),
+            path
+        );
     }
 
     /// Add global middleware
@@ -293,9 +390,41 @@ pub fn get_routes() -> &'static Mutex<RouteRegistry> {
 /// Freeze the registry — move from Mutex to lock-free OnceLock.
 /// Called exactly once before the accept loop starts.
 /// After this, `get_frozen_routes()` provides zero-cost access.
+///
+/// Processes deferred routes: routes deferred by `defer_route()` are only
+/// registered if no package has claimed the same method+path. This allows
+/// packages (OAuth, etc.) to override system-registered routes generically.
 pub fn freeze_routes() {
     let routes = get_routes();
     let mut guard = routes.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Process deferred routes before freezing — package routes take priority
+    let deferred = std::mem::take(&mut guard.deferred_routes);
+    for route in deferred {
+        let key = format!("{}:{}", route.method, route.path);
+        if guard.package_paths.contains(&key) {
+            ffi_debug!(
+                "ROUTER",
+                "Skipped deferred {} {} — package route takes priority",
+                route.method,
+                route.path
+            );
+        } else {
+            guard.register_with_middleware(
+                &route.method,
+                &route.path,
+                route.handler,
+                route.middleware,
+            );
+            ffi_debug!(
+                "ROUTER",
+                "Registered deferred {} {} (no package conflict)",
+                route.method,
+                route.path
+            );
+        }
+    }
+
     let registry = std::mem::replace(&mut *guard, RouteRegistry::new());
     let _ = FROZEN_ROUTES.set(registry);
 }
