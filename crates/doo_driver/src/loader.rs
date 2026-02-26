@@ -792,9 +792,7 @@ pub fn resolve_imports(
                     if nested_import.path.len() >= 2 {
                         let module_name = &nested_import.path[1];
                         let module_key = format!("std::{}", module_name);
-                        if !nested_std_import_requests.contains_key(&module_key)
-                            && !std_import_requests.contains_key(&module_key)
-                        {
+                        if !nested_std_import_requests.contains_key(&module_key) {
                             nested_std_import_order.push(module_key.clone());
                         }
                         let symbols = nested_std_import_requests.entry(module_key).or_default();

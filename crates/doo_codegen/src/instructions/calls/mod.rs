@@ -447,6 +447,22 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     match kind {
                         TypeKind::Struct { name, .. } => Some(name),
                         TypeKind::Enum { name, .. } => Some(name),
+                        TypeKind::TypeRef { name } => {
+                            // Resolve TypeRef to its underlying struct/enum name
+                            if let Some(resolved_tid) = ctx.type_registry.lookup(&name) {
+                                if let Some(resolved_kind) = ctx.get_type_kind(resolved_tid) {
+                                    match resolved_kind {
+                                        TypeKind::Struct { name: n, .. } => Some(n),
+                                        TypeKind::Enum { name: n, .. } => Some(n),
+                                        _ => Some(name),
+                                    }
+                                } else {
+                                    Some(name)
+                                }
+                            } else {
+                                Some(name)
+                            }
+                        }
                         _ => None,
                     }
                 } else {

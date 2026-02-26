@@ -73,12 +73,13 @@ pub struct MirBuilder<'a> {
     pub(crate) closure_counter: usize,
 
     /// Pending closure functions to be added to the program.
-    /// Each entry is (func_name, params, body_expr, captures).
+    /// Each entry is (func_name, params, body_expr, captures, captures_by_value).
     pub(crate) pending_closures: Vec<(
         String,
         Vec<(String, Option<CoreTypeId>)>,
         Box<HirExpr>,
         Vec<String>,
+        bool,
     )>,
 
     /// Closure return types for type propagation.
@@ -337,9 +338,10 @@ impl<'a> MirBuilder<'a> {
         }
 
         // Generate MIR functions for all pending closures
-        while let Some((closure_name, params, body, captures)) = self.pending_closures.pop() {
-            let closure_func =
+        while let Some((closure_name, params, body, captures, by_value)) = self.pending_closures.pop() {
+            let mut closure_func =
                 self.build_closure_function(&closure_name, &params, &body, &captures);
+            closure_func.captures_by_value = by_value;
             program.functions.push(closure_func);
         }
 

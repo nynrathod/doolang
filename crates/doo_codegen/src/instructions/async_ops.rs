@@ -113,8 +113,8 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                 let func_val = ctx.get_function(&resolve(*func))?;
                 let func_ptr = func_val.as_global_value().as_pointer_value();
 
-                // Pack captures into env struct (or null if none)
-                let env_ptr = build_env_pack(ctx, captures)?;
+                // Pack captures into env struct — VALUE capture for fire-and-forget Spawn
+                let env_ptr = build_env_pack(ctx, captures, true)?;
 
                 let spawn_fn = get_or_declare_doo_spawn(ctx);
                 let call_site = ctx
@@ -179,8 +179,8 @@ impl<'ctx> InstructionHandler<'ctx> for AsyncOpsHandler {
                 let func_val = ctx.get_function(&resolve(*func))?;
                 let func_ptr = func_val.as_global_value().as_pointer_value();
 
-                // Pack captures into env struct (or null if none)
-                let env_ptr = build_env_pack(ctx, captures)?;
+                // Pack captures into env struct — REFERENCE capture for ScopeSpawn (parent waits)
+                let env_ptr = build_env_pack(ctx, captures, false)?;
 
                 let scope_spawn_fn = get_or_declare_doo_scope_spawn(ctx);
                 let _ = ctx
@@ -475,6 +475,7 @@ pub fn get_or_declare_doo_spawn_blocking<'ctx>(
 fn build_env_pack<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     captures: &[doo_mir::MirOperand],
+    by_value: bool,
 ) -> Option<inkwell::values::PointerValue<'ctx>> {
     if captures.is_empty() {
         // No captures — pass null env pointer
@@ -495,7 +496,6 @@ fn build_env_pack<'ctx>(
         .basic()?
         .into_pointer_value();
 
-    // Store POINTER to each captured variable's alloca (reference capture)
     for (i, cap) in captures.iter().enumerate() {
         let cap_name = match cap {
             doo_mir::MirOperand::Local(n) | doo_mir::MirOperand::Temp(n) => resolve(*n),
@@ -508,11 +508,21 @@ fn build_env_pack<'ctx>(
             None => continue,
         };
 
-        // Convert alloca pointer to i64 for uniform storage
-        let as_i64 = ctx
-            .builder
-            .build_ptr_to_int(alloca_ptr, i64_ty, &format!("cap_ref_{}", i))
-            .ok()?;
+        let as_i64 = if by_value {
+            // VALUE CAPTURE: Load the actual value from the alloca, store it in env.
+            // This is safe for fire-and-forget Spawn because the value is copied,
+            // not a pointer to the parent's stack frame which gets freed.
+            let loaded = ctx
+                .builder
+                .build_load(i64_ty, alloca_ptr, &format!("cap_load_{}", i))
+                .ok()?;
+            loaded.into_int_value()
+        } else {
+            // REFERENCE CAPTURE: Store pointer to alloca (for ScopeSpawn where parent waits)
+            ctx.builder
+                .build_ptr_to_int(alloca_ptr, i64_ty, &format!("cap_ref_{}", i))
+                .ok()?
+        };
 
         // GEP to the i-th i64 slot and store
         let field_ptr = unsafe {
@@ -532,15 +542,16 @@ fn build_env_pack<'ctx>(
 }
 
 /// Emit env unpack code at the start of a spawn function.
-/// Loads POINTERS to outer allocas from the env struct, then replaces
-/// the spawn function's local allocas with the outer pointers.
-/// This implements reference capture — the spawn function directly
-/// reads/writes the parent scope's variables.
-/// Frees the env struct after unpacking (it only holds pointers, not values).
+/// When `by_value` is true (Spawn / go {}), the env struct contains actual VALUES
+/// loaded from the parent's allocas. We create new allocas and store the values.
+/// When `by_value` is false (ScopeSpawn), the env struct contains POINTERS to
+/// the parent's allocas — we use them directly (reference capture).
+/// Frees the env struct after unpacking.
 pub fn emit_env_unpack<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     captures: &[String],
     llvm_func: inkwell::values::FunctionValue<'ctx>,
+    by_value: bool,
 ) {
     if captures.is_empty() {
         return;
@@ -552,7 +563,7 @@ pub fn emit_env_unpack<'ctx>(
     // env_ptr is always param 0 for closure/spawn functions
     let env_ptr = llvm_func.get_nth_param(0).unwrap().into_pointer_value();
 
-    // Load each captured alloca pointer from the env struct
+    // Load each captured variable from the env struct
     for (i, cap_name) in captures.iter().enumerate() {
         let field_ptr = unsafe {
             ctx.builder
@@ -569,22 +580,31 @@ pub fn emit_env_unpack<'ctx>(
                 ctx.builder
                     .build_load(i64_ty, field_ptr, &format!("cap_raw_{}", cap_name))
             {
-                // Convert i64 back to pointer (this is the outer alloca pointer)
-                if let Ok(outer_alloca) = ctx.builder.build_int_to_ptr(
-                    loaded_i64.into_int_value(),
-                    ptr_ty,
-                    &format!("cap_ptr_{}", cap_name),
-                ) {
-                    // Get the type of the local alloca we're replacing
+                if by_value {
+                    // VALUE CAPTURE: loaded_i64 IS the actual value (not a pointer to alloca).
+                    // Create a new alloca in the spawned function and store the value there.
                     let local_ty = ctx.get_local_type(cap_name).unwrap_or(i64_ty.into());
-                    // Replace the spawn function's local alloca with the outer pointer
-                    ctx.replace_local_ptr(cap_name, outer_alloca, local_ty);
+                    if let Ok(new_alloca) = ctx.builder.build_alloca(i64_ty, &format!("cap_local_{}", cap_name)) {
+                        ctx.builder.build_store(new_alloca, loaded_i64.into_int_value()).ok();
+                        ctx.replace_local_ptr(cap_name, new_alloca, local_ty);
+                    }
+                } else {
+                    // REFERENCE CAPTURE: loaded_i64 is a pointer to the outer alloca.
+                    // Convert i64 back to pointer and use directly.
+                    if let Ok(outer_alloca) = ctx.builder.build_int_to_ptr(
+                        loaded_i64.into_int_value(),
+                        ptr_ty,
+                        &format!("cap_ptr_{}", cap_name),
+                    ) {
+                        let local_ty = ctx.get_local_type(cap_name).unwrap_or(i64_ty.into());
+                        ctx.replace_local_ptr(cap_name, outer_alloca, local_ty);
+                    }
                 }
             }
         }
     }
 
-    // Free the env struct — it only held pointer values, not the actual data
+    // Free the env struct
     let free_fn = get_or_declare_free(ctx);
     let _ = ctx
         .builder

@@ -769,15 +769,32 @@ impl Lower {
                 out.type_id = Some(infer_binop_result_type(op_kind, lhs_type, rhs_type));
             }
             HirExprKind::Field { object, field } => {
-                // Infer field access type from struct type
+                // Infer field access type from struct type, resolving TypeRef chains
                 if let Some(obj_type) = object.type_id {
-                    if let Some(info) = registry.get(obj_type) {
-                        if let TypeKind::Struct { fields, .. } = &info.kind {
-                            if let Some((_, field_type, _)) =
-                                fields.iter().find(|(n, _, _)| n == field)
-                            {
-                                out.type_id = Some(*field_type);
+                    let mut current_type = obj_type;
+                    // Follow TypeRef chains (max 10 to prevent infinite loops)
+                    for _ in 0..10 {
+                        if let Some(info) = registry.get(current_type) {
+                            match &info.kind {
+                                TypeKind::Struct { fields, .. } => {
+                                    if let Some((_, field_type, _)) =
+                                        fields.iter().find(|(n, _, _)| n == field)
+                                    {
+                                        out.type_id = Some(*field_type);
+                                    }
+                                    break;
+                                }
+                                TypeKind::TypeRef { name } => {
+                                    if let Some(resolved) = registry.lookup(name) {
+                                        current_type = resolved;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                _ => break,
                             }
+                        } else {
+                            break;
                         }
                     }
                 }

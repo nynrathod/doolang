@@ -215,6 +215,12 @@ pub const DOO_HTTP_PATCH_WITH_MIDDLEWARE: &str = "doo_http_patch_with_middleware
 // HTTP FFI symbol constants — used by codegen for metadata/auth/crud dispatch
 pub const DOO_HTTP_AUTH: &str = "doo_http_auth";
 pub const DOO_HTTP_CRUD: &str = "doo_http_crud";
+
+// Default auth route paths — used when app.auth() is called with zero arguments.
+// Single source of truth: referenced by route_transform for default injection.
+pub const DEFAULT_AUTH_SIGNUP_PATH: &str = "/auth/register";
+pub const DEFAULT_AUTH_LOGIN_PATH: &str = "/auth/login";
+
 pub const DOO_HTTP_REGISTER_MIDDLEWARE: &str = "doo_http_register_middleware";
 pub const DOO_HTTP_REGISTER_HANDLER_WITH_METADATA: &str = "doo_http_register_handler_with_metadata";
 pub const DOO_HTTP_REGISTER_STRUCT_METADATA: &str = "doo_http_register_struct_metadata";

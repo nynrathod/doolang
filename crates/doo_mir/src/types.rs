@@ -202,6 +202,9 @@ pub struct MirFunction {
     pub span: Span,
     /// Whether this is a closure function (requires env param and i64 calling convention)
     pub is_closure: bool,
+    /// Whether this closure captures by value (true for fire-and-forget Spawn/go{})
+    /// vs by reference (false for ScopeSpawn where parent waits)
+    pub captures_by_value: bool,
     /// Whether this is an async function
     pub is_async: bool,
     /// Captured variable names from outer scope (for spawn/closure env unpacking)
@@ -257,6 +260,7 @@ impl MirFunction {
             ffi: None,
             span: Span::default(),
             is_closure: false,
+            captures_by_value: false,
             is_async: false,
             captures: Vec::new(),
         }

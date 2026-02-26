@@ -1707,7 +1707,7 @@ pub extern "C" fn doo_json_object_get_field(
         let field = c_to_string_lossy(field_name);
         value
             .as_object()
-            .and_then(|o| o.get(field.as_str()))
+            .and_then(|o| json_object_get_field(o, &field))
             .and_then(|v| serde_json::to_string(v).ok())
             .map(|s| doo_alloc_string(&s))
             .unwrap_or_else(|| doo_alloc_string("null"))
@@ -1730,7 +1730,7 @@ pub extern "C" fn doo_json_object_has_field(
         let field = c_to_string_lossy(field_name);
         value
             .as_object()
-            .map(|o| if o.contains_key(field.as_str()) { 1 } else { 0 })
+            .map(|o| if json_object_get_field(o, &field).is_some() { 1 } else { 0 })
             .unwrap_or(0)
     }))
     .unwrap_or(0)
@@ -1753,6 +1753,23 @@ pub extern "C" fn doo_json_object_free(obj: *mut std::ffi::c_void) {
 // These extract primitive values directly from the cached parse without
 // converting back to JSON strings. Used by codegen for struct-from-JSON.
 
+/// Case-insensitive JSON field lookup: try exact match first, then case-insensitive fallback.
+/// Handles PascalCase struct fields matching lowercase DB column names (e.g., "CreatedAt" → "createdat").
+fn json_object_get_field<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<&'a serde_json::Value> {
+    // Exact match first (fast path)
+    if let Some(v) = obj.get(field) {
+        return Some(v);
+    }
+    // Case-insensitive fallback
+    let lower = field.to_lowercase();
+    obj.iter()
+        .find(|(k, _)| k.to_lowercase() == lower)
+        .map(|(_, v)| v)
+}
+
 /// Extract an integer field from a cached JSON object.
 /// Returns the value directly (zero re-serialization). Returns 0 if missing/wrong type.
 #[no_mangle]
@@ -1768,7 +1785,7 @@ pub extern "C" fn doo_json_object_get_int(
         let field = c_to_string_lossy(field_name);
         value
             .as_object()
-            .and_then(|o| o.get(field.as_str()))
+            .and_then(|o| json_object_get_field(o, &field))
             .and_then(|v| v.as_i64())
             .unwrap_or(0)
     }))
@@ -1790,7 +1807,7 @@ pub extern "C" fn doo_json_object_get_float(
         let field = c_to_string_lossy(field_name);
         value
             .as_object()
-            .and_then(|o| o.get(field.as_str()))
+            .and_then(|o| json_object_get_field(o, &field))
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0)
     }))
@@ -1812,7 +1829,7 @@ pub extern "C" fn doo_json_object_get_bool(
         let field = c_to_string_lossy(field_name);
         value
             .as_object()
-            .and_then(|o| o.get(field.as_str()))
+            .and_then(|o| json_object_get_field(o, &field))
             .and_then(|v| v.as_bool())
             .map(|b| if b { 1 } else { 0 })
             .unwrap_or(0)
@@ -1836,7 +1853,7 @@ pub extern "C" fn doo_json_object_get_str(
         let field = c_to_string_lossy(field_name);
         value
             .as_object()
-            .and_then(|o| o.get(field.as_str()))
+            .and_then(|o| json_object_get_field(o, &field))
             .and_then(|v| v.as_str())
             .map(|s| doo_alloc_string(s))
             .unwrap_or_else(|| doo_alloc_string(""))
@@ -1860,7 +1877,7 @@ pub extern "C" fn doo_json_object_get_json(
         let field = c_to_string_lossy(field_name);
         value
             .as_object()
-            .and_then(|o| o.get(field.as_str()))
+            .and_then(|o| json_object_get_field(o, &field))
             .and_then(|v| serde_json::to_string(v).ok())
             .map(|s| doo_alloc_string(&s))
             .unwrap_or_else(|| doo_alloc_string("null"))

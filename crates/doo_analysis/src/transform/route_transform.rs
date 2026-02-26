@@ -28,7 +28,7 @@
 //! app.getWithMiddleware("/api/profile", "AuthMiddleware,LogMiddleware", "getProfile");
 //! ```
 
-use doo_core::constants::{DOO_JWT_FUNC_NAME, MIDDLEWARE_JWT};
+use doo_core::constants::{DOO_JWT_FUNC_NAME, MIDDLEWARE_JWT, DEFAULT_AUTH_SIGNUP_PATH, DEFAULT_AUTH_LOGIN_PATH};
 use doo_core::Span;
 use doo_frontend::ast::{Expr, ExprKind, FunctionDecl, Item, Program, Stmt, StmtKind, TypeExpr};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -700,7 +700,14 @@ fn transform_expr_recursive(expr: &mut Expr) {
                 }
 
                 // Handle auth() and crud() special methods
-                if method == "auth" && args.len() == 4 {
+                if method == "auth" && args.is_empty() {
+                    // app.auth() with no args — inject sensible defaults from centralized constants.
+                    // Uses active DB pool if connected, in-memory auth otherwise.
+                    args.push(Expr::new(ExprKind::StrLit(DEFAULT_AUTH_SIGNUP_PATH.into()), expr.span));
+                    args.push(Expr::new(ExprKind::StrLit(DEFAULT_AUTH_LOGIN_PATH.into()), expr.span));
+                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
+                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
+                } else if method == "auth" && args.len() == 4 {
                     // app.auth(signupPath, loginPath, UserStruct, db)
                     args[2] = convert_handler_to_string(args[2].clone(), args[2].span);
                 } else if method == "crud" && args.len() == 3 {

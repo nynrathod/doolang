@@ -864,21 +864,19 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 .iter()
                 .any(|e| matches!(e.kind, HirExprKind::Spread(_)));
 
-            // Infer elem_type: try expr.type_id first, then from elements
+            // Infer elem_type: try expr.type_id first, then from ANY element
             let elem_type = expr
                 .type_id
                 .and_then(|t| builder.array_elem_type_from_type_id(t))
                 .or_else(|| {
-                    // Try to infer from first element (either spread or literal)
-                    elements.first().and_then(|e| {
+                    // Try ALL elements (not just first) — field accesses may lack type_id
+                    elements.iter().find_map(|e| {
                         if let HirExprKind::Spread(inner) = &e.kind {
                             // For spread, get element type from the inner array
-                            // First try inner's type_id, then look up local if it's a variable
                             inner
                                 .type_id
                                 .and_then(|t| builder.array_elem_type_from_type_id(t))
                                 .or_else(|| {
-                                    // If inner is a Local, look up its type
                                     if let HirExprKind::Local { name } = &inner.kind {
                                         builder
                                             .get_local_type(name)
@@ -888,8 +886,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                     }
                                 })
                         } else {
-                            // Use the element's type directly
-                            e.type_id
+                            // Use the element's type directly, or try local variable lookup
+                            e.type_id.or_else(|| {
+                                if let HirExprKind::Local { name } = &e.kind {
+                                    builder.get_local_type(name)
+                                } else {
+                                    None
+                                }
+                            })
                         }
                     })
                 })
@@ -1729,7 +1733,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // The body will be built as a separate MIR function
             builder
                 .pending_closures
-                .push((closure_name.clone(), params.clone(), body.clone(), Vec::new()));
+                .push((closure_name.clone(), params.clone(), body.clone(), Vec::new(), false));
 
             // Emit ClosureCreate instruction that references the closure function
             let dest = builder.new_temp();
@@ -1834,9 +1838,13 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Collect free variables from the body — these must be captured
             let captures = super::capture::collect_free_vars(body, builder);
 
+            // Determine capture mode: fire-and-forget Spawn captures by value,
+            // ScopeSpawn captures by reference (parent waits, stack stays valid).
+            let is_spawn_by_value = builder.scope_stack.is_empty();
+
             builder
                 .pending_closures
-                .push((closure_name.clone(), Vec::new(), body.clone(), captures.clone()));
+                .push((closure_name.clone(), Vec::new(), body.clone(), captures.clone(), is_spawn_by_value));
             let span = builder.convert_span(expr.span);
 
             // Build capture operands from the outer scope

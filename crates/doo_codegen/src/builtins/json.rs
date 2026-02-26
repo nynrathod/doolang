@@ -10,6 +10,34 @@ use inkwell::{AddressSpace, IntPredicate};
 pub struct JsonBuiltins;
 
 impl JsonBuiltins {
+    /// Resolve a TypeId through TypeRef chains to find the underlying concrete type.
+    /// Returns the resolved TypeId (may be the same if not a TypeRef) and its TypeKind.
+    fn resolve_type_ref<'ctx>(
+        ctx: &CodegenContext<'ctx>,
+        ty: TypeId,
+    ) -> (TypeId, Option<TypeKind>) {
+        let kind = ctx.get_type_kind(ty);
+        if let Some(TypeKind::TypeRef { ref name }) = kind {
+            // Try to resolve through the type registry
+            if let Some(resolved_tid) = ctx.type_registry.lookup(name) {
+                let resolved_kind = ctx.get_type_kind(resolved_tid);
+                if resolved_kind.is_some() {
+                    return (resolved_tid, resolved_kind);
+                }
+            }
+            // Fallback: return the TypeRef as-is (name may match a primitive)
+            // Try to match well-known type names to built-in types
+            match name.as_str() {
+                "Str" => return (ty, Some(TypeKind::Str)),
+                "Int" => return (ty, Some(TypeKind::Int)),
+                "Float" => return (ty, Some(TypeKind::Float)),
+                "Bool" => return (ty, Some(TypeKind::Bool)),
+                _ => {}
+            }
+        }
+        (ty, kind)
+    }
+
     /// Provide `JSON.stringify(value)` support.
     /// Returns a pointer to a DooString (as i8* or specialized struct pointer).
     pub fn emit_stringify<'ctx>(
@@ -23,7 +51,7 @@ impl JsonBuiltins {
         // 2. Estimate buffer capacity from type info (reduces reallocs)
         // Structs: fields * 20 + 16 (key+value+separators per field)
         // Default: 64 bytes (covers most small JSON responses)
-        let estimated_cap = match ctx.get_type_kind(val_type) {
+        let estimated_cap = match Self::resolve_type_ref(ctx, val_type).1 {
             Some(TypeKind::Struct { fields, .. }) => fields.len() * 20 + 16,
             _ => 0, // 0 signals: use default capacity
         };
@@ -78,12 +106,14 @@ impl JsonBuiltins {
 
         // Check if this is a complex type that needs inline codegen
         if let Some(ty) = target_type {
-            let kind = ctx.get_type_kind(ty);
+            // Resolve TypeRef before dispatch
+            let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
+            let kind = resolved_kind;
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                 doo_debug!(
                     "CODEGEN",
                     "emit_parse: target_type={:?}, kind={:?}",
-                    ty,
+                    resolved_ty,
                     kind
                 );
             }
@@ -104,8 +134,8 @@ impl JsonBuiltins {
                     return Self::emit_parse_enum(ctx, val, ty, &name, &variants);
                 }
                 Some(TypeKind::Array { element: elem_type }) => {
-                    let elem_kind = ctx.get_type_kind(elem_type);
-                    match elem_kind {
+                    let (resolved_elem, resolved_elem_kind) = Self::resolve_type_ref(ctx, elem_type);
+                    match resolved_elem_kind {
                         Some(TypeKind::Struct { name, fields }) => {
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                                 doo_debug!(
@@ -146,8 +176,8 @@ impl JsonBuiltins {
         // Determine the FFI function name and return type based on target_type
         let (fn_name, ret_type): (&str, BasicTypeEnum<'ctx>) = match target_type {
             Some(ty) => {
-                let kind = ctx.get_type_kind(ty);
-                match kind {
+                let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
+                match resolved_kind {
                     Some(TypeKind::Int) => (ffi_names::DOO_JSON_PARSE_INT, ctx.i64_type().into()),
                     Some(TypeKind::Float) => {
                         (ffi_names::DOO_JSON_PARSE_FLOAT, ctx.f64_type().into())
@@ -158,8 +188,8 @@ impl JsonBuiltins {
                     ),
                     Some(TypeKind::Str) => (ffi_names::DOO_JSON_PARSE_STR, i8_ptr.into()),
                     Some(TypeKind::Array { element: elem_type }) => {
-                        let elem_kind = ctx.get_type_kind(elem_type);
-                        match elem_kind {
+                        let (_, resolved_elem_kind) = Self::resolve_type_ref(ctx, elem_type);
+                        match resolved_elem_kind {
                             Some(TypeKind::Int) => {
                                 (ffi_names::DOO_JSON_PARSE_ARRAY_INT, i8_ptr.into())
                             }
@@ -179,8 +209,8 @@ impl JsonBuiltins {
                         key: key_type,
                         value: val_type,
                     }) => {
-                        let key_kind = ctx.get_type_kind(key_type);
-                        let val_kind = ctx.get_type_kind(val_type);
+                        let (_, key_kind) = Self::resolve_type_ref(ctx, key_type);
+                        let (_, val_kind) = Self::resolve_type_ref(ctx, val_type);
                         match (key_kind, val_kind) {
                             (Some(TypeKind::Str), Some(TypeKind::Int)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_STR_INT, i8_ptr.into())
@@ -301,7 +331,7 @@ impl JsonBuiltins {
             // Fallback: compute size accounting for enum fields (16 bytes each)
             let mut offset: u64 = 0;
             for (_, type_id) in fields.iter() {
-                let field_size = match ctx.get_type_kind(*type_id) {
+                let field_size = match Self::resolve_type_ref(ctx, *type_id).1 {
                     Some(doo_core::types::TypeKind::Enum { .. }) => 16, // { i32, ptr }
                     _ => 8,
                 };
@@ -333,7 +363,8 @@ impl JsonBuiltins {
         // ── For each field, use typed extraction (zero re-serialization for primitives) ──
         for (i, (fname, fty)) in fields.iter().enumerate() {
             let field_name_str = ctx.const_string(fname);
-            let kind = ctx.get_type_kind(*fty);
+            let (_, kind_raw) = Self::resolve_type_ref(ctx, *fty);
+            let kind = kind_raw;
 
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                 doo_debug!(
@@ -851,7 +882,8 @@ impl JsonBuiltins {
         val: BasicValueEnum<'ctx>,
         ty: TypeId,
     ) -> Option<()> {
-        let kind = ctx.get_type_kind(ty)?;
+        let (_, kind) = Self::resolve_type_ref(ctx, ty);
+        let kind = kind?;
 
         match kind {
             TypeKind::Str => {
@@ -906,7 +938,10 @@ impl JsonBuiltins {
         val: BasicValueEnum<'ctx>,
         ty: TypeId,
     ) -> Option<()> {
-        let kind = ctx.get_type_kind(ty)?;
+        // Resolve TypeRef to underlying type before dispatch
+        let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
+        let kind = resolved_kind?;
+        let ty = resolved_ty;
 
         match kind {
             TypeKind::Int => {
@@ -1355,7 +1390,7 @@ impl JsonBuiltins {
                         // For pointer-type payloads (String, Array, Map, Struct), the payload_ptr IS the value
                         // For value-type payloads (Int, Float, Bool), we need to load from payload_ptr
                         if let Some(pptr) = payload_ptr_opt {
-                            let pty_kind = ctx.get_type_kind(*pty);
+                            let (_, pty_kind) = Self::resolve_type_ref(ctx, *pty);
                             let is_pointer_payload = match pty_kind {
                                 Some(TypeKind::Str)
                                 | Some(TypeKind::Array { .. })
@@ -1390,7 +1425,50 @@ impl JsonBuiltins {
 
                 ctx.builder.position_at_end(merge_bb);
             }
-            TypeKind::Any | TypeKind::Error | TypeKind::Void => {
+            TypeKind::Any => {
+                // For Any type, try to infer from LLVM value type
+                // Pointer values in Doo are most commonly strings (char*)
+                if val.is_pointer_value() {
+                    let func = Self::get_or_declare_write_string(ctx);
+                    let ptr = val.into_pointer_value();
+                    ctx.builder
+                        .build_call(func, &[writer.into(), ptr.into()], "")
+                        .ok()?;
+                } else if val.is_int_value() {
+                    let int_val = val.into_int_value();
+                    let bit_width = int_val.get_type().get_bit_width();
+                    if bit_width == 1 {
+                        // i1 → bool
+                        let func = Self::get_or_declare_write_bool(ctx);
+                        ctx.builder
+                            .build_call(func, &[writer.into(), int_val.into()], "")
+                            .ok()?;
+                    } else {
+                        // i64 → int
+                        let func = Self::get_or_declare_write_int(ctx);
+                        let val_i64 = ctx
+                            .builder
+                            .build_int_z_extend_or_bit_cast(int_val, ctx.i64_type(), "cast")
+                            .ok()?;
+                        ctx.builder
+                            .build_call(func, &[writer.into(), val_i64.into()], "")
+                            .ok()?;
+                    }
+                } else if val.is_float_value() {
+                    let func = Self::get_or_declare_write_float(ctx);
+                    let val_f64 = ctx
+                        .builder
+                        .build_float_cast(val.into_float_value(), ctx.f64_type(), "cast")
+                        .ok()?;
+                    ctx.builder
+                        .build_call(func, &[writer.into(), val_f64.into()], "")
+                        .ok()?;
+                } else {
+                    let func = Self::get_or_declare_write_null(ctx);
+                    ctx.builder.build_call(func, &[writer.into()], "").ok()?;
+                }
+            }
+            TypeKind::Error | TypeKind::Void => {
                 // For unknown types, write null as a safe fallback
                 let func = Self::get_or_declare_write_null(ctx);
                 ctx.builder.build_call(func, &[writer.into()], "").ok()?;

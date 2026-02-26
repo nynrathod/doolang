@@ -849,7 +849,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Must happen AFTER allocas are created and BEFORE block code generation.
         if func.is_closure && !func.captures.is_empty() {
             let capture_names: Vec<String> = func.captures.iter().map(|s| resolve(*s)).collect();
-            crate::instructions::async_ops::emit_env_unpack(ctx, &capture_names, llvm_func);
+            crate::instructions::async_ops::emit_env_unpack(ctx, &capture_names, llvm_func, func.captures_by_value);
         }
 
         // Generate code for each block
