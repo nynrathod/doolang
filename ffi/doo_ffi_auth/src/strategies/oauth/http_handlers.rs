@@ -346,12 +346,7 @@ extern "C" fn oauth_callback_handler(req: *const c_void) -> *mut DooResult {
                 let config = OAUTH_CONFIG.get();
                 if let Some(url) = config.and_then(|c| c.callback_url.as_deref()) {
                     let separator = if url.contains('?') { "&" } else { "?" };
-                    let redirect_url = format!(
-                        "{}{}error={}",
-                        url,
-                        separator,
-                        percent_encode(&e)
-                    );
+                    let redirect_url = format!("{}{}error={}", url, separator, percent_encode(&e));
                     ffi_debug!("OAUTH", "Redirecting to error: {}", redirect_url);
                     make_redirect(&redirect_url)
                 } else {
@@ -512,6 +507,51 @@ extern "C" fn oauth_refresh_handler(req: *const c_void) -> *mut DooResult {
 // ============================================================================
 // AUTH ME HANDLER — Returns current user identity from JWT claims
 // ============================================================================
+
+/// Handler for `GET /auth/logout` — clears auth cookies and returns success.
+///
+/// Sets Max-Age=0 on both access and refresh cookies, causing the browser
+/// to delete them. Works for ALL auth strategies (OAuth, email/password).
+///
+/// Response: `{ "message": "Logged out" }`
+extern "C" fn auth_logout_handler(_req: *const c_void) -> *mut DooResult {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ffi_debug!("AUTH", "auth_logout_handler called");
+        doo_ffi_core::cookies::push_clear_cookies();
+        make_ok_json("{\"message\":\"Logged out\"}")
+    })) {
+        Ok(result) => result,
+        Err(_) => make_err_http(
+            500,
+            "Internal server error (panic in auth/logout handler)",
+            "/auth/logout",
+        ),
+    }
+}
+
+/// Handler for `POST /auth/forgot-password` — initiates password reset flow.
+///
+/// Always returns success regardless of whether the email exists (security best
+/// practice — prevents email enumeration). When an email service is configured,
+/// this will send a reset link to the user's email.
+///
+/// Response: `{ "message": "If that email is registered, a reset link has been sent." }`
+extern "C" fn auth_forgot_password_handler(_req: *const c_void) -> *mut DooResult {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ffi_debug!("AUTH", "auth_forgot_password_handler called");
+        // Always return success — prevents email enumeration attacks.
+        // TODO: When email service is configured, generate a time-limited
+        //       reset token and send it to the user's email address.
+        make_ok_json("{\"message\":\"If that email is registered, a reset link has been sent.\"}")
+    })) {
+        Ok(result) => result,
+        Err(_) => make_err_http(
+            500,
+            "Internal server error (panic in auth/forgot-password handler)",
+            "/auth/forgot-password",
+        ),
+    }
+}
 
 /// Handler for `GET /auth/me` — returns the authenticated user's identity data.
 ///
@@ -765,10 +805,8 @@ pub fn push_cookies_via_http_bridge(
 ) {
     if let Some(push_fn) = get_push_cookie_fn() {
         // Build cookie header strings using doo_ffi_core cookie builders
-        let access_cookie = doo_ffi_core::cookies::ResponseCookie::access_token(
-            access_token,
-            access_expiry_secs,
-        );
+        let access_cookie =
+            doo_ffi_core::cookies::ResponseCookie::access_token(access_token, access_expiry_secs);
         let access_header = access_cookie.to_header_value();
         let access_c = string_to_c(&access_header);
         push_fn(access_c);
@@ -970,13 +1008,23 @@ pub fn setup_from_map(
     ffi_debug!("AUTH", "Registering route: GET {}", me_path);
     register_http_route("GET", &me_path, auth_me_handler)?;
 
+    // Register /auth/logout — clears auth cookies (access + refresh)
+    let logout_path = format!("{}/logout", base);
+    ffi_debug!("AUTH", "Registering route: GET {}", logout_path);
+    register_http_route("GET", &logout_path, auth_logout_handler)?;
+
+    // Register /auth/forgot-password — initiates password reset (public, no JWT)
+    let forgot_path = format!("{}/forgot-password", base);
+    ffi_debug!("AUTH", "Registering route: POST {}", forgot_path);
+    register_http_route("POST", &forgot_path, auth_forgot_password_handler)?;
+
     let registered = list_providers();
     ffi_debug!(
         "OAUTH",
-        "OAuth setup complete: {} providers ({:?}), {} routes (includes /refresh, /me)",
+        "OAuth setup complete: {} providers ({:?}), {} routes (includes /refresh, /me, /logout, /forgot-password)",
         registered.len(),
         registered,
-        registered.len() * 2 + 2
+        registered.len() * 2 + 4
     );
 
     Ok(())

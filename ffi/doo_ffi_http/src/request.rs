@@ -65,7 +65,13 @@ pub extern "C" fn doo_http_req_param(req: *const DooRequest, key: *const c_char)
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 if let Some(v) = value.get(&key_str) {
                     if let Some(s) = v.as_str() {
+                        // String value — return directly
                         return string_to_c(s);
+                    }
+                    // Non-string value (number, bool) — convert to string representation
+                    // e.g. route param "id":2 → "2" for req.param("id")
+                    if !v.is_null() {
+                        return string_to_c(&v.to_string());
                     }
                 }
             }

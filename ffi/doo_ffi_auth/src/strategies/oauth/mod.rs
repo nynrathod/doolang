@@ -99,14 +99,17 @@ pub fn init(config_json: Option<&str>) -> Result<(), String> {
     let mut skipped: Vec<(String, String)> = Vec::new();
 
     for name in &provider_names {
-        let result: Result<Box<dyn OAuthProvider>, String> = match name.as_str() {
-            "google" => google::GoogleProvider::from_env().map(|p| Box::new(p) as Box<dyn OAuthProvider>),
-            "github" => github::GitHubProvider::from_env().map(|p| Box::new(p) as Box<dyn OAuthProvider>),
-            _ => {
-                skipped.push((name.clone(), format!("Unknown provider: '{}'", name)));
-                continue;
-            }
-        };
+        let result: Result<Box<dyn OAuthProvider>, String> =
+            match name.as_str() {
+                "google" => google::GoogleProvider::from_env()
+                    .map(|p| Box::new(p) as Box<dyn OAuthProvider>),
+                "github" => github::GitHubProvider::from_env()
+                    .map(|p| Box::new(p) as Box<dyn OAuthProvider>),
+                _ => {
+                    skipped.push((name.clone(), format!("Unknown provider: '{}'", name)));
+                    continue;
+                }
+            };
 
         match result {
             Ok(provider) => {
