@@ -161,3 +161,19 @@ fn Jwt() -> Str {}
 // JWT middleware (Jwt()) works with both systems for API route protection.
 @extern("doo_auth", "doo_auth_oauth_setup")
 fn Server.oauth(self, options: {Str: Str}?) -> !AuthError {}
+
+// === Password Reset ===
+
+// Forgot password — register POST endpoint that accepts email, generates reset token
+// Usage: app.forgotPassword("/forgot", User, db)
+// Request:  POST /forgot  { "email": "user@example.com" }
+// Response: { "data": { "message": "...", "token": "..." } }
+@extern("doo_http", "doo_http_forgot_password")
+fn Server.forgotPassword(self, path: Str, model: Str, db: Str) -> Void {}
+
+// Reset password — register POST endpoint that accepts token + new password
+// Usage: app.resetPassword("/reset", User, db)
+// Request:  POST /reset  { "token": "...", "password": "newpass123" }
+// Response: { "data": { "message": "Password updated successfully" } }
+@extern("doo_http", "doo_http_reset_password")
+fn Server.resetPassword(self, path: Str, model: Str, db: Str) -> Void {}
