@@ -234,6 +234,7 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
             sub: Option<String>,
             user_id: Option<i64>,
             exp: Option<usize>,
+            data: Option<String>,
         }
 
         let mut validation = Validation::new(Algorithm::HS256);
@@ -256,16 +257,26 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
         };
 
         // Extract user_id from verified claims
-        // First try direct user_id claim, then fallback to DB lookup by sub (email)
-        let user_id = if let Some(uid) = token_data.claims.user_id {
-            uid
-        } else if let Some(ref email) = token_data.claims.sub {
-            match lookup_user_id_by_email(email) {
-                Some(id) => id,
-                None => return make_err_response(401, "User not found"),
+        // First try direct user_id claim (>0 — 0 is sentinel for "not set", e.g. OAuth tokens),
+        // then fallback to DB lookup by sub (email), then auto-create from JWT data claim.
+        let user_id = match token_data.claims.user_id.filter(|&uid| uid > 0) {
+            Some(uid) => uid,
+            None => {
+                if let Some(ref email) = token_data.claims.sub {
+                    match lookup_user_id_by_email(email) {
+                        Some(id) => id,
+                        None => {
+                            // User not in DB — auto-create from JWT data (OAuth users)
+                            match ensure_user_in_db(email, token_data.claims.data.as_deref()) {
+                                Some(id) => id,
+                                None => return make_err_response(401, "User not found"),
+                            }
+                        }
+                    }
+                } else {
+                    return make_err_response(401, "Could not extract user ID from token");
+                }
             }
-        } else {
-            return make_err_response(401, "Could not extract user ID from token");
         };
 
         // Set the user_id on the request
@@ -296,47 +307,150 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
     }
 }
 
-/// Look up user ID by email from the database
+/// Look up user ID by email from the database.
+/// Uses the centralized db_bridge for cached DB library access.
+/// Gets auth table name from configuration (set by app.auth()).
 fn lookup_user_id_by_email(email: &str) -> Option<i64> {
-    use libloading::{Library, Symbol};
-    use std::ffi::CString;
-    use std::os::raw::c_char;
+    // Get auth table name dynamically from auth config
+    let table_name = crate::auth::get_auth_table_name().unwrap_or_else(|| "users".to_string());
 
-    // Try to load the database library
-    #[cfg(target_os = "windows")]
-    let lib_names = ["doo_ffi_db.dll", "libdoo_ffi_db.dll"];
-    #[cfg(target_os = "linux")]
-    let lib_names = ["libdoo_ffi_db.so", "doo_ffi_db.so"];
-    #[cfg(target_os = "macos")]
-    let lib_names = ["libdoo_ffi_db.dylib", "doo_ffi_db.dylib"];
+    let sql = format!("SELECT id FROM {} WHERE email = $1 LIMIT 1", table_name);
+    let result_json = crate::db_bridge::execute_db_query_with_string_param(&sql, email).ok()?;
 
-    let lib = lib_names
-        .iter()
-        .find_map(|name| unsafe { Library::new(name).ok() })?;
+    let result: serde_json::Value = serde_json::from_str(&result_json).ok()?;
+    result.as_array()?.first()?.get("id")?.as_i64()
+}
 
-    // Call doo_db_query_one to find user by email
-    type QueryFn = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut std::ffi::c_void;
-    let query_fn: Symbol<QueryFn> = unsafe { lib.get(b"doo_db_query_with_params").ok()? };
+/// Auto-create a user in the DB from JWT data claim (for OAuth users).
+///
+/// OAuth tokens carry user info in the `data` JSON string (name, email, avatar, provider)
+/// but don't insert users into the local DB table. This function upserts the user
+/// by discovering the table schema at runtime — no hardcoded column names.
+///
+/// Uses centralized db_bridge for cached DB library access.
+fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
+    // Get auth table name from config
+    let table_name = crate::auth::get_auth_table_name().unwrap_or_else(|| "users".to_string());
 
-    let sql = CString::new("SELECT id FROM users WHERE email = $1 LIMIT 1").ok()?;
-    let params_json = serde_json::json!([email]).to_string();
-    let params = CString::new(params_json).ok()?;
+    // Parse JWT data claim into a key-value map
+    let data_map: HashMap<String, serde_json::Value> = data_json
+        .and_then(|d| serde_json::from_str(d).ok())
+        .unwrap_or_default();
 
-    let result_ptr = unsafe { query_fn(sql.as_ptr(), params.as_ptr()) };
-    if result_ptr.is_null() {
+    // Discover which columns actually exist in the table at runtime
+    // This is truly generic — works for ANY table schema
+    let schema_sql = format!(
+        "SELECT column_name, column_default, is_nullable \
+         FROM information_schema.columns \
+         WHERE table_name = $1 \
+         ORDER BY ordinal_position"
+    );
+    let schema_json =
+        crate::db_bridge::execute_db_query_with_string_param(&schema_sql, &table_name).ok()?;
+
+    let column_rows: Vec<serde_json::Value> = serde_json::from_str(&schema_json).ok()?;
+    if column_rows.is_empty() {
         return None;
     }
 
-    // Parse the result - it's a JSON array with rows
-    // Each row is an object with column values
-    let result_str = c_to_string(result_ptr as *const c_char);
+    // Build dynamic column list and values by matching table columns to JWT data
+    let mut insert_columns = Vec::new();
+    let mut placeholders = Vec::new();
+    let mut values: Vec<serde_json::Value> = Vec::new();
+    let mut email_col = String::new();
+    let mut idx = 1usize;
 
-    // CRITICAL: Free the DB result pointer to prevent leak on every JWT-authenticated request
-    doo_ffi_core::doo_free(result_ptr as *mut u8);
+    for col_row in &column_rows {
+        // DB FFI returns PascalCase keys: column_name→ColumnName, column_default→ColumnDefault, is_nullable→IsNullable
+        let col_name = col_row
+            .get("ColumnName")
+            .or_else(|| col_row.get("column_name"))
+            .and_then(|v| v.as_str());
+        let col_name = match col_name {
+            Some(n) => n,
+            None => continue, // skip unparseable rows
+        };
+        let col_default = col_row
+            .get("ColumnDefault")
+            .or_else(|| col_row.get("column_default"))
+            .and_then(|v| v.as_str());
+        let is_nullable = col_row
+            .get("IsNullable")
+            .or_else(|| col_row.get("is_nullable"))
+            .and_then(|v| v.as_str())
+            == Some("YES");
 
-    let result: serde_json::Value = serde_json::from_str(&result_str).ok()?;
+        // Skip auto-generated columns (serial/identity with nextval default)
+        if let Some(def) = col_default {
+            if def.contains("nextval") {
+                continue;
+            }
+        }
 
-    // Get the first row's id field
+        // Try to find a value for this column from email param or JWT data
+        let value = if crate::metadata::field_names_match(col_name, "email") {
+            email_col = col_name.to_string();
+            Some(email.to_string())
+        } else {
+            // Search JWT data keys for a match (case-insensitive field name matching)
+            data_map
+                .iter()
+                .find(|(k, _)| crate::metadata::field_names_match(k, col_name))
+                .and_then(|(_, v)| match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Bool(b) => Some(b.to_string()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+        };
+
+        match value {
+            Some(val) => {
+                insert_columns.push(col_name.to_string());
+                placeholders.push(format!("${}", idx));
+                values.push(serde_json::json!(val));
+                idx += 1;
+            }
+            None => {
+                // Column has no matching data — skip if nullable or has default
+                if is_nullable || col_default.is_some() {
+                    // Skip — DB will use default/null
+                } else {
+                    // NOT NULL without default — insert empty string to avoid constraint violation
+                    insert_columns.push(col_name.to_string());
+                    placeholders.push(format!("${}", idx));
+                    values.push(serde_json::json!(""));
+                    idx += 1;
+                }
+            }
+        }
+    }
+
+    if insert_columns.is_empty() || email_col.is_empty() {
+        return None;
+    }
+
+    // Build INSERT ... ON CONFLICT DO NOTHING
+    let insert_sql = format!(
+        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING",
+        table_name,
+        insert_columns.join(", "),
+        placeholders.join(", "),
+        email_col,
+    );
+
+    // Execute the INSERT via centralized db_bridge
+    let _ = crate::db_bridge::execute_db_insert(&insert_sql, &values);
+
+    // Now look up the user ID (the INSERT may have been a no-op if user already existed)
+    let select_sql = format!(
+        "SELECT id FROM {} WHERE {} = $1 LIMIT 1",
+        table_name, email_col
+    );
+    let select_json =
+        crate::db_bridge::execute_db_query_with_string_param(&select_sql, email).ok()?;
+
+    let result: serde_json::Value = serde_json::from_str(&select_json).ok()?;
     result.as_array()?.first()?.get("id")?.as_i64()
 }
 

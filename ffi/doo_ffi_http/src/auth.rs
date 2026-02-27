@@ -31,8 +31,7 @@ static AUTH_USERS: std::sync::OnceLock<StdMutex<HashMap<String, AuthUser>>> =
     std::sync::OnceLock::new();
 
 /// Counter for generating user IDs (in-memory; production would use DB auto-increment)
-static AUTH_USER_ID_COUNTER: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(1);
+static AUTH_USER_ID_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
 
 /// Store which auth table has been created in the database
 static AUTH_DB_TABLE: std::sync::OnceLock<StdMutex<Option<String>>> = std::sync::OnceLock::new();
@@ -57,7 +56,7 @@ fn is_auth_db_backed() -> bool {
 }
 
 /// Get the auth table name (e.g., "users")
-fn get_auth_table_name() -> Option<String> {
+pub(crate) fn get_auth_table_name() -> Option<String> {
     let table = get_auth_db_table()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -811,7 +810,11 @@ pub extern "C" fn doo_http_auth(
             auth_me_handler,
             vec![crate::middleware::jwt_middleware_handler],
         );
-        ffi_debug!("HTTP", "Deferred GET {} for auth identity (JWT protected, yields to packages)", me_path);
+        ffi_debug!(
+            "HTTP",
+            "Deferred GET {} for auth identity (JWT protected, yields to packages)",
+            me_path
+        );
 
         make_ok_void()
     })
