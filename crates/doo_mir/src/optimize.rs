@@ -504,7 +504,7 @@ impl MirPass for CopyPropagation {
     fn run(&mut self, program: &mut MirProgram) -> bool {
         use rustc_hash::FxHashMap;
 
-        let mut changed = false;
+        let changed = false;
 
         for func in &mut program.functions {
             for block in &mut func.blocks {

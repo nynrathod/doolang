@@ -9,7 +9,6 @@
 //! - All status codes returned (no auto-error for 4xx/5xx) — caller decides
 //! - URL encoding follows RFC 3986
 
-use std::time::Duration;
 
 /// HTTP request timeout — 30 seconds (generous for OAuth API calls)
 const HTTP_TIMEOUT_SECS: u64 = 30;

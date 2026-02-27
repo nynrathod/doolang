@@ -509,7 +509,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     .into_pointer_value();
 
                 // Get field type IDs for proper boxing
-                let field_type_ids = ctx.get_struct_field_types(&sname);
+                let _field_type_ids = ctx.get_struct_field_types(&sname);
 
                 // Store field values
                 for (i, (_, value)) in fields.iter().enumerate() {

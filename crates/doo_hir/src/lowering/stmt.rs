@@ -2,17 +2,13 @@
 
 use doo_core::{
     doo_debug,
-    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
-    Span,
 };
 use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
-    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
-    TypeExpr, UnaryOp,
+    self, ElseBranch, ExprKind, IncDecOp, PatternKind, Stmt, StmtKind,
 };
 use crate::types::*;
-use super::{Lower, LowerError};
+use super::Lower;
 
 impl Lower {
     pub(crate) fn lower_stmt(&mut self, stmt: &Stmt) -> HirStmt {
@@ -289,7 +285,7 @@ impl Lower {
                 if let PatternKind::Tuple(patterns) = &pattern.kind {
                     let names: Vec<String> =
                         patterns.iter().map(|p| self.pattern_to_name(p)).collect();
-                    let mut value_hir = self.lower_expr_typed(value, registry);
+                    let value_hir = self.lower_expr_typed(value, registry);
 
                     // Try to get element types from the value's tuple type
                     let mut type_ids: Vec<Option<TypeId>> = vec![None; names.len()];

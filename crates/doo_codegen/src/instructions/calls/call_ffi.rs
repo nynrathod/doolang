@@ -8,6 +8,7 @@
 
 use super::call_utils::operand_to_value;
 use crate::context::CodegenContext;
+use crate::packages::database as db_pkg;
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId};
@@ -506,14 +507,14 @@ pub(crate) fn try_convert_enum_array_to_json_string<'ctx>(
             // Declare doo_db_serialize_enum_array if not already declared
             let serialize_fn = ctx
                 .module
-                .get_function(ffi_names::DOO_DB_SERIALIZE_ENUM_ARRAY)
+                .get_function(db_pkg::DOO_DB_SERIALIZE_ENUM_ARRAY)
                 .unwrap_or_else(|| {
                     let ptr_type = ctx.ptr_type();
                     let i32_type = ctx.i32_type();
                     let fn_type = ptr_type
                         .fn_type(&[ptr_type.into(), ptr_type.into(), i32_type.into()], false);
                     ctx.module
-                        .add_function(ffi_names::DOO_DB_SERIALIZE_ENUM_ARRAY, fn_type, None)
+                        .add_function(db_pkg::DOO_DB_SERIALIZE_ENUM_ARRAY, fn_type, None)
                 });
 
             // Call doo_db_serialize_enum_array(array_ptr, variants, stride)
@@ -618,7 +619,7 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
         .ok();
 
     // For each element, generate switch-case to append "variant"
-    for (elem_idx, (temp_name, (enum_name, variants))) in
+    for (elem_idx, (temp_name, (_enum_name, variants))) in
         element_temps.iter().zip(enum_infos.iter()).enumerate()
     {
         // Get the current buffer position
@@ -650,7 +651,7 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
                 .try_as_basic_value()
                 .basic()?
                 .into_int_value();
-            let write_pos = unsafe {
+            let _write_pos = unsafe {
                 ctx.builder
                     .build_gep(i8_type, buffer, &[current_len], "write_pos2")
             }

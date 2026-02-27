@@ -1,18 +1,12 @@
 //! HTTP route middleware helpers.
 
 use doo_core::{
-    doo_debug,
-    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
-    types::{builtin, TypeId, TypeKind, TypeRegistry},
+    types::TypeRegistry,
     Span,
 };
-use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
-    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
-    TypeExpr, UnaryOp,
-};
+use doo_frontend::ast::Expr;
 use crate::types::*;
-use super::{Lower, LowerError};
+use super::Lower;
 
 impl Lower {
     /// Check if a method name is an HTTP route method.

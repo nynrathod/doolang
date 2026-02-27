@@ -25,7 +25,6 @@
 //! All counters use `AtomicU64` (lock-free). Route-level metrics use `DashMap`.
 //! Zero per-request allocation for counter increments.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 

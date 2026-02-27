@@ -121,6 +121,10 @@ pub struct TypeChecker {
     /// Struct fields that are optional or have defaults (not required in constructors).
     /// Maps struct name -> set of optional/defaulted field names.
     struct_optional_fields: HashMap<String, HashSet<String>>,
+    /// Module names discovered from the program's import statements.
+    /// Used to recognize module names (e.g., "Http", "Database") without
+    /// hardcoding them in the compiler. Core modules are always recognized.
+    imported_modules: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -139,6 +143,7 @@ impl TypeChecker {
             oauth_call_span: None,
             functions: HashMap::new(),
             struct_optional_fields: HashMap::new(),
+            imported_modules: HashSet::new(),
         }
     }
 
@@ -169,7 +174,25 @@ impl TypeChecker {
     }
 
     /// Check an entire program.
+    /// Check if a name is a known module — either a core module or an imported package module.
+    /// This is discovery-based: package modules are recognized from the program's imports,
+    /// NOT from a hardcoded list in the compiler.
+    fn is_known_module(&self, name: &str) -> bool {
+        ffi_names::is_core_module(name) || self.imported_modules.contains(name)
+    }
+
     pub fn check(&mut self, program: &HirProgram) -> Result<(), Vec<TypeError>> {
+        // Discover imported module names from the program's imports.
+        // This replaces the old hardcoded BUILTIN_MODULES list for package modules.
+        for item in &program.items {
+            if let HirItem::Import(import) = item {
+                // import path: ["std", "Http"] or ["std", "Database"]
+                if import.path.len() >= 2 {
+                    self.imported_modules.insert(import.path[1].clone());
+                }
+            }
+        }
+
         // First pass: Register all functions, structs, enums in global scope
         // This allows forward references and detects duplicates
         self.scopes.enter_scope(super::scope::ScopeKind::Global);
@@ -406,7 +429,7 @@ impl TypeChecker {
         // Check body statements
         let mut found_return = false;
         let mut return_span = None;
-        for (i, stmt) in func.body.iter().enumerate() {
+        for (_i, stmt) in func.body.iter().enumerate() {
             // UnreachableCode: after a return, subsequent statements are unreachable
             if found_return {
                 self.direct_errors.push(
@@ -879,7 +902,7 @@ impl TypeChecker {
 
             HirExprKind::Local { name } => {
                 // Built-in modules (JSON, Math, File, etc.) don't need to be in scope
-                if ffi_names::is_builtin_module(name) {
+                if self.is_known_module(name) {
                     return builtin::ANY; // Module type - resolved at codegen
                 }
 
@@ -934,7 +957,7 @@ impl TypeChecker {
                 // First, see if the func is a local reference (e.g., a function name)
                 let func_return_type = if let HirExprKind::Local { name } = &func.kind {
                     // Built-in modules/functions don't need to be in scope
-                    let is_builtin = ffi_names::is_builtin_module(name)
+                    let is_builtin = self.is_known_module(name)
                         || name == "print"
                         || name == "panic"
                         || name == "toString"
@@ -1529,7 +1552,7 @@ impl TypeChecker {
 
             // Local variable reference — validate scope even when type_id is pre-set
             HirExprKind::Local { name } => {
-                if !ffi_names::is_builtin_module(name)
+                if !self.is_known_module(name)
                     && self.scopes.lookup(name).is_none()
                     && self.registry.lookup(name).is_none()
                     && name != "print"

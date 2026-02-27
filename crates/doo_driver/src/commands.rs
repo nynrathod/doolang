@@ -392,7 +392,7 @@ fn prompt_env_vars_for_production() -> Vec<(String, String)> {
     result
 }
 
-fn deploy_flyio(verbose: bool) -> i32 {
+fn deploy_flyio(_verbose: bool) -> i32 {
     // Track deployment attempt (fire-and-forget, anonymous)
     analytics::track_deploy_attempt("flyio");
 
@@ -838,7 +838,7 @@ fn install_railway() -> bool {
     }
 }
 
-fn deploy_railway(verbose: bool) -> i32 {
+fn deploy_railway(_verbose: bool) -> i32 {
     // Track deployment attempt (fire-and-forget, anonymous)
     analytics::track_deploy_attempt("railway");
 

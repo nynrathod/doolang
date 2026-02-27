@@ -4,7 +4,7 @@
 //! This bridges the gap between granular analysis errors and the unified
 //! diagnostic system — single source of truth.
 
-use doo_core::errors::codes::{CompilerError, ErrorCode, ErrorSeverity};
+use doo_core::errors::codes::{CompilerError, ErrorCode};
 
 use crate::borrow::{BorrowError, BorrowErrorKind};
 use crate::ownership::OwnershipError;

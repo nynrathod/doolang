@@ -1,18 +1,14 @@
 //! For-loop desugaring to while-loops.
 
 use doo_core::{
-    doo_debug,
-    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
-    types::{builtin, TypeId, TypeKind, TypeRegistry},
+    types::{builtin, TypeKind, TypeRegistry},
     Span,
 };
 use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
-    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
-    TypeExpr, UnaryOp,
+    Expr, ExprKind, Pattern, PatternKind, Stmt,
 };
 use crate::types::*;
-use super::{Lower, LowerError};
+use super::Lower;
 
 impl Lower {
     /// Lower a for-loop to HIR.

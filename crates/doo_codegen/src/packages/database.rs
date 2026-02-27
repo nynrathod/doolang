@@ -10,10 +10,15 @@
 
 use crate::context::CodegenContext;
 use crate::instructions::calls::call_ffi;
-use crate::instructions::calls::call_utils;
-use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
 use doo_mir::MirOperand;
+
+// ============================================================================
+// Database FFI Symbol Constants (Package-Owned)
+// ============================================================================
+
+pub(crate) const DOO_DB_RAW_PARAM: &str = "doo_db_raw_param";
+pub(crate) const DOO_DB_SERIALIZE_ENUM_ARRAY: &str = "doo_db_serialize_enum_array";
 
 /// Check if a DB FFI argument needs package-specific conversion.
 ///
@@ -28,7 +33,7 @@ pub(crate) fn convert_arg<'ctx>(
     operand: &MirOperand,
 ) -> Option<inkwell::values::BasicMetadataValueEnum<'ctx>> {
     // Only applies to doo_db_raw_param arg[2] (the parameter value)
-    if symbol != ffi_names::DOO_DB_RAW_PARAM || arg_index != 2 {
+    if symbol != DOO_DB_RAW_PARAM || arg_index != 2 {
         return None;
     }
 

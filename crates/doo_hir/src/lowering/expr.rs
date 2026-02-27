@@ -2,15 +2,11 @@
 
 use doo_core::{
     constants::ffi_names,
-    doo_debug,
-    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
+    infer::{infer_binop_result_type, infer_unaryop_result_type},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
-    Span,
 };
 use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
-    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
-    TypeExpr, UnaryOp,
+    Expr, ExprKind,
 };
 use crate::types::*;
 use super::{Lower, LowerError};
@@ -431,7 +427,7 @@ impl Lower {
                     .and_then(|tid| registry.get(tid))
                     .map(|info| matches!(info.kind, TypeKind::Struct { .. }))
                     .unwrap_or(false);
-                let is_enum = type_id
+                let _is_enum = type_id
                     .and_then(|tid| registry.get(tid))
                     .map(|info| matches!(info.kind, TypeKind::Enum { .. }))
                     .unwrap_or(false);

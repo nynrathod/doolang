@@ -8,7 +8,7 @@ use crate::utils::emit_eq;
 use doo_core::constants::ffi_names;
 use doo_core::types::{TypeId, TypeKind};
 use inkwell::types::BasicType;
-use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
+use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 pub struct MapBuiltins;
@@ -646,7 +646,7 @@ impl MapBuiltins {
 // =============================================================================
 
 use crate::layout::{
-    alloc_with_header, data_ptr_from_header, get_map_data_ptr, get_map_length,
-    header_ptr_from_data, load_len_i32, set_map_length, set_map_length_from_data, store_len,
+    alloc_with_header, data_ptr_from_header,
+    header_ptr_from_data, load_len_i32, set_map_length_from_data,
     store_len_at_header,
 };

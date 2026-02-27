@@ -39,7 +39,6 @@ use doo_ffi_core::DooResult;
 use tokio::runtime::Runtime;
 
 use driver::get_driver;
-use limits::MAX_ROWS;
 
 // ============================================================================
 // Runtime — use shared HTTP runtime when available, fallback to DB-only runtime

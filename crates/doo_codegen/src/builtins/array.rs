@@ -9,7 +9,7 @@ use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
 use doo_core::types::{builtin, TypeId};
 use inkwell::types::BasicType;
-use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 pub struct ArrayBuiltins;
@@ -438,7 +438,7 @@ impl ArrayBuiltins {
                 "new_len",
             )
             .ok()?;
-        let new_len_i64 = ctx
+        let _new_len_i64 = ctx
             .builder
             .build_int_z_extend(new_len_i32, ctx.context.i64_type(), "new_len64")
             .ok()?;
@@ -1556,9 +1556,8 @@ impl ArrayBuiltins {
 // =============================================================================
 
 use crate::layout::{
-    alloc_with_header, data_ptr_from_header, get_array_data_ptr, get_array_length,
-    header_ptr_from_data, int_to_i64, load_len_i32, set_array_length, set_array_length_from_data,
-    store_header, store_header_len_only, store_len, store_len_at_header,
+    alloc_with_header, int_to_i64, load_len_i32, set_array_length, set_array_length_from_data,
+    store_header,
 };
 
 fn get_or_declare_malloc<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {

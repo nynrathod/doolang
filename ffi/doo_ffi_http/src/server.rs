@@ -890,7 +890,7 @@ fn build_response_bytes(status: i32, body: &[u8]) -> Response<Full<Bytes>> {
 fn build_redirect(status: i32, url: &str) -> Response<Full<Bytes>> {
     let status_code = StatusCode::from_u16(status as u16).unwrap_or(StatusCode::FOUND);
 
-    let mut builder = Response::builder()
+    let builder = Response::builder()
         .status(status_code)
         .header("Location", url);
 
@@ -918,7 +918,7 @@ fn build_response_bytes_typed(
     let status_code =
         StatusCode::from_u16(status as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
-    let mut builder = Response::builder()
+    let builder = Response::builder()
         .status(status_code)
         .header("Content-Type", content_type);
 

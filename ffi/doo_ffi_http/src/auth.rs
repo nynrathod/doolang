@@ -45,7 +45,7 @@ fn get_auth_db_table() -> &'static StdMutex<Option<String>> {
 }
 
 /// Check if auth is using the database
-fn is_auth_db_backed() -> bool {
+pub(crate) fn is_auth_db_backed() -> bool {
     if !is_pool_initialized() {
         return false;
     }

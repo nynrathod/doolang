@@ -1,18 +1,24 @@
 //! # Doo FFI Core
 //!
-//! Single source of truth for ALL FFI types and constants.
+//! Shared foundation for all FFI crates. Contains:
 //!
-//! ## Core Types
+//! ## Core Runtime (Language Fundamentals)
+//! - `DooResult` / `ResultTag` — The ONE result type for all FFI calls
+//! - `DooString` — The ONE string type for FFI
+//! - `casts` — Type casting (Str↔Int, Str↔Float)
+//! - `memory` — Allocation/free (doo_alloc, doo_free, doo_clone)
+//! - `config` — Environment variable access
+//! - `debug` — Debug output helpers
+//! - `macros` — Shared FFI macros
 //!
-//! - `DooResult` - The ONE result type for all FFI calls
-//! - `DooString` - The ONE string type for FFI
-//! - `DooValue` - Generic value wrapper
-//! - `Rfc7807Error` - RFC 7807 error format
-//!
-//! ## Constants (SINGLE SOURCE OF TRUTH)
-//!
-//! All middleware names, FFI identifiers used across compiler and runtime
-//! are defined in the `constants` module.
+//! ## Shared Infrastructure (Used by Multiple Packages)
+//! These modules are shared across HTTP, Auth, DB, and JSON packages.
+//! They live here to avoid circular dependencies between packages.
+//! - `rfc7807` — RFC 7807 structured error format (used by HTTP, JSON, DB, Auth)
+//! - `cookies` — Cookie management (used by HTTP, Auth)
+//! - `validation` — Field validation (used by HTTP request validation)
+//! - `errors` — Error codes (Auth, DB)
+//! - `helpers` — Common FFI helpers (string conversion, result builders)
 
 #[macro_use]
 pub mod macros;

@@ -5,8 +5,8 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::layout::{
-    alloc_with_header, data_ptr_from_header, get_map_data_ptr, get_map_length,
-    header_ptr_from_data, load_len_i32, set_map_length, store_len_at_header,
+    alloc_with_header, data_ptr_from_header,
+    header_ptr_from_data, load_len_i32, store_len_at_header,
 };
 use crate::utils::{default_for_type, emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;

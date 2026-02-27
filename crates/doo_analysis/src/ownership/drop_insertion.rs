@@ -20,8 +20,7 @@
 use crate::{Decision, OwnershipResults};
 use doo_core::Span;
 use doo_hir::{
-    HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind, HirVisitor,
-    HirVisitorMut,
+    HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 

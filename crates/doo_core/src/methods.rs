@@ -9,7 +9,6 @@
 //! - Codegen uses this registry to dispatch method implementations
 //! - NO hardcoded method names elsewhere in the codebase
 
-use crate::types::TypeId;
 
 /// Method signature definition
 #[derive(Debug, Clone)]

@@ -9,7 +9,7 @@ use doo_core::constants::ffi_names::{self, derive_ffi_symbol};
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeKind, TypeRegistry};
 use doo_mir::sym::resolve;
-use doo_mir::{MirBlock, MirConst, MirFunction, MirInstr, MirOperand, MirProgram, MirTerminator};
+use doo_mir::{MirConst, MirFunction, MirOperand, MirProgram, MirTerminator};
 use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
@@ -1287,7 +1287,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         let i64_ty = self.context.i64_type();
         let i32_ty = self.context.i32_type();
-        let i8_ty = self.context.i8_type();
+        let _i8_ty = self.context.i8_type();
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
 
         // malloc: ptr malloc(i64)

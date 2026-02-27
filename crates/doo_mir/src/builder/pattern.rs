@@ -1,9 +1,8 @@
 use doo_hir::{HirMatchPattern};
 use crate::{MirInstrKind, MirOperand, MirConst, BinaryOp};
 use super::MirBuilder;
-use crate::types::{Span, LocalDef};
+use crate::types::Span;
 use crate::sym::sym;
-use doo_core::types::builtin;
 
 pub fn build_match_condition(
     builder: &mut MirBuilder,

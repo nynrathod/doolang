@@ -2,9 +2,9 @@ use crate::context::CodegenContext;
 use crate::layout;
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
-use doo_core::types::{builtin, TypeId, TypeKind};
+use doo_core::types::{TypeId, TypeKind};
 use inkwell::types::{BasicType, BasicTypeEnum};
-use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 pub struct JsonBuiltins;
@@ -134,7 +134,7 @@ impl JsonBuiltins {
                     return Self::emit_parse_enum(ctx, val, ty, &name, &variants);
                 }
                 Some(TypeKind::Array { element: elem_type }) => {
-                    let (resolved_elem, resolved_elem_kind) = Self::resolve_type_ref(ctx, elem_type);
+                    let (_resolved_elem, resolved_elem_kind) = Self::resolve_type_ref(ctx, elem_type);
                     match resolved_elem_kind {
                         Some(TypeKind::Struct { name, fields }) => {
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
@@ -176,7 +176,7 @@ impl JsonBuiltins {
         // Determine the FFI function name and return type based on target_type
         let (fn_name, ret_type): (&str, BasicTypeEnum<'ctx>) = match target_type {
             Some(ty) => {
-                let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
+                let (_resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
                 match resolved_kind {
                     Some(TypeKind::Int) => (ffi_names::DOO_JSON_PARSE_INT, ctx.i64_type().into()),
                     Some(TypeKind::Float) => {
@@ -688,7 +688,7 @@ impl JsonBuiltins {
     fn emit_parse_enum<'ctx>(
         ctx: &mut CodegenContext<'ctx>,
         json_str: BasicValueEnum<'ctx>,
-        ty: TypeId,
+        _ty: TypeId,
         _name: &str,
         variants: &[(String, Option<TypeId>)],
     ) -> Option<BasicValueEnum<'ctx>> {
@@ -941,7 +941,7 @@ impl JsonBuiltins {
         // Resolve TypeRef to underlying type before dispatch
         let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
         let kind = resolved_kind?;
-        let ty = resolved_ty;
+        let _ty = resolved_ty;
 
         match kind {
             TypeKind::Int => {
@@ -1028,7 +1028,7 @@ impl JsonBuiltins {
                 let end_fn = Self::get_or_declare_end_object(ctx);
                 let comma_fn = Self::get_or_declare_comma(ctx);
                 let colon_fn = Self::get_or_declare_colon(ctx);
-                let key_fn = Self::get_or_declare_write_key(ctx); // writes "key"
+                let _key_fn = Self::get_or_declare_write_key(ctx); // writes "key"
 
                 ctx.builder
                     .build_call(start_fn, &[writer.into()], "")
@@ -1153,7 +1153,7 @@ impl JsonBuiltins {
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
             }
-            TypeKind::Struct { name, fields } => {
+            TypeKind::Struct { name: _, fields } => {
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
                 let key_fn = Self::get_or_declare_write_key(ctx);
@@ -1271,7 +1271,7 @@ impl JsonBuiltins {
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
             }
-            TypeKind::Enum { name, variants } => {
+            TypeKind::Enum { name: _, variants } => {
                 // Enum -> {"Variant": Payload} or "Variant"
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
@@ -1589,12 +1589,12 @@ impl JsonBuiltins {
     fn emit_map_loop_via_keys<'ctx>(
         ctx: &mut CodegenContext<'ctx>,
         writer: PointerValue<'ctx>,
-        map_ptr: PointerValue<'ctx>,
+        _map_ptr: PointerValue<'ctx>,
         keys_arr_ptr: PointerValue<'ctx>,
         key_ty: TypeId,
-        val_ty: TypeId,
+        _val_ty: TypeId,
         comma_fn: FunctionValue<'ctx>,
-        colon_fn: FunctionValue<'ctx>,
+        _colon_fn: FunctionValue<'ctx>,
     ) -> Option<()> {
         // Similar loop over keys array
         // Reusing minimal loop logic relative to `emit_array_loop` but with Map lookup

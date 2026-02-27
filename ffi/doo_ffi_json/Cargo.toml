@@ -6,7 +6,7 @@ description = "JSON FFI functions for Doo — parse, serialize, writer"
 license = "MIT"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 # Core types and memory allocation

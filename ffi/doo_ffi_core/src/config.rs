@@ -17,9 +17,8 @@
 //! Caller owns the returned pointer and must free via `doo_free`.
 
 use crate::helpers::{c_to_string, make_err, make_ok_string, string_to_c};
-use crate::memory::doo_alloc_string;
 use crate::result::DooResult;
-use crate::{ffi_debug, ffi_safe_ptr};
+use crate::ffi_debug;
 use std::os::raw::c_char;
 
 // ============================================================================

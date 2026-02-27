@@ -6,7 +6,7 @@
 //! This module is the **single source of truth** for the Doo compilation pipeline.
 //! All compilation commands (build, run, check) flow through this module.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -745,28 +745,28 @@ fn compile_to_object(
 // Linking
 // ============================================================================
 
-/// Normalize FFI library name from @ffi decorator to actual DLL name.
-/// Examples: doo_http -> doo_ffi_http, doo_db -> doo_ffi_db
+/// Normalize FFI library name from @extern decorator to actual crate name.
+///
+/// Generic rule: `doo_X` → `doo_ffi_X`.
+/// Only special-cases are aliases where the short name differs from the crate suffix.
 fn normalize_ffi_lib_name(name: &str) -> String {
-    // Map short names to full names
-    match name {
-        "doo_http" => "doo_ffi_http".to_string(),
-        "doo_db" | "doo_database" => "doo_ffi_db".to_string(),
-        "doo_auth" => "doo_ffi_auth".to_string(),
-        "doo_file" => "doo_ffi_file".to_string(),
-        "doo_json" => "doo_ffi_json".to_string(),
-        "doo_core" => "doo_ffi_core".to_string(),
-        // WS symbols live inside doo_ffi_http — no separate crate
-        "doo_ws" | "doo_websocket" => "doo_ffi_http".to_string(),
-        // Process module
-        "doo_process" => "doo_ffi_process".to_string(),
-        // Git module — native libgit2 operations
-        "doo_git" => "doo_ffi_git".to_string(),
-        // Config module — lives in doo_ffi_core (always linked)
-        "doo_config" => "doo_ffi_core".to_string(),
-        // Already normalized or unknown - pass through
-        _ if name.starts_with("doo_ffi_") => name.to_string(),
-        _ => name.to_string(),
+    // Already normalized
+    if name.starts_with("doo_ffi_") {
+        return name.to_string();
+    }
+
+    // Generic rule: doo_X -> doo_ffi_X
+    if let Some(suffix) = name.strip_prefix("doo_") {
+        match suffix {
+            // Aliases where short name doesn't match crate suffix
+            "database" => "doo_ffi_db".to_string(),
+            "ws" | "websocket" => "doo_ffi_http".to_string(), // WS lives in HTTP crate
+            "config" => "doo_ffi_core".to_string(),           // Config lives in core crate
+            _ => format!("doo_ffi_{}", suffix),
+        }
+    } else {
+        // Not a doo library — pass through as-is
+        name.to_string()
     }
 }
 
@@ -776,8 +776,9 @@ fn link_object_file(
     opts: &CompileOptions,
     mir_program: &doo_mir::MirProgram,
 ) -> Result<PathBuf, String> {
-    // Collect FFI libraries from MIR (ffi field contains FfiLinkage with library name)
-    // Normalize library names: doo_http -> doo_ffi_http, doo_db -> doo_ffi_db, etc.
+    // Collect FFI libraries from @extern declarations in MIR.
+    // This is entirely discovery-based — only libraries that the program
+    // actually imports via @extern will be linked.
     let mut ffi_libs: HashSet<String> = mir_program
         .functions
         .iter()
@@ -788,87 +789,16 @@ fn link_object_file(
         })
         .collect();
 
-    // Always include core runtime library (new naming: doo_ffi_core)
+    // Always include core runtime and JSON (language fundamentals)
     ffi_libs.insert("doo_ffi_core".to_string());
-
-    // Always include JSON library — JSON serialization is a codegen builtin
-    // used by virtually every program (print, HTTP responses, logging, etc.)
     ffi_libs.insert("doo_ffi_json".to_string());
 
-    // Detect HTTP usage
-    let has_http = mir_program.functions.iter().any(|f| {
-        let fname = resolve(f.name);
-        f.ffi
-            .as_ref()
-            .map(|l| {
-                let lib = resolve(l.library);
-                lib == "doo_ffi_http" || lib == "doo_http"
-            })
-            .unwrap_or(false)
-            || fname.starts_with("Server::")
-            || fname.contains("::get")
-            || fname.contains("::post")
-            || fname.contains("::put")
-            || fname.contains("::delete")
-    });
-
-    if has_http {
-        ffi_libs.insert("doo_ffi_http".to_string());
-        ffi_libs.insert("doo_ffi_db".to_string());
-        ffi_libs.insert("doo_ffi_auth".to_string());
-    }
-
-    // Detect WebSocket usage (WS is part of doo_ffi_http, not a separate crate)
-    let has_ws = mir_program.functions.iter().any(|f| {
-        let fname = resolve(f.name);
-        f.ffi
-            .as_ref()
-            .map(|l| {
-                let lib = resolve(l.library);
-                lib == "doo_ffi_http" || lib == "doo_ws" || lib == "doo_http"
-            })
-            .unwrap_or(false)
-            && fname.contains("ws")
-    });
-    if has_ws {
-        ffi_libs.insert("doo_ffi_http".to_string());
-        ffi_libs.insert("doo_ffi_runtime".to_string());
-    }
-
-    // Detect database usage
-    let has_db = mir_program.functions.iter().any(|f| {
-        let fname = resolve(f.name);
-        f.ffi
-            .as_ref()
-            .map(|l| {
-                let lib = resolve(l.library);
-                lib == "doo_ffi_db" || lib == "doo_db"
-            })
-            .unwrap_or(false)
-            || fname.starts_with("Database::")
-    });
-    if has_db {
-        ffi_libs.insert("doo_ffi_db".to_string());
-    }
-
-    // Detect async/concurrency usage — link doo_ffi_runtime
-    let has_async = mir_program.has_async_features();
-    if has_async || has_http {
-        ffi_libs.insert("doo_ffi_runtime".to_string());
-    }
-
-    // Detect process usage — link doo_ffi_process + doo_ffi_runtime
-    let has_process = mir_program.functions.iter().any(|f| {
-        f.ffi
-            .as_ref()
-            .map(|l| {
-                let lib = resolve(l.library);
-                lib == "doo_ffi_process" || lib == "doo_process"
-            })
-            .unwrap_or(false)
-    });
-    if has_process {
-        ffi_libs.insert("doo_ffi_process".to_string());
+    // Transitive dependency: async runtime is needed by HTTP server, WebSocket,
+    // and Process — link it when any of those are present or async features used.
+    if mir_program.has_async_features()
+        || ffi_libs.contains("doo_ffi_http")
+        || ffi_libs.contains("doo_ffi_process")
+    {
         ffi_libs.insert("doo_ffi_runtime".to_string());
     }
 
@@ -895,6 +825,18 @@ fn build_library_search_paths() -> Vec<PathBuf> {
     if let Ok(exe_path) = env::current_exe() {
         if let Some(dir) = exe_path.parent() {
             paths.push(dir.to_path_buf());
+
+            // Search packages/ subdirectories next to executable
+            let packages_dir = dir.join("packages");
+            if packages_dir.exists() {
+                if let Ok(entries) = fs::read_dir(&packages_dir) {
+                    for entry in entries.flatten() {
+                        if entry.path().is_dir() {
+                            paths.push(entry.path());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -908,6 +850,18 @@ fn build_library_search_paths() -> Vec<PathBuf> {
 
         #[cfg(target_os = "linux")]
         paths.push(cwd.join("target-linux").join("release"));
+
+        // Search packages/ subdirectories in project root
+        let packages_dir = cwd.join("packages");
+        if packages_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&packages_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        paths.push(entry.path());
+                    }
+                }
+            }
+        }
     }
 
     // User home directories

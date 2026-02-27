@@ -393,7 +393,7 @@ impl StringBuiltins {
             .into_int_value();
 
         // Convert case
-        let (range_start, range_end, offset) = if to_upper {
+        let (range_start, range_end, _offset) = if to_upper {
             (97u64, 122u64, -32i64 as u64) // 'a'-'z' -> subtract 32
         } else {
             (65u64, 90u64, 32u64) // 'A'-'Z' -> add 32

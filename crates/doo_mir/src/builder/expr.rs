@@ -100,7 +100,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
 
         HirExprKind::Local { name } => {
             // Built-in modules (JSON, Math, File, etc.) are treated as globals, not locals
-            if ffi_names::is_builtin_module(name) {
+            if builder.is_module_name(name) {
                 return MirOperand::Global(sym(name));
             }
 

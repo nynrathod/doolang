@@ -23,10 +23,8 @@
 
 use std::os::raw::c_char;
 use std::panic;
-use std::path::Path;
 
 use doo_ffi_core::helpers::{c_to_string_lossy, make_ok_string, make_ok_void};
-use doo_ffi_core::memory::doo_alloc_string;
 use doo_ffi_core::result::DooResult;
 
 use git2::{Repository, Signature, StatusOptions};

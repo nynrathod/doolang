@@ -11,8 +11,17 @@
 
 use crate::context::CodegenContext;
 use crate::instructions::calls::call_wrappers;
-use doo_core::constants::ffi_names;
 use inkwell::values::FunctionValue;
+
+// ============================================================================
+// WebSocket FFI Symbol Constants (Package-Owned)
+// ============================================================================
+
+pub(crate) const DOO_WS_ROUTE: &str = "doo_ws_route";
+pub(crate) const DOO_WS_CONN_ON: &str = "doo_ws_conn_on";
+pub(crate) const DOO_WS_CONN_ON_ERROR: &str = "doo_ws_conn_on_error";
+pub(crate) const DOO_WS_CONN_ON_CONNECT: &str = "doo_ws_conn_on_connect";
+pub(crate) const DOO_WS_CONN_ON_DISCONNECT: &str = "doo_ws_conn_on_disconnect";
 
 /// Handle FuncRef wrapping for WebSocket package symbols.
 ///
@@ -26,17 +35,13 @@ pub(crate) fn wrap_func_ref<'ctx>(
     symbol: &str,
     func_name: &str,
 ) -> FunctionValue<'ctx> {
-    if symbol == ffi_names::DOO_WS_ROUTE {
+    if symbol == DOO_WS_ROUTE {
         // Route handler: fn(*const WsConnection) → void
         call_wrappers::get_or_generate_ws_handler_wrapper(ctx, func_name)
-    } else if symbol == ffi_names::DOO_WS_CONN_ON
-        || symbol == ffi_names::DOO_WS_CONN_ON_ERROR
-    {
+    } else if symbol == DOO_WS_CONN_ON || symbol == DOO_WS_CONN_ON_ERROR {
         // Event/error handler: fn(*const WsConnection, *const c_char) → void
         call_wrappers::get_or_generate_ws_event_handler_wrapper(ctx, func_name)
-    } else if symbol == ffi_names::DOO_WS_CONN_ON_CONNECT
-        || symbol == ffi_names::DOO_WS_CONN_ON_DISCONNECT
-    {
+    } else if symbol == DOO_WS_CONN_ON_CONNECT || symbol == DOO_WS_CONN_ON_DISCONNECT {
         // Lifecycle handler: fn(*const WsConnection) → void
         call_wrappers::get_or_generate_ws_lifecycle_handler_wrapper(ctx, func_name)
     } else {

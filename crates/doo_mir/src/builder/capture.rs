@@ -4,7 +4,6 @@
 //! subtracts variables defined within the tree, and returns the
 //! list of free variables that must be captured from the outer scope.
 
-use doo_core::constants::ffi_names;
 use doo_hir::{HirExpr, HirExprKind, HirStmt, HirStmtKind};
 use std::collections::HashSet;
 
@@ -39,7 +38,7 @@ pub fn collect_free_vars(body: &HirExpr, builder: &MirBuilder) -> Vec<String> {
     let mut free_vars: Vec<String> = referenced
         .difference(&defined)
         .filter(|name| {
-            !ffi_names::is_builtin_module(name)
+            !builder.is_module_name(name)
                 && !builder.is_function_name(name)
                 && !builder.is_type_name(name)
                 && !is_intrinsic_name(name)

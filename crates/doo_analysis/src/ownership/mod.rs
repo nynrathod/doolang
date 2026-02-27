@@ -596,7 +596,7 @@ impl OwnershipAnalyzer {
             }
             HirExprKind::MethodCall {
                 receiver,
-                method,
+                method: _,
                 args,
             } => {
                 // For method calls on locals, use Borrow instead of Clone

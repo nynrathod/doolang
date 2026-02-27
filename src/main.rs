@@ -1,7 +1,6 @@
 use clap::Parser;
 use doo_driver::{
     compile_project, discover_main_doo_candidates, initialize, Cli, Commands, CompileOptions,
-    CompileResult,
 };
 
 fn main() {

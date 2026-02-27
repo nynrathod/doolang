@@ -17,9 +17,9 @@ use doo_hir::{
     HirStmt, HirStmtKind, HirUnaryOp,
 };
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::sym::{resolve, sym, Sym};
+use crate::sym::{sym, Sym};
 use crate::types::*;
 
 /// FFI function information extracted from @extern decorator.
@@ -98,6 +98,11 @@ pub struct MirBuilder<'a> {
     /// Stack of active scope variable names.
     /// When non-empty, `go { ... }` emits ScopeSpawn instead of Spawn.
     pub(crate) scope_stack: Vec<Sym>,
+
+    /// Module names discovered from the program's import statements.
+    /// Used to recognize module names (e.g., "Http", "Database") without
+    /// hardcoding them in the compiler. Core modules are always recognized.
+    pub(crate) imported_modules: FxHashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +134,7 @@ impl<'a> MirBuilder<'a> {
             ffi_functions: FxHashMap::default(),
             function_aliases: FxHashMap::default(),
             scope_stack: Vec::new(),
+            imported_modules: FxHashSet::default(),
         }
     }
 
@@ -157,6 +163,7 @@ impl<'a> MirBuilder<'a> {
             ffi_functions: FxHashMap::default(),
             function_aliases: FxHashMap::default(),
             scope_stack: Vec::new(),
+            imported_modules: FxHashSet::default(),
         }
     }
 
@@ -170,9 +177,26 @@ impl<'a> MirBuilder<'a> {
         self.ownership_results.as_ref()?.get_decision(name, span)
     }
 
+    /// Check if a name is a known module — either a core module or an imported package module.
+    /// This is discovery-based: package modules are recognized from the program's imports,
+    /// NOT from a hardcoded list in the compiler.
+    pub(crate) fn is_module_name(&self, name: &str) -> bool {
+        doo_core::constants::ffi_names::is_core_module(name) || self.imported_modules.contains(name)
+    }
+
     /// Build MIR from HIR program.
     pub fn build(&mut self, hir: &HirProgram) -> MirProgram {
         let mut program = MirProgram::new();
+
+        // Discover imported module names from the program's imports.
+        // This replaces the old hardcoded BUILTIN_MODULES list for package modules.
+        for item in &hir.items {
+            if let HirItem::Import(import) = item {
+                if import.path.len() >= 2 {
+                    self.imported_modules.insert(import.path[1].clone());
+                }
+            }
+        }
 
         // First pass: collect all function return types, parameter types, and FFI info
         for item in &hir.items {

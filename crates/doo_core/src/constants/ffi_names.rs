@@ -9,12 +9,18 @@
 //! let malloc_fn = module.get_function(ffi_names::MALLOC)?;
 //!
 //! // Check if a name is a built-in module
-//! if ffi_names::is_builtin_module(name) { ... }
+//! if ffi_names::is_core_module(name) { ... }
 //! ```
 
 // ============================================================================
-// Built-in Module Names (Static Modules like JSON, Math, File, etc.)
+// Built-in Module Names
 // ============================================================================
+// NOTE: Package modules (Http, Auth, Database, WebSocket, Process, Git) are
+// listed here temporarily for module recognition by type_check, MIR, and
+// capture analysis. In Phase 2 (Solution 2), these will be discovered
+// dynamically via the import resolution system from packages/ directory.
+// Core modules (JSON, Math, File, Random, Array, Console, Config) will
+// remain as true built-ins.
 
 /// JSON module for parsing and stringifying JSON data
 pub const MODULE_JSON: &str = "JSON";
@@ -22,48 +28,33 @@ pub const MODULE_JSON: &str = "JSON";
 pub const MODULE_MATH: &str = "Math";
 /// File module for file system operations
 pub const MODULE_FILE: &str = "File";
-/// Http module for HTTP server and client operations  
-pub const MODULE_HTTP: &str = "Http";
-/// Auth module for authentication (hashing, JWT, etc.)
-pub const MODULE_AUTH: &str = "Auth";
-/// Database module for database operations
-pub const MODULE_DATABASE: &str = "Database";
 /// Random module for random number generation
 pub const MODULE_RANDOM: &str = "Random";
 /// Array module for array utilities
 pub const MODULE_ARRAY: &str = "Array";
 /// Console module for console I/O
 pub const MODULE_CONSOLE: &str = "Console";
-/// WebSocket module for WebSocket server operations
-pub const MODULE_WEBSOCKET: &str = "WebSocket";
-/// Process module for command/process execution
-pub const MODULE_PROCESS: &str = "Process";
 /// Config module for environment variable access
 pub const MODULE_CONFIG: &str = "Config";
-/// Git module for native git operations (libgit2)
-pub const MODULE_GIT: &str = "Git";
 
-/// All built-in module names in a static array for iteration/lookup
-pub const BUILTIN_MODULES: &[&str] = &[
+/// Core language modules — true built-ins that are part of the language itself
+pub const CORE_MODULES: &[&str] = &[
     MODULE_JSON,
     MODULE_MATH,
     MODULE_FILE,
-    MODULE_HTTP,
-    MODULE_AUTH,
-    MODULE_DATABASE,
     MODULE_RANDOM,
     MODULE_ARRAY,
     MODULE_CONSOLE,
-    MODULE_WEBSOCKET,
-    MODULE_PROCESS,
     MODULE_CONFIG,
-    MODULE_GIT,
 ];
 
-/// Check if a name is a built-in module
+/// Check if a name is a core built-in module (language-level, not packages).
+/// Package modules (Http, Auth, Database, etc.) are discovered from program
+/// imports — they are NOT hardcoded here. See TypeChecker::is_known_module()
+/// and MirBuilder::is_module_name() for the discovery-based approach.
 #[inline]
-pub fn is_builtin_module(name: &str) -> bool {
-    BUILTIN_MODULES.contains(&name)
+pub fn is_core_module(name: &str) -> bool {
+    CORE_MODULES.contains(&name)
 }
 
 // ============================================================================
@@ -190,86 +181,6 @@ pub const DOO_JSON_OBJECT_GET_BOOL: &str = "doo_json_object_get_bool";
 pub const DOO_JSON_OBJECT_GET_STR: &str = "doo_json_object_get_str";
 pub const DOO_JSON_OBJECT_GET_JSON: &str = "doo_json_object_get_json";
 pub const DOO_JSON_OBJECT_FREE: &str = "doo_json_object_free";
-
-// ============================================================================
-// Doo HTTP FFI (doo_ffi_http)
-// ============================================================================
-
-pub const DOO_HTTP_GET_SERVER_INSTANCE: &str = "doo_http_get_server_instance";
-pub const DOO_HTTP_GROUP: &str = "doo_http_group";
-
-// HTTP Method Routes with function pointer
-pub const DOO_HTTP_GET_FN: &str = "doo_http_get_fn";
-pub const DOO_HTTP_POST_FN: &str = "doo_http_post_fn";
-pub const DOO_HTTP_PUT_FN: &str = "doo_http_put_fn";
-pub const DOO_HTTP_DELETE_FN: &str = "doo_http_delete_fn";
-pub const DOO_HTTP_PATCH_FN: &str = "doo_http_patch_fn";
-
-// HTTP Method Routes with middleware
-pub const DOO_HTTP_GET_WITH_MIDDLEWARE: &str = "doo_http_get_with_middleware";
-pub const DOO_HTTP_POST_WITH_MIDDLEWARE: &str = "doo_http_post_with_middleware";
-pub const DOO_HTTP_PUT_WITH_MIDDLEWARE: &str = "doo_http_put_with_middleware";
-pub const DOO_HTTP_DELETE_WITH_MIDDLEWARE: &str = "doo_http_delete_with_middleware";
-pub const DOO_HTTP_PATCH_WITH_MIDDLEWARE: &str = "doo_http_patch_with_middleware";
-
-// HTTP FFI symbol constants — used by codegen for metadata/auth/crud dispatch
-pub const DOO_HTTP_AUTH: &str = "doo_http_auth";
-pub const DOO_HTTP_CRUD: &str = "doo_http_crud";
-
-// Default auth route paths — used when app.auth() is called with zero arguments.
-// Single source of truth: referenced by route_transform for default injection.
-pub const DEFAULT_AUTH_SIGNUP_PATH: &str = "/auth/register";
-pub const DEFAULT_AUTH_LOGIN_PATH: &str = "/auth/login";
-
-pub const DOO_HTTP_REGISTER_MIDDLEWARE: &str = "doo_http_register_middleware";
-pub const DOO_HTTP_REGISTER_HANDLER_WITH_METADATA: &str = "doo_http_register_handler_with_metadata";
-pub const DOO_HTTP_REGISTER_STRUCT_METADATA: &str = "doo_http_register_struct_metadata";
-pub const DOO_HTTP_REGISTER_ENUM_METADATA: &str = "doo_http_register_enum_metadata";
-
-// HTTP Serialization Helpers (doohttp_ prefix — compiled into codegen wrappers)
-pub const DOOHTTP_POPULATE_STRUCT_FROM_REQUEST: &str = "doohttp_populate_struct_from_request";
-pub const DOOHTTP_LAST_ERROR_STATUS: &str = "doohttp_last_error_status";
-pub const DOOHTTP_LAST_ERROR_JSON: &str = "doohttp_last_error_json";
-pub const DOOHTTP_ERROR_VARIANT_TO_STATUS: &str = "doohttp_error_variant_to_status";
-pub const DOOHTTP_BUILD_RFC7807_ERROR: &str = "doohttp_build_rfc7807_error";
-pub const DOOHTTP_SERIALIZE_STRUCT_TO_JSON: &str = "doohttp_serialize_struct_to_json";
-pub const DOOHTTP_FORMAT_ERROR_AS_JSON: &str = "doohttp_format_error_as_json";
-
-// ============================================================================
-// Doo Database FFI (doo_ffi_db)
-// ============================================================================
-
-pub const DOO_DB_POSTGRES: &str = "doo_db_postgres";
-pub const DOO_DB_FIND: &str = "doo_db_find";
-pub const DOO_DB_FIND_ALL: &str = "doo_db_find_all";
-pub const DOO_DB_INSERT: &str = "doo_db_insert";
-pub const DOO_DB_UPDATE: &str = "doo_db_update";
-pub const DOO_DB_DELETE: &str = "doo_db_delete";
-pub const DOO_DB_RAW: &str = "doo_db_raw";
-pub const DOO_DB_RAW_WITH_PARAMS: &str = "doo_db_raw_with_params";
-pub const DOO_DB_QUERY: &str = "doo_db_query";
-pub const DOO_DB_EXISTS: &str = "doo_db_exists";
-pub const DOO_DB_RESULT_FREE: &str = "doo_db_result_free";
-pub const DOO_DB_SERIALIZE_ENUM_ARRAY: &str = "doo_db_serialize_enum_array";
-pub const DOO_DB_CONNECT_POSTGRES: &str = "doo_db_connect_postgres";
-pub const DOO_DB_GET_GLOBAL: &str = "doo_db_get_global";
-pub const DOO_DB_RAW_PARAM: &str = "doo_db_raw_param";
-pub const DOO_DB_FREE_STRING: &str = "doo_db_free_string";
-pub const DOO_DB_BATCH_QUERY: &str = "doo_db_batch_query";
-pub const DOO_DB_BATCH_UPDATE: &str = "doo_db_batch_update";
-
-// ============================================================================
-// Doo Auth FFI (doo_ffi_auth)
-// ============================================================================
-
-pub const DOO_AUTH_HASH_PASSWORD: &str = "doo_auth_hash_password";
-pub const DOO_AUTH_VERIFY_PASSWORD: &str = "doo_auth_verify_password";
-pub const DOO_AUTH_SIGN_TOKEN: &str = "doo_auth_sign_token";
-pub const DOO_AUTH_VERIFY_TOKEN: &str = "doo_auth_verify_token";
-pub const DOO_AUTH_FREE_RESULT: &str = "doo_auth_free_result";
-pub const DOO_AUTH_SIGN: &str = "doo_auth_sign";
-pub const DOO_AUTH_VERIFY: &str = "doo_auth_verify";
-pub const DOO_AUTH_FREE_STRING: &str = "doo_auth_free_string";
 
 // ============================================================================
 // Doo File FFI (doo_ffi_file)
@@ -414,13 +325,12 @@ pub const SELF_RETURNING_ACCESSORS: &[&str] = &[
     "shared",    // Type.shared() -> Type (shared instance)
 ];
 
-/// Connection method names that establish connections returning typed handles
+/// Connection method names that establish connections returning typed handles.
+/// Only generic patterns — specific driver names (Postgres, mysql, sqlite)
+/// are not hardcoded; return types come from @extern declarations.
 pub const SELF_RETURNING_CONNECTORS: &[&str] = &[
-    "connect",  // Database.connect() -> Database
-    "Postgres", // Database.Postgres() -> Database
-    "mysql",    // Database.mysql() -> Database
-    "sqlite",   // Database.sqlite() -> Database
-    "open",     // File.open() -> File
+    "connect",  // Generic connection pattern
+    "open",     // Generic open pattern
 ];
 
 /// Check if a method name is a self-returning pattern
@@ -431,85 +341,6 @@ pub fn is_self_returning_method(method: &str) -> bool {
         || SELF_RETURNING_ACCESSORS.contains(&method)
         || SELF_RETURNING_CONNECTORS.contains(&method)
 }
-
-// ============================================================================
-// Middleware Names — Used by doo_analysis route transform
-// ============================================================================
-// Codegen has its own local copy in packages/http.rs for dispatch.
-// These are only needed by analysis (route_transform.rs).
-
-/// JWT middleware function name (the Doo `Jwt()` function)
-pub const DOO_JWT_FUNC_NAME: &str = "Jwt";
-/// JWT middleware identifier — used by analysis for route transform
-pub const MIDDLEWARE_JWT: &str = "Jwt";
-
-// ============================================================================
-// Doo WebSocket FFI (doo_ffi_websocket) - Single Source of Truth
-// ============================================================================
-
-// Route registration
-pub const DOO_WS_ROUTE: &str = "doo_ws_route";
-pub const DOO_WS_INIT: &str = "doo_ws_init";
-pub const DOO_WS_CONFIG: &str = "doo_ws_config";
-pub const DOO_WS_SHUTDOWN: &str = "doo_ws_shutdown";
-pub const DOO_WS_ACTIVE_CONNECTIONS: &str = "doo_ws_active_connections";
-
-// Connection operations
-pub const DOO_WS_CONN_ID: &str = "doo_ws_conn_id";
-pub const DOO_WS_CONN_EMIT: &str = "doo_ws_conn_emit";
-pub const DOO_WS_CONN_EMIT_BINARY: &str = "doo_ws_conn_emit_binary";
-pub const DOO_WS_CONN_JOIN: &str = "doo_ws_conn_join";
-pub const DOO_WS_CONN_LEAVE: &str = "doo_ws_conn_leave";
-pub const DOO_WS_CONN_CLOSE: &str = "doo_ws_conn_close";
-pub const DOO_WS_CONN_IS_CLOSED: &str = "doo_ws_conn_is_closed";
-pub const DOO_WS_CONN_ON: &str = "doo_ws_conn_on";
-pub const DOO_WS_CONN_ON_CONNECT: &str = "doo_ws_conn_on_connect";
-pub const DOO_WS_CONN_ON_DISCONNECT: &str = "doo_ws_conn_on_disconnect";
-pub const DOO_WS_CONN_ON_ERROR: &str = "doo_ws_conn_on_error";
-
-// WebSocket route check (used by HTTP server)
-pub const DOO_WS_IS_WS_ROUTE: &str = "doo_ws_is_ws_route";
-
-// Broadcast & room operations
-pub const DOO_WS_BROADCAST: &str = "doo_ws_broadcast";
-pub const DOO_WS_ROOM_EMIT: &str = "doo_ws_room_emit";
-
-// ============================================================================
-// Doo Process FFI (doo_ffi_process) - Single Source of Truth
-// ============================================================================
-
-// Synchronous command execution
-pub const DOO_PROCESS_RUN: &str = "doo_process_run";
-pub const DOO_PROCESS_OUTPUT: &str = "doo_process_output";
-
-// Async spawn / handle
-pub const DOO_PROCESS_SPAWN: &str = "doo_process_spawn";
-pub const DOO_PROCESS_KILL: &str = "doo_process_kill";
-pub const DOO_PROCESS_STATUS: &str = "doo_process_status";
-pub const DOO_PROCESS_WAIT_OUTPUT: &str = "doo_process_wait_output";
-pub const DOO_PROCESS_IS_RUNNING: &str = "doo_process_is_running";
-pub const DOO_PROCESS_READ_STDOUT: &str = "doo_process_read_stdout";
-pub const DOO_PROCESS_READ_STDERR: &str = "doo_process_read_stderr";
-
-// Lifecycle
-pub const DOO_PROCESS_SHUTDOWN: &str = "doo_process_shutdown";
-pub const DOO_PROCESS_ACTIVE_COUNT: &str = "doo_process_active_count";
-
-// ============================================================================
-// Doo Git FFI (doo_ffi_git) — Native libgit2 operations
-// ============================================================================
-
-pub const DOO_GIT_INIT: &str = "doo_git_init";
-pub const DOO_GIT_CLONE: &str = "doo_git_clone";
-pub const DOO_GIT_COMMIT_ALL: &str = "doo_git_commit_all";
-pub const DOO_GIT_PUSH: &str = "doo_git_push";
-pub const DOO_GIT_PULL: &str = "doo_git_pull";
-pub const DOO_GIT_IS_DIRTY: &str = "doo_git_is_dirty";
-pub const DOO_GIT_STASH: &str = "doo_git_stash";
-pub const DOO_GIT_STASH_POP: &str = "doo_git_stash_pop";
-pub const DOO_GIT_HAS_REMOTE: &str = "doo_git_has_remote";
-pub const DOO_GIT_HEAD_SHORT: &str = "doo_git_head_short";
-pub const DOO_GIT_COMMIT_ALL_BG: &str = "doo_git_commit_all_bg";
 
 // ============================================================================
 // Doo Config FFI (doo_ffi_core) - Single Source of Truth
@@ -527,22 +358,6 @@ pub const DOO_CONFIG_GET_INT: &str = "doo_config_get_int";
 pub const DOO_CONFIG_GET_BOOL: &str = "doo_config_get_bool";
 /// Set environment variable at runtime
 pub const DOO_CONFIG_SET: &str = "doo_config_set";
-
-// ============================================================================
-// Doo HTTP Metrics FFI (doo_ffi_http) - Single Source of Truth
-// ============================================================================
-
-/// Enable Prometheus-compatible metrics endpoint on the server
-pub const DOO_HTTP_METRICS: &str = "doo_http_metrics";
-
-// ============================================================================
-// Doo HTTP Client / Fetch FFI (doo_ffi_http) - Single Source of Truth
-// ============================================================================
-
-/// `Fetch(url, options?)` — Make an outbound HTTP request.
-/// options: ObjectLit `{ method: "POST", body: "...", timeout: 30, headers: ["K: V"] }`
-/// Returns JSON: `{"status":200,"body":"...","ok":true,"headers":{...}}`
-pub const DOO_HTTP_FETCH: &str = "doo_http_fetch";
 
 // ============================================================================
 // FFI Symbol Derivation — Single Source of Truth

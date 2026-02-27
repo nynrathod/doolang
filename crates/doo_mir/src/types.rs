@@ -21,7 +21,7 @@
 //!
 //! **NO IncRef/DecRef** - the compiler decides ownership at analysis time.
 
-use crate::sym::{resolve, sym, Sym};
+use crate::sym::{resolve, Sym};
 use std::collections::HashMap;
 
 use doo_core::doo_debug;

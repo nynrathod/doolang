@@ -98,7 +98,7 @@ impl CollectionType {
     }
 
     /// Whether this collection type can contain the given element type.
-    pub fn is_valid_element(&self, element_type: TypeId, registry_check: impl Fn(TypeId) -> bool) -> bool {
+    pub fn is_valid_element(&self, _element_type: TypeId, registry_check: impl Fn(TypeId) -> bool) -> bool {
         match self {
             Self::Map { key, .. } => {
                 // Map keys must be hashable (delegated to registry)

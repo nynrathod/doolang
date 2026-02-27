@@ -87,7 +87,7 @@ impl RouteContext {
     pub fn param_source_index(
         &self,
         param_name: &str,
-        param_idx: usize,
+        _param_idx: usize,
         total_params: usize,
     ) -> u32 {
         // Special case: JWT user ID injection

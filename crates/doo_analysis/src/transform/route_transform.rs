@@ -28,10 +28,25 @@
 //! app.getWithMiddleware("/api/profile", "AuthMiddleware,LogMiddleware", "getProfile");
 //! ```
 
-use doo_core::constants::{DOO_JWT_FUNC_NAME, MIDDLEWARE_JWT, DEFAULT_AUTH_SIGNUP_PATH, DEFAULT_AUTH_LOGIN_PATH};
 use doo_core::Span;
-use doo_frontend::ast::{Expr, ExprKind, FunctionDecl, Item, Program, Stmt, StmtKind, TypeExpr};
+use doo_frontend::ast::{Expr, ExprKind, FunctionDecl, Item, Program, Stmt, StmtKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+// ============================================================================
+// HTTP Package Constants (used by route transform analysis)
+// ============================================================================
+// These are HTTP-package-specific constants. They live here (not in doo_core)
+// because the compiler core should not know about package-specific values.
+// Route transform is an analysis pass that specifically handles HTTP DSL syntax.
+
+/// JWT middleware function name (the Doo `Jwt()` function)
+const DOO_JWT_FUNC_NAME: &str = "Jwt";
+/// JWT middleware identifier
+const MIDDLEWARE_JWT: &str = "Jwt";
+/// Default auth signup path
+const DEFAULT_AUTH_SIGNUP_PATH: &str = "/auth/register";
+/// Default auth login path
+const DEFAULT_AUTH_LOGIN_PATH: &str = "/auth/login";
 
 /// Global counter for generating unique closure function names.
 static CLOSURE_COUNTER: AtomicUsize = AtomicUsize::new(0);

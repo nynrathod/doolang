@@ -44,7 +44,7 @@ use std::panic;
 
 use doo_ffi_core::ffi_debug;
 use doo_ffi_core::helpers::{
-    c_to_string_lossy, make_err as core_make_err, make_ok_string as make_ok_str, make_ok_void,
+    c_to_string_lossy, make_ok_string as make_ok_str, make_ok_void,
     make_panic_err as core_make_panic_err,
 };
 use doo_ffi_core::memory::doo_alloc_string;

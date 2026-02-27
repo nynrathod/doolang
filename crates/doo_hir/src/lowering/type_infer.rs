@@ -1,18 +1,11 @@
 //! Type inference helpers for module methods and closures.
 
 use doo_core::{
-    doo_debug,
-    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
+    infer::{infer_binop_result_type, infer_unaryop_result_type},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
-    Span,
-};
-use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
-    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
-    TypeExpr, UnaryOp,
 };
 use crate::types::*;
-use super::{Lower, LowerError};
+use super::Lower;
 use rustc_hash::FxHashMap;
 use super::{hir_binop_to_kind, hir_unaryop_to_kind};
 

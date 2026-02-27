@@ -24,7 +24,7 @@
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
 use inkwell::types::BasicType;
-use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
+use inkwell::values::{IntValue, PointerValue};
 use inkwell::IntPredicate;
 
 /// Map entry size in bytes: each entry stores key (8 bytes) + value (8 bytes).

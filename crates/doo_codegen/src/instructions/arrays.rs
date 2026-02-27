@@ -12,7 +12,6 @@ use crate::layout::{alloc_with_header, get_array_length_from_data, int_to_i64};
 use crate::utils::{emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
-use doo_core::types::TypeKind;
 use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::types::BasicType;
@@ -457,7 +456,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 // Or we assume 'value' type matches array element type.
                 // We need to know element SIZE for realloc.
                 let val_type = val.get_type();
-                let elem_size = val_type.size_of()?; // This might be wrong if val is pointer but array holds structs
+                let _elem_size = val_type.size_of()?; // This might be wrong if val is pointer but array holds structs
                                                      // Better: rely on type info from a registry if available, but codegen usually works on LLVM types.
                                                      // Assuming homogeneous array, element type is type of 'val'.
 

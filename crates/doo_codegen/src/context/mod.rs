@@ -15,7 +15,7 @@ mod metadata;
 mod type_cache;
 
 use doo_core::doo_debug;
-use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
+use doo_core::types::{TypeId, TypeKind, TypeRegistry};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};

@@ -1,18 +1,15 @@
 //! Pattern matching, operators, and utility methods.
 
 use doo_core::{
-    doo_debug,
-    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
     Span,
 };
 use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
-    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
+    self, BinaryOp, CompoundOp, Pattern, PatternKind,
     TypeExpr, UnaryOp,
 };
 use crate::types::*;
-use super::{Lower, LowerError};
+use super::Lower;
 
 impl Lower {
     pub(crate) fn pattern_to_name(&self, pattern: &Pattern) -> String {

@@ -5,7 +5,7 @@ edition = "2021"
 description = "Production-grade file system FFI for Doo programming language"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 libc = "0.2"

@@ -5,7 +5,7 @@ edition = "2021"
 description = "Database FFI layer with pluggable driver architecture"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [features]
 default = ["postgres"]

@@ -18,15 +18,12 @@ mod type_infer;
 mod helpers;
 
 use doo_core::{
-    doo_debug,
-    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
-    types::{builtin, TypeId, TypeKind, TypeRegistry},
+    infer::{BinOpKind, UnaryOpKind},
+    types::{TypeId, TypeRegistry},
     Span,
 };
 use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
-    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
-    TypeExpr, UnaryOp,
+    Item, Program,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 

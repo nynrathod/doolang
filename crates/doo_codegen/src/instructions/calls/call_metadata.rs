@@ -1,13 +1,11 @@
 //! Metadata registration and error helpers for HTTP handler codegen.
 
-use super::call_ffi::declare_ffi_function;
 use crate::context::CodegenContext;
-use doo_core::constants::ffi_names;
+use crate::packages::http as http_pkg;
 use doo_core::doo_debug;
-use doo_core::types::{TypeKind, TypeId, TypeRegistry};
+use doo_core::types::TypeKind;
 use doo_mir::{MirConst, MirOperand};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use std::sync::Arc;
+use inkwell::values::FunctionValue;
 
 /// Emit a call to doo_http_register_handler_with_metadata to register handler metadata.
 /// This is called when an HTTP route is registered, allowing the FFI to validate
@@ -38,10 +36,13 @@ pub(crate) fn emit_handler_metadata_registration<'ctx>(
 
     let register_fn = ctx
         .module
-        .get_function(ffi_names::DOO_HTTP_REGISTER_HANDLER_WITH_METADATA)
+        .get_function(http_pkg::DOO_HTTP_REGISTER_HANDLER_WITH_METADATA)
         .unwrap_or_else(|| {
-            ctx.module
-                .add_function(ffi_names::DOO_HTTP_REGISTER_HANDLER_WITH_METADATA, fn_type, None)
+            ctx.module.add_function(
+                http_pkg::DOO_HTTP_REGISTER_HANDLER_WITH_METADATA,
+                fn_type,
+                None,
+            )
         });
 
     // Create string constants for handler name and metadata
@@ -92,7 +93,11 @@ pub(crate) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
 
     // For auth: args are [server, signup_path, login_path, struct_name, db]
     // For crud: args are [server, base_path, struct_name, db]
-    let struct_name_arg_idx = if symbol == ffi_names::DOO_HTTP_AUTH { 3 } else { 2 };
+    let struct_name_arg_idx = if symbol == http_pkg::DOO_HTTP_AUTH {
+        3
+    } else {
+        2
+    };
 
     let struct_name = match args.get(struct_name_arg_idx) {
         Some(MirOperand::Const(MirConst::Str(name))) => name.clone(),
@@ -124,10 +129,10 @@ pub(crate) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
 
     let register_fn = ctx
         .module
-        .get_function(ffi_names::DOO_HTTP_REGISTER_STRUCT_METADATA)
+        .get_function(http_pkg::DOO_HTTP_REGISTER_STRUCT_METADATA)
         .unwrap_or_else(|| {
             ctx.module
-                .add_function(ffi_names::DOO_HTTP_REGISTER_STRUCT_METADATA, fn_type, None)
+                .add_function(http_pkg::DOO_HTTP_REGISTER_STRUCT_METADATA, fn_type, None)
         });
 
     // Create string constants
@@ -189,10 +194,10 @@ pub(crate) fn emit_enum_metadata_if_needed<'ctx>(
 
         let register_fn = ctx
             .module
-            .get_function(ffi_names::DOO_HTTP_REGISTER_ENUM_METADATA)
+            .get_function(http_pkg::DOO_HTTP_REGISTER_ENUM_METADATA)
             .unwrap_or_else(|| {
                 ctx.module
-                    .add_function(ffi_names::DOO_HTTP_REGISTER_ENUM_METADATA, fn_type, None)
+                    .add_function(http_pkg::DOO_HTTP_REGISTER_ENUM_METADATA, fn_type, None)
             });
 
         // Create string constants
@@ -232,10 +237,10 @@ pub(crate) fn emit_struct_metadata_if_needed<'ctx>(
 
         let register_fn = ctx
             .module
-            .get_function(ffi_names::DOO_HTTP_REGISTER_STRUCT_METADATA)
+            .get_function(http_pkg::DOO_HTTP_REGISTER_STRUCT_METADATA)
             .unwrap_or_else(|| {
                 ctx.module
-                    .add_function(ffi_names::DOO_HTTP_REGISTER_STRUCT_METADATA, fn_type, None)
+                    .add_function(http_pkg::DOO_HTTP_REGISTER_STRUCT_METADATA, fn_type, None)
             });
 
         // Create string constants
@@ -442,14 +447,38 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                     );
                 }
                 TypeKind::Array { element } => {
-                    collect_struct_layout(registry, *element, struct_layouts, enum_variants, field_decorators_map);
+                    collect_struct_layout(
+                        registry,
+                        *element,
+                        struct_layouts,
+                        enum_variants,
+                        field_decorators_map,
+                    );
                 }
                 TypeKind::Optional { inner } => {
-                    collect_struct_layout(registry, *inner, struct_layouts, enum_variants, field_decorators_map);
+                    collect_struct_layout(
+                        registry,
+                        *inner,
+                        struct_layouts,
+                        enum_variants,
+                        field_decorators_map,
+                    );
                 }
                 TypeKind::Map { key, value } => {
-                    collect_struct_layout(registry, *key, struct_layouts, enum_variants, field_decorators_map);
-                    collect_struct_layout(registry, *value, struct_layouts, enum_variants, field_decorators_map);
+                    collect_struct_layout(
+                        registry,
+                        *key,
+                        struct_layouts,
+                        enum_variants,
+                        field_decorators_map,
+                    );
+                    collect_struct_layout(
+                        registry,
+                        *value,
+                        struct_layouts,
+                        enum_variants,
+                        field_decorators_map,
+                    );
                 }
                 _ => {}
             }

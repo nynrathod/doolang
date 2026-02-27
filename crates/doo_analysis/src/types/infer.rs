@@ -253,7 +253,7 @@ impl TypeInference {
             // Index access - infer element type from array/map/tuple
             HirExprKind::Index { object, index } => {
                 let object_type = self.infer_expr_type(object, registry);
-                let index_type = self.infer_expr_type(index, registry);
+                let _index_type = self.infer_expr_type(index, registry);
 
                 if let Some(info) = registry.get(object_type) {
                     match &info.kind {

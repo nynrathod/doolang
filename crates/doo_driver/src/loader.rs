@@ -136,6 +136,34 @@ impl ModuleLoader {
         )
     }
 
+    /// Resolve a module from the packages/ directory.
+    ///
+    /// Searches `packages/*/` (sibling of std/) for `{module_name}.doo`.
+    /// This is entirely discovery-based — no hardcoded package names.
+    fn resolve_package_module(&self, stdlib: &Path, module_name: &str) -> Result<PathBuf, String> {
+        if let Some(parent) = stdlib.parent() {
+            let packages_dir = parent.join("packages");
+            if packages_dir.exists() {
+                // Scan all subdirectories for {module_name}.doo
+                if let Ok(entries) = fs::read_dir(&packages_dir) {
+                    for entry in entries.flatten() {
+                        if entry.path().is_dir() {
+                            let candidate = entry.path().join(format!("{}.doo", module_name));
+                            if candidate.exists() {
+                                return Ok(candidate);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "Module '{}' not found in std/ or packages/",
+            module_name
+        ))
+    }
+
     /// Load and parse a module file.
     ///
     /// Returns the cached version if already loaded.
@@ -157,18 +185,21 @@ impl ModuleLoader {
         // Resolve file path
         let module_file = match namespace {
             "std" => {
-                let stdlib = self.resolve_stdlib_path()?;
-                stdlib.join(format!("{}.doo", module_name))
+                // Clone to release the mutable borrow on self
+                let stdlib = self.resolve_stdlib_path()?.to_path_buf();
+                let std_file = stdlib.join(format!("{}.doo", module_name));
+                if std_file.exists() {
+                    std_file
+                } else {
+                    // Fallback: search packages/ directory (sibling of std/)
+                    self.resolve_package_module(&stdlib, module_name)?
+                }
             }
             _ => {
                 // TODO: Support project-relative imports
                 return Err(format!("Unsupported namespace: {}", namespace));
             }
         };
-
-        if !module_file.exists() {
-            return Err(format!("Module file not found: {}", module_file.display()));
-        }
 
         if self.debug {
             doo_debug!(
@@ -705,7 +736,7 @@ pub fn resolve_imports(
     > = HashMap::new();
     let mut nested_std_import_order: Vec<String> = Vec::new();
 
-    while let Some((module_path, path_symbols, import_chain, origin_span)) = pending_modules.pop() {
+    while let Some((module_path, _path_symbols, import_chain, origin_span)) = pending_modules.pop() {
         // Skip if already visited
         let canonical_path = module_path
             .canonicalize()
@@ -917,7 +948,7 @@ pub fn resolve_imports(
         //
         // The `{...}` syntax in imports documents usage intent but doesn't restrict
         // what gets loaded — all public items from the local module are included.
-        let import_all = true;
+        let _import_all = true;
 
         // First pass: collect struct/enum names that will be imported
         // so we can also import their associated functions

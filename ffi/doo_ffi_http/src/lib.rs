@@ -66,6 +66,7 @@ mod map_ops;
 mod metadata;
 pub mod metrics;
 mod middleware_ffi;
+mod password_reset;
 mod request;
 mod response;
 mod routes;

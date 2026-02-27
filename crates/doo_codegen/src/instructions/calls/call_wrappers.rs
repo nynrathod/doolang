@@ -3,13 +3,12 @@
 use super::RouteContext;
 use crate::builtins::JsonBuiltins;
 use crate::context::CodegenContext;
+use crate::packages::http as http_pkg;
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
-use doo_core::types::{builtin, TypeKind};
+use doo_core::types::TypeKind;
 use doo_mir::{MirConst, MirOperand};
-use inkwell::module::Linkage;
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use inkwell::IntPredicate;
+use inkwell::values::{FunctionValue, PointerValue};
 /// Extract route context from FFI call arguments.
 /// For HTTP route registrations like doo_http_get_fn(server, path, handler),
 /// this extracts the route path pattern and middleware information.
@@ -89,7 +88,10 @@ pub(crate) fn get_or_generate_ws_handler_wrapper<'ctx>(
     let entry = ctx.context.append_basic_block(wrapper_fn, "entry");
     ctx.builder.position_at_end(entry);
 
-    let ws_conn_ptr = wrapper_fn.get_nth_param(0).expect("ICE: wrapper function missing expected parameter").into_pointer_value();
+    let ws_conn_ptr = wrapper_fn
+        .get_nth_param(0)
+        .expect("ICE: wrapper function missing expected parameter")
+        .into_pointer_value();
 
     match ctx.get_function(user_func_name) {
         Some(user_func) => {
@@ -114,11 +116,11 @@ pub(crate) fn get_or_generate_ws_handler_wrapper<'ctx>(
                     "Server" | "DooServer" => {
                         let get_server_fn = ctx
                             .module
-                            .get_function(ffi_names::DOO_HTTP_GET_SERVER_INSTANCE)
+                            .get_function(http_pkg::DOO_HTTP_GET_SERVER_INSTANCE)
                             .unwrap_or_else(|| {
                                 let fn_type = ptr_type.fn_type(&[], false);
                                 ctx.module.add_function(
-                                    ffi_names::DOO_HTTP_GET_SERVER_INSTANCE,
+                                    http_pkg::DOO_HTTP_GET_SERVER_INSTANCE,
                                     fn_type,
                                     Some(inkwell::module::Linkage::External),
                                 )
@@ -185,8 +187,14 @@ pub(crate) fn get_or_generate_ws_event_handler_wrapper<'ctx>(
     let entry = ctx.context.append_basic_block(wrapper_fn, "entry");
     ctx.builder.position_at_end(entry);
 
-    let conn_ptr = wrapper_fn.get_nth_param(0).expect("ICE: wrapper function missing expected parameter").into_pointer_value();
-    let data_ptr = wrapper_fn.get_nth_param(1).expect("ICE: wrapper function missing expected parameter").into_pointer_value();
+    let conn_ptr = wrapper_fn
+        .get_nth_param(0)
+        .expect("ICE: wrapper function missing expected parameter")
+        .into_pointer_value();
+    let data_ptr = wrapper_fn
+        .get_nth_param(1)
+        .expect("ICE: wrapper function missing expected parameter")
+        .into_pointer_value();
 
     match ctx.get_function(user_func_name) {
         Some(user_func) => {
@@ -214,11 +222,11 @@ pub(crate) fn get_or_generate_ws_event_handler_wrapper<'ctx>(
                         // Inject global server instance
                         let get_server_fn = ctx
                             .module
-                            .get_function(ffi_names::DOO_HTTP_GET_SERVER_INSTANCE)
+                            .get_function(http_pkg::DOO_HTTP_GET_SERVER_INSTANCE)
                             .unwrap_or_else(|| {
                                 let fn_type = ptr_type.fn_type(&[], false);
                                 ctx.module.add_function(
-                                    ffi_names::DOO_HTTP_GET_SERVER_INSTANCE,
+                                    http_pkg::DOO_HTTP_GET_SERVER_INSTANCE,
                                     fn_type,
                                     Some(inkwell::module::Linkage::External),
                                 )
@@ -285,7 +293,10 @@ pub(crate) fn get_or_generate_ws_lifecycle_handler_wrapper<'ctx>(
     let entry = ctx.context.append_basic_block(wrapper_fn, "entry");
     ctx.builder.position_at_end(entry);
 
-    let conn_ptr = wrapper_fn.get_nth_param(0).expect("ICE: wrapper function missing expected parameter").into_pointer_value();
+    let conn_ptr = wrapper_fn
+        .get_nth_param(0)
+        .expect("ICE: wrapper function missing expected parameter")
+        .into_pointer_value();
 
     match ctx.get_function(user_func_name) {
         Some(user_func) => {
@@ -310,11 +321,11 @@ pub(crate) fn get_or_generate_ws_lifecycle_handler_wrapper<'ctx>(
                     "Server" | "DooServer" => {
                         let get_server_fn = ctx
                             .module
-                            .get_function(ffi_names::DOO_HTTP_GET_SERVER_INSTANCE)
+                            .get_function(http_pkg::DOO_HTTP_GET_SERVER_INSTANCE)
                             .unwrap_or_else(|| {
                                 let fn_type = ptr_type.fn_type(&[], false);
                                 ctx.module.add_function(
-                                    ffi_names::DOO_HTTP_GET_SERVER_INSTANCE,
+                                    http_pkg::DOO_HTTP_GET_SERVER_INSTANCE,
                                     fn_type,
                                     Some(inkwell::module::Linkage::External),
                                 )
@@ -521,12 +532,15 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
     ctx.builder.position_at_end(entry);
 
     // Get the request parameter
-    let request_ptr = wrapper_fn.get_nth_param(0).expect("ICE: wrapper function missing expected parameter").into_pointer_value();
+    let request_ptr = wrapper_fn
+        .get_nth_param(0)
+        .expect("ICE: wrapper function missing expected parameter")
+        .into_pointer_value();
 
     // Types we'll need
     let i32_type = ctx.i32_type();
     let i64_type = ctx.i64_type();
-    let i8_type = ctx.context.i8_type();
+    let _i8_type = ctx.context.i8_type();
 
     // Allocate result on heap (we'll need this for both success and error paths)
     // DooResult layout: { i64 tag, ptr data, i32 owner }
@@ -534,10 +548,13 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
         .context
         .struct_type(&[i64_type.into(), ptr_type.into(), i32_type.into()], false);
 
-    let malloc_fn = ctx.module.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
-        let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
-        ctx.module.add_function(ffi_names::MALLOC, fn_type, None)
-    });
+    let malloc_fn = ctx
+        .module
+        .get_function(ffi_names::MALLOC)
+        .unwrap_or_else(|| {
+            let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
+            ctx.module.add_function(ffi_names::MALLOC, fn_type, None)
+        });
 
     // Call the user's function (or FFI function via external symbol)
     // For FFI functions, use their actual parameter count, not the middleware signature
@@ -557,7 +574,10 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 .and_then(|cs| cs.try_as_basic_value().basic())
         } else if user_param_count == 2 && (is_middleware || is_ffi_middleware) {
             // FFI middleware with 2 params (request, next)
-            let next_fn_ptr = wrapper_fn.get_nth_param(1).expect("ICE: wrapper function missing expected parameter").into_pointer_value();
+            let next_fn_ptr = wrapper_fn
+                .get_nth_param(1)
+                .expect("ICE: wrapper function missing expected parameter")
+                .into_pointer_value();
             ctx.builder
                 .build_call(
                     user_func,
@@ -576,7 +596,10 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
     } else if is_middleware {
         // Middleware function: fn(Request, Next) -> Response
         // Get the next function pointer from wrapper's second param
-        let next_fn_ptr = wrapper_fn.get_nth_param(1).expect("ICE: wrapper function missing expected parameter").into_pointer_value();
+        let next_fn_ptr = wrapper_fn
+            .get_nth_param(1)
+            .expect("ICE: wrapper function missing expected parameter")
+            .into_pointer_value();
 
         // Call user's middleware with both request and next
         ctx.builder
@@ -598,7 +621,7 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
         // Get or declare doohttp_populate_struct_from_request
         let populate_fn = ctx
             .module
-            .get_function(ffi_names::DOOHTTP_POPULATE_STRUCT_FROM_REQUEST)
+            .get_function(http_pkg::DOOHTTP_POPULATE_STRUCT_FROM_REQUEST)
             .unwrap_or_else(|| {
                 let fn_type = i32_type.fn_type(
                     &[
@@ -609,8 +632,11 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     ],
                     false,
                 );
-                ctx.module
-                    .add_function(ffi_names::DOOHTTP_POPULATE_STRUCT_FROM_REQUEST, fn_type, None)
+                ctx.module.add_function(
+                    http_pkg::DOOHTTP_POPULATE_STRUCT_FROM_REQUEST,
+                    fn_type,
+                    None,
+                )
             });
 
         // Get handler name as C string for the validation call
@@ -667,20 +693,20 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
             // Get error status and JSON
             let get_status_fn = ctx
                 .module
-                .get_function(ffi_names::DOOHTTP_LAST_ERROR_STATUS)
+                .get_function(http_pkg::DOOHTTP_LAST_ERROR_STATUS)
                 .unwrap_or_else(|| {
                     let fn_type = i32_type.fn_type(&[], false);
                     ctx.module
-                        .add_function(ffi_names::DOOHTTP_LAST_ERROR_STATUS, fn_type, None)
+                        .add_function(http_pkg::DOOHTTP_LAST_ERROR_STATUS, fn_type, None)
                 });
 
             let get_json_fn = ctx
                 .module
-                .get_function(ffi_names::DOOHTTP_LAST_ERROR_JSON)
+                .get_function(http_pkg::DOOHTTP_LAST_ERROR_JSON)
                 .unwrap_or_else(|| {
                     let fn_type = ptr_type.fn_type(&[], false);
                     ctx.module
-                        .add_function(ffi_names::DOOHTTP_LAST_ERROR_JSON, fn_type, None)
+                        .add_function(http_pkg::DOOHTTP_LAST_ERROR_JSON, fn_type, None)
                 });
 
             let error_status = ctx
@@ -893,11 +919,11 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     }
                     let get_server_fn = ctx
                         .module
-                        .get_function(ffi_names::DOO_HTTP_GET_SERVER_INSTANCE)
+                        .get_function(http_pkg::DOO_HTTP_GET_SERVER_INSTANCE)
                         .unwrap_or_else(|| {
                             let fn_type = ptr_type.fn_type(&[], false);
                             ctx.module.add_function(
-                                ffi_names::DOO_HTTP_GET_SERVER_INSTANCE,
+                                http_pkg::DOO_HTTP_GET_SERVER_INSTANCE,
                                 fn_type,
                                 Some(inkwell::module::Linkage::External),
                             )
@@ -1227,10 +1253,13 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         .unwrap_or(i64_type.const_int(24, false));
 
                     // Declare malloc
-                    let malloc_fn = ctx.module.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
-                        let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
-                        ctx.module.add_function(ffi_names::MALLOC, fn_type, None)
-                    });
+                    let malloc_fn =
+                        ctx.module
+                            .get_function(ffi_names::MALLOC)
+                            .unwrap_or_else(|| {
+                                let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
+                                ctx.module.add_function(ffi_names::MALLOC, fn_type, None)
+                            });
 
                     let error_struct_mem = ctx
                         .builder
@@ -1321,7 +1350,8 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         .unwrap_or_else(|| i32_type.const_zero());
 
                     // Get enum metadata to get variant names
-                    let enum_name_str = error_type_name.as_ref()
+                    let enum_name_str = error_type_name
+                        .as_ref()
                         .expect("ICE: error type has no name — cannot generate error handler");
                     let variant_names = if let Some(TypeKind::Enum { variants, .. }) =
                         error_type_id.and_then(|tid| ctx.get_type_kind(tid))
@@ -1369,14 +1399,14 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     // Call doohttp_error_variant_to_status to get HTTP status code
                     let error_mapping_fn = ctx
                         .module
-                        .get_function(ffi_names::DOOHTTP_ERROR_VARIANT_TO_STATUS)
+                        .get_function(http_pkg::DOOHTTP_ERROR_VARIANT_TO_STATUS)
                         .unwrap_or_else(|| {
                             let fn_type = i32_type.fn_type(
                                 &[ptr_type.into(), ptr_type.into(), i32_type.into()],
                                 false,
                             );
                             ctx.module.add_function(
-                                ffi_names::DOOHTTP_ERROR_VARIANT_TO_STATUS,
+                                http_pkg::DOOHTTP_ERROR_VARIANT_TO_STATUS,
                                 fn_type,
                                 None,
                             )
@@ -1403,12 +1433,15 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     // Get the doohttp_build_rfc7807_error function to create proper error JSON
                     let build_error_fn = ctx
                         .module
-                        .get_function(ffi_names::DOOHTTP_BUILD_RFC7807_ERROR)
+                        .get_function(http_pkg::DOOHTTP_BUILD_RFC7807_ERROR)
                         .unwrap_or_else(|| {
                             let fn_type =
                                 ptr_type.fn_type(&[i32_type.into(), ptr_type.into()], false);
-                            ctx.module
-                                .add_function(ffi_names::DOOHTTP_BUILD_RFC7807_ERROR, fn_type, None)
+                            ctx.module.add_function(
+                                http_pkg::DOOHTTP_BUILD_RFC7807_ERROR,
+                                fn_type,
+                                None,
+                            )
                         });
 
                     // Build RFC 7807 error JSON using the helper
@@ -1621,7 +1654,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         );
 
                         let error_struct_size = i64_type.const_int(24, false);
-                        let malloc_fn = ctx.module.get_function(ffi_names::MALLOC)
+                        let malloc_fn = ctx
+                            .module
+                            .get_function(ffi_names::MALLOC)
                             .expect("ICE: malloc not declared in LLVM module");
                         let error_struct_ptr = ctx
                             .builder
@@ -1707,12 +1742,12 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         // Serialize the Response struct to JSON
                         let serialize_fn = ctx
                             .module
-                            .get_function(ffi_names::DOOHTTP_SERIALIZE_STRUCT_TO_JSON)
+                            .get_function(http_pkg::DOOHTTP_SERIALIZE_STRUCT_TO_JSON)
                             .unwrap_or_else(|| {
                                 let fn_type =
                                     ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
                                 ctx.module.add_function(
-                                    ffi_names::DOOHTTP_SERIALIZE_STRUCT_TO_JSON,
+                                    http_pkg::DOOHTTP_SERIALIZE_STRUCT_TO_JSON,
                                     fn_type,
                                     None,
                                 )
@@ -1873,7 +1908,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         .struct_type(&[i32_type.into(), ptr_type.into(), ptr_type.into()], false);
 
                     let error_struct_size = i64_type.const_int(24, false);
-                    let malloc_fn = ctx.module.get_function(ffi_names::MALLOC)
+                    let malloc_fn = ctx
+                        .module
+                        .get_function(ffi_names::MALLOC)
                         .expect("ICE: malloc not declared in LLVM module");
                     let error_struct_ptr = ctx
                         .builder
@@ -1959,12 +1996,12 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     // Non-Response return type: serialize to JSON and store with tag=0
                     let serialize_fn = ctx
                         .module
-                        .get_function(ffi_names::DOOHTTP_SERIALIZE_STRUCT_TO_JSON)
+                        .get_function(http_pkg::DOOHTTP_SERIALIZE_STRUCT_TO_JSON)
                         .unwrap_or_else(|| {
                             let fn_type =
                                 ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
                             ctx.module.add_function(
-                                ffi_names::DOOHTTP_SERIALIZE_STRUCT_TO_JSON,
+                                http_pkg::DOOHTTP_SERIALIZE_STRUCT_TO_JSON,
                                 fn_type,
                                 None,
                             )
@@ -2133,11 +2170,14 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 // Call doohttp_serialize_struct_to_json or similar
                 let serialize_fn = ctx
                     .module
-                    .get_function(ffi_names::DOOHTTP_SERIALIZE_STRUCT_TO_JSON)
+                    .get_function(http_pkg::DOOHTTP_SERIALIZE_STRUCT_TO_JSON)
                     .unwrap_or_else(|| {
                         let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-                        ctx.module
-                            .add_function(ffi_names::DOOHTTP_SERIALIZE_STRUCT_TO_JSON, fn_type, None)
+                        ctx.module.add_function(
+                            http_pkg::DOOHTTP_SERIALIZE_STRUCT_TO_JSON,
+                            fn_type,
+                            None,
+                        )
                     });
 
                 let handler_name_str = ctx
@@ -2195,11 +2235,14 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 // No extra dereference needed — use it directly.
                 let format_error_fn = ctx
                     .module
-                    .get_function(ffi_names::DOOHTTP_FORMAT_ERROR_AS_JSON)
+                    .get_function(http_pkg::DOOHTTP_FORMAT_ERROR_AS_JSON)
                     .unwrap_or_else(|| {
                         let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
-                        ctx.module
-                            .add_function(ffi_names::DOOHTTP_FORMAT_ERROR_AS_JSON, fn_type, None)
+                        ctx.module.add_function(
+                            http_pkg::DOOHTTP_FORMAT_ERROR_AS_JSON,
+                            fn_type,
+                            None,
+                        )
                     });
 
                 // Error value IS the string pointer directly (from `return Err "..."`)
@@ -2207,7 +2250,11 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
 
                 let error_json_str = ctx
                     .builder
-                    .build_call(format_error_fn, &[error_msg_ptr.into()], "formatted_error_json")
+                    .build_call(
+                        format_error_fn,
+                        &[error_msg_ptr.into()],
+                        "formatted_error_json",
+                    )
                     .ok()
                     .and_then(|cs| cs.try_as_basic_value().basic())
                     .map(|v| v.into_pointer_value())
@@ -2339,11 +2386,14 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 // Get or declare doohttp_serialize_struct_to_json
                 let serialize_fn = ctx
                     .module
-                    .get_function(ffi_names::DOOHTTP_SERIALIZE_STRUCT_TO_JSON)
+                    .get_function(http_pkg::DOOHTTP_SERIALIZE_STRUCT_TO_JSON)
                     .unwrap_or_else(|| {
                         let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-                        ctx.module
-                            .add_function(ffi_names::DOOHTTP_SERIALIZE_STRUCT_TO_JSON, fn_type, None)
+                        ctx.module.add_function(
+                            http_pkg::DOOHTTP_SERIALIZE_STRUCT_TO_JSON,
+                            fn_type,
+                            None,
+                        )
                     });
 
                 // Create handler name string

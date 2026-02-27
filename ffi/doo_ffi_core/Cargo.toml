@@ -6,7 +6,7 @@ description = "Core FFI types shared across all Doo FFI libraries"
 license = "MIT"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 # Serialization (needed by rfc7807.rs, validation.rs)

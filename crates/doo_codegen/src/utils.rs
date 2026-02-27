@@ -244,7 +244,7 @@ fn emit_eq_by_llvm_type<'ctx>(
 
 /// Get default value for a type (zero/null).
 pub fn default_for_type<'ctx>(
-    ctx: &CodegenContext<'ctx>,
+    _ctx: &CodegenContext<'ctx>,
     ty: BasicTypeEnum<'ctx>,
 ) -> BasicValueEnum<'ctx> {
     match ty {

@@ -2,17 +2,14 @@
 
 use doo_core::{
     doo_debug,
-    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind},
-    types::{builtin, TypeId, TypeKind, TypeRegistry},
-    Span,
+    types::{TypeKind, TypeRegistry},
 };
 use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Decorator, ElseBranch, EnumDecl, Expr, ExprKind, FunctionDecl,
-    ImportDecl, IncDecOp, Item, Pattern, PatternKind, Program, Stmt, StmtKind, StructDecl,
-    TypeExpr, UnaryOp,
+    self, Decorator, EnumDecl, FunctionDecl,
+    ImportDecl, Item, StructDecl,
 };
 use crate::types::*;
-use super::{Lower, LowerError};
+use super::Lower;
 
 impl Lower {
     pub(crate) fn lower_item(&mut self, item: &Item) -> Option<HirItem> {
