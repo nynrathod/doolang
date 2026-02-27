@@ -22,10 +22,9 @@
 //! **NO IncRef/DecRef** - the compiler decides ownership at analysis time.
 
 use crate::sym::{resolve, Sym};
-use std::collections::HashMap;
-
 use doo_core::doo_debug;
 use doo_core::types::TypeId;
+use std::collections::HashMap;
 
 // ============================================================================
 // Type System Integration
@@ -52,7 +51,7 @@ pub struct MirProgram {
     pub globals: Vec<MirGlobal>,
     /// Struct metadata: name -> field definitions
     pub structs: HashMap<Sym, StructDef>,
-    /// Enum metadata: name -> variant definitions  
+    /// Enum metadata: name -> variant definitions
     pub enums: HashMap<Sym, EnumDef>,
     /// Entry point function name (usually "main")
     pub entry_point: Option<Sym>,
@@ -119,6 +118,8 @@ impl MirProgram {
 
     /// Check if any function in the program uses async features.
     /// Used by codegen to emit `doo_runtime_init()` in `main()`.
+    /// Note: Process FFI async detection is handled by the linker (compile.rs)
+    /// which links doo_ffi_runtime when doo_ffi_process is present.
     pub fn has_async_features(&self) -> bool {
         self.functions.iter().any(|f| {
             f.is_async
@@ -132,10 +133,6 @@ impl MirProgram {
                                 | MirInstrKind::ScopeCreate { .. }
                                 | MirInstrKind::ScopeSpawn { .. }
                                 | MirInstrKind::ScopeWait { .. }
-                        ) || matches!(
-                            &i.kind,
-                            MirInstrKind::FfiCall { symbol, .. }
-                                if resolve(*symbol).starts_with("doo_process_")
                         )
                     })
                 })
@@ -1008,6 +1005,7 @@ impl std::error::Error for MirError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sym::sym;
     use doo_core::types::TypeId;
 
     #[test]

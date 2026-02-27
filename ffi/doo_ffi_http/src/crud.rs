@@ -595,13 +595,29 @@ pub extern "C" fn doo_http_crud(
         let routes = get_routes();
         let mut registry = routes.lock().unwrap_or_else(|e| e.into_inner());
 
+        // Read routes are always public
         registry.register("GET", &base_str, crud_list_handler);
-        registry.register("POST", &base_str, crud_create_handler);
-
         let get_one_path = format!("{}/{{id}}", base_str);
         registry.register("GET", &get_one_path, crud_get_handler);
-        registry.register("PUT", &get_one_path, crud_update_handler);
-        registry.register("DELETE", &get_one_path, crud_delete_handler);
+
+        // Write routes: auto-protect with JWT when app.auth() has been configured.
+        // This is generic — any CRUD endpoint auto-protects writes when auth is present.
+        let auth_configured = registry.auth_config.is_some();
+        if auth_configured {
+            ffi_debug!(
+                "HTTP",
+                "Auth configured — CRUD write routes for {} will require JWT",
+                base_str
+            );
+            let jwt_mw: Vec<DooMiddlewareFn> = vec![crate::middleware::jwt_middleware_handler];
+            registry.register_with_middleware("POST", &base_str, crud_create_handler, jwt_mw.clone());
+            registry.register_with_middleware("PUT", &get_one_path, crud_update_handler, jwt_mw.clone());
+            registry.register_with_middleware("DELETE", &get_one_path, crud_delete_handler, jwt_mw);
+        } else {
+            registry.register("POST", &base_str, crud_create_handler);
+            registry.register("PUT", &get_one_path, crud_update_handler);
+            registry.register("DELETE", &get_one_path, crud_delete_handler);
+        }
 
         registry.crud_configs.push(CrudConfig {
             base_path: base_str,

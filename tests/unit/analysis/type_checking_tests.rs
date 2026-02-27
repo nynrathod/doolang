@@ -1148,8 +1148,9 @@ fn binop_comparison_chain() {
 }
 
 #[test]
-fn binop_int_float_fail() {
-    assert!(types_fail("fn main() { let x = 1 + 2.5; }"));
+fn binop_int_float_coercion() {
+    // Int + Float is allowed via auto-coercion (Int → Float via sitofp)
+    assert!(types_ok("fn main() { let x = 1 + 2.5; }"));
 }
 
 #[test]

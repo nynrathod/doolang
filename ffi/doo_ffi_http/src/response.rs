@@ -239,7 +239,6 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         "Str" => {
             let cstr = unsafe { std::ffi::CStr::from_ptr(struct_ptr as *const c_char) };
             let s = cstr.to_bytes();
-            // Pre-allocate: 2 quotes + escaped content
             let mut buf = Vec::with_capacity(s.len() + 2);
             buf.push(b'"');
             json_escape_bytes_into(&mut buf, s);
@@ -248,19 +247,21 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         }
         "Int" => {
             let i = unsafe { *(struct_ptr as *const i64) };
-            let mut buf = itoa::Buffer::new();
-            return string_to_c(buf.format(i));
+            let mut ibuf = itoa::Buffer::new();
+            let formatted = ibuf.format(i);
+            return string_to_c(formatted);
         }
         "Float" => {
             let f = unsafe { *(struct_ptr as *const f64) };
-            let mut buf = ryu::Buffer::new();
-            return string_to_c(buf.format(f));
+            let mut fbuf = ryu::Buffer::new();
+            let formatted = fbuf.format(f);
+            return string_to_c(formatted);
         }
         "Bool" => {
             let b = unsafe { *(struct_ptr as *const i8) != 0 };
             return string_to_c(if b { "true" } else { "false" });
         }
-        "Void" => return string_to_c("null"),
+        "Void" => return string_to_c("{}"),
         _ => {}
     }
 

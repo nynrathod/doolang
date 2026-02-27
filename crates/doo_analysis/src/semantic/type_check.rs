@@ -420,7 +420,8 @@ impl TypeChecker {
                 name: param.name.clone(),
                 kind: SymbolKind::Parameter,
                 type_id: param.type_id.or(Some(builtin::ANY)),
-                mutable: false,
+                // Auto-ownership: `self` is always mutable — users don't declare `mut self`
+                mutable: param.name == "self",
                 span: param.span,
                 used: false,
             });
@@ -1577,12 +1578,29 @@ impl TypeChecker {
     }
 
     /// Check that all array elements have consistent types (first element defines expected type).
+    /// Mixed enum types are allowed in untyped arrays (common for SQL parameters, config, etc.).
     fn check_array_internal_consistency(&mut self, elem_types: &[TypeId], elements: &[HirExpr]) {
         if let Some(&first) = elem_types.first() {
             if first != builtin::ANY {
                 for (i, &et) in elem_types.iter().enumerate().skip(1) {
                     if et != builtin::ANY && et != first && !self.registry.is_compatible(et, first)
                     {
+                        // Allow mixed enum types — heterogeneous parameter arrays
+                        // e.g., [Priority::High, Status::Done] for SQL params
+                        let first_is_enum = self
+                            .registry
+                            .get(first)
+                            .map(|f| matches!(f.kind, TypeKind::Enum { .. }))
+                            .unwrap_or(false);
+                        let elem_is_enum = self
+                            .registry
+                            .get(et)
+                            .map(|e| matches!(e.kind, TypeKind::Enum { .. }))
+                            .unwrap_or(false);
+                        if first_is_enum && elem_is_enum {
+                            continue;
+                        }
+
                         self.errors.push(TypeError {
                             kind: TypeErrorKind::InvalidArrayElement {
                                 expected: first,

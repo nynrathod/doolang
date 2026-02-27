@@ -631,6 +631,7 @@ impl<'ctx> CodegenContext<'ctx> {
 mod tests {
     use super::*;
     use crate::linker::{CrossModuleResolver, LinkError, ModuleLinker};
+    use doo_core::types::builtin;
     use std::sync::Arc;
 
     #[test]

@@ -966,6 +966,13 @@ fn link_windows(
         .arg("/SUBSYSTEM:CONSOLE")
         .arg("/ENTRY:main");
 
+    // When linking multiple Rust static libraries, each contains its own copy of
+    // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
+    // Allow duplicates so the linker uses the first definition and ignores the rest.
+    if ffi_libs.len() > 1 {
+        cmd.arg("/FORCE:MULTIPLE");
+    }
+
     // Add Windows SDK paths
     if let Some(paths) = sdk_paths {
         if let Some(ucrt) = paths.ucrt_lib {
@@ -994,7 +1001,8 @@ fn link_windows(
                 .arg("userenv.lib")
                 .arg("bcrypt.lib")
                 .arg("kernel32.lib")
-                .arg("advapi32.lib");
+                .arg("advapi32.lib")
+                .arg("ntdll.lib");
             cmd.arg(lib_file.to_str().unwrap());
         } else {
             return Err(format!(
@@ -1106,14 +1114,45 @@ fn link_unix(
     let mut cmd = Command::new("clang");
     cmd.arg(obj_file).arg("-o").arg(&exe_path).arg("-lm");
 
+    // Enable per-function/data section GC — critical for static linking performance.
+    // Combined with --gc-sections in the linker, this eliminates unused code from
+    // the Rust runtime copies embedded in each static library.
+    cmd.arg("-ffunction-sections").arg("-fdata-sections");
+
+    // Use lld if available — much faster than GNU ld for large Rust static libraries.
+    // lld can be 10-50x faster for linking multiple Rust static archives.
+    #[cfg(target_os = "linux")]
+    let _has_lld = {
+        let lld_available = Command::new("ld.lld").arg("--version").output().is_ok();
+        if lld_available {
+            cmd.arg("-fuse-ld=lld");
+        } else {
+            eprintln!("hint: install lld for 10-50x faster linking: sudo apt install lld");
+        }
+        lld_available
+    };
+
     // Platform-specific system libraries
     #[cfg(target_os = "linux")]
     {
         cmd.arg("-lpthread").arg("-ldl");
-        // Export all symbols to the dynamic symbol table so that
-        // cross-library runtime resolution (dlsym/libloading) works.
-        // Required for OAuth (doo_ffi_auth) to find HTTP FFI symbols.
-        cmd.arg("-rdynamic");
+        // GC unused sections — critical for static linking performance.
+        // Each Rust static library embeds the full runtime; --gc-sections
+        // strips the 8 duplicate copies, drastically reducing link time.
+        cmd.arg("-Wl,--gc-sections");
+        // Export symbols to dynamic table only when auth/OAuth is linked —
+        // OAuth uses dlsym for cross-library symbol resolution at runtime.
+        // Programs without auth skip this, avoiding the overhead of
+        // processing all symbols for the dynamic symbol table.
+        if ffi_libs.contains("doo_ffi_auth") {
+            cmd.arg("-rdynamic");
+        }
+        // When linking multiple Rust static libraries, each contains its own copy of
+        // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
+        // Allow duplicates so the linker uses the first definition and ignores the rest.
+        if ffi_libs.len() > 1 {
+            cmd.arg("-Wl,--allow-multiple-definition");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1121,6 +1160,12 @@ fn link_unix(
         cmd.arg("-lpthread");
         cmd.arg("-framework").arg("Security");
         cmd.arg("-framework").arg("CoreFoundation");
+        // When linking multiple Rust static libraries, each contains its own copy of
+        // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
+        // Allow duplicates so the linker uses the first definition and ignores the rest.
+        if ffi_libs.len() > 1 {
+            cmd.arg("-Wl,-multiply_defined,suppress");
+        }
     }
 
     // Link FFI libraries in dependency order
@@ -1157,15 +1202,24 @@ fn link_unix(
                 }
                 cmd.arg(format!("-l{}", lib));
             } else {
-                // Static archive (.a): use --whole-archive to include ALL symbols,
-                // not just those with direct compile-time references.
-                // Required for symbols resolved at runtime via dlsym (e.g.,
-                // doo_http_register_package_route used by OAuth route registration).
+                // Static archive (.a) linking.
+                // Only use --whole-archive for the HTTP server library — it has
+                // runtime-registered route handlers and init code that the linker
+                // can't see direct references to. Auth and DB symbols are called
+                // explicitly from compiler-generated code and don't need it.
+                // Minimizing --whole-archive usage is critical for link speed:
+                // each Rust static lib embeds ~10MB of runtime, and --whole-archive
+                // forces the linker to process ALL of it.
                 #[cfg(target_os = "linux")]
                 {
-                    cmd.arg("-Wl,--whole-archive");
-                    cmd.arg(lib_file.to_str().unwrap());
-                    cmd.arg("-Wl,--no-whole-archive");
+                    let needs_whole_archive = lib.contains("http");
+                    if needs_whole_archive {
+                        cmd.arg("-Wl,--whole-archive");
+                        cmd.arg(lib_file.to_str().unwrap());
+                        cmd.arg("-Wl,--no-whole-archive");
+                    } else {
+                        cmd.arg(lib_file.to_str().unwrap());
+                    }
                 }
                 #[cfg(not(target_os = "linux"))]
                 {

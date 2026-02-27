@@ -211,7 +211,8 @@ impl OwnershipAnalyzer {
                 VarInfo {
                     uses: Vec::new(),
                     type_id: param.type_id,
-                    mutable: false, // Params immutable by default
+                    // Auto-ownership: `self` is always mutable in methods
+                    mutable: param.name == "self",
                     ownership: Ownership::Owned,
                 },
             );
