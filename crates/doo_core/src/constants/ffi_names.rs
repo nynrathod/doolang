@@ -304,8 +304,8 @@ pub const SELF_RETURNING_ACCESSORS: &[&str] = &[
 /// Only generic patterns — specific driver names (Postgres, mysql, sqlite)
 /// are not hardcoded; return types come from @extern declarations.
 pub const SELF_RETURNING_CONNECTORS: &[&str] = &[
-    "connect",  // Generic connection pattern
-    "open",     // Generic open pattern
+    "connect", // Generic connection pattern
+    "open",    // Generic open pattern
 ];
 
 /// Check if a method name is a self-returning pattern

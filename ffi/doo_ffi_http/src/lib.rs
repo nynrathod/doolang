@@ -98,6 +98,12 @@ pub extern "C" fn doo_http_get_server_instance() -> *const c_void {
 #[no_mangle]
 pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut c_void {
     ffi_safe_ptr!({
+        // Register bridge symbols so other FFI crates (e.g., doo_ffi_auth) can
+        // discover them via doo_ffi_core::ffi_bridge — works for static linking
+        // where OS-level symbol resolution (GetProcAddress/dlsym) may not find
+        // symbols in the final executable.
+        register_bridge_symbols();
+
         let host_port_str = if host_port.is_null() {
             ":3000".to_string()
         } else {
@@ -196,4 +202,26 @@ pub(crate) fn make_err_http(status: i32, message: &str) -> *mut DooResult {
         std::ptr::write(ptr, DooResult::err(status as u16, error_response, 0));
         ptr
     }
+}
+
+// ============================================================================
+// FFI BRIDGE REGISTRATION — Cross-Crate Symbol Discovery
+// ============================================================================
+
+/// Register HTTP bridge symbols with doo_ffi_core's FFI bridge registry.
+/// Called once during server init so other packages (e.g., doo_ffi_auth)
+/// can discover these functions without OS-level symbol resolution.
+fn register_bridge_symbols() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        doo_ffi_core::ffi_bridge::register(
+            "doo_http_register_package_route",
+            routes::doo_http_register_package_route as *const std::ffi::c_void,
+        );
+        doo_ffi_core::ffi_bridge::register(
+            "doo_http_push_cookie",
+            routes::doo_http_push_cookie as *const std::ffi::c_void,
+        );
+    });
 }

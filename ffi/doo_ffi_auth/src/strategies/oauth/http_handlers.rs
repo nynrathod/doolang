@@ -663,13 +663,27 @@ fn extract_provider_from_callback_path(path: &str) -> Option<String> {
 // GENERIC PROCESS-WIDE SYMBOL RESOLVER — zero hardcoded DLL names
 // ============================================================================
 
-/// Resolve a symbol by name from ANY loaded module in the current process.
+/// Resolve a symbol by name from the FFI bridge registry or OS-level resolution.
 ///
-/// Fully generic — zero hardcoded DLL names. Enumerates all loaded modules.
+/// Priority order:
+/// 1. FFI bridge registry (doo_ffi_core::ffi_bridge) — works for static linking
+/// 2. OS-level resolution (dlsym/GetProcAddress) — works for dynamic linking
 ///
 /// On Unix: `dlsym(RTLD_DEFAULT)` already searches everything.
 /// On Windows: `K32EnumProcessModules` iterates every loaded DLL + exe.
 fn resolve_symbol_in_process<T: Copy>(symbol_name: &[u8]) -> Option<T> {
+    // Strip trailing null byte for bridge lookup (bridge uses &str, not C strings)
+    let name_str = std::str::from_utf8(
+        &symbol_name[..symbol_name.len().saturating_sub(1)]
+    ).unwrap_or("");
+
+    // First: check the FFI bridge registry (works for static linking on all platforms)
+    if let Some(ptr) = doo_ffi_core::ffi_bridge::resolve(name_str) {
+        ffi_debug!("OAUTH", "Resolved '{}' via FFI bridge registry", name_str);
+        return Some(unsafe { std::mem::transmute_copy(&ptr) });
+    }
+
+    // Fallback: OS-level symbol resolution (for dynamic linking / DLL mode)
     #[cfg(unix)]
     {
         let addr = unsafe {

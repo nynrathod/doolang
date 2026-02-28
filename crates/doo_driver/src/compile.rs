@@ -949,9 +949,9 @@ fn add_posix_compat_stubs(module: &inkwell::module::Module) {
     // Define __imp_close = pointer to _close
     let close_ty = i32_type.fn_type(&[i32_type.into()], false);
     if module.get_global("__imp_close").is_none() {
-        let _close = module.get_function("_close").unwrap_or_else(|| {
-            module.add_function("_close", close_ty, Some(Linkage::External))
-        });
+        let _close = module
+            .get_function("_close")
+            .unwrap_or_else(|| module.add_function("_close", close_ty, Some(Linkage::External)));
         let imp_close = module.add_global(ptr_type, Some(AddressSpace::default()), "__imp_close");
         imp_close.set_initializer(&_close.as_global_value().as_pointer_value());
         imp_close.set_linkage(Linkage::External);
@@ -961,9 +961,9 @@ fn add_posix_compat_stubs(module: &inkwell::module::Module) {
     // Define __imp_read = pointer to _read
     let read_ty = i32_type.fn_type(&[i32_type.into(), ptr_type.into(), i32_type.into()], false);
     if module.get_global("__imp_read").is_none() {
-        let _read = module.get_function("_read").unwrap_or_else(|| {
-            module.add_function("_read", read_ty, Some(Linkage::External))
-        });
+        let _read = module
+            .get_function("_read")
+            .unwrap_or_else(|| module.add_function("_read", read_ty, Some(Linkage::External)));
         let imp_read = module.add_global(ptr_type, Some(AddressSpace::default()), "__imp_read");
         imp_read.set_initializer(&_read.as_global_value().as_pointer_value());
         imp_read.set_linkage(Linkage::External);
@@ -1214,11 +1214,11 @@ fn link_unix(
         // Each Rust static library embeds the full runtime; --gc-sections
         // strips the 8 duplicate copies, drastically reducing link time.
         cmd.arg("-Wl,--gc-sections");
-        // Export symbols to dynamic table only when auth/OAuth is linked —
-        // OAuth uses dlsym for cross-library symbol resolution at runtime.
-        // Programs without auth skip this, avoiding the overhead of
-        // processing all symbols for the dynamic symbol table.
-        if ffi_libs.contains("doo_ffi_auth") {
+        // Export symbols to dynamic table when multiple FFI libs are linked —
+        // cross-crate FFI uses dlsym for runtime symbol resolution
+        // (e.g., auth → http register, http → db bridge).
+        // Programs with a single FFI lib skip this overhead.
+        if ffi_libs.len() > 1 {
             cmd.arg("-rdynamic");
         }
         // When linking multiple Rust static libraries, each contains its own copy of
@@ -1239,6 +1239,9 @@ fn link_unix(
         // Allow duplicates so the linker uses the first definition and ignores the rest.
         if ffi_libs.len() > 1 {
             cmd.arg("-Wl,-multiply_defined,suppress");
+            // Export dynamic symbols so dlsym(RTLD_DEFAULT) can find cross-crate
+            // bridge symbols at runtime (macOS equivalent of -rdynamic on Linux).
+            cmd.arg("-Wl,-export_dynamic");
         }
     }
 

@@ -790,7 +790,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             crate::metrics::record_request(&method, &path, status, duration_us);
         }
         if crate::middleware::is_logger_enabled() {
-            crate::middleware::log_request(&method, &path, status, duration_us / 1000);
+            crate::middleware::log_request(&method, &path, status, duration_us);
         }
     }
 
@@ -1004,9 +1004,9 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             .await
             .map_err(|e| format!("Failed to bind: {}", e))?;
 
-        let boot_time = STARTUP_INSTANT
-            .get()
-            .map(|s| s.elapsed().as_millis())
+        let boot_time_us = doo_ffi_runtime::runtime::program_start()
+            .map(|s| s.elapsed().as_micros())
+            .or_else(|| STARTUP_INSTANT.get().map(|s| s.elapsed().as_micros()))
             .unwrap_or(0);
 
         // Count registered routes from frozen registry
@@ -1034,7 +1034,7 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             println!("-------------------------------------------");
             println!("Info Server Online");
             println!("-------------------------------------------");
-            println!("  Boot Time:            {} ms", boot_time);
+            println!("  Boot Time:            {}", format_duration_smart(boot_time_us));
             println!("  Listening on:         http://{}:{}", addr.ip(), port);
             println!("  Handlers Loaded:      {}", total_routes);
             if ws_routes > 0 {
@@ -1188,4 +1188,19 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             }
         }
     })
+}
+
+/// Format a duration in microseconds into a human-readable string.
+/// - < 1 ms  → "123µs"
+/// - < 1 s   → "12.3ms"
+/// - >= 1 s  → "1.2s"
+#[inline]
+fn format_duration_smart(us: u128) -> String {
+    if us < 1_000 {
+        format!("{}µs", us)
+    } else if us < 1_000_000 {
+        format!("{:.1}ms", us as f64 / 1_000.0)
+    } else {
+        format!("{:.2}s", us as f64 / 1_000_000.0)
+    }
 }

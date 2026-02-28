@@ -28,6 +28,7 @@ pub mod constants;
 pub mod cookies;
 pub mod debug;
 pub mod errors;
+pub mod ffi_bridge;
 pub mod helpers;
 pub mod memory;
 pub mod result;

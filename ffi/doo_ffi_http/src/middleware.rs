@@ -605,7 +605,7 @@ pub fn is_logger_enabled() -> bool {
 /// to avoid adding function pointer overhead to the middleware chain.
 /// Cost: only the string formatting + eprintln when the level is enabled.
 #[inline]
-pub fn log_request(method: &str, path: &str, status: u16, duration_ms: u64) {
+pub fn log_request(method: &str, path: &str, status: u16, duration_us: u64) {
     let config = match get_frozen_logger() {
         Some(c) => c,
         None => return,
@@ -653,10 +653,13 @@ pub fn log_request(method: &str, path: &str, status: u16, duration_ms: u64) {
     };
 
     // Right-align duration for clean columns
-    let dur_str = if duration_ms < 1000 {
-        format!("{:>4}ms", duration_ms)
+    // < 1ms → µs, < 1s → ms, >= 1s → seconds
+    let dur_str = if duration_us < 1_000 {
+        format!("{:>4}µs", duration_us)
+    } else if duration_us < 1_000_000 {
+        format!("{:>5.1}ms", duration_us as f64 / 1_000.0)
     } else {
-        format!("{:>4.1}s ", duration_ms as f64 / 1000.0)
+        format!("{:>5.1}s ", duration_us as f64 / 1_000_000.0)
     };
 
     // Format: [Doo] HH:MM:SS | STATUS | DURATION | METHOD /path

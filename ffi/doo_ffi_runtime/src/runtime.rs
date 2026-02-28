@@ -28,12 +28,17 @@ use doo_ffi_core::DooResult;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::time::Instant;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 
 /// The ONE global runtime. Initialized exactly once via `doo_runtime_init`
 /// or lazily via `get_or_init_runtime`.
 static GLOBAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+/// Program start instant — captured at `doo_runtime_init()` for accurate boot time.
+/// Used by the HTTP server banner to show total program startup time.
+static PROGRAM_START: OnceLock<Instant> = OnceLock::new();
 
 /// Shutdown flag to prevent new async work after shutdown.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -97,6 +102,12 @@ pub fn is_runtime_initialized() -> bool {
     GLOBAL_RUNTIME.get().is_some()
 }
 
+/// Get the program start instant (captured at `doo_runtime_init`).
+/// Used by the HTTP server to measure total boot time.
+pub fn program_start() -> Option<&'static Instant> {
+    PROGRAM_START.get()
+}
+
 /// Get or init the global cancellation token.
 pub fn get_cancel_token() -> &'static CancellationToken {
     CANCEL_TOKEN.get_or_init(CancellationToken::new)
@@ -113,6 +124,10 @@ pub fn get_cancel_token() -> &'static CancellationToken {
 #[no_mangle]
 pub extern "C" fn doo_runtime_init() -> i32 {
     let result = catch_unwind(|| {
+        // Capture program start time — the runtime init is the first FFI call
+        // in main(), so this gives accurate boot time measurement.
+        let _ = PROGRAM_START.set(Instant::now());
+
         let was_new = GLOBAL_RUNTIME.get().is_none();
         let _ = get_runtime();
 

@@ -194,6 +194,10 @@ fn create_database_struct(conn_type: &str, connected: bool) -> *mut c_void {
 #[cfg(feature = "postgres")]
 #[no_mangle]
 pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
+    // Register bridge symbols so other FFI crates (e.g., doo_ffi_http/db_bridge)
+    // can discover DB functions via the FFI bridge registry.
+    register_bridge_symbols();
+
     safe_ffi("DB", || {
         ffi_debug!("DB", "doo_db_connect_postgres called");
         match drivers::postgres::connect_from_env() {
@@ -913,4 +917,30 @@ pub extern "C" fn doo_db_migrate_schemas(schema_json: *const c_char) -> *mut Doo
             Err(e) => db_result_err(500, &e),
         }
     })
+}
+
+// ============================================================================
+// FFI BRIDGE REGISTRATION — Cross-Crate Symbol Discovery
+// ============================================================================
+
+/// Register DB bridge symbols with doo_ffi_core's FFI bridge registry.
+/// Called once during DB connect so other packages (e.g., doo_ffi_http/db_bridge)
+/// can discover these functions without OS-level symbol resolution.
+fn register_bridge_symbols() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        doo_ffi_core::ffi_bridge::register(
+            "doo_db_is_connected",
+            doo_db_is_connected as *const std::ffi::c_void,
+        );
+        doo_ffi_core::ffi_bridge::register(
+            "doo_db_execute_sql",
+            doo_db_execute_sql as *const std::ffi::c_void,
+        );
+        doo_ffi_core::ffi_bridge::register(
+            "doo_db_query_with_params",
+            doo_db_query_with_params as *const std::ffi::c_void,
+        );
+    });
 }
