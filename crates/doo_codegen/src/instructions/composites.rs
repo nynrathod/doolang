@@ -19,7 +19,9 @@ impl CompositeHandler {
     /// Extract variable name from MirOperand for struct type lookup.
     fn get_operand_name(operand: &MirOperand) -> Option<String> {
         match operand {
-            MirOperand::Local(name) | MirOperand::Temp(name) => Some(resolve(*name)),
+            MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
+                Some(resolve(*name))
+            }
             _ => None,
         }
     }

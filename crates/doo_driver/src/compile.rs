@@ -540,6 +540,13 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Phase 9: Optimize
     optimize_module(&module, OptLevel::O2);
 
+    // Phase 9.5: Add POSIX compatibility stubs AFTER optimization (Windows only)
+    // Must be after optimization so the stubs aren't removed by dead code elimination.
+    // FFI C code (libgit2, libssh2) uses POSIX names (close, read) which on
+    // Windows map to _close, _read. These stubs enable lld-link auto-import.
+    #[cfg(target_os = "windows")]
+    add_posix_compat_stubs(&module);
+
     // Phase 10: Write LLVM IR if requested
     if opts.keep_ll {
         let ll_file = format!("{}.ll", opts.output_name);
@@ -925,6 +932,45 @@ fn find_ffi_library(lib_name: &str, paths: &[PathBuf]) -> Option<(PathBuf, PathB
 #[cfg(target_os = "windows")]
 const EMBEDDED_LINKER: &[u8] = include_bytes!("../../../linkers/lld-link.exe");
 
+/// Add POSIX-to-MSVC forwarding stubs to the LLVM module.
+/// On Windows, C code compiled for MSVC uses _close/_read (underscore-prefixed)
+/// but some FFI libraries (libgit2, libssh2) reference the unprefixed POSIX names
+/// via __declspec(dllimport). The dllimport mechanism looks for __imp_close etc.
+/// We define these as global pointers pointing to the MSVC-named functions.
+#[cfg(target_os = "windows")]
+fn add_posix_compat_stubs(module: &inkwell::module::Module) {
+    use inkwell::module::Linkage;
+    use inkwell::AddressSpace;
+
+    let ctx = module.get_context();
+    let i32_type = ctx.i32_type();
+    let ptr_type = ctx.ptr_type(AddressSpace::default());
+
+    // Define __imp_close = pointer to _close
+    let close_ty = i32_type.fn_type(&[i32_type.into()], false);
+    if module.get_global("__imp_close").is_none() {
+        let _close = module.get_function("_close").unwrap_or_else(|| {
+            module.add_function("_close", close_ty, Some(Linkage::External))
+        });
+        let imp_close = module.add_global(ptr_type, Some(AddressSpace::default()), "__imp_close");
+        imp_close.set_initializer(&_close.as_global_value().as_pointer_value());
+        imp_close.set_linkage(Linkage::External);
+        imp_close.set_constant(true);
+    }
+
+    // Define __imp_read = pointer to _read
+    let read_ty = i32_type.fn_type(&[i32_type.into(), ptr_type.into(), i32_type.into()], false);
+    if module.get_global("__imp_read").is_none() {
+        let _read = module.get_function("_read").unwrap_or_else(|| {
+            module.add_function("_read", read_ty, Some(Linkage::External))
+        });
+        let imp_read = module.add_global(ptr_type, Some(AddressSpace::default()), "__imp_read");
+        imp_read.set_initializer(&_read.as_global_value().as_pointer_value());
+        imp_read.set_linkage(Linkage::External);
+        imp_read.set_constant(true);
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn extract_embedded_linker() -> Result<PathBuf, String> {
     let temp_dir = env::temp_dir();
@@ -964,7 +1010,11 @@ fn link_windows(
     cmd.arg(format!("/OUT:{}", exe_path.display()))
         .arg(obj_file)
         .arg("/SUBSYSTEM:CONSOLE")
-        .arg("/ENTRY:main");
+        // Use mainCRTStartup (from libcmt.lib) as the entry point.
+        // This initializes the C runtime (TLS, heap, static ctors) before
+        // calling main(). Without this, Tokio/async runtimes fail silently
+        // because thread-local storage isn't set up.
+        .arg("/ENTRY:mainCRTStartup");
 
     // When linking multiple Rust static libraries, each contains its own copy of
     // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
@@ -972,6 +1022,12 @@ fn link_windows(
     if ffi_libs.len() > 1 {
         cmd.arg("/FORCE:MULTIPLE");
     }
+
+    // Suppress dynamic CRT defaultlib to avoid MSVCRT.lib(utility.obj) conflicts.
+    // All CRT symbols come from the static set instead.
+    cmd.arg("/NODEFAULTLIB:MSVCRT")
+        .arg("/NODEFAULTLIB:MSVCRTD")
+        .arg("/NODEFAULTLIB:libcmtd");
 
     // Add Windows SDK paths
     if let Some(paths) = sdk_paths {
@@ -984,11 +1040,35 @@ fn link_windows(
         if let Some(msvc) = paths.msvc_lib {
             cmd.arg(format!("/LIBPATH:{}", msvc));
         }
-        cmd.arg("ucrt.lib")
-            .arg("vcruntime.lib")
-            .arg("legacy_stdio_definitions.lib")
-            .arg("libcmt.lib");
+        // STATIC CRT strategy for single-binary FFI linking:
+        //
+        //   libcmt.lib        → CRT startup, _tls_used, atexit
+        //   libvcruntime.lib  → __vcrt_initialize, __chkstk, __security_cookie
+        //   libucrt.lib       → All C runtime functions (getenv, malloc, etc.)
+        //
+        // /WHOLEARCHIVE:libucrt.lib forces ALL UCRT objects to load,
+        // enabling lld-link's __imp_X → X auto-import resolution for
+        // FFI C code compiled with /MD (__declspec(dllimport)).
+        // This produces harmless LNK4217 warnings.
+        cmd.arg("/WHOLEARCHIVE:libucrt.lib")
+            .arg("libvcruntime.lib")
+            .arg("libcmt.lib")
+            .arg("legacy_stdio_definitions.lib");
     }
+
+    // Windows system libraries required by FFI crates (added once, not per-lib)
+    cmd.arg("ws2_32.lib")
+        .arg("userenv.lib")
+        .arg("bcrypt.lib")
+        .arg("kernel32.lib")
+        .arg("advapi32.lib")
+        .arg("ntdll.lib")
+        .arg("winhttp.lib")
+        .arg("ole32.lib")
+        .arg("rpcrt4.lib")
+        .arg("secur32.lib")
+        .arg("crypt32.lib")
+        .arg("user32.lib");
 
     // Link FFI libraries
     let mut added_paths = HashSet::new();
@@ -997,12 +1077,6 @@ fn link_windows(
             if added_paths.insert(lib_dir.clone()) {
                 cmd.arg(format!("/LIBPATH:{}", lib_dir.display()));
             }
-            cmd.arg("ws2_32.lib")
-                .arg("userenv.lib")
-                .arg("bcrypt.lib")
-                .arg("kernel32.lib")
-                .arg("advapi32.lib")
-                .arg("ntdll.lib");
             cmd.arg(lib_file.to_str().unwrap());
         } else {
             return Err(format!(
