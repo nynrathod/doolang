@@ -1318,8 +1318,9 @@ fn find_msvc_lib_path(base: &str) -> Option<String> {
         for year_entry in years.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
             let year_name = year_entry.file_name().to_string_lossy().to_string();
             if let Ok(editions) = fs::read_dir(year_entry.path()) {
-                for edition_entry in
-                    editions.filter_map(|e| e.ok()).filter(|e| e.path().is_dir())
+                for edition_entry in editions
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
                 {
                     let vc_path = edition_entry.path().join("VC").join("Tools").join("MSVC");
                     if let Ok(versions) = fs::read_dir(&vc_path) {
@@ -1329,14 +1330,9 @@ fn find_msvc_lib_path(base: &str) -> Option<String> {
                             .map(|e| e.file_name().to_string_lossy().to_string())
                             .max()
                         {
-                            let path =
-                                format!("{}\\{}\\lib\\x64", vc_path.display(), version);
+                            let path = format!("{}\\{}\\lib\\x64", vc_path.display(), version);
                             let sort_key = format!("{}_{}", year_name, version);
-                            if best
-                                .as_ref()
-                                .map(|(k, _)| sort_key > *k)
-                                .unwrap_or(true)
-                            {
+                            if best.as_ref().map(|(k, _)| sort_key > *k).unwrap_or(true) {
                                 best = Some((sort_key, path));
                             }
                         }
