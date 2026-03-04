@@ -15,7 +15,7 @@ output.*
 *.o
 *.ll
 *.env
-*.log
+#*.log
 
 # Compiled binaries
 *.exe

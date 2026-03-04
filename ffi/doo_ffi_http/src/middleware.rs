@@ -654,13 +654,15 @@ pub fn log_request(method: &str, path: &str, status: u16, duration_us: u64) {
 
     // Right-align duration for clean columns
     // < 1ms → µs, < 1s → ms, >= 1s → seconds
-    let dur_str = if duration_us < 1_000 {
-        format!("{:>4}µs", duration_us)
+    // Two-step format: build raw string, then right-align to fixed 7-column width
+    let dur_raw = if duration_us < 1_000 {
+        format!("{}µs", duration_us)
     } else if duration_us < 1_000_000 {
-        format!("{:>5.1}ms", duration_us as f64 / 1_000.0)
+        format!("{:.1}ms", duration_us as f64 / 1_000.0)
     } else {
-        format!("{:>5.1}s ", duration_us as f64 / 1_000_000.0)
+        format!("{:.1}s", duration_us as f64 / 1_000_000.0)
     };
+    let dur_str = format!("{:>7}", dur_raw);
 
     // Format: [Doo] HH:MM:SS | STATUS | DURATION | METHOD /path
     // Entire line colored by status level (like Gin/Fiber/Express)
