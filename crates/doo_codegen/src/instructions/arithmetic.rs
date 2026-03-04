@@ -4,6 +4,7 @@
 
 use super::InstructionHandler;
 use crate::context::CodegenContext;
+use crate::utils::null_coerce_str;
 use doo_core::constants::ffi_names;
 use doo_core::doo_debug;
 use doo_mir::sym::resolve;
@@ -224,10 +225,17 @@ fn emit_binop<'ctx>(
                 ctx.module.add_function(ffi_names::STRCMP, fn_ty, None)
             });
 
+        // Null-coerce both operands: LLVM infers nonnull+dereferenceable(1) on
+        // strcmp args because it recognizes the function name. If either operand
+        // is null (e.g., from a try-expression error path or uninitialized var),
+        // the nonnull annotation triggers UB-based miscompilation.
+        let safe_lhs = null_coerce_str(ctx, lhs_ptr);
+        let safe_rhs = null_coerce_str(ctx, rhs_ptr);
+
         // Call strcmp
         let strcmp_result = ctx
             .builder
-            .build_call(strcmp, &[lhs_ptr.into(), rhs_ptr.into()], "strcmp_result")
+            .build_call(strcmp, &[safe_lhs.into(), safe_rhs.into()], "strcmp_result")
             .ok()?
             .try_as_basic_value()
             .basic()?
@@ -463,13 +471,19 @@ fn emit_float_binop<'ctx>(
 
 /// Emit string concatenation.
 /// Calls strlen, malloc, memcpy to build a new concatenated string.
+/// SAFETY: Both operands are null-coerced to empty strings before use,
+/// preventing undefined behavior when LLVM infers nonnull on strlen args.
 fn emit_string_concat<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     lhs: BasicValueEnum<'ctx>,
     rhs: BasicValueEnum<'ctx>,
 ) -> Option<BasicValueEnum<'ctx>> {
-    let str1_ptr = lhs.into_pointer_value();
-    let str2_ptr = rhs.into_pointer_value();
+    // Null-coerce both string pointers to prevent UB: if a string pointer
+    // is null (e.g., from MapGet not-found default), replace with empty string.
+    // This is critical because LLVM infers nonnull+dereferenceable(1) on strlen
+    // arguments, and a null input would be UB that the optimizer can exploit.
+    let str1_ptr = null_coerce_str(ctx, lhs.into_pointer_value());
+    let str2_ptr = null_coerce_str(ctx, rhs.into_pointer_value());
 
     // Declare external functions if needed
     let strlen = ctx

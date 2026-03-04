@@ -30,3 +30,27 @@ pub mod runtime;
 pub mod scope;
 pub mod task;
 pub mod task_handle;
+
+// ============================================================================
+// Random module — Single source of truth for all random value generation
+// ============================================================================
+
+use std::os::raw::c_char;
+
+/// FFI: `doo_random_base62(len: i64) -> *const c_char`
+///
+/// Generate a random base62 string (a-z, A-Z, 0-9) of the given length.
+/// Declared in `std/Random.doo` as `Random.string(len: Int) -> Str`.
+/// Returns a heap-allocated C string (caller-owned via doo_alloc_string).
+#[no_mangle]
+pub extern "C" fn doo_random_base62(len: i64) -> *const c_char {
+    use rand::Rng;
+
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let len = len.max(0) as usize;
+    let mut rng = rand::thread_rng();
+    let result: String = (0..len)
+        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .collect();
+    doo_ffi_core::memory::doo_alloc_string(&result) as *const c_char
+}

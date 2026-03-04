@@ -62,7 +62,7 @@ pub(crate) fn coerce_arg_to_param_type<'ctx>(
     // This happens with enums: EnumCreate returns { i32, ptr } but function params expect ptr
     if val.is_struct_value() && expected.is_pointer_type() {
         // Box the struct value: allocate, store, return pointer
-        let alloca = ctx.builder.build_alloca(val.get_type(), "arg_box").unwrap();
+        let alloca = ctx.alloca_in_entry_block(val.get_type(), "arg_box").unwrap();
         ctx.builder.build_store(alloca, val).ok();
         return alloca.into();
     }
@@ -142,7 +142,7 @@ pub(crate) fn value_to_ptr<'ctx>(
     } else if val.is_float_value() {
         // Bitcast float to i64 then to pointer
         let float_val = val.into_float_value();
-        let alloca = ctx.builder.build_alloca(ctx.f64_type(), "f_tmp").ok()?;
+        let alloca = ctx.alloca_in_entry_block(ctx.f64_type(), "f_tmp")?;
         ctx.builder.build_store(alloca, float_val).ok()?;
         let i64_ptr = ctx
             .builder
@@ -174,11 +174,11 @@ pub(crate) fn load_result_struct<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     result_val: BasicValueEnum<'ctx>,
 ) -> Option<inkwell::values::StructValue<'ctx>> {
-    // Result struct layout: { i64 tag, i64 value }
-    // Using i64 for both fields for consistent ABI with FFI SimpleResult
+    // Result struct layout: { i64 tag, ptr value }
+    // Using ptr for payload preserves pointer provenance through LLVM optimizations
     let result_struct_type = ctx
         .context
-        .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
+        .struct_type(&[ctx.i64_type().into(), ctx.ptr_type().into()], false);
 
     if result_val.is_pointer_value() && !result_val.is_struct_value() {
         // Load from pointer

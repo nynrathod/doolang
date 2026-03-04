@@ -92,14 +92,13 @@ fn ffi_type_to_llvm<'ctx>(
         "i32" => Some(ctx.i32_type().into()),
         "f64" => Some(ctx.f64_type().into()),
         "void" => None, // void is not a BasicType
-        // SimpleResult: { i64 tag, i64 value } - returned by value for Result types
-        // Using i64 for both fields ensures proper Windows x64 ABI compatibility.
-        // On Windows x64, a struct of exactly 2x i64 (16 bytes) is returned via RAX:RDX registers.
-        // This avoids sret (hidden pointer) issues that occur with { i32, ptr } layouts.
+        // SimpleResult: { i64 tag, ptr value } - returned by value for Result types
+        // Using ptr for the payload field preserves pointer provenance through LLVM optimizations.
+        // This avoids ptrtoint/inttoptr round-trips that lose provenance under O3 alias analysis.
         "simple_result" => {
             let struct_ty = ctx
                 .context
-                .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
+                .struct_type(&[ctx.i64_type().into(), ctx.ptr_type().into()], false);
             Some(struct_ty.into())
         }
         _ => Some(ctx.i64_type().into()), // default to i64
@@ -217,15 +216,23 @@ fn convert_to_ffi_arg<'ctx>(
 ) -> inkwell::values::BasicMetadataValueEnum<'ctx> {
     match expected_type {
         Some("i32") => {
-            // Convert i64 to i32 if needed
+            // Convert to i32 if needed (i64→i32 truncate, i8→i32 zero-extend for Bool)
             if val.is_int_value() {
                 let int_val = val.into_int_value();
-                if int_val.get_type().get_bit_width() == 64 {
+                let bit_width = int_val.get_type().get_bit_width();
+                if bit_width == 64 {
                     let truncated = ctx
                         .builder
                         .build_int_truncate(int_val, ctx.i32_type(), "i64_to_i32")
                         .unwrap();
                     return truncated.into();
+                } else if bit_width < 32 {
+                    // Bool (i8) → i32: zero-extend for C ABI compatibility
+                    let extended = ctx
+                        .builder
+                        .build_int_z_extend(int_val, ctx.i32_type(), "bool_to_i32")
+                        .unwrap();
+                    return extended.into();
                 }
             }
             val.into()
@@ -319,8 +326,7 @@ fn convert_to_ffi_arg<'ctx>(
                 // This handles single enum values passed to FFI functions like doo_db_raw_param
                 let struct_val = val.into_struct_value();
                 let alloca = ctx
-                    .builder
-                    .build_alloca(struct_val.get_type(), "enum_box")
+                    .alloca_in_entry_block(struct_val.get_type(), "enum_box")
                     .unwrap();
                 ctx.builder.build_store(alloca, struct_val).ok();
                 return alloca.into();
@@ -435,6 +441,30 @@ pub(crate) fn emit_ffi_call<'ctx>(
     // Handle return value
     if let Some(dest_name) = dest {
         if let Some(ret_val) = call_site.try_as_basic_value().basic() {
+            // FFI Bool returns i32 (C ABI), but internal Doo Bool is i8 — truncate if needed
+            let ret_val = if ret_val.is_int_value() {
+                let int_val = ret_val.into_int_value();
+                if int_val.get_type().get_bit_width() == 32 {
+                    // Check if the registered return type is Bool
+                    if let Some((_, Some(ret_type_id), _)) = ctx.ffi_type_signatures.get(symbol) {
+                        if *ret_type_id == builtin::BOOL {
+                            let truncated = ctx
+                                .builder
+                                .build_int_truncate(int_val, ctx.context.i8_type(), "i32_to_bool")
+                                .unwrap();
+                            truncated.into()
+                        } else {
+                            ret_val
+                        }
+                    } else {
+                        ret_val
+                    }
+                } else {
+                    ret_val
+                }
+            } else {
+                ret_val
+            };
             ctx.set_temp(dest_name, ret_val);
             return Some(ret_val);
         }

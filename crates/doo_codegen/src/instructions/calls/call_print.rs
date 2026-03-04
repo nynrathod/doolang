@@ -202,7 +202,7 @@ pub(super) fn emit_print_value<'ctx>(
                 .build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64")
                 .ok();
             if let Some(i64_val) = i64_val {
-                let tmp = ctx.builder.build_alloca(ctx.i64_type(), "f_tmp").ok();
+                let tmp = ctx.alloca_in_entry_block(ctx.i64_type(), "f_tmp");
                 if let Some(tmp) = tmp {
                     ctx.builder.build_store(tmp, i64_val).ok();
                     let f_ptr = ctx
@@ -871,7 +871,7 @@ fn emit_print_array_contents<'ctx>(
     let inc_bb = ctx.context.append_basic_block(current_fn, "print_arr_inc");
     let end_bb = ctx.context.append_basic_block(current_fn, "print_arr_end");
 
-    let idx_alloca = ctx.builder.build_alloca(ctx.i64_type(), "idx").ok();
+    let idx_alloca = ctx.alloca_in_entry_block(ctx.i64_type(), "idx");
     let Some(idx_alloca) = idx_alloca else {
         return;
     };
@@ -1076,7 +1076,7 @@ fn emit_print_map_contents<'ctx>(
     let inc_bb = ctx.context.append_basic_block(current_fn, "print_map_inc");
     let end_bb = ctx.context.append_basic_block(current_fn, "print_map_end");
 
-    let idx_alloca = ctx.builder.build_alloca(ctx.i64_type(), "idx").ok();
+    let idx_alloca = ctx.alloca_in_entry_block(ctx.i64_type(), "idx");
     let Some(idx_alloca) = idx_alloca else {
         return;
     };

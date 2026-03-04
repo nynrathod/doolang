@@ -49,10 +49,13 @@ impl DbDriver for PostgresDriver {
         let sql = sql.to_owned();
         let params_vals = params_vals.to_vec();
         Box::pin(async move {
-            let client = get_client().await?;
+            let client = get_client().await.map_err(|e| format_pg_error(&*e))?;
 
             if params_vals.is_empty() {
-                let rows = client.query(&sql, &[]).await?;
+                let rows = client
+                    .query(&sql, &[])
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 if rows.len() > MAX_ROWS {
                     return Err(
                         format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into(),
@@ -61,12 +64,18 @@ impl DbDriver for PostgresDriver {
                 Ok(json_utils::rows_to_json(&rows))
             } else {
                 // Prepare to get PG-inferred param types, then adapt params
-                let stmt = client.prepare_cached(&sql).await?;
+                let stmt = client
+                    .prepare_cached(&sql)
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 let pg_types = stmt.params();
                 let boxed_params = params::json_values_to_pg_params_typed(&params_vals, pg_types);
                 let param_refs = params::params_as_refs(&boxed_params);
 
-                let rows = client.query(&stmt, &param_refs[..]).await?;
+                let rows = client
+                    .query(&stmt, &param_refs[..])
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 if rows.len() > MAX_ROWS {
                     return Err(
                         format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into(),
@@ -85,15 +94,21 @@ impl DbDriver for PostgresDriver {
         let sql = sql.to_owned();
         let params_vals = params_vals.to_vec();
         Box::pin(async move {
-            let client = get_client().await?;
+            let client = get_client().await.map_err(|e| format_pg_error(&*e))?;
 
             if params_vals.is_empty() {
-                let affected = client.execute(&sql, &[]).await?;
+                let affected = client
+                    .execute(&sql, &[])
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 Ok(affected)
             } else {
                 let boxed_params = params::json_values_to_pg_params(&params_vals);
                 let param_refs = params::params_as_refs(&boxed_params);
-                let affected = client.execute(&sql, &param_refs[..]).await?;
+                let affected = client
+                    .execute(&sql, &param_refs[..])
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 Ok(affected)
             }
         })
@@ -107,15 +122,21 @@ impl DbDriver for PostgresDriver {
         let sql = sql.to_owned();
         let params_vals = params_vals.to_vec();
         Box::pin(async move {
-            let client = get_client().await?;
+            let client = get_client().await.map_err(|e| format_pg_error(&*e))?;
 
             if params_vals.is_empty() {
-                let row = client.query_one(&sql, &[]).await?;
+                let row = client
+                    .query_one(&sql, &[])
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 Ok(json_utils::row_to_json(&row))
             } else {
                 let boxed_params = params::json_values_to_pg_params(&params_vals);
                 let param_refs = params::params_as_refs(&boxed_params);
-                let row = client.query_one(&sql, &param_refs[..]).await?;
+                let row = client
+                    .query_one(&sql, &param_refs[..])
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 Ok(json_utils::row_to_json(&row))
             }
         })
@@ -127,14 +148,20 @@ impl DbDriver for PostgresDriver {
             let queries: Vec<QueryDef> = serde_json::from_str(&queries_json)
                 .map_err(|e| format!("Invalid transaction queries: {}", e))?;
 
-            let mut client = get_client().await?;
-            let tx = client.transaction().await?;
+            let mut client = get_client().await.map_err(|e| format_pg_error(&*e))?;
+            let tx = client
+                .transaction()
+                .await
+                .map_err(|e| format_pg_error(&e))?;
 
             let mut results = Vec::new();
             for q in &queries {
                 let boxed_params = params::json_values_to_pg_params(&q.params);
                 let param_refs = params::params_as_refs(&boxed_params);
-                let rows = tx.query(&q.sql, &param_refs[..]).await?;
+                let rows = tx
+                    .query(&q.sql, &param_refs[..])
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 if rows.len() > MAX_ROWS {
                     return Err(
                         format!("Query returned {} rows (max {})", rows.len(), MAX_ROWS).into(),
@@ -143,7 +170,7 @@ impl DbDriver for PostgresDriver {
                 results.push(json_utils::rows_to_json(&rows));
             }
 
-            tx.commit().await?;
+            tx.commit().await.map_err(|e| format_pg_error(&e))?;
             Ok(serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string()))
         })
     }
@@ -151,10 +178,10 @@ impl DbDriver for PostgresDriver {
     fn batch_execute(&self, sql: &str) -> BoxFuture<'_, DriverResult<()>> {
         let sql = sql.to_owned();
         Box::pin(async move {
-            let client = get_client().await?;
+            let client = get_client().await.map_err(|e| format_pg_error(&*e))?;
             client.batch_execute(&sql).await.map_err(|e| {
                 let msg: Box<dyn std::error::Error + Send + Sync> =
-                    format!("Batch execute failed: {}", e).into();
+                    format!("Batch execute failed: {}", format_pg_error(&e)).into();
                 msg
             })?;
             Ok(())
@@ -169,14 +196,20 @@ impl DbDriver for PostgresDriver {
         let sql = sql.to_owned();
         let params_vals = params_vals.to_vec();
         Box::pin(async move {
-            let client = get_client().await?;
+            let client = get_client().await.map_err(|e| format_pg_error(&*e))?;
 
             if params_vals.is_empty() {
                 if is_mutating_sql(&sql) {
-                    let count = client.execute(&sql, &[]).await?;
+                    let count = client
+                        .execute(&sql, &[])
+                        .await
+                        .map_err(|e| format_pg_error(&e))?;
                     Ok(format!("{{\"affected_rows\":{}}}", count))
                 } else {
-                    let rows = client.query(&sql, &[]).await?;
+                    let rows = client
+                        .query(&sql, &[])
+                        .await
+                        .map_err(|e| format_pg_error(&e))?;
                     if rows.len() > MAX_ROWS {
                         return Err(format!(
                             "Query returned {} rows (max {})",
@@ -188,21 +221,33 @@ impl DbDriver for PostgresDriver {
                     Ok(json_utils::rows_to_json(&rows))
                 }
             } else {
-                let stmt = client.prepare_cached(&sql).await?;
+                let stmt = client
+                    .prepare_cached(&sql)
+                    .await
+                    .map_err(|e| format_pg_error(&e))?;
                 let pg_types = stmt.params();
                 let boxed_params = params::json_values_to_pg_params_typed(&params_vals, pg_types);
                 let param_refs = params::params_as_refs(&boxed_params);
 
                 if is_mutating_sql(&sql) {
                     if has_returning(&sql) {
-                        let rows = client.query(&stmt, &param_refs[..]).await?;
+                        let rows = client
+                            .query(&stmt, &param_refs[..])
+                            .await
+                            .map_err(|e| format_pg_error(&e))?;
                         Ok(json_utils::rows_to_json(&rows))
                     } else {
-                        let count = client.execute(&stmt, &param_refs[..]).await?;
+                        let count = client
+                            .execute(&stmt, &param_refs[..])
+                            .await
+                            .map_err(|e| format_pg_error(&e))?;
                         Ok(format!("{{\"affected_rows\":{}}}", count))
                     }
                 } else {
-                    let rows = client.query(&stmt, &param_refs[..]).await?;
+                    let rows = client
+                        .query(&stmt, &param_refs[..])
+                        .await
+                        .map_err(|e| format_pg_error(&e))?;
                     if rows.len() > MAX_ROWS {
                         return Err(format!(
                             "Query returned {} rows (max {})",
@@ -226,7 +271,7 @@ impl DbDriver for PostgresDriver {
     ) -> BoxFuture<'_, DriverResult<String>> {
         let queries = queries.to_vec();
         Box::pin(async move {
-            let client = get_client().await?;
+            let client = get_client().await.map_err(|e| format_pg_error(&*e))?;
             let mut buf = String::with_capacity(queries.len() * 64);
             buf.push('[');
             for (qi, (sql, params_vals)) in queries.iter().enumerate() {
@@ -234,15 +279,24 @@ impl DbDriver for PostgresDriver {
                     buf.push(',');
                 }
                 if params_vals.is_empty() {
-                    let row = client.query_one(&**sql, &[]).await?;
+                    let row = client
+                        .query_one(&**sql, &[])
+                        .await
+                        .map_err(|e| format_pg_error(&e))?;
                     buf.push_str(&json_utils::row_to_json(&row));
                 } else {
-                    let stmt = client.prepare_cached(sql).await?;
+                    let stmt = client
+                        .prepare_cached(sql)
+                        .await
+                        .map_err(|e| format_pg_error(&e))?;
                     let pg_types = stmt.params();
                     let boxed_params =
                         params::json_values_to_pg_params_typed(params_vals, pg_types);
                     let param_refs = params::params_as_refs(&boxed_params);
-                    let row = client.query_one(&stmt, &param_refs[..]).await?;
+                    let row = client
+                        .query_one(&stmt, &param_refs[..])
+                        .await
+                        .map_err(|e| format_pg_error(&e))?;
                     buf.push_str(&json_utils::row_to_json(&row));
                 }
             }
@@ -264,10 +318,11 @@ impl DbDriver for PostgresDriver {
         let ids = ids.to_vec();
         let values = values.to_vec();
         Box::pin(async move {
-            let client = get_client().await?;
+            let client = get_client().await.map_err(|e| format_pg_error(&*e))?;
             let affected = client
                 .execute(&sql, &[&ids, &values])
-                .await?;
+                .await
+                .map_err(|e| format_pg_error(&e))?;
             Ok(affected)
         })
     }
@@ -313,7 +368,9 @@ impl DbDriver for PostgresDriver {
             let unique = if idx.unique { "UNIQUE " } else { "" };
             sql.push_str(&format!(
                 "CREATE {}INDEX IF NOT EXISTS {} ON {} ({});\n",
-                unique, idx.name, schema.name,
+                unique,
+                idx.name,
+                schema.name,
                 idx.columns.join(", ")
             ));
         }
@@ -387,7 +444,6 @@ pub fn db_error_from_pg_code(code: &str) -> crate::error::DbError {
 }
 
 /// Extract detailed error message from a PostgreSQL error.
-#[allow(dead_code)]
 pub fn format_pg_error(e: &(dyn std::error::Error + 'static)) -> String {
     if let Some(pg_err) = e.downcast_ref::<tokio_postgres::Error>() {
         if let Some(db_err) = pg_err.as_db_error() {

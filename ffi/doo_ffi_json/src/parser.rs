@@ -92,28 +92,28 @@ pub extern "C" fn doo_json_parse_float(json_str: *const c_char) -> f64 {
 /// Handles both JSON booleans (true) and JSON strings containing booleans ("true")
 /// Uses direct from_str::<bool> first (no Value tree allocation) for performance.
 #[no_mangle]
-pub extern "C" fn doo_json_parse_bool(json_str: *const c_char) -> bool {
+pub extern "C" fn doo_json_parse_bool(json_str: *const c_char) -> i32 {
     if json_str.is_null() {
-        return false;
+        return 0i32;
     }
     catch_unwind(AssertUnwindSafe(|| {
         let s = c_to_string_lossy(json_str);
         if check_json_size(&s).is_err() {
-            return false;
+            return 0i32;
         }
         // Fast path: direct parse (no Value tree)
         if let Ok(b) = serde_json::from_str::<bool>(&s) {
-            return b;
+            return b as i32;
         }
         // Fallback: try string-containing-boolean ("true")
         if let Ok(sv) = serde_json::from_str::<String>(&s) {
             if let Ok(b) = sv.parse::<bool>() {
-                return b;
+                return b as i32;
             }
         }
-        false
+        0i32
     }))
-    .unwrap_or(false)
+    .unwrap_or(0i32)
 }
 
 /// Parse JSON to Str (returns C string pointer)
@@ -1564,7 +1564,7 @@ pub extern "C" fn doo_json_get_field(
             .ok()
             .and_then(|v| {
                 v.as_object()
-                    .and_then(|obj| obj.get(field.as_str()).cloned())
+                    .and_then(|obj| json_object_get_field(obj, &field).cloned())
             })
             .and_then(|field_val| serde_json::to_string(&field_val).ok())
             .map(|s| doo_alloc_string(&s))
@@ -1730,7 +1730,13 @@ pub extern "C" fn doo_json_object_has_field(
         let field = c_to_string_lossy(field_name);
         value
             .as_object()
-            .map(|o| if json_object_get_field(o, &field).is_some() { 1 } else { 0 })
+            .map(|o| {
+                if json_object_get_field(o, &field).is_some() {
+                    1
+                } else {
+                    0
+                }
+            })
             .unwrap_or(0)
     }))
     .unwrap_or(0)
@@ -1754,7 +1760,8 @@ pub extern "C" fn doo_json_object_free(obj: *mut std::ffi::c_void) {
 // converting back to JSON strings. Used by codegen for struct-from-JSON.
 
 /// Case-insensitive JSON field lookup: try exact match first, then case-insensitive fallback.
-/// Handles PascalCase struct fields matching lowercase DB column names (e.g., "CreatedAt" → "createdat").
+/// Handles PascalCase struct fields matching snake_case JSON keys (e.g., "ExitCode" → "exit_code").
+/// Normalizes by lowercasing AND stripping underscores so `exit_code` == `exitcode` == `ExitCode`.
 fn json_object_get_field<'a>(
     obj: &'a serde_json::Map<String, serde_json::Value>,
     field: &str,
@@ -1763,10 +1770,10 @@ fn json_object_get_field<'a>(
     if let Some(v) = obj.get(field) {
         return Some(v);
     }
-    // Case-insensitive fallback
-    let lower = field.to_lowercase();
+    // Normalized fallback: lowercase + strip underscores/hyphens
+    let normalized = field.to_lowercase().replace('_', "").replace('-', "");
     obj.iter()
-        .find(|(k, _)| k.to_lowercase() == lower)
+        .find(|(k, _)| k.to_lowercase().replace('_', "").replace('-', "") == normalized)
         .map(|(_, v)| v)
 }
 

@@ -351,9 +351,7 @@ impl StringBuiltins {
         let after_bb = ctx.context.append_basic_block(current_fn, "case_after");
 
         let idx_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "idx")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -519,12 +517,10 @@ impl StringBuiltins {
         let end_bb = ctx.context.append_basic_block(current_fn, "replace_end");
 
         let res_alloca = ctx
-            .builder
-            .build_alloca(
+            .alloca_in_entry_block(
                 ctx.context.i8_type().ptr_type(AddressSpace::default()),
                 "replace_res",
-            )
-            .ok()?;
+            )?;
 
         ctx.builder
             .build_conditional_branch(is_null, not_found_bb, found_bb)
@@ -690,9 +686,7 @@ impl StringBuiltins {
 
         // start scan
         let start_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "start")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "start")?;
         ctx.builder
             .build_store(start_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -749,9 +743,7 @@ impl StringBuiltins {
         // end scan
         ctx.builder.position_at_end(start_end);
         let end_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "end")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "end")?;
         ctx.builder.build_store(end_alloca, len).ok()?;
         let end_loop = ctx.context.append_basic_block(current_fn, "trim_end_loop");
         let end_body = ctx.context.append_basic_block(current_fn, "trim_end_body");
@@ -919,9 +911,7 @@ impl StringBuiltins {
         let after_bb = ctx.context.append_basic_block(current_fn, "rev_after");
 
         let idx_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "idx")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -1184,9 +1174,7 @@ impl StringBuiltins {
         let after_bb = ctx.context.append_basic_block(current_fn, "rep_after");
 
         let idx_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "idx")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -1286,16 +1274,12 @@ impl StringBuiltins {
         let after_bb = ctx.context.append_basic_block(current_fn, "count_after");
 
         let ptr_alloca = ctx
-            .builder
-            .build_alloca(
+            .alloca_in_entry_block(
                 ctx.context.i8_type().ptr_type(AddressSpace::default()),
                 "ptr",
-            )
-            .ok()?;
+            )?;
         let count_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i32_type(), "count")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i32_type(), "count")?;
         ctx.builder.build_store(ptr_alloca, str_ptr).ok()?;
         ctx.builder
             .build_store(count_alloca, ctx.context.i32_type().const_zero())
@@ -1427,4 +1411,3 @@ fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::F
             ctx.module.add_function(ffi_names::MEMCPY, fn_type, None)
         })
 }
-

@@ -524,6 +524,15 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
         .module
         .add_function(&wrapper_name, wrapper_fn_type, None);
 
+    // Disable tail calls to prevent sret + tail call stack corruption on Windows x64
+    let no_tail = ctx
+        .context
+        .create_string_attribute("disable-tail-calls", "true");
+    wrapper_fn.add_attribute(
+        inkwell::attributes::AttributeLoc::Function,
+        no_tail,
+    );
+
     // Save current position
     let current_block = ctx.builder.get_insert_block();
 
@@ -1095,10 +1104,10 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 );
             }
 
-            // If the function returns a struct type { i64, i64 } (SimpleResult), we need to extract values
+            // If the function returns a struct type { i64, ptr } (SimpleResult), we need to extract values
             // Try to convert to struct value if the return type indicates it's a result struct
             if user_returns_result_struct && error_type_name.is_some() {
-                // The call returns { i64, i64 } directly as a struct value
+                // The call returns { i64, ptr } directly as a struct value
                 // We need to extract the tag and value from it
                 if let Ok(user_result_struct) = val.try_into() {
                     let user_result_struct: inkwell::values::StructValue = user_result_struct;
@@ -1110,15 +1119,11 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         .map(|v| v.into_int_value())
                         .unwrap_or_else(|_| i64_type.const_int(0, false));
 
-                    // Extract i64 value and convert to pointer
-                    let value_i64 = ctx
-                        .builder
-                        .build_extract_value(user_result_struct, 1, "result_value_i64")
-                        .map(|v| v.into_int_value())
-                        .unwrap_or_else(|_| i64_type.const_zero());
+                    // Extract ptr value directly (no int_to_ptr needed)
                     let value = ctx
                         .builder
-                        .build_int_to_ptr(value_i64, ptr_type, "result_value")
+                        .build_extract_value(user_result_struct, 1, "result_value_ptr")
+                        .map(|v| v.into_pointer_value())
                         .unwrap_or_else(|_| ptr_type.const_null());
 
                     // Create blocks for Ok and Err paths
@@ -2098,7 +2103,7 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
     let handler_returns_result = handler_error_type_id.is_some()
         && user_return_type.map_or(false, |rt| {
             if let inkwell::types::BasicTypeEnum::StructType(st) = rt {
-                st.count_fields() == 2 // Result<T, E> is { i64 tag, i64 value }
+                st.count_fields() == 2 // Result<T, E> is { i64 tag, ptr value }
             } else {
                 false
             }
@@ -2127,15 +2132,11 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     .map(|v| v.into_int_value())
                     .unwrap_or_else(|_| i64_type.const_int(0, false));
 
-                // Extract i64 value and convert to pointer
-                let value_i64 = ctx
-                    .builder
-                    .build_extract_value(user_result_struct, 1, "result_value_i64")
-                    .map(|v| v.into_int_value())
-                    .unwrap_or_else(|_| i64_type.const_zero());
+                // Extract ptr value directly (no int_to_ptr needed)
                 let value = ctx
                     .builder
-                    .build_int_to_ptr(value_i64, ptr_type, "result_value")
+                    .build_extract_value(user_result_struct, 1, "result_value_ptr")
+                    .map(|v| v.into_pointer_value())
                     .unwrap_or_else(|_| ptr_type.const_null());
 
                 // Create blocks for Ok and Err paths

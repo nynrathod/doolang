@@ -219,13 +219,19 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
         }
     };
 
-    // Create target machine with optimization level
+    // Create target machine with optimization level.
+    // CRITICAL: Use host CPU and features (not "generic") to match the codegen
+    // TargetMachine. Mismatched CPU/features between optimization and codegen
+    // can cause the optimizer to make incorrect assumptions about instruction
+    // availability and data layout, leading to miscompilation.
+    let cpu = TargetMachine::get_host_cpu_name();
+    let features = TargetMachine::get_host_cpu_features();
     let target_machine = match target.create_target_machine(
         &target_triple,
-        "generic", // CPU - use "native" for host-specific optimizations
-        "",        // Features
+        cpu.to_str().unwrap_or("generic"),
+        features.to_str().unwrap_or(""),
         config.level.to_inkwell_opt_level(),
-        RelocMode::Default,
+        RelocMode::PIC,
         CodeModel::Default,
     ) {
         Some(tm) => tm,

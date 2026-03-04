@@ -76,6 +76,12 @@ fn build_runtime() -> Runtime {
         .worker_threads(workers)
         .max_blocking_threads(max_blocking)
         .thread_name("doo-worker")
+        // Worker thread stack size: 8 MB (default on Windows is ~1 MB).
+        // HTTP handlers call deep FFI chains (HandleGenerate → EnsureRepo →
+        // doo_git_init → libgit2 internals). The combined stack usage of
+        // Doo-generated code + Rust FFI + libgit2 can exceed 1 MB.
+        // Configurable via DOO_THREAD_STACK_SIZE (bytes).
+        .thread_stack_size(env_usize("DOO_THREAD_STACK_SIZE", 8 * 1024 * 1024))
         // Tuned for high-throughput benchmarks:
         // - event_interval=31: Check I/O more frequently (default 61), reduces latency
         // - global_queue_interval=7: Check global queue more often, better work distribution
@@ -124,6 +130,180 @@ pub fn get_cancel_token() -> &'static CancellationToken {
 #[no_mangle]
 pub extern "C" fn doo_runtime_init() -> i32 {
     let result = catch_unwind(|| {
+        // Install panic hook that prints to stderr before abort.
+        // With panic=abort, the default hook may not flush output before the process dies.
+        // This ensures panic messages are ALWAYS visible for debugging.
+        std::panic::set_hook(Box::new(|info| {
+            use std::io::Write;
+            let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_default();
+            let _ = writeln!(std::io::stderr(), "\n[Doo PANIC] {} at {}", msg, location);
+            let _ = std::io::stderr().flush();
+        }));
+
+        // Install Windows crash handler to catch access violations / segfaults.
+        // Without this, segfaults silently kill the process with no output.
+        #[cfg(target_os = "windows")]
+        {
+            use std::io::Write;
+            unsafe {
+                #[repr(C)]
+                struct ExceptionRecord {
+                    code: u32,
+                    flags: u32,
+                    record: *mut ExceptionRecord,
+                    address: *mut std::ffi::c_void,
+                    num_params: u32,
+                    info: [usize; 15],
+                }
+                #[repr(C)]
+                struct ExceptionPointers {
+                    record: *mut ExceptionRecord,
+                    context: *mut std::ffi::c_void,
+                }
+                #[repr(C)]
+                #[allow(dead_code)]
+                struct MemoryBasicInformation {
+                    base_address: *mut std::ffi::c_void,
+                    allocation_base: *mut std::ffi::c_void,
+                    allocation_protect: u32,
+                    partition_id: u16,
+                    region_size: usize,
+                    state: u32,
+                    protect: u32,
+                    type_: u32,
+                }
+                type ExceptionFilter = unsafe extern "system" fn(*mut ExceptionPointers) -> i32;
+                extern "system" {
+                    fn SetUnhandledExceptionFilter(
+                        filter: ExceptionFilter,
+                    ) -> *mut std::ffi::c_void;
+                    fn VirtualQuery(
+                        address: *const std::ffi::c_void,
+                        buffer: *mut MemoryBasicInformation,
+                        length: usize,
+                    ) -> usize;
+                    fn RtlCaptureStackBackTrace(
+                        frames_to_skip: u32,
+                        frames_to_capture: u32,
+                        back_trace: *mut *mut std::ffi::c_void,
+                        back_trace_hash: *mut u32,
+                    ) -> u16;
+                    fn GetModuleFileNameA(
+                        module: *mut std::ffi::c_void,
+                        filename: *mut u8,
+                        size: u32,
+                    ) -> u32;
+                }
+                unsafe extern "system" fn crash_handler(info: *mut ExceptionPointers) -> i32 {
+                    let rec = &*(*info).record;
+                    let code = rec.code;
+                    let addr = rec.address;
+                    let access_type = if rec.num_params >= 2 {
+                        match rec.info[0] {
+                            0 => "READ",
+                            1 => "WRITE",
+                            8 => "DEP",
+                            _ => "UNKNOWN",
+                        }
+                    } else {
+                        "N/A"
+                    };
+                    let target_addr = if rec.num_params >= 2 { rec.info[1] } else { 0 };
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "\n[Doo CRASH] Exception 0x{:08X} at RIP {:?} — {} access to 0x{:X}",
+                        code,
+                        addr,
+                        access_type,
+                        target_addr
+                    );
+
+                    // Query memory info for the crash address
+                    let mut mbi: MemoryBasicInformation = std::mem::zeroed();
+                    let mbi_size = std::mem::size_of::<MemoryBasicInformation>();
+                    let result =
+                        VirtualQuery(target_addr as *const std::ffi::c_void, &mut mbi, mbi_size);
+                    if result > 0 {
+                        let state_str = match mbi.state {
+                            0x1000 => "COMMITTED",
+                            0x2000 => "RESERVED",
+                            0x10000 => "FREE",
+                            _ => "UNKNOWN",
+                        };
+                        let protect_str = match mbi.protect {
+                            0x01 => "NOACCESS",
+                            0x02 => "READONLY",
+                            0x04 => "READWRITE",
+                            0x08 => "WRITECOPY",
+                            0x10 => "EXECUTE",
+                            0x20 => "EXECUTE_READ",
+                            0x40 => "EXECUTE_READWRITE",
+                            0x80 => "EXECUTE_WRITECOPY",
+                            _ => "OTHER",
+                        };
+                        let type_str = match mbi.type_ {
+                            0x20000 => "PRIVATE",
+                            0x40000 => "MAPPED",
+                            0x1000000 => "IMAGE",
+                            _ => "UNKNOWN",
+                        };
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "[Doo CRASH] Memory at 0x{:X}: state={}, protect={} (0x{:X}), type={}, base=0x{:X}, size=0x{:X}",
+                            target_addr, state_str, protect_str, mbi.protect, type_str,
+                            mbi.base_address as usize, mbi.region_size
+                        );
+                    }
+
+                    // Get module name for the crash address
+                    let mut mod_name = [0u8; 260];
+                    let len = GetModuleFileNameA(
+                        mbi.allocation_base as *mut std::ffi::c_void,
+                        mod_name.as_mut_ptr(),
+                        260,
+                    );
+                    if len > 0 {
+                        let name = std::str::from_utf8_unchecked(&mod_name[..len as usize]);
+                        let _ = writeln!(std::io::stderr(), "[Doo CRASH] Module: {}", name);
+                    }
+
+                    // Capture stack backtrace (up to 32 frames)
+                    let mut frames: [*mut std::ffi::c_void; 32] = [std::ptr::null_mut(); 32];
+                    let count =
+                        RtlCaptureStackBackTrace(0, 32, frames.as_mut_ptr(), std::ptr::null_mut());
+                    if count > 0 {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "[Doo CRASH] Stack trace ({} frames):",
+                            count
+                        );
+                        for i in 0..count as usize {
+                            let _ = writeln!(
+                                std::io::stderr(),
+                                "  [{:2}] 0x{:X}",
+                                i,
+                                frames[i] as usize
+                            );
+                        }
+                    }
+
+                    let _ = std::io::stderr().flush();
+                    0 // EXCEPTION_CONTINUE_SEARCH — let the OS terminate the process
+                }
+                SetUnhandledExceptionFilter(crash_handler);
+            }
+        }
+
         // Capture program start time — the runtime init is the first FFI call
         // in main(), so this gives accurate boot time measurement.
         let _ = PROGRAM_START.set(Instant::now());

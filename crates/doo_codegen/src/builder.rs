@@ -460,7 +460,14 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 .unwrap_or_else(|| ctx.context.i64_type().into());
 
             let fn_type = return_llvm_type.fn_type(&param_types, false);
-            ctx.module.add_function(&func_name, fn_type, None);
+            let closure_fn = ctx.module.add_function(&func_name, fn_type, None);
+
+            // Disable tail calls to prevent sret + tail call stack corruption on Windows x64
+            let no_tail = ctx
+                .context
+                .create_string_attribute("disable-tail-calls", "true");
+            closure_fn.add_attribute(inkwell::attributes::AttributeLoc::Function, no_tail);
+
             return;
         }
 
@@ -486,13 +493,17 @@ impl<'ctx> CodegenBuilder<'ctx> {
         }
 
         // Build return type
-        // If function has an error_type, it returns a Result struct { i64, i64 }
-        // Using i64 for both fields ensures proper Windows x64 ABI compatibility.
-        // On Windows x64, a struct of exactly 2x i64 (16 bytes) is returned via RAX:RDX registers.
+        // If function has an error_type, it returns a Result struct { i64, ptr }
+        // Using ptr for the payload field preserves pointer provenance through LLVM O3.
         let return_type = if func.error_type.is_some() {
-            // Result type: { i64 tag, i64 payload }
+            // Result type: { i64 tag, ptr payload }
             let result_struct_type = ctx.context.struct_type(
-                &[ctx.context.i64_type().into(), ctx.context.i64_type().into()],
+                &[
+                    ctx.context.i64_type().into(),
+                    ctx.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .into(),
+                ],
                 false,
             );
             Some(result_struct_type.into())
@@ -502,7 +513,20 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // For FFI functions, use external linkage and register symbol
         if let Some(ffi) = &func.ffi {
-            let param_meta: Vec<_> = param_types.iter().map(|t| (*t).into()).collect();
+            // Use C ABI compatible types for FFI declarations:
+            // Bool → i32 (C ABI) instead of i8 (internal Doo representation)
+            let ffi_param_meta: Vec<BasicMetadataTypeEnum<'ctx>> = func
+                .params
+                .iter()
+                .map(|p| {
+                    let llvm_ty: BasicTypeEnum<'ctx> = if p.type_id == builtin::BOOL {
+                        ctx.i32_type().into()
+                    } else {
+                        ctx.get_llvm_type(p.type_id)
+                    };
+                    llvm_ty.into()
+                })
+                .collect();
 
             // For FFI functions with error types, they return *mut SimpleResult (pointer to heap-allocated result)
             // to avoid Windows x64 sret ABI issues. The caller loads the struct from the pointer.
@@ -514,15 +538,22 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         .into(),
                 )
             } else {
-                return_type
+                // Use C ABI compatible return type: Bool → i32
+                func.return_type.map(|t| -> BasicTypeEnum<'ctx> {
+                    if t == builtin::BOOL {
+                        ctx.i32_type().into()
+                    } else {
+                        ctx.get_llvm_type(t)
+                    }
+                })
             };
 
             let fn_type = match ffi_return_type {
                 Some(ret) => {
                     use inkwell::types::BasicType;
-                    ret.fn_type(&param_meta, false)
+                    ret.fn_type(&ffi_param_meta, false)
                 }
-                None => ctx.context.void_type().fn_type(&param_meta, false),
+                None => ctx.context.void_type().fn_type(&ffi_param_meta, false),
             };
 
             // Use explicit symbol if provided, otherwise derive from library + function name
@@ -849,7 +880,12 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Must happen AFTER allocas are created and BEFORE block code generation.
         if func.is_closure && !func.captures.is_empty() {
             let capture_names: Vec<String> = func.captures.iter().map(|s| resolve(*s)).collect();
-            crate::instructions::async_ops::emit_env_unpack(ctx, &capture_names, llvm_func, func.captures_by_value);
+            crate::instructions::async_ops::emit_env_unpack(
+                ctx,
+                &capture_names,
+                llvm_func,
+                func.captures_by_value,
+            );
         }
 
         // Generate code for each block
@@ -926,11 +962,16 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     ctx.builder.position_at_end(bb);
 
                     // Check if this is a Result-returning function (has error_type).
-                    // Result functions return { i64 tag, i64 payload } struct for Windows x64 ABI.
+                    // Result functions return { i64 tag, ptr payload } struct.
                     if func.error_type.is_some() {
-                        // Create a default Result struct: { 0 (Ok tag), 0 (null payload as i64) }
+                        // Create a default Result struct: { 0 (Ok tag), null (payload) }
                         let result_struct_type = ctx.context.struct_type(
-                            &[ctx.context.i64_type().into(), ctx.context.i64_type().into()],
+                            &[
+                                ctx.context.i64_type().into(),
+                                ctx.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                            ],
                             false,
                         );
                         let default_result = result_struct_type.const_zero();

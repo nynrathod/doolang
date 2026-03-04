@@ -229,13 +229,9 @@ impl ArrayBuiltins {
         let end_bb = ctx.context.append_basic_block(current_fn, "idx_end");
 
         let idx_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "idx")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         let res_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i32_type(), "res")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i32_type(), "res")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -526,8 +522,8 @@ impl ArrayBuiltins {
         let inner_end_bb = ctx.context.append_basic_block(current_fn, "sort_inner_end");
         let outer_end_bb = ctx.context.append_basic_block(current_fn, "sort_outer_end");
 
-        let i_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "i").ok()?;
-        let j_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "j").ok()?;
+        let i_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "i")?;
+        let j_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "j")?;
         ctx.builder
             .build_store(i_alloca, ctx.context.i64_type().const_zero())
             .ok()?;

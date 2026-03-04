@@ -562,6 +562,45 @@ unsafe fn write_value_to_buf(
                 write_array_to_buf(buf, arr_data, elem_type, struct_layouts);
             }
         }
+        t if t.starts_with("Optional(") && t.ends_with(')') => {
+            // Optional types: same layout as inner type but nullable.
+            // Extract inner type and delegate — null pointer → JSON null.
+            let inner = &t[9..t.len() - 1];
+            match inner {
+                "Str" => {
+                    let str_ptr = *(field_ptr as *const *const c_char);
+                    if str_ptr.is_null() {
+                        buf.extend_from_slice(b"null");
+                    } else {
+                        let cstr = std::ffi::CStr::from_ptr(str_ptr);
+                        let bytes = cstr.to_bytes();
+                        buf.push(b'"');
+                        json_escape_bytes_into(buf, bytes);
+                        buf.push(b'"');
+                    }
+                }
+                "Int" => {
+                    // Optional(Int) — check if the pointer itself is null
+                    // Same layout as Int (i64), use the value directly
+                    write_value_to_buf(buf, field_ptr, "Int", struct_layouts);
+                }
+                "Float" => {
+                    write_value_to_buf(buf, field_ptr, "Float", struct_layouts);
+                }
+                "Bool" => {
+                    write_value_to_buf(buf, field_ptr, "Bool", struct_layouts);
+                }
+                _ => {
+                    // For Optional structs/arrays, the pointer could be null
+                    let nested_ptr = *(field_ptr as *const *const u8);
+                    if nested_ptr.is_null() {
+                        buf.extend_from_slice(b"null");
+                    } else {
+                        write_value_to_buf(buf, field_ptr, inner, struct_layouts);
+                    }
+                }
+            }
+        }
         _ if struct_layouts.contains_key(field_type) => {
             let nested_ptr = *(field_ptr as *const *const u8);
             write_struct_to_buf(buf, nested_ptr, field_type, struct_layouts);
@@ -702,6 +741,41 @@ pub(crate) fn serialize_struct_recursive(
                     } else {
                         let elem_type = &t[1..t.len() - 1];
                         serialize_array(arr_data, elem_type, struct_layouts)
+                    }
+                }
+                t if t.starts_with("Optional(") && t.ends_with(")") => {
+                    // Optional types: same layout as inner, but null → JSON null
+                    let inner = &t[9..t.len() - 1];
+                    match inner {
+                        "Str" => {
+                            let str_ptr = *(field_ptr as *const *const c_char);
+                            if str_ptr.is_null() {
+                                serde_json::Value::Null
+                            } else {
+                                serde_json::Value::String(c_to_string(str_ptr))
+                            }
+                        }
+                        "Int" => {
+                            let i = *(field_ptr as *const i64);
+                            serde_json::json!(i)
+                        }
+                        "Float" => {
+                            let f = *(field_ptr as *const f64);
+                            serde_json::json!(f)
+                        }
+                        "Bool" => {
+                            let b = *(field_ptr as *const i8) != 0;
+                            serde_json::json!(b)
+                        }
+                        _ if struct_layouts.contains_key(inner) => {
+                            let nested_ptr = *(field_ptr as *const *const u8);
+                            if nested_ptr.is_null() {
+                                serde_json::Value::Null
+                            } else {
+                                serialize_struct_recursive(nested_ptr, inner, struct_layouts)
+                            }
+                        }
+                        _ => serde_json::Value::Null,
                     }
                 }
                 _ if struct_layouts.contains_key(field_type) => {

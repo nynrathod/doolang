@@ -6,7 +6,7 @@ use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::layout::{
     alloc_with_header, data_ptr_from_header,
-    header_ptr_from_data, load_len_i32, store_len_at_header,
+    header_ptr_from_data, load_len_i32, set_map_capacity, store_len_at_header,
 };
 use crate::utils::{default_for_type, emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
@@ -114,8 +114,21 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .build_int_z_extend(len_i32, ctx.i64_type(), "len_i64")
                     .ok()?;
 
-                let default_val = default_for_type(ctx, val_llvm);
-                let res_alloca = ctx.builder.build_alloca(val_llvm, "map_get_res").ok()?;
+                // CRITICAL: For string-valued maps, use a global empty string constant
+                // instead of null as the default. This prevents undefined behavior when
+                // the MapGet result is passed to strlen/strcmp functions — LLVM infers
+                // nonnull+dereferenceable on those parameters, and a null phi incoming
+                // value is UB that the optimizer can exploit to miscompile the code.
+                let default_val = if *val_type == doo_core::types::builtin::STR {
+                    ctx.builder
+                        .build_global_string_ptr("", "map_get_default_str")
+                        .ok()
+                        .map(|g| g.as_pointer_value().into())
+                        .unwrap_or_else(|| default_for_type(ctx, val_llvm))
+                } else {
+                    default_for_type(ctx, val_llvm)
+                };
+                let res_alloca = ctx.alloca_in_entry_block(val_llvm, "map_get_res")?;
                 ctx.builder.build_store(res_alloca, default_val).ok();
 
                 let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
@@ -125,7 +138,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 let found_bb = ctx.context.append_basic_block(current_fn, "map_get_found");
                 let end_bb = ctx.context.append_basic_block(current_fn, "map_get_end");
 
-                let idx_alloca = ctx.builder.build_alloca(ctx.i64_type(), "idx").ok()?;
+                let idx_alloca = ctx.alloca_in_entry_block(ctx.i64_type(), "idx")?;
                 ctx.builder
                     .build_store(idx_alloca, ctx.i64_type().const_zero())
                     .ok();
@@ -231,11 +244,11 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 let found_bb = ctx.context.append_basic_block(current_fn, "map_has_found");
                 let end_bb = ctx.context.append_basic_block(current_fn, "map_has_end");
 
-                let idx_alloca = ctx.builder.build_alloca(ctx.i64_type(), "idx").ok()?;
+                let idx_alloca = ctx.alloca_in_entry_block(ctx.i64_type(), "idx")?;
                 ctx.builder
                     .build_store(idx_alloca, ctx.i64_type().const_zero())
                     .ok();
-                let res_alloca = ctx.builder.build_alloca(ctx.bool_type(), "res").ok()?;
+                let res_alloca = ctx.alloca_in_entry_block(ctx.bool_type(), "res")?;
                 ctx.builder
                     .build_store(res_alloca, ctx.bool_type().const_zero())
                     .ok();
@@ -366,13 +379,13 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .append_basic_block(current_fn, "map_set_not_found");
                 let end_bb = ctx.context.append_basic_block(current_fn, "map_set_end");
 
-                let idx_alloca = ctx.builder.build_alloca(ctx.i64_type(), "idx").ok()?;
+                let idx_alloca = ctx.alloca_in_entry_block(ctx.i64_type(), "idx")?;
                 ctx.builder
                     .build_store(idx_alloca, ctx.i64_type().const_zero())
                     .ok();
 
                 // We'll store updated data pointer here (defaults to old)
-                let updated_alloca = ctx.builder.build_alloca(ctx.ptr_type(), "updated").ok()?;
+                let updated_alloca = ctx.alloca_in_entry_block(ctx.ptr_type(), "updated")?;
                 ctx.builder.build_store(updated_alloca, old_data).ok();
 
                 ctx.builder.build_unconditional_branch(loop_bb).ok()?;
@@ -458,6 +471,8 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                     .build_int_z_extend(new_len_i32, ctx.i64_type(), "new_len_i64_store")
                     .ok()?;
                 store_len_at_header(ctx, new_header, new_len_i64_for_store)?;
+                // Also update capacity to match the realloc'd size (exact-fit)
+                set_map_capacity(ctx, new_header, new_len_i64_for_store)?;
                 let new_data = data_ptr_from_header(ctx, new_header)?;
                 ctx.builder.build_store(updated_alloca, new_data).ok();
 

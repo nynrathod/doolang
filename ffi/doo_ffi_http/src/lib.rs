@@ -7,10 +7,9 @@
 //! - Request helpers (params, query, headers)
 //! - Server lifecycle
 
-// ============================================================================
-// GLOBAL ALLOCATOR — mimalloc for reduced lock contention at high RPS
-// Since this is a cdylib, the allocator applies to all allocations in this DLL.
-// ============================================================================
+// Use mimalloc as global allocator when the feature is enabled.
+// Disabled by default to avoid C symbol conflicts with vendored C libs.
+#[cfg(feature = "mimalloc-allocator")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

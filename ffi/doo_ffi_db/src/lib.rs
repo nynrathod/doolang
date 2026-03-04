@@ -237,11 +237,11 @@ pub extern "C" fn doo_db_get_global() -> *mut DooResult {
 
 /// Check if connected to database.
 #[no_mangle]
-pub extern "C" fn doo_db_is_connected() -> bool {
+pub extern "C" fn doo_db_is_connected() -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        get_driver().map_or(false, |d| d.is_connected())
+        get_driver().map_or(0i32, |d| d.is_connected() as i32)
     }))
-    .unwrap_or(false)
+    .unwrap_or(0i32)
 }
 
 /// Cleanup and disconnect.

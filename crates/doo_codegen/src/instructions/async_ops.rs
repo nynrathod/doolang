@@ -584,7 +584,7 @@ pub fn emit_env_unpack<'ctx>(
                     // VALUE CAPTURE: loaded_i64 IS the actual value (not a pointer to alloca).
                     // Create a new alloca in the spawned function and store the value there.
                     let local_ty = ctx.get_local_type(cap_name).unwrap_or(i64_ty.into());
-                    if let Ok(new_alloca) = ctx.builder.build_alloca(i64_ty, &format!("cap_local_{}", cap_name)) {
+                    if let Some(new_alloca) = ctx.alloca_in_entry_block(i64_ty, &format!("cap_local_{}", cap_name)) {
                         ctx.builder.build_store(new_alloca, loaded_i64.into_int_value()).ok();
                         ctx.replace_local_ptr(cap_name, new_alloca, local_ty);
                     }

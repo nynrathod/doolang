@@ -161,9 +161,7 @@ fn emit_enum_create<'ctx>(
 
     // Allocate enum struct
     let enum_alloca = ctx
-        .builder
-        .build_alloca(enum_type, &format!("{}_enum", dest))
-        .ok()?;
+        .alloca_in_entry_block(enum_type, &format!("{}_enum", dest))?;
 
     // Get variant index from type registry (single source of truth)
     // Falls back to 0 if not found (shouldn't happen in well-typed programs)

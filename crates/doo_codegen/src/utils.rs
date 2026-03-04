@@ -8,6 +8,7 @@ use doo_core::types::{builtin, TypeId, TypeKind};
 use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirOperand};
 use inkwell::types::BasicTypeEnum;
+use inkwell::values::PointerValue;
 use inkwell::values::{BasicValueEnum, IntValue};
 use inkwell::IntPredicate;
 
@@ -136,7 +137,35 @@ pub fn emit_eq<'ctx>(
     }
 }
 
-/// Emit string equality comparison using strcmp
+/// Coerce a potentially-null string pointer to a valid empty string.
+/// This prevents undefined behavior when the pointer is passed to strlen/strcmp/memcpy,
+/// because LLVM infers `nonnull dereferenceable(1)` on those function arguments
+/// when it recognizes them as standard C library functions.
+/// A null pointer with nonnull annotation is UB that LLVM can exploit to miscompile code.
+pub fn null_coerce_str<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    ptr: PointerValue<'ctx>,
+) -> PointerValue<'ctx> {
+    let is_null = match ctx.builder.build_is_null(ptr, "str_is_null") {
+        Ok(v) => v,
+        Err(_) => return ptr,
+    };
+    let empty = match ctx.builder.build_global_string_ptr("", "empty_str") {
+        Ok(v) => v.as_pointer_value(),
+        Err(_) => return ptr,
+    };
+    match ctx
+        .builder
+        .build_select(is_null, empty, ptr, "safe_str")
+    {
+        Ok(v) => v.into_pointer_value(),
+        Err(_) => ptr,
+    }
+}
+
+/// Emit string equality comparison using strcmp.
+/// SAFETY: Both operands are null-coerced to prevent UB from LLVM's
+/// nonnull inference on strcmp arguments.
 fn emit_str_eq<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     lhs: BasicValueEnum<'ctx>,
@@ -153,9 +182,16 @@ fn emit_str_eq<'ctx>(
             ctx.module.add_function(ffi_names::STRCMP, fn_ty, None)
         });
 
+    // Null-coerce both operands: LLVM infers nonnull+dereferenceable(1) on
+    // strcmp args because it recognizes the function name. If either operand
+    // is null (e.g., from a try-expression error path), the nonnull annotation
+    // triggers UB-based miscompilation in large functions.
+    let safe_lhs = null_coerce_str(ctx, lhs.into_pointer_value());
+    let safe_rhs = null_coerce_str(ctx, rhs.into_pointer_value());
+
     let result = ctx
         .builder
-        .build_call(strcmp, &[lhs.into(), rhs.into()], "strcmp_result")
+        .build_call(strcmp, &[safe_lhs.into(), safe_rhs.into()], "strcmp_result")
         .ok()?
         .try_as_basic_value()
         .basic()?

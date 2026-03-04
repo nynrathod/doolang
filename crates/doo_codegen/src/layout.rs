@@ -688,14 +688,12 @@ pub fn realloc_array_capacity<'ctx>(
     let done_bb = ctx.context.append_basic_block(current_fn, "arr_done");
 
     let result_alloca = ctx
-        .builder
-        .build_alloca(
+        .alloca_in_entry_block(
             ctx.context
                 .i8_type()
                 .ptr_type(inkwell::AddressSpace::default()),
             "arr_result",
-        )
-        .ok()?;
+        )?;
     // Store the current DATA pointer
     ctx.builder.build_store(result_alloca, data_ptr).ok()?;
 

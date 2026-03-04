@@ -538,7 +538,57 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     doo_debug!("DEBUG", "LLVM module verified");
 
     // Phase 9: Optimize
-    optimize_module(&module, OptLevel::O2);
+    optimize_module(&module, OptLevel::O3);
+
+    // Phase 9.1: Harden ALL functions against stack corruption post-optimization.
+    //
+    // LLVM's O3 pass pipeline can strip function attributes and add `tail call`
+    // markers during transforms. On Windows x64, functions returning structs
+    // >8 bytes use sret (hidden stack pointer). If the backend honours a `tail
+    // call` inside such a function, it reuses the caller's frame while sret
+    // still points into it → corrupted return address → DEP violation.
+    //
+    // Three-pronged fix:
+    //   1. Re-apply "disable-tail-calls" to ALL functions (attribute-level guard)
+    //   2. Strip `tail` marker from ALL call instructions (instruction-level guard)
+    //   3. Add "frame-pointer"="all" to prevent frame pointer elimination,
+    //      which stabilises stack frames and prevents backend frame reuse
+    {
+        use inkwell::values::InstructionOpcode;
+
+        let no_tail = context.create_string_attribute("disable-tail-calls", "true");
+        let frame_ptr = context.create_string_attribute("frame-pointer", "all");
+        let mut func = module.get_first_function();
+        while let Some(f) = func {
+            // (1) Function-level attribute: tell backend "no tail calls"
+            f.add_attribute(inkwell::attributes::AttributeLoc::Function, no_tail);
+            // (3) Preserve frame pointer in every function
+            f.add_attribute(inkwell::attributes::AttributeLoc::Function, frame_ptr);
+
+            // (2) Walk every instruction and clear the `tail` flag on calls.
+            //     O3 adds `tail call` markers to many calls (printf, malloc,
+            //     strlen, FFI, etc.). Even with disable-tail-calls, belt-and-
+            //     suspenders: remove the IR-level hint so the backend can never
+            //     see it.
+            let mut bb = f.get_first_basic_block();
+            while let Some(block) = bb {
+                let mut instr = block.get_first_instruction();
+                while let Some(inst) = instr {
+                    if inst.get_opcode() == InstructionOpcode::Call {
+                        if let Ok(call_site) = inkwell::values::CallSiteValue::try_from(inst) {
+                            if call_site.is_tail_call() {
+                                call_site.set_tail_call(false);
+                            }
+                        }
+                    }
+                    instr = inst.get_next_instruction();
+                }
+                bb = block.get_next_basic_block();
+            }
+
+            func = f.get_next_function();
+        }
+    }
 
     // Phase 9.5: Add POSIX compatibility stubs AFTER optimization (Windows only)
     // Must be after optimization so the stubs aren't removed by dead code elimination.
@@ -943,31 +993,73 @@ fn add_posix_compat_stubs(module: &inkwell::module::Module) {
     use inkwell::AddressSpace;
 
     let ctx = module.get_context();
-    let i32_type = ctx.i32_type();
     let ptr_type = ctx.ptr_type(AddressSpace::default());
 
-    // Define __imp_close = pointer to _close
-    let close_ty = i32_type.fn_type(&[i32_type.into()], false);
-    if module.get_global("__imp_close").is_none() {
-        let _close = module
-            .get_function("_close")
-            .unwrap_or_else(|| module.add_function("_close", close_ty, Some(Linkage::External)));
-        let imp_close = module.add_global(ptr_type, Some(AddressSpace::default()), "__imp_close");
-        imp_close.set_initializer(&_close.as_global_value().as_pointer_value());
-        imp_close.set_linkage(Linkage::External);
-        imp_close.set_constant(true);
-    }
+    // POSIX → MSVC name mappings for C code compiled with dllimport.
+    //
+    // FFI C libraries (libgit2, libssh2, etc.) reference POSIX function names
+    // via __declspec(dllimport), generating __imp_<posix_name> references.
+    // On MSVC, these functions have underscore-prefixed names (_open, _close, etc.)
+    // and are in libucrt.lib. The __imp_ references won't auto-resolve because
+    // the UCRT doesn't export the unprefixed names.
+    //
+    // For each pair, we declare the MSVC function (_open) and create a constant
+    // pointer __imp_open that points to it, enabling lld-link to resolve the
+    // dllimport references.
+    //
+    // This table is generic: add new pairs as FFI packages require them.
+    // The POSIX name (left) maps to the MSVC name (right).
+    let posix_to_msvc: &[(&str, &str)] = &[
+        ("close", "_close"),
+        ("read", "_read"),
+        ("open", "_open"),
+        ("write", "_write"),
+        ("lseek", "_lseek"),
+        ("access", "_access"),
+        ("chmod", "_chmod"),
+        ("mkdir", "_mkdir"),
+        ("rmdir", "_rmdir"),
+        ("unlink", "_unlink"),
+        ("stat", "_stat"),
+        ("fstat", "_fstat"),
+        ("dup", "_dup"),
+        ("dup2", "_dup2"),
+        ("fileno", "_fileno"),
+        ("isatty", "_isatty"),
+        ("getcwd", "_getcwd"),
+        ("chdir", "_chdir"),
+        ("umask", "_umask"),
+        ("mktemp", "_mktemp"),
+        ("setmode", "_setmode"),
+        ("strdup", "_strdup"),
+        ("stricmp", "_stricmp"),
+        ("strnicmp", "_strnicmp"),
+    ];
 
-    // Define __imp_read = pointer to _read
-    let read_ty = i32_type.fn_type(&[i32_type.into(), ptr_type.into(), i32_type.into()], false);
-    if module.get_global("__imp_read").is_none() {
-        let _read = module
-            .get_function("_read")
-            .unwrap_or_else(|| module.add_function("_read", read_ty, Some(Linkage::External)));
-        let imp_read = module.add_global(ptr_type, Some(AddressSpace::default()), "__imp_read");
-        imp_read.set_initializer(&_read.as_global_value().as_pointer_value());
-        imp_read.set_linkage(Linkage::External);
-        imp_read.set_constant(true);
+    // Generic stub generation — no per-function signature needed.
+    // All stubs use a generic void->void function type because __imp_X is just
+    // a pointer; the calling code casts it to the correct signature at the call
+    // site. The linker only needs the address, not the type.
+    let generic_fn_ty = ctx.void_type().fn_type(&[], false);
+
+    for (posix_name, msvc_name) in posix_to_msvc {
+        let imp_name = format!("__imp_{}", posix_name);
+
+        // Skip if already defined (e.g., by a previous compilation pass)
+        if module.get_global(&imp_name).is_some() {
+            continue;
+        }
+
+        // Declare the MSVC-named function (if not already present)
+        let msvc_fn = module.get_function(msvc_name).unwrap_or_else(|| {
+            module.add_function(msvc_name, generic_fn_ty, Some(Linkage::External))
+        });
+
+        // Create __imp_<posix_name> = constant pointer to _<posix_name>
+        let imp_global = module.add_global(ptr_type, Some(AddressSpace::default()), &imp_name);
+        imp_global.set_initializer(&msvc_fn.as_global_value().as_pointer_value());
+        imp_global.set_linkage(Linkage::External);
+        imp_global.set_constant(true);
     }
 }
 
@@ -1001,10 +1093,27 @@ fn link_windows(
     ffi_libs: &HashSet<String>,
     search_paths: &[PathBuf],
 ) -> Result<PathBuf, String> {
-    let linker = extract_embedded_linker()?;
     let exe_path = PathBuf::from(format!("{}.exe", opts.output_name));
 
     let sdk_paths = find_windows_sdk_paths();
+
+    // Prefer MSVC's native link.exe over embedded lld-link.
+    //
+    // MSVC's linker correctly handles .pdata/.xdata associative COMDAT
+    // deduplication when /FORCE:MULTIPLE is used. The embedded lld-link
+    // (LLVM 18) has a known bug where it does not properly discard
+    // .pdata entries for COMDATs removed during duplicate resolution,
+    // leaving stale exception table entries that corrupt SEH unwinding
+    // and cause DEP crashes at the module base address.
+    //
+    // This is especially critical for FFI crates containing C code
+    // (libgit2, zlib, etc.) whose functions have complex .pdata entries.
+    let linker = sdk_paths
+        .as_ref()
+        .and_then(|p| p.msvc_lib.as_ref())
+        .and_then(|lib| find_msvc_linker(lib))
+        .map(Ok)
+        .unwrap_or_else(|| extract_embedded_linker())?;
 
     let mut cmd = Command::new(&linker);
     cmd.arg(format!("/OUT:{}", exe_path.display()))
@@ -1019,8 +1128,35 @@ fn link_windows(
     // When linking multiple Rust static libraries, each contains its own copy of
     // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
     // Allow duplicates so the linker uses the first definition and ignores the rest.
-    if ffi_libs.len() > 1 {
+    //
+    // IMPORTANT: /FORCE:MULTIPLE disables /OPT:REF by default (per MSVC docs).
+    // Do NOT re-enable /OPT:REF with /FORCE:MULTIPLE — it can strip sections
+    // that surviving duplicate copies still reference, corrupting .pdata/.xdata
+    // exception tables and causing DEP crashes at the module base address.
+    let use_force_multiple = ffi_libs.len() > 1;
+    if use_force_multiple {
         cmd.arg("/FORCE:MULTIPLE");
+        // CRITICAL: Explicitly disable ICF and REF to prevent .pdata corruption.
+        //
+        // /FORCE:MULTIPLE only implies /OPT:NOREF (per MSVC docs), but ICF
+        // (Identical COMDAT Folding) REMAINS ENABLED by default for non-debug
+        // builds. ICF folds COMDATs with identical machine code but potentially
+        // different .pdata/.xdata exception table entries, corrupting SEH
+        // unwind data and causing DEP crashes at the module base address.
+        //
+        // This is the root cause of the DEP crash in FFI C code (libgit2, etc.):
+        //  1. Multiple Rust static libraries define identical generic functions
+        //  2. ICF folds them into one, discarding some .pdata entries
+        //  3. An exception in the surviving function finds a stale .pdata entry
+        //  4. The SEH unwinder jumps to a corrupted address (module base) → DEP
+        //
+        // /OPT:NOICF prevents content-based folding, keeping all .pdata entries valid.
+        // /OPT:NOREF prevents section garbage collection, keeping all code referenced.
+        // The size increase is negligible (~100KB) vs. the risk of silent DEP crashes.
+        cmd.arg("/OPT:NOICF,NOREF");
+        // Also produce a MAP file for crash diagnostics
+        let map_path = exe_path.with_extension("map");
+        cmd.arg(format!("/MAP:{}", map_path.display()));
     }
 
     // Suppress dynamic CRT defaultlib to avoid MSVCRT.lib(utility.obj) conflicts.
@@ -1068,16 +1204,17 @@ fn link_windows(
         .arg("rpcrt4.lib")
         .arg("secur32.lib")
         .arg("crypt32.lib")
-        .arg("user32.lib");
+        .arg("user32.lib")
+        .arg("shell32.lib");
 
-    // Link FFI libraries
-    let mut added_paths = HashSet::new();
-    for lib in ffi_libs {
+    // Link FFI libraries in deterministic alphabetical order.
+    // With /FORCE:MULTIPLE, the FIRST definition of each duplicate symbol wins.
+    // Alphabetical order ensures doo_ffi_core's runtime symbols win deduplication,
+    // which is correct since core provides the canonical runtime implementation.
+    let mut lib_entries: Vec<(&String, PathBuf, PathBuf)> = Vec::new();
+    for lib in ffi_libs.iter() {
         if let Some((lib_dir, lib_file)) = find_ffi_library(lib, search_paths) {
-            if added_paths.insert(lib_dir.clone()) {
-                cmd.arg(format!("/LIBPATH:{}", lib_dir.display()));
-            }
-            cmd.arg(lib_file.to_str().unwrap());
+            lib_entries.push((lib, lib_dir, lib_file));
         } else {
             return Err(format!(
                 "FFI library '{}.dll.lib' not found.\n\
@@ -1088,9 +1225,31 @@ fn link_windows(
         }
     }
 
+    // Alphabetical by library name for deterministic, reproducible builds.
+    lib_entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut added_paths = HashSet::new();
+    for (_, lib_dir, lib_file) in &lib_entries {
+        if added_paths.insert(lib_dir.clone()) {
+            cmd.arg(format!("/LIBPATH:{}", lib_dir.display()));
+        }
+        cmd.arg(lib_file.to_str().unwrap());
+    }
+
     let result = cmd.output();
     match result {
-        Ok(r) if r.status.success() => Ok(exe_path),
+        Ok(r) if r.status.success() => {
+            // Show linker warnings even on success — critical for diagnosing
+            // symbol conflicts with /FORCE:MULTIPLE linking.
+            let stderr = String::from_utf8_lossy(&r.stderr);
+            if !stderr.is_empty() {
+                let debug = std::env::var("DOO_DEBUG").is_ok();
+                if debug {
+                    eprintln!("[LINKER] Warnings:\n{}", stderr);
+                }
+            }
+            Ok(exe_path)
+        }
         Ok(r) => Err(format!(
             "Linking failed:\n{}",
             String::from_utf8_lossy(&r.stderr)
@@ -1145,22 +1304,76 @@ fn find_windows_sdk_paths() -> Option<WindowsSdkPaths> {
 #[cfg(target_os = "windows")]
 fn find_msvc_lib_path(base: &str) -> Option<String> {
     let base_path = Path::new(base);
-    for year in &["2022", "2019", "2017"] {
-        for edition in &["BuildTools", "Community", "Professional", "Enterprise"] {
-            let vc_path = base_path.join(year).join(edition).join("VC\\Tools\\MSVC");
-            if let Ok(entries) = fs::read_dir(&vc_path) {
-                if let Some(version) = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_dir())
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .max()
+    if !base_path.exists() {
+        return None;
+    }
+
+    // Dynamically scan all Visual Studio installation years and editions.
+    // This avoids hardcoding year/edition lists (2022, 2019, etc.) and
+    // automatically supports future VS releases (2025, 2027, etc.).
+    // Picks the newest year + newest MSVC toolchain version.
+    let mut best: Option<(String, String)> = None; // (year_sort_key, full_path)
+
+    if let Ok(years) = fs::read_dir(base_path) {
+        for year_entry in years.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
+            let year_name = year_entry.file_name().to_string_lossy().to_string();
+            if let Ok(editions) = fs::read_dir(year_entry.path()) {
+                for edition_entry in
+                    editions.filter_map(|e| e.ok()).filter(|e| e.path().is_dir())
                 {
-                    return Some(format!("{}\\{}\\lib\\x64", vc_path.display(), version));
+                    let vc_path = edition_entry.path().join("VC").join("Tools").join("MSVC");
+                    if let Ok(versions) = fs::read_dir(&vc_path) {
+                        if let Some(version) = versions
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.path().is_dir())
+                            .map(|e| e.file_name().to_string_lossy().to_string())
+                            .max()
+                        {
+                            let path =
+                                format!("{}\\{}\\lib\\x64", vc_path.display(), version);
+                            let sort_key = format!("{}_{}", year_name, version);
+                            if best
+                                .as_ref()
+                                .map(|(k, _)| sort_key > *k)
+                                .unwrap_or(true)
+                            {
+                                best = Some((sort_key, path));
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    None
+
+    best.map(|(_, path)| path)
+}
+
+/// Find MSVC's native link.exe from the Visual Studio installation.
+///
+/// MSVC's link.exe handles /FORCE:MULTIPLE + .pdata/.xdata correctly,
+/// unlike lld-link (LLVM 18) which has known bugs with associative
+/// COMDAT deduplication that corrupt SEH exception tables and cause
+/// DEP crashes at the module base address.
+///
+/// The path is derived from the MSVC lib directory:
+///   .../VC/Tools/MSVC/{version}/lib/x64  →
+///   .../VC/Tools/MSVC/{version}/bin/Hostx64/x64/link.exe
+#[cfg(target_os = "windows")]
+fn find_msvc_linker(msvc_lib: &str) -> Option<PathBuf> {
+    let path = Path::new(msvc_lib);
+    // Go up from lib/x64 to the MSVC version root
+    let msvc_version_root = path.parent()?.parent()?;
+    let linker = msvc_version_root
+        .join("bin")
+        .join("Hostx64")
+        .join("x64")
+        .join("link.exe");
+    if linker.exists() {
+        Some(linker)
+    } else {
+        None
+    }
 }
 
 // ============================================================================
@@ -1251,6 +1464,7 @@ fn link_unix(
         "doo_ffi_http",
         "doo_ffi_auth",
         "doo_ffi_db",
+        "doo_ffi_git",
         "doo_ffi_file",
         "doo_ffi_process",
         "doo_ffi_runtime",
@@ -1316,6 +1530,16 @@ fn link_unix(
                 lib_name, search_paths
             ));
         }
+    }
+
+    // System library dependencies for FFI crates.
+    // These must come AFTER the static archives (linker resolves left-to-right).
+    // Discovered dynamically from the ffi_libs set — no hardcoded assumptions.
+    // When using the bundle, all system deps are needed since it contains all crates.
+    if ffi_libs.contains("doo_ffi_git") {
+        // libgit2 depends on zlib for compression. OpenSSL is vendored (statically
+        // compiled into the git2 static archive via `vendored-openssl` feature).
+        cmd.arg("-lz");
     }
 
     let result = cmd.output();

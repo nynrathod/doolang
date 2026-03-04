@@ -670,7 +670,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             );
 
             // Check for JSON parse errors (type mismatches in arrays, etc.)
-            if doo_ffi_json::doo_json_has_parse_error() {
+            if doo_ffi_json::doo_json_has_parse_error() != 0 {
                 let status = doo_ffi_json::doo_json_get_parse_error_status();
                 let error_json_ptr = doo_ffi_json::doo_json_get_parse_error_json();
                 let body = c_to_string(error_json_ptr as *const i8);
@@ -1040,14 +1040,14 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             if ws_routes > 0 {
                 println!("  WebSocket Routes:     {}", ws_routes);
             }
-            if crate::middleware::is_logger_enabled() {
-                let cfg = crate::middleware::get_frozen_logger().unwrap();
-                let mut levels = Vec::new();
-                if cfg.info { levels.push("Info"); }
-                if cfg.warn { levels.push("Warn"); }
-                if cfg.error { levels.push("Error"); }
-                println!("  Logger:               {}", levels.join(", "));
-            }
+            // if crate::middleware::is_logger_enabled() {
+            //     let cfg = crate::middleware::get_frozen_logger().unwrap();
+            //     let mut levels = Vec::new();
+            //     if cfg.info { levels.push("Info"); }
+            //     if cfg.warn { levels.push("Warn"); }
+            //     if cfg.error { levels.push("Error"); }
+            //     println!("  Logger:               {}", levels.join(", "));
+            // }
             println!("  Process ID:           {}", std::process::id());
             // println!("  Max Connections:      {}", max_connections);
             // println!("  Max Body Size:        {} bytes", MAX_BODY_SIZE.load(Ordering::Relaxed));

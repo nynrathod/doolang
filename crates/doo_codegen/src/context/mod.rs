@@ -16,12 +16,11 @@ mod type_cache;
 
 use doo_core::doo_debug;
 use doo_core::types::{TypeId, TypeKind, TypeRegistry};
+use inkwell::attributes::AttributeLoc;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::targets::{
-    CodeModel, InitializationConfig, RelocMode, Target, TargetMachine,
-};
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
@@ -453,6 +452,16 @@ impl<'ctx> CodegenContext<'ctx> {
         };
 
         let func = self.module.add_function(name, fn_type, None);
+
+        // Prevent LLVM's TailCallElim pass from adding `tail call` annotations.
+        // On Windows x64, functions returning structs >8 bytes use sret (implicit
+        // stack pointer). Tail calls can reuse the caller's frame while sret still
+        // points into it, corrupting the return address → DEP violation.
+        let no_tail = self
+            .context
+            .create_string_attribute("disable-tail-calls", "true");
+        func.add_attribute(AttributeLoc::Function, no_tail);
+
         self.function_cache.insert(name.to_string(), func);
         func
     }
@@ -620,6 +629,44 @@ impl<'ctx> CodegenContext<'ctx> {
             .build_global_string_ptr(val, "str")
             .expect("ICE: failed to create global string constant");
         global.as_pointer_value()
+    }
+
+    // ========================================================================
+    // Entry-Block Alloca Helper
+    // ========================================================================
+
+    /// Emit an `alloca` in the current function's entry block.
+    ///
+    /// On Windows x64, allocas outside the entry block are "dynamic allocas"
+    /// that require runtime stack adjustments. These can interfere with SEH
+    /// unwind tables and corrupt the stack frame, leading to DEP violations.
+    /// LLVM best practice: ALL allocas must be in the entry block so they
+    /// become part of the fixed stack frame allocated in the function prologue.
+    ///
+    /// This helper saves the current builder position, inserts the alloca at
+    /// the start of the entry block, then restores the builder position.
+    pub fn alloca_in_entry_block<T: BasicType<'ctx>>(
+        &self,
+        ty: T,
+        name: &str,
+    ) -> Option<PointerValue<'ctx>> {
+        let current_block = self.builder.get_insert_block()?;
+        let current_fn = current_block.get_parent()?;
+        let entry_block = current_fn.get_first_basic_block()?;
+
+        // Position at the start of the entry block (before all existing instructions)
+        if let Some(first_instr) = entry_block.get_first_instruction() {
+            self.builder.position_before(&first_instr);
+        } else {
+            self.builder.position_at_end(entry_block);
+        }
+
+        let alloca = self.builder.build_alloca(ty, name).ok()?;
+
+        // Restore the builder to the original position
+        self.builder.position_at_end(current_block);
+
+        Some(alloca)
     }
 }
 

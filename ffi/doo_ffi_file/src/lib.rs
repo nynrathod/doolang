@@ -818,7 +818,7 @@ pub extern "C" fn doo_file_exists(path: *const c_char) -> i32 {
             0
         }
     })) {
-        Ok(result) => result,
+        Ok(r) => r,
         Err(_) => 0,
     }
 }

@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[features]
+default = []
+mimalloc-allocator = ["mimalloc"]
+
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 hyper = { version = "1.8.1", features = ["http1", "server"] }
@@ -27,8 +31,10 @@ jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 libloading = "0.8"
 base64 = "0.22"
 
-# Performance: mimalloc reduces allocation contention under high concurrency
-mimalloc = { version = "0.1.48", default-features = false }
+# Performance: mimalloc reduces allocation contention under high concurrency.
+# Optional to avoid C symbol conflicts with other vendored C libraries (libgit2)
+# when linked via /FORCE:MULTIPLE. Enable with: features = ["mimalloc-allocator"]
+mimalloc = { version = "0.1.48", default-features = false, optional = true }
 
 # WebSocket support
 tokio-tungstenite = "0.26"

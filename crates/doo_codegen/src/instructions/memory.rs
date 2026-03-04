@@ -739,16 +739,12 @@ fn clone_map<'ctx>(
 
     // Get source map length
     let src_len = get_array_length_from_data(ctx, src_ptr)?;
-    let src_len_i32 = ctx
-        .builder
-        .build_int_truncate(src_len, ctx.context.i32_type(), "len_i32")
-        .ok()?;
 
     // Use i8 array type for map entries (MAP_ENTRY_SIZE bytes per entry)
     let pair_type = ctx.context.i8_type().array_type(crate::layout::MAP_ENTRY_SIZE as u32);
 
-    // Allocate new map with same length
-    let dst_ptr = alloc_with_header(ctx, src_len_i32, pair_type, "cloned_map")?;
+    // Allocate new map with same length (pass i64 directly, no truncation)
+    let dst_ptr = alloc_with_header(ctx, src_len, pair_type, "cloned_map")?;
 
     // Check if keys or values need deep cloning (strings)
     let key_is_str = key_type == builtin::STR;

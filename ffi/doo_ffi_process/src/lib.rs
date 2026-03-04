@@ -82,6 +82,38 @@ pub(crate) fn ensure_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// Safely run an async future to completion, even when called from within
+/// an existing Tokio runtime (e.g., inside an HTTP handler).
+///
+/// If no runtime is active on the current thread, uses the shared process runtime.
+/// If already inside a Tokio runtime, spawns a temporary thread with its own runtime
+/// to avoid the "Cannot start a runtime from within a runtime" panic.
+fn block_on_safe<F, T>(f: F) -> T
+where
+    F: FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Err(_) => {
+            // Not in a runtime — use shared runtime directly
+            let rt = ensure_runtime();
+            rt.block_on(f())
+        }
+        Ok(_) => {
+            // Already inside a Tokio runtime — run on a separate thread
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create temporary runtime for process");
+                rt.block_on(f())
+            })
+            .join()
+            .unwrap_or_else(|_| panic!("Process thread panicked"))
+        }
+    }
+}
+
 // ============================================================================
 // FFI Helpers — delegated to doo_ffi_core::helpers (single source of truth)
 // c_to_string (lossy), make_ok_void, make_ok_str, make_err, make_panic_err
@@ -130,11 +162,12 @@ pub extern "C" fn doo_process_run(cmd: *const c_char, args_json: *const c_char) 
             Err(e) => return make_err(&e),
         };
 
-        // Use the local tokio runtime to run the command
-        let rt = ensure_runtime();
-
-        let result: Result<String, String> =
-            rt.block_on(async { run_command(&cmd_str, &args).await });
+        // Use block_on_safe to handle both standalone and nested-runtime contexts
+        let cmd_owned = cmd_str.to_string();
+        let args_owned = args.clone();
+        let result: Result<String, String> = block_on_safe(move || {
+            Box::pin(async move { run_command(&cmd_owned, &args_owned).await })
+        });
 
         match result {
             Ok(ref output) => make_ok_str(output),
@@ -175,10 +208,11 @@ pub extern "C" fn doo_process_spawn(
             Err(e) => return make_err(&e),
         };
 
-        let rt = ensure_runtime();
-
-        let result: Result<String, String> =
-            rt.block_on(async { spawn_process(&cmd_str, &args).await });
+        let cmd_owned = cmd_str.to_string();
+        let args_owned = args.clone();
+        let result: Result<String, String> = block_on_safe(move || {
+            Box::pin(async move { spawn_process(&cmd_owned, &args_owned).await })
+        });
 
         match result {
             Ok(ref handle_id) => make_ok_str(handle_id),
@@ -262,10 +296,10 @@ pub extern "C" fn doo_process_wait_output(handle_ptr: *const c_char) -> *mut Doo
         let handle_id = c_to_string_lossy(handle_ptr);
         ffi_debug!("PROCESS", "waitForOutput({})", handle_id);
 
-        let rt = ensure_runtime();
-
-        let result: Result<String, String> =
-            rt.block_on(async { get_registry().wait_for_output(&handle_id).await });
+        let handle_owned = handle_id.to_string();
+        let result: Result<String, String> = block_on_safe(move || {
+            Box::pin(async move { get_registry().wait_for_output(&handle_owned).await })
+        });
 
         match result {
             Ok(ref output) => make_ok_str(output),
@@ -330,10 +364,11 @@ pub extern "C" fn doo_process_output(
             Err(e) => return make_err(&e),
         };
 
-        let rt = ensure_runtime();
-
-        let result: Result<String, String> =
-            rt.block_on(async { run_command_stdout(&cmd_str, &args).await });
+        let cmd_owned = cmd_str.to_string();
+        let args_owned = args.clone();
+        let result: Result<String, String> = block_on_safe(move || {
+            Box::pin(async move { run_command_stdout(&cmd_owned, &args_owned).await })
+        });
 
         match result {
             Ok(ref stdout) => make_ok_str(stdout),

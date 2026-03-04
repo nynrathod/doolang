@@ -46,7 +46,10 @@ fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicVal
     let printf = ctx
         .module
         .get_function(ffi_names::PRINTF)
-        .unwrap_or_else(|| ctx.module.add_function(ffi_names::PRINTF, printf_type, None));
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(ffi_names::PRINTF, printf_type, None)
+        });
 
     // If message is a pointer, it might be an error struct (like FileError)
     // Error structs have Message as first field - extract it
@@ -89,7 +92,10 @@ fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicVal
     let fflush_fn = ctx
         .module
         .get_function(ffi_names::FFLUSH)
-        .unwrap_or_else(|| ctx.module.add_function(ffi_names::FFLUSH, fflush_type, None));
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(ffi_names::FFLUSH, fflush_type, None)
+        });
     let null_ptr = ctx.ptr_type().const_null();
     let _ = ctx
         .builder

@@ -141,9 +141,7 @@ impl MapBuiltins {
         let body_bb = ctx.context.append_basic_block(current_fn, "keys_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "keys_end");
         let idx_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "idx")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -225,9 +223,7 @@ impl MapBuiltins {
         let body_bb = ctx.context.append_basic_block(current_fn, "values_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "values_end");
         let idx_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "idx")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -320,23 +316,17 @@ impl MapBuiltins {
         let end_bb = ctx.context.append_basic_block(current_fn, "map_remove_end");
 
         let idx_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "idx")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
         let found_idx_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.i64_type(), "found_idx")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.i64_type(), "found_idx")?;
         ctx.builder
             .build_store(found_idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
         let found_flag_alloca = ctx
-            .builder
-            .build_alloca(ctx.context.bool_type(), "found")
-            .ok()?;
+            .alloca_in_entry_block(ctx.context.bool_type(), "found")?;
         ctx.builder
             .build_store(found_flag_alloca, ctx.context.bool_type().const_zero())
             .ok()?;
@@ -443,7 +433,7 @@ impl MapBuiltins {
             .build_array_alloca(pair_ty, new_len_i64, "tmp_pairs")
             .ok()?;
 
-        let idx2_alloca = ctx.builder.build_alloca(ctx.context.i64_type(), "i").ok()?;
+        let idx2_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "i")?;
         ctx.builder
             .build_store(idx2_alloca, ctx.context.i64_type().const_zero())
             .ok()?;

@@ -63,8 +63,26 @@ pub extern "C" fn doo_git_init(path: *const c_char) -> *mut DooResult {
     let result = panic::catch_unwind(|| {
         let path_str = c_to_string_lossy(path);
         match Repository::init(&path_str) {
-            Ok(_repo) => make_ok_void(),
+            Ok(_) => make_ok_void(),
             Err(e) => make_err(&format!("git init failed: {}", e)),
+        }
+    });
+    result.unwrap_or_else(|_| make_panic_err())
+}
+
+// ============================================================================
+// doo_git_init_bare — Initialize a bare git repository
+// ============================================================================
+
+/// Initialize a bare git repository at the given path.
+/// Bare repos have no working directory — used as remotes for push/pull.
+#[no_mangle]
+pub extern "C" fn doo_git_init_bare(path: *const c_char) -> *mut DooResult {
+    let result = panic::catch_unwind(|| {
+        let path_str = c_to_string_lossy(path);
+        match Repository::init_bare(&path_str) {
+            Ok(_) => make_ok_void(),
+            Err(e) => make_err(&format!("git init --bare failed: {}", e)),
         }
     });
     result.unwrap_or_else(|_| make_panic_err())
@@ -81,7 +99,7 @@ pub extern "C" fn doo_git_clone(url: *const c_char, path: *const c_char) -> *mut
         let url_str = c_to_string_lossy(url);
         let path_str = c_to_string_lossy(path);
         match Repository::clone(&url_str, &path_str) {
-            Ok(_repo) => make_ok_void(),
+            Ok(_) => make_ok_void(),
             Err(e) => make_err(&format!("git clone failed: {}", e)),
         }
     });
@@ -293,28 +311,32 @@ pub extern "C" fn doo_git_pull(path: *const c_char) -> *mut DooResult {
 // ============================================================================
 
 /// Returns 1 (true) if the working directory has uncommitted changes, 0 (false) otherwise.
-/// This is a direct i8 return — NOT a DooResult.
+/// Returns i32 for C ABI compatibility (matches Doo Bool → i32 at FFI boundary).
 #[no_mangle]
-pub extern "C" fn doo_git_is_dirty(path: *const c_char) -> i8 {
-    let result = panic::catch_unwind(|| {
+pub extern "C" fn doo_git_is_dirty(path: *const c_char) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         let path_str = c_to_string_lossy(path);
 
         let repo = match Repository::open(&path_str) {
             Ok(r) => r,
-            Err(_) => return 0i8, // Can't open → not dirty
+            Err(_) => return 0i32, // Can't open → not dirty
         };
 
         let mut opts = StatusOptions::new();
         opts.include_untracked(true);
         opts.recurse_untracked_dirs(true);
 
-        let is_dirty = match repo.statuses(Some(&mut opts)) {
-            Ok(statuses) => bool_to_i8(!statuses.is_empty()),
-            Err(_) => 0i8,
-        };
-        is_dirty
-    });
-    result.unwrap_or(0i8)
+        let is_dirty = repo
+            .statuses(Some(&mut opts))
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        if is_dirty {
+            1i32
+        } else {
+            0i32
+        }
+    }));
+    result.unwrap_or(0i32)
 }
 
 // ============================================================================
@@ -378,24 +400,29 @@ pub extern "C" fn doo_git_stash_pop(path: *const c_char) -> *mut DooResult {
 // ============================================================================
 
 /// Returns 1 (true) if the repository has any remotes configured, 0 (false) otherwise.
-/// This is a direct i8 return — NOT a DooResult.
+/// Returns i32 for C ABI compatibility (matches Doo Bool → i32 at FFI boundary).
 #[no_mangle]
-pub extern "C" fn doo_git_has_remote(path: *const c_char) -> i8 {
+pub extern "C" fn doo_git_has_remote(path: *const c_char) -> i32 {
     let result = panic::catch_unwind(|| {
         let path_str = c_to_string_lossy(path);
 
         let repo = match Repository::open(&path_str) {
             Ok(r) => r,
-            Err(_) => return 0i8,
+            Err(_) => return 0i32,
         };
 
-        let has = match repo.remotes() {
-            Ok(remotes) => bool_to_i8(!remotes.is_empty()),
-            Err(_) => 0i8,
-        };
-        has
+        match repo.remotes() {
+            Ok(remotes) => {
+                if remotes.is_empty() {
+                    0i32
+                } else {
+                    1i32
+                }
+            }
+            Err(_) => 0i32,
+        }
     });
-    result.unwrap_or(0i8)
+    result.unwrap_or(0i32)
 }
 
 // ============================================================================
@@ -427,6 +454,34 @@ pub extern "C" fn doo_git_head_short(path: *const c_char) -> *mut DooResult {
             Err(e) => make_err(&format!("git head commit failed: {}", e)),
         };
         result
+    });
+    result.unwrap_or_else(|_| make_panic_err())
+}
+
+// ============================================================================
+// doo_git_current_branch — Get the current branch name
+// ============================================================================
+
+/// Return the name of the current branch (e.g. "main" or "master").
+#[no_mangle]
+pub extern "C" fn doo_git_current_branch(path: *const c_char) -> *mut DooResult {
+    let result = panic::catch_unwind(|| {
+        let path_str = c_to_string_lossy(path);
+
+        let repo = match Repository::open(&path_str) {
+            Ok(r) => r,
+            Err(e) => return make_err(&format!("git open failed: {}", e)),
+        };
+
+        let head = match repo.head() {
+            Ok(h) => h,
+            Err(e) => return make_err(&format!("git head failed: {}", e)),
+        };
+
+        match head.shorthand() {
+            Some(name) => make_ok_string(name),
+            None => make_err("git: could not determine branch name"),
+        }
     });
     result.unwrap_or_else(|_| make_panic_err())
 }

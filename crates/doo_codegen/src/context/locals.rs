@@ -12,9 +12,10 @@ impl<'ctx> CodegenContext<'ctx> {
     // Local Variable Management
     // ========================================================================
 
-    /// Create an alloca (local variable).
+    /// Create an alloca (local variable) in the function's entry block.
     pub fn create_local(&mut self, name: &str, ty: BasicTypeEnum<'ctx>) -> PointerValue<'ctx> {
-        let alloca = self.builder.build_alloca(ty, name)
+        let alloca = self
+            .alloca_in_entry_block(ty, name)
             .expect("ICE: failed to build alloca for local variable");
         self.locals.insert(name.to_string(), (alloca, ty));
         alloca
@@ -104,6 +105,31 @@ impl<'ctx> CodegenContext<'ctx> {
                             doo_debug!(
                                 "CODEGEN",
                                 "set_local '{}': converted ptr->int via ptrtoint",
+                                name
+                            );
+                        }
+                        return;
+                    }
+                }
+
+                // int -> ptr conversion: handles tuple-destructured values that are
+                // stored as i64 (because TupleCreate uses uniform i64 layout) but the
+                // variable was declared as a string/pointer type.
+                // Example: `let resultJson, err = Process.run(...)` where resultJson
+                // is Str (ptr alloca) but TupleGet extracts it as i64.
+                if alloca_ty.is_pointer_type() && value.is_int_value() {
+                    if let Ok(converted) = self.builder.build_int_to_ptr(
+                        value.into_int_value(),
+                        alloca_ty.into_pointer_type(),
+                        &format!("{}_inttoptr", name),
+                    ) {
+                        let converted_val: BasicValueEnum = converted.into();
+                        let _ = self.builder.build_store(ptr, converted_val);
+                        self.temps.remove(&name);
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                            doo_debug!(
+                                "CODEGEN",
+                                "set_local '{}': converted int->ptr via inttoptr",
                                 name
                             );
                         }

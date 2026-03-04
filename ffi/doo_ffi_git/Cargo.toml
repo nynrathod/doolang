@@ -8,6 +8,14 @@ description = "Native git operations FFI for Doo — powered by libgit2 via git2
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-git2 = "0.20"
+# default-features = false removes vendored-openssl and SSH.
+# On Windows, libgit2 uses schannel (native TLS) for HTTPS — no OpenSSL needed.
+# This eliminates thousands of C symbols from vendored OpenSSL that can conflict
+# with other FFI crate symbols under /FORCE:MULTIPLE linking.
+# Local git ops (init, commit, status, push, pull) all work without SSH feature.
+# default-features = false removes ssh/https (avoids libssh2/OpenSSL C code).
+# Local git ops (init, commit, status) work without these features.
+# libgit2 is still vendored (built from source) by libgit2-sys default features.
+git2 = { version = "0.20.4", default-features = false }
 doo_ffi_core = { path = "../doo_ffi_core" }
 libc = "0.2"

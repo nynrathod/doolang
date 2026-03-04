@@ -5,8 +5,8 @@
 //! All string data uses doo_alloc_string (simple C strings).
 //! Codegen converts to Doo format automatically via clone_ffi_string_to_rc.
 //!
-//! CRITICAL: Layout MUST match codegen expectation: { i64 tag, i64 value }
-//! Codegen loads tag as i64 and value as i64 (inttoptr for pointers).
+/// CRITICAL: Layout MUST match codegen expectation: { i64 tag, ptr value }
+/// Codegen stores the payload as ptr directly (preserving pointer provenance).
 
 use crate::memory::{doo_alloc_string, doo_free};
 use std::ffi::c_void;
@@ -76,23 +76,14 @@ impl DooResult {
     }
 
     /// Create an Err result from a string.
-    /// OWNERSHIP: Wraps string in { *char } struct to match codegen error path.
-    /// Codegen does: GEP(data, 0) → load ptr → gets the error message string.
-    /// This matches the same layout as FileError { message: *char } etc.
+    /// OWNERSHIP: Allocates a C string, stored directly as `data`.
+    /// The codegen reads `data` as a `*char` pointer — no extra wrapper needed.
     #[inline]
     pub fn err_str(_code: u16, message: &str) -> Self {
-        let str_ptr = doo_alloc_string(message);
-        // Wrap in a single-field struct { *char message } matching codegen expectations.
-        // Codegen's panic handler loads the first pointer-sized field from data.
-        unsafe {
-            let wrapper = libc::malloc(std::mem::size_of::<*mut c_void>()) as *mut *mut c_void;
-            if !wrapper.is_null() {
-                *wrapper = str_ptr as *mut c_void;
-            }
-            Self {
-                tag: ResultTag::Err as i64,
-                data: wrapper as *mut c_void,
-            }
+        let str_ptr = doo_alloc_string(message) as *mut c_void;
+        Self {
+            tag: ResultTag::Err as i64,
+            data: str_ptr,
         }
     }
 
@@ -128,7 +119,7 @@ impl DooResult {
 
 /// Free a DooResult (must be called by Doo code after use).
 /// Handles:
-///   - Err results from `err_str`: data -> wrapper { *char } -> frees inner string + wrapper
+///   - Err results: data is a direct string pointer (no wrapper)
 ///   - Ok results: frees data pointer directly
 ///   - Outer DooResult shell: freed with libc::free (matching into_raw)
 #[no_mangle]
@@ -137,20 +128,10 @@ pub extern "C" fn doo_result_free(result: *mut DooResult) {
         return;
     }
     unsafe {
-        // Read the result fields before freeing
-        let tag = (*result).tag;
         let data = (*result).data;
 
         if !data.is_null() {
-            if tag == ResultTag::Err as i64 {
-                // Err results from err_str have data -> wrapper { *char message }
-                // Free the inner string pointer first, then the wrapper
-                let inner_str = *(data as *const *mut c_void);
-                if !inner_str.is_null() {
-                    doo_free(inner_str as *mut u8);
-                }
-            }
-            // Free the data/wrapper pointer itself
+            // Free the data pointer (string for Err, value for Ok)
             libc::free(data);
         }
 

@@ -364,12 +364,12 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                     .context
                     .append_basic_block(current_fn, "arr_contains_end");
 
-                let idx_alloca = ctx.builder.build_alloca(ctx.i64_type(), "idx").ok()?;
+                let idx_alloca = ctx.alloca_in_entry_block(ctx.i64_type(), "idx")?;
                 ctx.builder
                     .build_store(idx_alloca, ctx.i64_type().const_zero())
                     .ok();
 
-                let res_alloca = ctx.builder.build_alloca(ctx.bool_type(), "res").ok()?;
+                let res_alloca = ctx.alloca_in_entry_block(ctx.bool_type(), "res")?;
                 ctx.builder
                     .build_store(res_alloca, ctx.bool_type().const_zero())
                     .ok();

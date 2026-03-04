@@ -134,7 +134,8 @@ impl JsonBuiltins {
                     return Self::emit_parse_enum(ctx, val, ty, &name, &variants);
                 }
                 Some(TypeKind::Array { element: elem_type }) => {
-                    let (_resolved_elem, resolved_elem_kind) = Self::resolve_type_ref(ctx, elem_type);
+                    let (_resolved_elem, resolved_elem_kind) =
+                        Self::resolve_type_ref(ctx, elem_type);
                     match resolved_elem_kind {
                         Some(TypeKind::Struct { name, fields }) => {
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
@@ -443,6 +444,76 @@ impl JsonBuiltins {
                         .try_as_basic_value()
                         .basic()?;
                     ctx.builder.build_store(field_ptr, val).ok()?;
+                }
+                Some(TypeKind::Optional { inner }) => {
+                    // Optional has the same runtime layout as its inner type.
+                    // Resolve inner type and dispatch to the correct typed extraction.
+                    let (_, inner_kind) = Self::resolve_type_ref(ctx, *inner);
+                    match &inner_kind {
+                        Some(TypeKind::Int) => {
+                            let val = ctx
+                                .builder
+                                .build_call(
+                                    get_int_fn,
+                                    &[obj_handle.into(), field_name_str.into()],
+                                    "field_opt_int",
+                                )
+                                .ok()?
+                                .try_as_basic_value()
+                                .basic()?;
+                            ctx.builder.build_store(field_ptr, val).ok()?;
+                        }
+                        Some(TypeKind::Float) => {
+                            let val = ctx
+                                .builder
+                                .build_call(
+                                    get_float_fn,
+                                    &[obj_handle.into(), field_name_str.into()],
+                                    "field_opt_float",
+                                )
+                                .ok()?
+                                .try_as_basic_value()
+                                .basic()?;
+                            ctx.builder.build_store(field_ptr, val).ok()?;
+                        }
+                        Some(TypeKind::Bool) => {
+                            let i32_val = ctx
+                                .builder
+                                .build_call(
+                                    get_bool_fn,
+                                    &[obj_handle.into(), field_name_str.into()],
+                                    "field_opt_bool_i32",
+                                )
+                                .ok()?
+                                .try_as_basic_value()
+                                .basic()?;
+                            let i8_val = ctx
+                                .builder
+                                .build_int_truncate(
+                                    i32_val.into_int_value(),
+                                    ctx.context.i8_type(),
+                                    "field_opt_bool",
+                                )
+                                .ok()?;
+                            ctx.builder.build_store(field_ptr, i8_val).ok()?;
+                        }
+                        _ => {
+                            // Str, Struct, Array, Map, Enum, etc. — all pointer-based.
+                            // get_str returns "" for null/missing (safe), or fall through
+                            // to generic parse for complex inner types.
+                            let val = ctx
+                                .builder
+                                .build_call(
+                                    get_str_fn,
+                                    &[obj_handle.into(), field_name_str.into()],
+                                    "field_opt_str",
+                                )
+                                .ok()?
+                                .try_as_basic_value()
+                                .basic()?;
+                            ctx.builder.build_store(field_ptr, val).ok()?;
+                        }
+                    }
                 }
                 // ── Composite: get as JSON string, then recursively parse ──
                 _ => {
@@ -1066,7 +1137,7 @@ impl JsonBuiltins {
                 let after_bb = ctx.context.append_basic_block(parent, "json_map_end");
 
                 let i64_type = ctx.i64_type();
-                let idx_ptr = ctx.builder.build_alloca(i64_type, "idx").ok()?;
+                let idx_ptr = ctx.alloca_in_entry_block(i64_type, "idx")?;
                 ctx.builder
                     .build_store(idx_ptr, i64_type.const_zero())
                     .ok()?;
@@ -1425,6 +1496,12 @@ impl JsonBuiltins {
 
                 ctx.builder.position_at_end(merge_bb);
             }
+            TypeKind::Optional { inner } => {
+                // Optional has the same runtime layout as its inner type (nullable ptr for Str).
+                // Delegate to the inner type's handler — FFI write functions already handle null
+                // pointers safely (e.g., doo_json_write_string writes "null" for null ptr).
+                Self::emit_write_value(ctx, writer, val, inner)?;
+            }
             TypeKind::Any => {
                 // For Any type, try to infer from LLVM value type
                 // Pointer values in Doo are most commonly strings (char*)
@@ -1506,7 +1583,7 @@ impl JsonBuiltins {
         let inc_bb = ctx.context.append_basic_block(parent, "json_arr_inc");
         let after_bb = ctx.context.append_basic_block(parent, "json_arr_end");
 
-        let idx_ptr = ctx.builder.build_alloca(i64_type, "idx").ok()?;
+        let idx_ptr = ctx.alloca_in_entry_block(i64_type, "idx")?;
         ctx.builder
             .build_store(idx_ptr, i64_type.const_zero())
             .ok()?;
@@ -1611,7 +1688,7 @@ impl JsonBuiltins {
         let inc_bb = ctx.context.append_basic_block(parent, "json_map_inc");
         let after_bb = ctx.context.append_basic_block(parent, "json_map_end");
 
-        let idx_ptr = ctx.builder.build_alloca(i64_type, "idx").ok()?;
+        let idx_ptr = ctx.alloca_in_entry_block(i64_type, "idx")?;
         ctx.builder
             .build_store(idx_ptr, i64_type.const_zero())
             .ok()?;

@@ -790,24 +790,22 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
             }
 
             MirInstrKind::WrapOk { dest, value } => {
-                // Result::Ok = { i64 tag=0, i64 payload }
-                // Using i64 for both fields for consistent ABI with FFI SimpleResult
+                // Result::Ok = { i64 tag=0, ptr payload }
+                // Using ptr for payload preserves pointer provenance through LLVM O3
                 // Allocate Result struct, set tag=0, box value in payload
                 let val = operand_to_value(ctx, value)?;
 
                 // Convert value to pointer representation
                 let value_ptr = value_to_ptr(ctx, val)?;
 
-                // Create Result struct type: { i64 tag, i64 payload }
+                // Create Result struct type: { i64 tag, ptr payload }
                 let result_struct_type = ctx
                     .context
-                    .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
+                    .struct_type(&[ctx.i64_type().into(), ctx.ptr_type().into()], false);
 
                 // Allocate Result struct on stack
                 let result_alloca = ctx
-                    .builder
-                    .build_alloca(result_struct_type, "result_ok")
-                    .ok()?;
+                    .alloca_in_entry_block(result_struct_type, "result_ok")?;
 
                 // Set tag = 0 (Ok)
                 let tag_ptr = ctx
@@ -818,16 +816,12 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     .build_store(tag_ptr, ctx.i64_type().const_int(0, false))
                     .ok()?;
 
-                // Convert pointer to i64 and set payload
-                let value_i64 = ctx
-                    .builder
-                    .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
-                    .ok()?;
+                // Store pointer directly as payload (preserves provenance)
                 let payload_ptr = ctx
                     .builder
                     .build_struct_gep(result_struct_type, result_alloca, 1, "ok_payload_ptr")
                     .ok()?;
-                ctx.builder.build_store(payload_ptr, value_i64).ok()?;
+                ctx.builder.build_store(payload_ptr, value_ptr).ok()?;
 
                 // Load and return the struct
                 let result_struct = ctx
@@ -840,24 +834,22 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
             }
 
             MirInstrKind::WrapErr { dest, value } => {
-                // Result::Err = { i64 tag=1, i64 payload }
-                // Using i64 for both fields for consistent ABI with FFI SimpleResult
+                // Result::Err = { i64 tag=1, ptr payload }
+                // Using ptr for payload preserves pointer provenance through LLVM O3
                 // Allocate Result struct, set tag=1, box error in payload
                 let val = operand_to_value(ctx, value)?;
 
                 // Convert value to pointer representation
                 let value_ptr = value_to_ptr(ctx, val)?;
 
-                // Create Result struct type: { i64 tag, i64 payload }
+                // Create Result struct type: { i64 tag, ptr payload }
                 let result_struct_type = ctx
                     .context
-                    .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
+                    .struct_type(&[ctx.i64_type().into(), ctx.ptr_type().into()], false);
 
                 // Allocate Result struct on stack
                 let result_alloca = ctx
-                    .builder
-                    .build_alloca(result_struct_type, "result_err")
-                    .ok()?;
+                    .alloca_in_entry_block(result_struct_type, "result_err")?;
 
                 // Set tag = 1 (Err)
                 let tag_ptr = ctx
@@ -868,16 +860,12 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     .build_store(tag_ptr, ctx.i64_type().const_int(1, false))
                     .ok()?;
 
-                // Convert pointer to i64 and set payload
-                let value_i64 = ctx
-                    .builder
-                    .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
-                    .ok()?;
+                // Store pointer directly as payload (preserves provenance)
                 let payload_ptr = ctx
                     .builder
                     .build_struct_gep(result_struct_type, result_alloca, 1, "err_payload_ptr")
                     .ok()?;
-                ctx.builder.build_store(payload_ptr, value_i64).ok()?;
+                ctx.builder.build_store(payload_ptr, value_ptr).ok()?;
 
                 // Load and return the struct
                 let result_struct = ctx
@@ -1007,21 +995,15 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                 // Try to get the Result struct (load if pointer)
                 if let Some(result_struct) = load_result_struct(ctx, result_val) {
-                    // Extract value as i64 (field 1) - stored as i64 for ABI compatibility
-                    let value_i64 = ctx
-                        .builder
-                        .build_extract_value(result_struct, 1, "ok_value_i64")
-                        .ok()?
-                        .into_int_value();
-
-                    // Convert i64 back to pointer using inttoptr
+                    // Extract value as ptr (field 1) - stored as ptr to preserve provenance
                     let value_ptr = ctx
                         .builder
-                        .build_int_to_ptr(value_i64, ctx.ptr_type(), "ok_value_ptr")
-                        .ok()?;
+                        .build_extract_value(result_struct, 1, "ok_value_ptr")
+                        .ok()?
+                        .into_pointer_value();
 
                     // Convert the pointer back to the expected type
-                    // The payload was created using value_to_ptr which uses inttoptr for primitives
+                    // For scalars, value_to_ptr encoded them via inttoptr, so we reverse with ptrtoint
                     let final_value: BasicValueEnum = match expected_type {
                         Some(type_id) if *type_id == builtin::INT => {
                             // Convert pointer back to i64 using ptrtoint
@@ -1036,7 +1018,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 .builder
                                 .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
                                 .ok()?;
-                            let tmp = ctx.builder.build_alloca(ctx.i64_type(), "f_tmp").ok()?;
+                            let tmp = ctx.alloca_in_entry_block(ctx.i64_type(), "f_tmp")?;
                             ctx.builder.build_store(tmp, i64_val).ok()?;
                             let f_ptr = ctx
                                 .builder
@@ -1085,18 +1067,12 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                 // Try to get the Result struct (load if pointer)
                 if let Some(result_struct) = load_result_struct(ctx, result_val) {
-                    // Extract payload as i64 (field 1) - stored as i64 for ABI compatibility
-                    let value_i64 = ctx
-                        .builder
-                        .build_extract_value(result_struct, 1, "err_value_i64")
-                        .ok()?
-                        .into_int_value();
-
-                    // Convert i64 back to pointer using inttoptr
+                    // Extract payload as ptr (field 1) - stored as ptr to preserve provenance
                     let value_ptr = ctx
                         .builder
-                        .build_int_to_ptr(value_i64, ctx.ptr_type(), "err_value_ptr")
-                        .ok()?;
+                        .build_extract_value(result_struct, 1, "err_value_ptr")
+                        .ok()?
+                        .into_pointer_value();
 
                     // The payload is now a pointer - store it as the value
                     ctx.set_temp(&resolve(*dest), value_ptr.into());
@@ -1144,10 +1120,10 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 // If it's a pointer, load the struct first
                 let result_struct = if result_val.is_pointer_value() {
                     let result_ptr = result_val.into_pointer_value();
-                    // Result struct: { i64 tag, i64 value } for ABI compatibility
+                    // Result struct: { i64 tag, ptr value } — ptr preserves provenance
                     let result_struct_type = ctx
                         .context
-                        .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
+                        .struct_type(&[ctx.i64_type().into(), ctx.ptr_type().into()], false);
                     let loaded = ctx
                         .builder
                         .build_load(result_struct_type, result_ptr, "result_struct_load")
@@ -1203,17 +1179,12 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     )
                     .ok()?;
 
-                // Extract value as i64 (field 1) and convert to pointer
-                let value_i64 = ctx
-                    .builder
-                    .build_extract_value(result_struct, 1, "result_value_i64")
-                    .ok()?
-                    .into_int_value();
-
+                // Extract value as ptr (field 1) — ptr preserves provenance
                 let value_ptr = ctx
                     .builder
-                    .build_int_to_ptr(value_i64, ctx.ptr_type(), "result_value_ptr")
-                    .ok()?;
+                    .build_extract_value(result_struct, 1, "result_value_ptr")
+                    .ok()?
+                    .into_pointer_value();
 
                 // Create blocks for ok and err paths
                 let func = ctx.builder.get_insert_block()?.get_parent()?;
@@ -1257,7 +1228,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                             .builder
                             .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
                             .ok()?;
-                        let tmp = ctx.builder.build_alloca(ctx.i64_type(), "f_tmp").ok()?;
+                        let tmp = ctx.alloca_in_entry_block(ctx.i64_type(), "f_tmp")?;
                         ctx.builder.build_store(tmp, i64_val).ok()?;
                         let f_ptr = ctx
                             .builder

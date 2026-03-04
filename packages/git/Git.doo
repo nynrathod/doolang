@@ -44,6 +44,11 @@ struct GitError {
 @extern("doo_git", "doo_git_init")
 fn Git.init(path: Str) -> Void ! GitError {}
 
+// Initialize a bare git repository at the given path.
+// Bare repos have no working directory — used as remotes for push/pull.
+@extern("doo_git", "doo_git_init_bare")
+fn Git.initBare(path: Str) -> Void ! GitError {}
+
 // Clone a remote repository from url into path.
 @extern("doo_git", "doo_git_clone")
 fn Git.clone(url: Str, path: Str) -> Void ! GitError {}
@@ -84,6 +89,10 @@ fn Git.isDirty(path: Str) -> Bool {}
 // Get the short (7 char) HEAD commit hash.
 @extern("doo_git", "doo_git_head_short")
 fn Git.headShort(path: Str) -> Str ! GitError {}
+
+// Get the current branch name (e.g. "main" or "master").
+@extern("doo_git", "doo_git_current_branch")
+fn Git.currentBranch(path: Str) -> Str ! GitError {}
 
 // ============================================================================
 // Stash Operations
