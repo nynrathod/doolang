@@ -1,7 +1,7 @@
 [package]
 name = "doo_analysis"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Semantic analysis for the Doo compiler (ownership, borrowing, types)"
 license = "MIT"
 

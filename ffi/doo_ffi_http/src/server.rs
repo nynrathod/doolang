@@ -40,7 +40,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
 static STARTUP_INSTANT: OnceLock<Instant> = OnceLock::new();
-const VERSION: &str = "0.4.0";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Get uptime in seconds (used by metrics module)
 pub fn startup_uptime_secs() -> u64 {
@@ -920,7 +920,8 @@ fn build_response_bytes_typed(
 
     let builder = Response::builder()
         .status(status_code)
-        .header("Content-Type", content_type);
+        .header("Content-Type", content_type)
+        .header("X-Powered-By", POWERED_BY);
 
     // CORS headers are NOT added here — they're applied once in handle_request()
     // via apply_cors_headers() with the request's Origin (proper ownership, no RefCell).

@@ -25,6 +25,10 @@ pub const CONTENT_TYPE_JSON: &str = "application/json";
 /// Plaintext content type for plain text responses
 pub const CONTENT_TYPE_PLAIN: &str = "text/plain";
 
+/// X-Powered-By header value — derived from Cargo.toml version at compile time.
+/// Single source of truth for branding. Like PHP's `X-Powered-By: PHP/8.3`.
+pub const POWERED_BY: &str = concat!("Doo/", env!("CARGO_PKG_VERSION"));
+
 /// Size of the error response struct: { i32 status (4) + padding (4) + ptr body (8) + ptr content_type (8) }
 pub const ERROR_RESPONSE_SIZE: usize = 24;
 

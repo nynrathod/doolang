@@ -70,6 +70,16 @@ fn Git.commitAll(path: Str, message: Str, authorName: Str, authorEmail: Str) -> 
 @extern("doo_git", "doo_git_push")
 fn Git.push(path: Str, remote: Str, branch: Str) -> Void ! GitError {}
 
+// Force push current branch (overwrites remote history).
+// Needed when local and remote histories diverge.
+@extern("doo_git", "doo_git_force_push")
+fn Git.forcePush(path: Str, remote: Str, branch: Str) -> Void ! GitError {}
+
+// Push current branch with token-based authentication (for HTTPS remotes).
+// For GitHub: username = "x-access-token", token = OAuth/PAT token.
+@extern("doo_git", "doo_git_push_with_token")
+fn Git.pushWithToken(path: Str, remote: Str, branch: Str, username: Str, token: Str) -> Void ! GitError {}
+
 // Fetch from origin and fast-forward merge (like git pull --ff-only).
 @extern("doo_git", "doo_git_pull")
 fn Git.pull(path: Str) -> Void ! GitError {}
@@ -77,6 +87,10 @@ fn Git.pull(path: Str) -> Void ! GitError {}
 // Check if any remote is configured.
 @extern("doo_git", "doo_git_has_remote")
 fn Git.hasRemote(path: Str) -> Bool {}
+
+// Add a named remote to the repository (or update URL if it already exists).
+@extern("doo_git", "doo_git_add_remote")
+fn Git.addRemote(path: Str, name: Str, url: Str) -> Void ! GitError {}
 
 // ============================================================================
 // Status Operations

@@ -73,12 +73,12 @@ pub struct MirBuilder<'a> {
     pub(crate) closure_counter: usize,
 
     /// Pending closure functions to be added to the program.
-    /// Each entry is (func_name, params, body_expr, captures, captures_by_value).
+    /// Each entry is (func_name, params, body_expr, captures_with_types, captures_by_value).
     pub(crate) pending_closures: Vec<(
         String,
         Vec<(String, Option<CoreTypeId>)>,
         Box<HirExpr>,
-        Vec<String>,
+        Vec<(String, CoreTypeId)>,
         bool,
     )>,
 
@@ -378,7 +378,7 @@ impl<'a> MirBuilder<'a> {
         name: &str,
         params: &[(String, Option<CoreTypeId>)],
         body: &HirExpr,
-        captures: &[String],
+        captures: &[(String, CoreTypeId)],
     ) -> MirFunction {
         // Save current state
         let saved_func = self.current_func.take();
@@ -426,12 +426,12 @@ impl<'a> MirBuilder<'a> {
 
         // Register captured variables as locals (populated from env struct at codegen)
         if let Some(f) = &mut self.current_func {
-            f.captures = captures.iter().map(|c| sym(c)).collect();
-            for cap_name in captures {
+            f.captures = captures.iter().map(|(c, _)| sym(c)).collect();
+            for (cap_name, cap_type) in captures {
                 f.locals.push(LocalDef {
                     name: sym(cap_name),
-                    type_id: builtin::INT, // captures are i64 values
-                    mutable: true,         // may be assigned inside the body
+                    type_id: *cap_type, // Use actual type from outer scope
+                    mutable: true,      // may be assigned inside the body
                 });
             }
         }

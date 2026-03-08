@@ -509,14 +509,32 @@ fn build_env_pack<'ctx>(
         };
 
         let as_i64 = if by_value {
-            // VALUE CAPTURE: Load the actual value from the alloca, store it in env.
-            // This is safe for fire-and-forget Spawn because the value is copied,
-            // not a pointer to the parent's stack frame which gets freed.
+            // VALUE CAPTURE: Load the actual value from the alloca using its REAL type,
+            // then widen to i64 for storage in the env struct.
+            // This is critical: Bool is i8, Int is i64, Str is ptr.
+            // Loading i64 from an i8 alloca reads 7 garbage bytes from adjacent memory.
+            let local_ty = ctx.get_local_type(&cap_name).unwrap_or(i64_ty.into());
             let loaded = ctx
                 .builder
-                .build_load(i64_ty, alloca_ptr, &format!("cap_load_{}", i))
+                .build_load(local_ty, alloca_ptr, &format!("cap_load_{}", i))
                 .ok()?;
-            loaded.into_int_value()
+            if local_ty.is_int_type() && local_ty.into_int_type().get_bit_width() < 64 {
+                // Small integer (e.g., Bool=i8): zero-extend to i64
+                ctx.builder
+                    .build_int_z_extend(loaded.into_int_value(), i64_ty, &format!("cap_zext_{}", i))
+                    .ok()?
+            } else if local_ty.is_pointer_type() {
+                // Pointer capture: convert pointer to i64 for env storage.
+                // String cloning happens on the UNPACK side (spawned function context)
+                // where type info is correct.
+                let loaded_ptr = loaded.into_pointer_value();
+                ctx.builder
+                    .build_ptr_to_int(loaded_ptr, i64_ty, &format!("cap_ptoi_{}", i))
+                    .ok()?
+            } else {
+                // i64 or same-width: use directly
+                loaded.into_int_value()
+            }
         } else {
             // REFERENCE CAPTURE: Store pointer to alloca (for ScopeSpawn where parent waits)
             ctx.builder
@@ -581,12 +599,42 @@ pub fn emit_env_unpack<'ctx>(
                     .build_load(i64_ty, field_ptr, &format!("cap_raw_{}", cap_name))
             {
                 if by_value {
-                    // VALUE CAPTURE: loaded_i64 IS the actual value (not a pointer to alloca).
-                    // Create a new alloca in the spawned function and store the value there.
+                    // VALUE CAPTURE: loaded_i64 IS the actual value (zero-extended to i64).
+                    // Create a new alloca matching the variable's real type and truncate.
                     let local_ty = ctx.get_local_type(cap_name).unwrap_or(i64_ty.into());
-                    if let Some(new_alloca) = ctx.alloca_in_entry_block(i64_ty, &format!("cap_local_{}", cap_name)) {
-                        ctx.builder.build_store(new_alloca, loaded_i64.into_int_value()).ok();
-                        ctx.replace_local_ptr(cap_name, new_alloca, local_ty);
+                    if local_ty.is_int_type() && local_ty.into_int_type().get_bit_width() < 64 {
+                        // Small integer (e.g., Bool=i8): truncate i64 → actual type
+                        if let Some(new_alloca) = ctx.alloca_in_entry_block(local_ty, &format!("cap_local_{}", cap_name)) {
+                            if let Ok(truncated) = ctx.builder.build_int_truncate(
+                                loaded_i64.into_int_value(),
+                                local_ty.into_int_type(),
+                                &format!("cap_trunc_{}", cap_name),
+                            ) {
+                                ctx.builder.build_store(new_alloca, truncated).ok();
+                                ctx.replace_local_ptr(cap_name, new_alloca, local_ty);
+                            }
+                        }
+                    } else if local_ty.is_pointer_type() {
+                        // Pointer type: convert i64 back to pointer.
+                        // Safety: The drop insertion pass ensures captured variables are NOT
+                        // freed by the outer function until after the Spawn instruction,
+                        // so the pointer remains valid when the go block unpacks it.
+                        if let Some(new_alloca) = ctx.alloca_in_entry_block(local_ty, &format!("cap_local_{}", cap_name)) {
+                            if let Ok(as_ptr) = ctx.builder.build_int_to_ptr(
+                                loaded_i64.into_int_value(),
+                                local_ty.into_pointer_type(),
+                                &format!("cap_itop_{}", cap_name),
+                            ) {
+                                ctx.builder.build_store(new_alloca, as_ptr).ok();
+                                ctx.replace_local_ptr(cap_name, new_alloca, local_ty);
+                            }
+                        }
+                    } else {
+                        // i64 or same width: store directly
+                        if let Some(new_alloca) = ctx.alloca_in_entry_block(i64_ty, &format!("cap_local_{}", cap_name)) {
+                            ctx.builder.build_store(new_alloca, loaded_i64.into_int_value()).ok();
+                            ctx.replace_local_ptr(cap_name, new_alloca, local_ty);
+                        }
                     }
                 } else {
                     // REFERENCE CAPTURE: loaded_i64 is a pointer to the outer alloca.

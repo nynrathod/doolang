@@ -444,6 +444,15 @@ impl TypeRegistry {
         self.types.keys().copied()
     }
 
+    /// Get a human-readable display name for a TypeId.
+    /// Returns the registered name (e.g., "Int", "Str", "MyStruct") or
+    /// falls back to "T{id}" if the TypeId is unregistered.
+    pub fn display_name(&self, id: TypeId) -> String {
+        self.get(id)
+            .map(|info| info.name.clone())
+            .unwrap_or_else(|| format!("T{}", id.0))
+    }
+
     /// Check if a type is Copy (bitwise copyable)
     pub fn is_copy(&self, id: TypeId) -> bool {
         self.get(id).map(|t| t.is_copy()).unwrap_or(false)

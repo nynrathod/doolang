@@ -1,7 +1,7 @@
 [package]
 name = "doo_ffi_file"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Production-grade file system FFI for Doo programming language"
 
 [lib]

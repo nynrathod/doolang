@@ -1838,13 +1838,30 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Collect free variables from the body — these must be captured
             let captures = super::capture::collect_free_vars(body, builder);
 
+            // Look up actual types for each captured variable from the outer scope.
+            // This is critical: Bool is i8, Int is i64, Str is ptr, etc.
+            // Without this, all captures default to i64 which causes LLVM type mismatches.
+            let captures_with_types: Vec<(String, CoreTypeId)> = captures
+                .iter()
+                .map(|name| {
+                    // Try to find the type from the current function's locals
+                    let type_id = builder.current_func.as_ref()
+                        .and_then(|f| f.locals.iter().find(|l| resolve(l.name) == *name).map(|l| l.type_id))
+                        // Fall back to temp_types (for variables stored as temporaries)
+                        .or_else(|| builder.temp_types.get(&sym(name)).copied())
+                        // Last resort: default to INT (i64)
+                        .unwrap_or(builtin::INT);
+                    (name.clone(), type_id)
+                })
+                .collect();
+
             // Determine capture mode: fire-and-forget Spawn captures by value,
             // ScopeSpawn captures by reference (parent waits, stack stays valid).
             let is_spawn_by_value = builder.scope_stack.is_empty();
 
             builder
                 .pending_closures
-                .push((closure_name.clone(), Vec::new(), body.clone(), captures.clone(), is_spawn_by_value));
+                .push((closure_name.clone(), Vec::new(), body.clone(), captures_with_types, is_spawn_by_value));
             let span = builder.convert_span(expr.span);
 
             // Build capture operands from the outer scope

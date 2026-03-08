@@ -73,8 +73,8 @@ pub enum TypeErrorKind {
     TypeParamCount { expected: usize, found: usize },
     /// Array element has wrong type.
     InvalidArrayElement {
-        expected: TypeId,
-        found: TypeId,
+        expected: String,
+        found: String,
         index: usize,
     },
     /// Map key type invalid.
@@ -460,7 +460,10 @@ impl TypeChecker {
                 let last_returns = func.body.last().map_or(false, |s| Self::stmt_is_return(s));
                 // Also check if the last statement is a value-producing expression
                 // (match, if/else, block) that serves as implicit return
-                let last_is_value = func.body.last().map_or(false, |s| Self::stmt_is_value_expr(s));
+                let last_is_value = func
+                    .body
+                    .last()
+                    .map_or(false, |s| Self::stmt_is_value_expr(s));
                 if !last_returns && !last_is_value && !func.body.is_empty() {
                     self.direct_errors.push(
                         doo_core::errors::codes::CompilerError::new(
@@ -521,10 +524,7 @@ impl TypeChecker {
             HirExprKind::Ok(_) | HirExprKind::Err(_) => true,
             // Match expression → only counts as return if ALL arms return
             HirExprKind::Match { arms, .. } => {
-                !arms.is_empty()
-                    && arms
-                        .iter()
-                        .all(|arm| Self::expr_is_return(&arm.body))
+                !arms.is_empty() && arms.iter().all(|arm| Self::expr_is_return(&arm.body))
             }
             // Block expression — check if its last expression/stmt returns
             HirExprKind::Block { stmts, expr } => {
@@ -680,8 +680,10 @@ impl TypeChecker {
                                         {
                                             self.errors.push(TypeError {
                                                 kind: TypeErrorKind::InvalidArrayElement {
-                                                    expected: expected_elem,
-                                                    found: elem_type,
+                                                    expected: self
+                                                        .registry
+                                                        .display_name(expected_elem),
+                                                    found: self.registry.display_name(elem_type),
                                                     index: i,
                                                 },
                                                 span: elem.span,
@@ -1518,8 +1520,8 @@ impl TypeChecker {
                             if et != builtin::ANY && !self.registry.is_compatible(et, expected) {
                                 self.errors.push(TypeError {
                                     kind: TypeErrorKind::InvalidArrayElement {
-                                        expected,
-                                        found: et,
+                                        expected: self.registry.display_name(expected),
+                                        found: self.registry.display_name(et),
                                         index: i,
                                     },
                                     span: elements[i].span,
@@ -1603,8 +1605,8 @@ impl TypeChecker {
 
                         self.errors.push(TypeError {
                             kind: TypeErrorKind::InvalidArrayElement {
-                                expected: first,
-                                found: et,
+                                expected: self.registry.display_name(first),
+                                found: self.registry.display_name(et),
                                 index: i,
                             },
                             span: elements[i].span,

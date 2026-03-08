@@ -58,6 +58,11 @@ pub struct ModuleLoader {
     stdlib_path: Option<PathBuf>,
     /// Debug mode
     debug: bool,
+    /// Next file_id to assign (main.doo is 0, imports start at 1)
+    next_file_id: u32,
+    /// Registered source files: (file_id, display_name, source_content)
+    /// These must be added to SourceMap after import resolution.
+    imported_sources: Vec<(u32, String, String)>,
 }
 
 impl ModuleLoader {
@@ -67,6 +72,8 @@ impl ModuleLoader {
             cache: HashMap::new(),
             stdlib_path: None,
             debug: env::var("DOO_DEBUG").is_ok(),
+            next_file_id: 1, // 0 is reserved for main.doo
+            imported_sources: Vec::new(),
         }
     }
 
@@ -214,7 +221,14 @@ impl ModuleLoader {
         let source = fs::read_to_string(&module_file)
             .map_err(|e| format!("Failed to read {}: {}", module_file.display(), e))?;
 
-        let mut parser = Parser::new(&source, 0);
+        let file_id = self.allocate_file_id(
+            module_file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(module_key),
+            &source,
+        );
+        let mut parser = Parser::new(&source, file_id);
         let program = parser
             .parse_program()
             .map_err(|e| format!("Failed to parse {}: {}", module_key, e))?;
@@ -237,6 +251,22 @@ impl ModuleLoader {
     /// Clear the module cache.
     pub fn clear_cache(&mut self) {
         self.cache.clear();
+    }
+
+    /// Allocate a unique file_id for an imported module and register its source.
+    /// Returns the assigned file_id.
+    fn allocate_file_id(&mut self, display_name: &str, source: &str) -> u32 {
+        let file_id = self.next_file_id;
+        self.next_file_id += 1;
+        self.imported_sources
+            .push((file_id, display_name.to_string(), source.to_string()));
+        file_id
+    }
+
+    /// Get all imported source files for registration in the SourceMap.
+    /// Returns (file_id, display_name, source) triples sorted by file_id.
+    pub fn imported_sources(&self) -> &[(u32, String, String)] {
+        &self.imported_sources
     }
 }
 
@@ -736,7 +766,8 @@ pub fn resolve_imports(
     > = HashMap::new();
     let mut nested_std_import_order: Vec<String> = Vec::new();
 
-    while let Some((module_path, _path_symbols, import_chain, origin_span)) = pending_modules.pop() {
+    while let Some((module_path, _path_symbols, import_chain, origin_span)) = pending_modules.pop()
+    {
         // Skip if already visited
         let canonical_path = module_path
             .canonicalize()
@@ -759,7 +790,12 @@ pub fn resolve_imports(
             }
         };
 
-        let mut parser = Parser::new(&source, 0);
+        let module_display_name = module_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("module.doo");
+        let file_id = loader.allocate_file_id(module_display_name, &source);
+        let mut parser = Parser::new(&source, file_id);
         let module_program = match parser.parse_program() {
             Ok(p) => p,
             Err(e) => {
@@ -838,10 +874,14 @@ pub fn resolve_imports(
                             if nested_import.wildcard {
                                 symbols.insert("*".to_string(), (None, nested_import.span));
                             } else {
-                                symbols.insert(sym, (nested_import.alias.clone(), nested_import.span));
+                                symbols
+                                    .insert(sym, (nested_import.alias.clone(), nested_import.span));
                             }
                         } else if nested_import.alias.is_some() {
-                            symbols.insert("*".to_string(), (nested_import.alias.clone(), nested_import.span));
+                            symbols.insert(
+                                "*".to_string(),
+                                (nested_import.alias.clone(), nested_import.span),
+                            );
                         } else if nested_import.wildcard {
                             symbols.insert("*".to_string(), (None, nested_import.span));
                         } else if nested_import.items.is_empty() {
@@ -853,7 +893,10 @@ pub fn resolve_imports(
                                         symbols.insert(name.clone(), (None, nested_import.span));
                                     }
                                     ImportItem::Alias { name, alias } => {
-                                        symbols.insert(name.clone(), (Some(alias.clone()), nested_import.span));
+                                        symbols.insert(
+                                            name.clone(),
+                                            (Some(alias.clone()), nested_import.span),
+                                        );
                                     }
                                     ImportItem::Wildcard => {
                                         symbols.insert("*".to_string(), (None, nested_import.span));
@@ -1158,8 +1201,9 @@ pub fn resolve_imports(
 
                         let is_explicitly_requested = requested.contains_key(&f.name);
 
-                        let is_wanted =
-                            import_all || is_explicitly_requested || is_associated_with_imported_type;
+                        let is_wanted = import_all
+                            || is_explicitly_requested
+                            || is_associated_with_imported_type;
 
                         let func_key = if let Some(ref assoc_type) = f.associated_type {
                             format!("{}.{}", assoc_type, f.name)
@@ -1167,7 +1211,9 @@ pub fn resolve_imports(
                             f.name.clone()
                         };
 
-                        if (is_explicitly_requested || is_public || is_associated_with_imported_type)
+                        if (is_explicitly_requested
+                            || is_public
+                            || is_associated_with_imported_type)
                             && is_wanted
                             && !imported_names.contains(&func_key)
                         {
@@ -1196,11 +1242,7 @@ pub fn resolve_imports(
                             import_all || requested.contains_key(&s.name) || is_primary_struct;
                         if is_wanted && !imported_names.contains(&s.name) {
                             if debug {
-                                doo_debug!(
-                                    "LOADER",
-                                    "  Importing nested-std struct: {}",
-                                    s.name
-                                );
+                                doo_debug!("LOADER", "  Importing nested-std struct: {}", s.name);
                             }
                             imported_names.insert(s.name.clone());
                             result.items.push(item.clone());
@@ -1210,11 +1252,7 @@ pub fn resolve_imports(
                         let is_wanted = import_all || requested.contains_key(&e.name);
                         if is_wanted && !imported_names.contains(&e.name) {
                             if debug {
-                                doo_debug!(
-                                    "LOADER",
-                                    "  Importing nested-std enum: {}",
-                                    e.name
-                                );
+                                doo_debug!("LOADER", "  Importing nested-std enum: {}", e.name);
                             }
                             imported_names.insert(e.name.clone());
                             result.items.push(item.clone());

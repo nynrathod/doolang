@@ -295,11 +295,13 @@ impl<'a> DropInserter<'a> {
             HirExprKind::Await(inner) => {
                 self.scan_expr_for_uses(inner);
             }
-            HirExprKind::Spawn { .. } => {
-                // Do NOT recurse into spawn bodies.
-                // Spawn bodies are built as separate MIR functions with their own scope.
-                // Traversing into them would treat spawn-local variables as outer variables,
-                // causing invalid Drop insertions in the outer function.
+            HirExprKind::Spawn { body } => {
+                // Do NOT fully recurse into spawn bodies — they have their own scope.
+                // BUT we MUST scan for outer-scope variable references so that
+                // captured variables aren't dropped before the Spawn instruction.
+                // Without this, the drop inserter frees captured structs (e.g., db)
+                // before the go block starts, causing use-after-free.
+                self.scan_spawn_body_for_outer_uses(body);
             }
             HirExprKind::ScopeBlock { stmts } => {
                 for s in stmts {
@@ -308,6 +310,140 @@ impl<'a> DropInserter<'a> {
             }
 
             HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
+        }
+    }
+
+    /// Scan a Spawn body for outer-scope Local references to extend last_use.
+    /// Only updates `last_use` — does NOT add to `needs_drop` (spawn-local
+    /// variables have their own scope and should not be dropped in the outer function).
+    fn scan_spawn_body_for_outer_uses(&mut self, expr: &HirExpr) {
+        match &expr.kind {
+            HirExprKind::Local { name } => {
+                // Only update if already known (outer-scope variable).
+                // This avoids adding spawn-internal variables to last_use.
+                if self.needs_drop.contains(name) || self.last_use.contains_key(name) {
+                    self.last_use.insert(name.clone(), self.current_idx);
+                    self.last_use_span.insert(name.clone(), expr.span);
+                }
+            }
+            HirExprKind::BinOp { lhs, rhs, .. } => {
+                self.scan_spawn_body_for_outer_uses(lhs);
+                self.scan_spawn_body_for_outer_uses(rhs);
+            }
+            HirExprKind::UnaryOp { operand, .. } => {
+                self.scan_spawn_body_for_outer_uses(operand);
+            }
+            HirExprKind::Call { func, args } => {
+                self.scan_spawn_body_for_outer_uses(func);
+                for a in args { self.scan_spawn_body_for_outer_uses(a); }
+            }
+            HirExprKind::MethodCall { receiver, args, .. } => {
+                self.scan_spawn_body_for_outer_uses(receiver);
+                for a in args { self.scan_spawn_body_for_outer_uses(a); }
+            }
+            HirExprKind::Field { object, .. } => {
+                self.scan_spawn_body_for_outer_uses(object);
+            }
+            HirExprKind::Index { object, index } => {
+                self.scan_spawn_body_for_outer_uses(object);
+                self.scan_spawn_body_for_outer_uses(index);
+            }
+            HirExprKind::Array(elems) | HirExprKind::Tuple(elems) => {
+                for e in elems { self.scan_spawn_body_for_outer_uses(e); }
+            }
+            HirExprKind::Map(entries) => {
+                for (k, v) in entries {
+                    self.scan_spawn_body_for_outer_uses(k);
+                    self.scan_spawn_body_for_outer_uses(v);
+                }
+            }
+            HirExprKind::Struct { fields, .. } => {
+                for (_, v) in fields { self.scan_spawn_body_for_outer_uses(v); }
+            }
+            HirExprKind::EnumVariant { payload, .. } => {
+                for p in payload { self.scan_spawn_body_for_outer_uses(p); }
+            }
+            HirExprKind::If { condition, then_expr, else_expr } => {
+                self.scan_spawn_body_for_outer_uses(condition);
+                self.scan_spawn_body_for_outer_uses(then_expr);
+                if let Some(e) = else_expr { self.scan_spawn_body_for_outer_uses(e); }
+            }
+            HirExprKind::Block { stmts, expr } => {
+                for s in stmts { self.scan_spawn_stmt_for_outer_uses(s); }
+                if let Some(e) = expr { self.scan_spawn_body_for_outer_uses(e); }
+            }
+            HirExprKind::Match { values, arms } => {
+                for v in values { self.scan_spawn_body_for_outer_uses(v); }
+                for arm in arms {
+                    if let Some(g) = &arm.guard { self.scan_spawn_body_for_outer_uses(g); }
+                    self.scan_spawn_body_for_outer_uses(&arm.body);
+                }
+            }
+            HirExprKind::Range { start, end, .. } => {
+                self.scan_spawn_body_for_outer_uses(start);
+                self.scan_spawn_body_for_outer_uses(end);
+            }
+            HirExprKind::Ok(inner) | HirExprKind::Err(inner) | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner) | HirExprKind::Clone(inner)
+            | HirExprKind::Borrow { expr: inner, .. } | HirExprKind::Await(inner)
+            | HirExprKind::Spread(inner) => {
+                self.scan_spawn_body_for_outer_uses(inner);
+            }
+            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+                self.scan_spawn_body_for_outer_uses(inner);
+                self.scan_spawn_body_for_outer_uses(message);
+            }
+            HirExprKind::Cast { value, .. } => {
+                self.scan_spawn_body_for_outer_uses(value);
+            }
+            HirExprKind::RouteBlock { routes } => {
+                for r in routes { self.scan_spawn_body_for_outer_uses(r); }
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for s in stmts { self.scan_spawn_stmt_for_outer_uses(s); }
+            }
+            // Don't recurse into nested spawns/closures
+            HirExprKind::Spawn { .. } | HirExprKind::Closure { .. } => {}
+            HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
+        }
+    }
+
+    /// Scan a statement inside a Spawn body for outer-scope uses.
+    /// Does NOT add to needs_drop — spawn-local variables are the spawn's responsibility.
+    fn scan_spawn_stmt_for_outer_uses(&mut self, stmt: &HirStmt) {
+        match &stmt.kind {
+            HirStmtKind::Let { value, .. } => {
+                self.scan_spawn_body_for_outer_uses(value);
+            }
+            HirStmtKind::TupleLet { value, .. } => {
+                self.scan_spawn_body_for_outer_uses(value);
+            }
+            HirStmtKind::Assign { target, value } => {
+                self.scan_spawn_body_for_outer_uses(target);
+                self.scan_spawn_body_for_outer_uses(value);
+            }
+            HirStmtKind::Expr(e) => {
+                self.scan_spawn_body_for_outer_uses(e);
+            }
+            HirStmtKind::Return(exprs) => {
+                for e in exprs { self.scan_spawn_body_for_outer_uses(e); }
+            }
+            HirStmtKind::If { condition, then_block, else_block } => {
+                self.scan_spawn_body_for_outer_uses(condition);
+                for s in then_block { self.scan_spawn_stmt_for_outer_uses(s); }
+                if let Some(stmts) = else_block {
+                    for s in stmts { self.scan_spawn_stmt_for_outer_uses(s); }
+                }
+            }
+            HirStmtKind::While { condition, body, increment } => {
+                self.scan_spawn_body_for_outer_uses(condition);
+                for s in body { self.scan_spawn_stmt_for_outer_uses(s); }
+                for s in increment { self.scan_spawn_stmt_for_outer_uses(s); }
+            }
+            HirStmtKind::ManualErrorExtract { expr, .. } => {
+                self.scan_spawn_body_for_outer_uses(expr);
+            }
+            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}
         }
     }
 

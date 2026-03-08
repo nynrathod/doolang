@@ -27,7 +27,7 @@ use std::panic;
 use doo_ffi_core::helpers::{c_to_string_lossy, make_ok_string, make_ok_void};
 use doo_ffi_core::result::DooResult;
 
-use git2::{Repository, Signature, StatusOptions};
+use git2::{Cred, PushOptions, RemoteCallbacks, Repository, Signature, StatusOptions};
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -216,6 +216,95 @@ pub extern "C" fn doo_git_push(
             Ok(_) => make_ok_void(),
             Err(e) => make_err(&format!("git push failed: {}", e)),
         }
+    });
+    result.unwrap_or_else(|_| make_panic_err())
+}
+
+// ============================================================================
+// doo_git_force_push — Force push to remote (overwrites remote history)
+// ============================================================================
+
+/// Force push the current branch to the specified remote.
+/// Uses `+` refspec prefix to force-update the remote branch.
+/// Needed when local and remote histories diverge (e.g., fresh init vs remote README).
+#[no_mangle]
+pub extern "C" fn doo_git_force_push(
+    path: *const c_char,
+    remote_name: *const c_char,
+    branch: *const c_char,
+) -> *mut DooResult {
+    let result = panic::catch_unwind(|| {
+        let path_str = c_to_string_lossy(path);
+        let remote_str = c_to_string_lossy(remote_name);
+        let branch_str = c_to_string_lossy(branch);
+
+        let repo = match Repository::open(&path_str) {
+            Ok(r) => r,
+            Err(e) => return make_err(&format!("git open failed: {}", e)),
+        };
+
+        let mut remote = match repo.find_remote(&remote_str) {
+            Ok(r) => r,
+            Err(e) => return make_err(&format!("git find remote '{}' failed: {}", remote_str, e)),
+        };
+
+        // '+' prefix = force push (like git push --force)
+        let refspec = format!("+refs/heads/{}:refs/heads/{}", branch_str, branch_str);
+        match remote.push(&[&refspec], None) {
+            Ok(_) => make_ok_void(),
+            Err(e) => make_err(&format!("git force push failed: {}", e)),
+        }
+    });
+    result.unwrap_or_else(|_| make_panic_err())
+}
+
+// ============================================================================
+// doo_git_push_with_token — Push to remote with token authentication
+// ============================================================================
+
+/// Push the current branch using a token for HTTPS authentication.
+/// For GitHub: username = "x-access-token", token = OAuth/PAT token.
+/// For other providers: username/token as appropriate.
+#[no_mangle]
+pub extern "C" fn doo_git_push_with_token(
+    path: *const c_char,
+    remote_name: *const c_char,
+    branch: *const c_char,
+    username: *const c_char,
+    token: *const c_char,
+) -> *mut DooResult {
+    let result = panic::catch_unwind(|| {
+        let path_str = c_to_string_lossy(path);
+        let remote_str = c_to_string_lossy(remote_name);
+        let branch_str = c_to_string_lossy(branch);
+        let username_str = c_to_string_lossy(username);
+        let token_str = c_to_string_lossy(token);
+
+        let repo = match Repository::open(&path_str) {
+            Ok(r) => r,
+            Err(e) => return make_err(&format!("git open failed: {}", e)),
+        };
+
+        let mut remote = match repo.find_remote(&remote_str) {
+            Ok(r) => r,
+            Err(e) => return make_err(&format!("git find remote '{}' failed: {}", remote_str, e)),
+        };
+
+        // Set up credential callback for token-based auth
+        let mut callbacks = RemoteCallbacks::new();
+        callbacks.credentials(move |_url, _username_from_url, _allowed_types| {
+            Cred::userpass_plaintext(&username_str, &token_str)
+        });
+
+        let mut push_options = PushOptions::new();
+        push_options.remote_callbacks(callbacks);
+
+        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_str, branch_str);
+        let res = match remote.push(&[&refspec], Some(&mut push_options)) {
+            Ok(_) => make_ok_void(),
+            Err(e) => make_err(&format!("git push failed: {}", e)),
+        };
+        res
     });
     result.unwrap_or_else(|_| make_panic_err())
 }
@@ -423,6 +512,45 @@ pub extern "C" fn doo_git_has_remote(path: *const c_char) -> i32 {
         }
     });
     result.unwrap_or(0i32)
+}
+
+// ============================================================================
+// doo_git_add_remote — Add or update a remote for a repository
+// ============================================================================
+
+/// Add a remote with the given name and URL to the repository.
+/// If the remote already exists, update its URL instead.
+/// Returns DooResult Ok(void) on success, Err on failure.
+#[no_mangle]
+pub extern "C" fn doo_git_add_remote(
+    path: *const c_char,
+    name: *const c_char,
+    url: *const c_char,
+) -> *mut DooResult {
+    let result = panic::catch_unwind(|| {
+        let path_str = c_to_string_lossy(path);
+        let name_str = c_to_string_lossy(name);
+        let url_str = c_to_string_lossy(url);
+
+        let repo = match Repository::open(&path_str) {
+            Ok(r) => r,
+            Err(e) => return make_err(&format!("git open failed: {}", e)),
+        };
+
+        // Try to add; if remote exists, update URL instead
+        let res = match repo.remote(&name_str, &url_str) {
+            Ok(_remote) => make_ok_void(),
+            Err(_) => {
+                // Remote already exists — update its URL
+                match repo.remote_set_url(&name_str, &url_str) {
+                    Ok(_) => make_ok_void(),
+                    Err(e) => make_err(&format!("git remote set-url failed: {}", e)),
+                }
+            }
+        };
+        res
+    });
+    result.unwrap_or_else(|_| make_panic_err())
 }
 
 // ============================================================================

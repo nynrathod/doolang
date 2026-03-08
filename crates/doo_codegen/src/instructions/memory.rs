@@ -291,7 +291,7 @@ fn emit_deep_clone<'ctx>(
 
 /// Clone a string (null-terminated C string).
 /// Allocates new buffer with strlen + 1, copies bytes including null terminator.
-fn clone_string<'ctx>(
+pub(crate) fn clone_string<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
 ) -> Option<inkwell::values::PointerValue<'ctx>> {

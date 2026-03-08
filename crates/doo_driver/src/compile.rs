@@ -329,7 +329,17 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("main.doo");
-    source_map.add_file(main_filename, &source);
+    source_map.add_file(main_filename, &source); // file_id = 0
+
+    // Register all imported module sources in the SourceMap.
+    // The loader assigns file_ids starting from 1, and SourceMap.add_file()
+    // returns sequential indices. We must add them in file_id order so indices match.
+    let mut imported = loader.imported_sources().to_vec();
+    imported.sort_by_key(|(fid, _, _)| *fid);
+    for (expected_id, name, src) in &imported {
+        let actual_id = source_map.add_file(name, src);
+        debug_assert_eq!(actual_id, *expected_id, "file_id mismatch for {}", name);
+    }
 
     let mut hir = hir; // Make HIR mutable for drop insertion
     let mut analysis_errors: Vec<CompilerError> = Vec::new();
