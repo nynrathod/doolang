@@ -198,7 +198,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     if !is_valid_email(&email) {
         ffi_debug!("AUTH", "Error: Invalid email format: {}", email);
         return make_err_http(
-            400,
+            422,
             "Invalid email format. Email must be in format: name@domain.tld",
         );
     }

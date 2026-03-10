@@ -1001,41 +1001,27 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         .into_pointer_value();
 
                     // Convert the pointer back to the expected type
-                    // For scalars, value_to_ptr encoded them via inttoptr, so we reverse with ptrtoint
+                    // value_to_ptr heap-boxes scalars: malloc(8) + store, so we load from pointer
                     let final_value: BasicValueEnum = match expected_type {
                         Some(type_id) if *type_id == builtin::INT => {
-                            // Convert pointer back to i64 using ptrtoint
+                            // Load i64 from heap-boxed pointer
                             ctx.builder
-                                .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_int")
+                                .build_load(ctx.i64_type(), value_ptr, "unbox_int")
                                 .ok()?
-                                .into()
                         }
                         Some(type_id) if *type_id == builtin::FLOAT => {
-                            // Convert pointer to float (reverse of value_to_ptr)
-                            let i64_val = ctx
-                                .builder
-                                .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
-                                .ok()?;
-                            let tmp = ctx.alloca_in_entry_block(ctx.i64_type(), "f_tmp")?;
-                            ctx.builder.build_store(tmp, i64_val).ok()?;
-                            let f_ptr = ctx
-                                .builder
-                                .build_pointer_cast(
-                                    tmp,
-                                    ctx.context.ptr_type(inkwell::AddressSpace::default()),
-                                    "f_ptr",
-                                )
-                                .ok()?;
+                            // Load f64 from heap-boxed pointer
                             ctx.builder
-                                .build_load(ctx.f64_type(), f_ptr, "f_val")
+                                .build_load(ctx.f64_type(), value_ptr, "unbox_float")
                                 .ok()?
                         }
                         Some(type_id) if *type_id == builtin::BOOL => {
-                            // Convert pointer back to bool
+                            // Load i64 from heap-boxed pointer, then truncate to bool
                             let i64_val = ctx
                                 .builder
-                                .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
-                                .ok()?;
+                                .build_load(ctx.i64_type(), value_ptr, "unbox_bool_i64")
+                                .ok()?
+                                .into_int_value();
                             ctx.builder
                                 .build_int_truncate(i64_val, ctx.bool_type(), "to_bool")
                                 .ok()?
@@ -1211,7 +1197,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 if is_scalar_ok {
                     // === SCALAR VALUE PATH ===
                     // For scalar ok types (Int, Float, Bool), we MUST extract actual values
-                    // because Result stores scalars as inttoptr(value).
+                    // because value_to_ptr heap-boxes scalars: malloc(8) + store.
                     // This applies whether error is captured or ignored.
 
                     let ok_llvm_type = ctx.get_llvm_type(*ok_type);
@@ -1219,38 +1205,24 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     // === Ok path ===
                     ctx.builder.position_at_end(ok_block);
 
-                    // Convert pointer to value (same logic as UnwrapOk)
+                    // Load value from heap-boxed pointer (same logic as UnwrapOk)
                     let ok_extracted_val: BasicValueEnum = if is_int {
-                        // Convert pointer back to i64 using ptrtoint
+                        // Load i64 from heap-boxed pointer
                         ctx.builder
-                            .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_int")
+                            .build_load(ctx.i64_type(), value_ptr, "unbox_int")
                             .ok()?
-                            .into()
                     } else if is_float {
-                        // Convert pointer to float (reverse of value_to_ptr)
-                        let i64_val = ctx
-                            .builder
-                            .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
-                            .ok()?;
-                        let tmp = ctx.alloca_in_entry_block(ctx.i64_type(), "f_tmp")?;
-                        ctx.builder.build_store(tmp, i64_val).ok()?;
-                        let f_ptr = ctx
-                            .builder
-                            .build_pointer_cast(
-                                tmp,
-                                ctx.context.ptr_type(inkwell::AddressSpace::default()),
-                                "f_ptr",
-                            )
-                            .ok()?;
+                        // Load f64 from heap-boxed pointer
                         ctx.builder
-                            .build_load(ctx.f64_type(), f_ptr, "f_val")
+                            .build_load(ctx.f64_type(), value_ptr, "unbox_float")
                             .ok()?
                     } else {
-                        // Bool: Convert pointer back to bool
+                        // Bool: Load i64 from heap-boxed pointer, then truncate to bool
                         let i64_val = ctx
                             .builder
-                            .build_ptr_to_int(value_ptr, ctx.i64_type(), "ptr_to_i64")
-                            .ok()?;
+                            .build_load(ctx.i64_type(), value_ptr, "unbox_bool_i64")
+                            .ok()?
+                            .into_int_value();
                         ctx.builder
                             .build_int_truncate(i64_val, ctx.bool_type(), "to_bool")
                             .ok()?

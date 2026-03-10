@@ -161,17 +161,17 @@ pub(super) fn emit_print_value<'ctx>(
                 }
             }
         } else if val.is_pointer_value() {
-            // Pointer holding a bool (e.g., from ManualErrorExtract) — convert ptr→i64→i1
+            // Pointer holding a bool (e.g., from ManualErrorExtract) — load from heap-boxed ptr
             let i64_val = ctx
                 .builder
-                .build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64")
+                .build_load(ctx.i64_type(), val.into_pointer_value(), "unbox_bool_i64")
                 .ok();
             if let Some(i64_val) = i64_val {
                 let is_true = ctx
                     .builder
                     .build_int_compare(
                         IntPredicate::NE,
-                        i64_val,
+                        i64_val.into_int_value(),
                         ctx.i64_type().const_zero(),
                         "is_true",
                     )
@@ -199,30 +199,13 @@ pub(super) fn emit_print_value<'ctx>(
         if val.is_float_value() {
             emit_print_float_ryu(ctx, printf, val, newline);
         } else if val.is_pointer_value() {
-            // Pointer holding a float (e.g., from ManualErrorExtract) — convert ptr→i64→f64
-            let i64_val = ctx
+            // Pointer holding a float (e.g., from ManualErrorExtract) — load from heap-boxed ptr
+            let f_val = ctx
                 .builder
-                .build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_i64")
+                .build_load(ctx.f64_type(), val.into_pointer_value(), "unbox_float")
                 .ok();
-            if let Some(i64_val) = i64_val {
-                let tmp = ctx.alloca_in_entry_block(ctx.i64_type(), "f_tmp");
-                if let Some(tmp) = tmp {
-                    ctx.builder.build_store(tmp, i64_val).ok();
-                    let f_ptr = ctx
-                        .builder
-                        .build_pointer_cast(
-                            tmp,
-                            ctx.context.ptr_type(inkwell::AddressSpace::default()),
-                            "f_ptr",
-                        )
-                        .ok();
-                    if let Some(f_ptr) = f_ptr {
-                        let f_val = ctx.builder.build_load(ctx.f64_type(), f_ptr, "f_val").ok();
-                        if let Some(f_val) = f_val {
-                            emit_print_float_ryu(ctx, printf, f_val, newline);
-                        }
-                    }
-                }
+            if let Some(f_val) = f_val {
+                emit_print_float_ryu(ctx, printf, f_val, newline);
             }
         }
         return;
@@ -257,10 +240,10 @@ pub(super) fn emit_print_value<'ctx>(
                 doo_debug!("CODEGEN", "emit_print_value INT: i64 extend failed");
             }
         } else if val.is_pointer_value() {
-            // Pointer holding an int (e.g., from ManualErrorExtract) — convert ptr→i64
+            // Pointer holding an int (e.g., from ManualErrorExtract) — load from heap-boxed ptr
             let i64v = ctx
                 .builder
-                .build_ptr_to_int(val.into_pointer_value(), ctx.i64_type(), "ptr_to_int")
+                .build_load(ctx.i64_type(), val.into_pointer_value(), "unbox_int")
                 .ok();
             if let Some(i64v) = i64v {
                 let fmt = if newline { "%lld\n" } else { "%lld" };

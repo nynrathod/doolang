@@ -1043,19 +1043,23 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             if ws_routes > 0 {
                 println!("  WebSocket Routes:     {}", ws_routes);
             }
-            // if crate::middleware::is_logger_enabled() {
-            //     let cfg = crate::middleware::get_frozen_logger().unwrap();
-            //     let mut levels = Vec::new();
-            //     if cfg.info { levels.push("Info"); }
-            //     if cfg.warn { levels.push("Warn"); }
-            //     if cfg.error { levels.push("Error"); }
-            //     println!("  Logger:               {}", levels.join(", "));
-            // }
+            if crate::middleware::is_logger_enabled() {
+                if let Some(cfg) = crate::middleware::get_frozen_logger() {
+                    let mut levels = Vec::new();
+                    if cfg.info { levels.push("Info"); }
+                    if cfg.warn { levels.push("Warn"); }
+                    if cfg.error { levels.push("Error"); }
+                    println!("  Logger:               {}", levels.join(", "));
+                }
+            }
             println!("  Process ID:           {}", std::process::id());
             // println!("  Max Connections:      {}", max_connections);
             // println!("  Max Body Size:        {} bytes", MAX_BODY_SIZE.load(Ordering::Relaxed));
             // println!("  Request Timeout:      {} ms", REQUEST_TIMEOUT_MS.load(Ordering::Relaxed));
             println!("-------------------------------------------");
+            // Explicit flush to ensure banner is written to redirected stdout (e.g., server.log)
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
         }
         // Always print the server started line (useful for container health checks)
         eprintln!("[Doo] Server started on http://{}:{} (pid={})", addr.ip(), port, std::process::id());

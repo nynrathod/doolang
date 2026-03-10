@@ -271,18 +271,26 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
             let elem_type = &return_type[1..return_type.len() - 1];
             let filtered =
                 filter_response_json_by_layout(&json_str, elem_type, &metadata.struct_layouts);
-            return string_to_c(&filtered);
+            // Wrap in standard {"data": ...} envelope — consistent with CRUD handlers
+            let mut envelope = String::with_capacity(filtered.len() + 10);
+            envelope.push_str("{\"data\":");
+            envelope.push_str(&filtered);
+            envelope.push('}');
+            return string_to_c(&envelope);
         }
     }
 
     // Serialize struct directly to buffer — no serde_json::Value intermediary
     let mut buf = Vec::with_capacity(128);
+    // Wrap in standard {"data": ...} envelope — consistent with CRUD handlers
+    buf.extend_from_slice(b"{\"data\":");
     write_struct_to_buf(
         &mut buf,
         struct_ptr as *const u8,
         return_type,
         &metadata.struct_layouts,
     );
+    buf.push(b'}');
     bytes_to_c(&buf)
 }
 
