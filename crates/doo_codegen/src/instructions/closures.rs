@@ -139,7 +139,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                         };
                         let idx_i64 = i64_type.const_int(idx as u64, false);
                         let slot = unsafe {
-                            ctx.builder.build_in_bounds_gep(
+                            ctx.builder.build_gep(
                                 i64_type,
                                 env_i64_ptr,
                                 &[idx_i64],

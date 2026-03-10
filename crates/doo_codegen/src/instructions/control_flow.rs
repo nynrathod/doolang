@@ -101,21 +101,19 @@ fn emit_panic_with_value<'ctx>(ctx: &mut CodegenContext<'ctx>, message: BasicVal
         .builder
         .build_call(fflush_fn, &[null_ptr.into()], "flush_before_exit");
 
-    // Get or declare exit
-    let exit_type = ctx
-        .context
-        .void_type()
-        .fn_type(&[ctx.i32_type().into()], false);
-    let exit_fn = ctx
-        .module
-        .get_function(ffi_names::EXIT)
-        .unwrap_or_else(|| ctx.module.add_function(ffi_names::EXIT, exit_type, None));
+    // Drop all tracked local variables before exit to prevent memory leaks.
+    // Collect variable names first to avoid borrow conflict with ctx.
+    let tracked_vars: Vec<String> = ctx.variable_types.keys().cloned().collect();
+    for var_name in &tracked_vars {
+        super::memory::emit_drop(ctx, var_name);
+    }
 
-    // Exit with code 1
+    // Use __doo_abort() instead of exit() directly — see get_or_create_doo_abort docs.
+    let abort_fn = ctx.get_or_create_doo_abort();
     let exit_code = ctx.i32_type().const_int(1, false);
     let _ = ctx
         .builder
-        .build_call(exit_fn, &[exit_code.into()], "exit_on_panic");
+        .build_call(abort_fn, &[exit_code.into()], "abort_on_panic");
 
     // Don't emit unreachable here - let MirTerminator::Unreachable handle it
 }

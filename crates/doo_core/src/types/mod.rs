@@ -15,14 +15,16 @@
 //! - `composite`: Struct, Enum, Function
 //! - `registry`: TypeRegistry - the central type store
 
-pub mod primitive;
 pub mod collection;
 pub mod composite;
-pub mod registry;
 pub mod display;
+pub mod primitive;
+pub mod registry;
 
 // Re-export key types from each module
-pub use primitive::PrimitiveType;
 pub use collection::CollectionType;
-pub use composite::{CompositeType, StructDef, EnumDef, FunctionType, FieldDef, VariantDef, DecoratorDef};
-pub use registry::{TypeRegistry, TypeKind, TypeId, builtin};
+pub use composite::{
+    CompositeType, DecoratorDef, EnumDef, FieldDef, FunctionType, StructDef, VariantDef,
+};
+pub use primitive::PrimitiveType;
+pub use registry::{builtin, TargetDataLayout, TypeId, TypeKind, TypeRegistry};

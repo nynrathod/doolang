@@ -15,6 +15,68 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ============================================================================
+// Target Data Layout
+// ============================================================================
+
+/// Platform-specific type sizes and alignment info.
+/// Used for correct ABI computation across different targets.
+#[derive(Debug, Clone, Copy)]
+pub struct TargetDataLayout {
+    /// Pointer size in bytes (4 for 32-bit, 8 for 64-bit)
+    pub pointer_size: usize,
+    /// i64 size in bytes (always 8)
+    pub i64_size: usize,
+    /// f64 size in bytes (always 8)
+    pub f64_size: usize,
+    /// Natural alignment in bytes
+    pub alignment: usize,
+}
+
+impl TargetDataLayout {
+    /// Create layout for 64-bit targets (x86_64, aarch64)
+    pub fn x86_64() -> Self {
+        Self {
+            pointer_size: 8,
+            i64_size: 8,
+            f64_size: 8,
+            alignment: 8,
+        }
+    }
+
+    /// Create layout for 32-bit targets (wasm32, arm32)
+    pub fn wasm32() -> Self {
+        Self {
+            pointer_size: 4,
+            i64_size: 8,
+            f64_size: 8,
+            alignment: 4,
+        }
+    }
+
+    /// Detect layout for the current compilation target.
+    pub fn for_current_target() -> Self {
+        // Check if a cross-compilation target is set
+        if let Ok(target) = std::env::var("DOO_TARGET") {
+            if target.contains("wasm32") || target.contains("arm32") || target.contains("i686") {
+                return Self::wasm32();
+            }
+        }
+        // Default to host architecture
+        if cfg!(target_pointer_width = "32") {
+            Self::wasm32()
+        } else {
+            Self::x86_64()
+        }
+    }
+}
+
+impl Default for TargetDataLayout {
+    fn default() -> Self {
+        Self::for_current_target()
+    }
+}
+
+// ============================================================================
 // Type IDs
 // ============================================================================
 
@@ -157,25 +219,30 @@ impl TypeInfo {
         !self.is_copy()
     }
 
-    /// Get size in bytes (for ABI)
+    /// Get size in bytes (for ABI) — assumes 64-bit target.
     pub fn size_bytes(&self) -> usize {
+        self.size_bytes_for_target(&TargetDataLayout::x86_64())
+    }
+
+    /// Get size in bytes for a specific target architecture.
+    pub fn size_bytes_for_target(&self, target: &TargetDataLayout) -> usize {
         match &self.kind {
             TypeKind::Void => 0,
             TypeKind::Bool => 1,
-            TypeKind::Int => 8,
-            TypeKind::Float => 8,
-            TypeKind::Str => 16,                                 // ptr + len
-            TypeKind::Array { .. } => 24,                        // ptr + len + cap
-            TypeKind::Map { .. } => 8,                           // ptr to hashmap
-            TypeKind::Optional { .. } => 16,                     // tag + value
-            TypeKind::Result { .. } => 24,                       // tag + ok + err
-            TypeKind::Tuple { elements } => elements.len() * 8,  // Simplified
-            TypeKind::Struct { fields, .. } => fields.len() * 8, // Simplified
-            TypeKind::Enum { .. } => 16,                         // tag + max payload
-            TypeKind::Function { .. } => 8,                      // function pointer
-            TypeKind::TypeRef { .. } => 8,                       // Will be resolved
-            TypeKind::Any => 16,                                 // tag + ptr
-            TypeKind::Error => 16,                               // ptr + len
+            TypeKind::Int => target.i64_size,
+            TypeKind::Float => target.f64_size,
+            TypeKind::Str => target.pointer_size * 2, // ptr + len
+            TypeKind::Array { .. } => target.pointer_size * 2 + target.i64_size, // ptr + len + cap
+            TypeKind::Map { .. } => target.pointer_size, // ptr to hashmap
+            TypeKind::Optional { .. } => target.alignment + target.pointer_size, // tag + value
+            TypeKind::Result { .. } => target.alignment + target.pointer_size * 2, // tag + ok + err
+            TypeKind::Tuple { elements } => elements.len() * target.alignment,
+            TypeKind::Struct { fields, .. } => fields.len() * target.alignment,
+            TypeKind::Enum { .. } => target.alignment + target.pointer_size, // tag + max payload
+            TypeKind::Function { .. } => target.pointer_size,                // function pointer
+            TypeKind::TypeRef { .. } => target.pointer_size,                 // Will be resolved
+            TypeKind::Any => target.alignment + target.pointer_size,         // tag + ptr
+            TypeKind::Error => target.pointer_size * 2,                      // ptr + len
         }
     }
 

@@ -122,7 +122,7 @@ fn emit_int_method<'ctx>(
             // Null terminate
             let null_ptr = unsafe {
                 ctx.builder
-                    .build_in_bounds_gep(
+                    .build_gep(
                         ctx.context.i8_type(),
                         ptr,
                         &[ctx.context.i64_type().const_int(1, false)],

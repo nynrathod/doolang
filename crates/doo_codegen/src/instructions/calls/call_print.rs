@@ -36,8 +36,7 @@ fn emit_print_float_ryu<'ctx>(
         .get_function(ffi_names::DOO_FREE)
         .unwrap_or_else(|| {
             let fn_ty = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
-            ctx.module
-                .add_function(ffi_names::DOO_FREE, fn_ty, None)
+            ctx.module.add_function(ffi_names::DOO_FREE, fn_ty, None)
         });
 
     // Call doo_format_float(val) → str_ptr
@@ -91,10 +90,12 @@ pub(super) fn emit_print_value<'ctx>(
             return;
         } else if val.is_pointer_value() {
             // Pointer - assume string (most common case for ANY)
+            // Null-coerce to prevent printf("%s", null) UB
+            let safe_str = crate::utils::null_coerce_str(ctx, val.into_pointer_value());
             let fmt = if newline { "%s\n" } else { "%s" };
             let fmt = ctx.const_string(fmt);
             ctx.builder
-                .build_call(printf, &[fmt.into(), val.into()], "print_str")
+                .build_call(printf, &[fmt.into(), safe_str.into()], "print_str")
                 .ok();
             return;
         }
@@ -103,6 +104,8 @@ pub(super) fn emit_print_value<'ctx>(
 
     if type_id == builtin::STR {
         if val.is_pointer_value() {
+            // Null-coerce string before printing to prevent printf("%s", null) UB
+            let safe_str = crate::utils::null_coerce_str(ctx, val.into_pointer_value());
             if quote_strings {
                 // Print string with surrounding quotes for collection display
                 let open_quote = ctx.const_string("\"");
@@ -116,7 +119,7 @@ pub(super) fn emit_print_value<'ctx>(
                     .build_call(printf, &[fmt.into(), open_quote.into()], "print_quote_open")
                     .ok();
                 ctx.builder
-                    .build_call(printf, &[fmt.into(), val.into()], "print_str")
+                    .build_call(printf, &[fmt.into(), safe_str.into()], "print_str")
                     .ok();
                 ctx.builder
                     .build_call(
@@ -129,7 +132,7 @@ pub(super) fn emit_print_value<'ctx>(
                 let fmt = if newline { "%s\n" } else { "%s" };
                 let fmt = ctx.const_string(fmt);
                 ctx.builder
-                    .build_call(printf, &[fmt.into(), val.into()], "print_str")
+                    .build_call(printf, &[fmt.into(), safe_str.into()], "print_str")
                     .ok();
             }
         }
@@ -353,10 +356,12 @@ pub(super) fn emit_print_value<'ctx>(
         }
 
         // For unknown pointer types, assume string
+        // Null-coerce to prevent printf("%s", null) UB
+        let safe_ptr = crate::utils::null_coerce_str(ctx, ptr);
         let fmt = if newline { "%s\n" } else { "%s" };
         let fmt = ctx.const_string(fmt);
         ctx.builder
-            .build_call(printf, &[fmt.into(), ptr.into()], "print_str")
+            .build_call(printf, &[fmt.into(), safe_ptr.into()], "print_str")
             .ok();
         return;
     }
@@ -482,9 +487,11 @@ pub(super) fn emit_print_struct<'ctx>(
             .build_call(printf, &[fmt_s.into(), fname_s.into()], "")
             .ok();
 
+        // P06: use physical field index for GEP (matches type_cache.rs remapping)
+        let physical_i = ctx.physical_field_index(name, i) as u32;
         let field_ptr = ctx
             .builder
-            .build_struct_gep(struct_llvm_type, base, i as u32, "field")
+            .build_struct_gep(struct_llvm_type, base, physical_i, "field")
             .ok();
         if let Some(fp) = field_ptr {
             // Use get_llvm_type for consistent type mapping
@@ -542,12 +549,9 @@ pub(super) fn emit_print_enum<'ctx>(
     // Generating complex control flow inside this helper is hard because it returns () and appends to current block.
     // We can do it!
 
-    let current_fn = ctx
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
+    let Some(current_fn) = ctx.current_function() else {
+        return;
+    };
     let merge_bb = ctx.context.append_basic_block(current_fn, "print_enum_end");
     let default_bb = ctx
         .context
@@ -679,12 +683,9 @@ pub(super) fn emit_print_enum_value<'ctx>(
         Err(_) => return,
     };
 
-    let current_fn = ctx
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
+    let Some(current_fn) = ctx.current_function() else {
+        return;
+    };
     let merge_bb = ctx.context.append_basic_block(current_fn, "print_enum_end");
     let default_bb = ctx
         .context

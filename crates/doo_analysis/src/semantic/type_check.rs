@@ -29,8 +29,8 @@ pub struct TypeError {
 pub enum TypeErrorKind {
     /// Type mismatch (expected X, found Y).
     Mismatch { expected: TypeId, found: TypeId },
-    /// Undefined variable.
-    Undefined(String),
+    /// Undefined variable (name, optional "did you mean?" suggestion).
+    Undefined(String, Option<String>),
     /// Undefined function call.
     UndefinedFunction(String),
     /// Undefined type name.
@@ -367,7 +367,7 @@ impl TypeChecker {
                     && self.scopes.lookup(&enum_key).is_none()
                 {
                     self.errors.push(TypeError {
-                        kind: TypeErrorKind::Undefined(name.clone()),
+                        kind: TypeErrorKind::Undefined(name.clone(), None),
                         span,
                     });
                 }
@@ -916,8 +916,9 @@ impl TypeChecker {
                     // This handles cases like `app.auth(..., User, db)` where User is a struct name
                     type_id
                 } else {
+                    let suggestion = self.scopes.find_suggestion(name);
                     self.errors.push(TypeError {
-                        kind: TypeErrorKind::Undefined(name.clone()),
+                        kind: TypeErrorKind::Undefined(name.clone(), suggestion),
                         span: expr.span,
                     });
                     builtin::ANY
@@ -1046,8 +1047,9 @@ impl TypeChecker {
                         }
                     } else if !is_builtin && self.scopes.lookup(name).is_none() {
                         // Function not found in signatures or scope — undefined
+                        let suggestion = self.scopes.find_suggestion(name);
                         self.errors.push(TypeError {
-                            kind: TypeErrorKind::Undefined(name.clone()),
+                            kind: TypeErrorKind::Undefined(name.clone(), suggestion),
                             span: func.span,
                         });
                     }
@@ -1563,8 +1565,9 @@ impl TypeChecker {
                     && name != "toString"
                     && name != "sleep"
                 {
+                    let suggestion = self.scopes.find_suggestion(name);
                     self.errors.push(TypeError {
-                        kind: TypeErrorKind::Undefined(name.clone()),
+                        kind: TypeErrorKind::Undefined(name.clone(), suggestion),
                         span: expr.span,
                     });
                 }
@@ -1618,60 +1621,9 @@ impl TypeChecker {
     }
 
     /// Check if a method name is a known built-in method (not user-defined).
+    /// H05: Delegates to the centralized method registry in doo_core::methods.
     fn is_known_builtin_method(method: &str) -> bool {
-        matches!(
-            method,
-            "push"
-                | "pop"
-                | "remove"
-                | "insert"
-                | "clear"
-                | "shift"
-                | "unshift"
-                | "len"
-                | "contains"
-                | "keys"
-                | "values"
-                | "entries"
-                | "map"
-                | "filter"
-                | "reduce"
-                | "forEach"
-                | "find"
-                | "sort"
-                | "reverse"
-                | "join"
-                | "split"
-                | "trim"
-                | "toLowerCase"
-                | "toUpperCase"
-                | "startsWith"
-                | "endsWith"
-                | "includes"
-                | "replace"
-                | "slice"
-                | "substring"
-                | "charAt"
-                | "indexOf"
-                | "toString"
-                | "toInt"
-                | "toFloat"
-                | "listen"
-                | "get"
-                | "post"
-                | "put"
-                | "delete"
-                | "patch"
-                | "options"
-                | "head"
-                | "use"
-                | "auth"
-                | "oauth"
-                | "cors"
-                | "logger"
-                | "static"
-                | "middleware"
-        )
+        doo_core::methods::is_known_builtin(method)
     }
 
     /// Validate that a method call's method is defined on the receiver's type.
@@ -1852,7 +1804,7 @@ impl TypeChecker {
                 let struct_key = format!("__struct_{}", name);
                 if self.scopes.lookup(&struct_key).is_none() {
                     self.errors.push(TypeError {
-                        kind: TypeErrorKind::Undefined(name.to_string()),
+                        kind: TypeErrorKind::Undefined(name.to_string(), None),
                         span,
                     });
                 }
@@ -1996,7 +1948,7 @@ impl TypeChecker {
                 let enum_key = format!("__enum_{}", enum_name);
                 if self.scopes.lookup(&enum_key).is_none() {
                     self.errors.push(TypeError {
-                        kind: TypeErrorKind::Undefined(enum_name.to_string()),
+                        kind: TypeErrorKind::Undefined(enum_name.to_string(), None),
                         span,
                     });
                 }
@@ -2012,7 +1964,7 @@ impl TypeChecker {
                     });
                 } else {
                     self.errors.push(TypeError {
-                        kind: TypeErrorKind::Undefined(enum_name.to_string()),
+                        kind: TypeErrorKind::Undefined(enum_name.to_string(), None),
                         span,
                     });
                 }

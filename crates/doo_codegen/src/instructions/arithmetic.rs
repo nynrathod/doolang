@@ -311,31 +311,41 @@ fn emit_binop<'ctx>(
         }
 
         let result = match op {
-            BinaryOp::Add => ctx
-                .builder
-                .build_int_add(lhs_int, rhs_int, "add")
-                .ok()?
-                .into(),
-            BinaryOp::Sub => ctx
-                .builder
-                .build_int_sub(lhs_int, rhs_int, "sub")
-                .ok()?
-                .into(),
-            BinaryOp::Mul => ctx
-                .builder
-                .build_int_mul(lhs_int, rhs_int, "mul")
-                .ok()?
-                .into(),
-            BinaryOp::Div => ctx
-                .builder
-                .build_int_signed_div(lhs_int, rhs_int, "div")
-                .ok()?
-                .into(),
-            BinaryOp::Mod => ctx
-                .builder
-                .build_int_signed_rem(lhs_int, rhs_int, "mod")
-                .ok()?
-                .into(),
+            BinaryOp::Add => {
+                emit_overflow_guard(ctx, lhs_int, rhs_int, "add");
+                ctx.builder
+                    .build_int_add(lhs_int, rhs_int, "add")
+                    .ok()?
+                    .into()
+            }
+            BinaryOp::Sub => {
+                emit_overflow_guard(ctx, lhs_int, rhs_int, "sub");
+                ctx.builder
+                    .build_int_sub(lhs_int, rhs_int, "sub")
+                    .ok()?
+                    .into()
+            }
+            BinaryOp::Mul => {
+                emit_overflow_guard(ctx, lhs_int, rhs_int, "mul");
+                ctx.builder
+                    .build_int_mul(lhs_int, rhs_int, "mul")
+                    .ok()?
+                    .into()
+            }
+            BinaryOp::Div => {
+                emit_div_zero_guard(ctx, rhs_int, "division");
+                ctx.builder
+                    .build_int_signed_div(lhs_int, rhs_int, "div")
+                    .ok()?
+                    .into()
+            }
+            BinaryOp::Mod => {
+                emit_div_zero_guard(ctx, rhs_int, "modulo");
+                ctx.builder
+                    .build_int_signed_rem(lhs_int, rhs_int, "mod")
+                    .ok()?
+                    .into()
+            }
             BinaryOp::Eq => ctx
                 .builder
                 .build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq")
@@ -572,7 +582,7 @@ fn emit_string_concat<'ctx>(
     // Copy second string (including null terminator)
     let dest2 = unsafe {
         ctx.builder
-            .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[len1], "dest2")
+            .build_gep(ctx.context.i8_type(), result_ptr, &[len1], "dest2")
             .ok()?
     };
     let len2_plus_null = ctx
@@ -765,4 +775,239 @@ fn value_to_string<'ctx>(
     ctx.builder.build_call(snprintf, &print_args, "fmt").ok()?;
 
     Some(buf.into())
+}
+
+/// Emit integer overflow detection guard (debug mode only).
+/// Uses LLVM's signed overflow intrinsics (llvm.sadd.with.overflow, etc.)
+/// to detect overflow at runtime and abort with a diagnostic message.
+/// Only active when DOO_OVERFLOW_CHECKS=1 or DOO_DEBUG is set.
+fn emit_overflow_guard<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    lhs: inkwell::values::IntValue<'ctx>,
+    rhs: inkwell::values::IntValue<'ctx>,
+    op_name: &str,
+) {
+    // Only emit overflow checks if enabled via env var
+    let checks_enabled = std::env::var("DOO_OVERFLOW_CHECKS").is_ok()
+        || std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
+    if !checks_enabled {
+        return;
+    }
+
+    // Only check i64 operations (skip i1/i8/i32 comparisons)
+    if lhs.get_type().get_bit_width() != 64 {
+        return;
+    }
+
+    let current_fn = match ctx.builder.get_insert_block().and_then(|b| b.get_parent()) {
+        Some(f) => f,
+        None => return,
+    };
+
+    // Build the overflow intrinsic name based on operation
+    let intrinsic_name = match op_name {
+        "add" => "llvm.sadd.with.overflow.i64",
+        "sub" => "llvm.ssub.with.overflow.i64",
+        "mul" => "llvm.smul.with.overflow.i64",
+        _ => return,
+    };
+
+    // Declare the intrinsic if not already declared
+    let i64_type = ctx.context.i64_type();
+    let i1_type = ctx.context.bool_type();
+    let overflow_result_type = ctx
+        .context
+        .struct_type(&[i64_type.into(), i1_type.into()], false);
+    let intrinsic_fn_type =
+        overflow_result_type.fn_type(&[i64_type.into(), i64_type.into()], false);
+
+    let intrinsic_fn = ctx.module.get_function(intrinsic_name).unwrap_or_else(|| {
+        ctx.module
+            .add_function(intrinsic_name, intrinsic_fn_type, None)
+    });
+
+    // Call the intrinsic
+    let result =
+        match ctx
+            .builder
+            .build_call(intrinsic_fn, &[lhs.into(), rhs.into()], "overflow_check")
+        {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+    let result_val = match result.try_as_basic_value().basic() {
+        Some(v) => v.into_struct_value(),
+        None => return,
+    };
+
+    // Extract the overflow flag (index 1)
+    let overflow_flag = match ctx
+        .builder
+        .build_extract_value(result_val, 1, "overflow_flag")
+    {
+        Ok(v) => v.into_int_value(),
+        Err(_) => return,
+    };
+
+    let abort_bb = ctx.context.append_basic_block(current_fn, "overflow_abort");
+    let cont_bb = ctx.context.append_basic_block(current_fn, "overflow_ok");
+
+    let _ = ctx
+        .builder
+        .build_conditional_branch(overflow_flag, abort_bb, cont_bb);
+
+    // Abort block: print error and exit(1)
+    ctx.builder.position_at_end(abort_bb);
+    let printf_type = ctx.context.i32_type().fn_type(
+        &[ctx
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default())
+            .into()],
+        true,
+    );
+    let printf = ctx
+        .module
+        .get_function(ffi_names::PRINTF)
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(ffi_names::PRINTF, printf_type, None)
+        });
+
+    let error_msg = ctx.const_string(&format!(
+        "fatal: integer overflow in {} operation\n",
+        op_name
+    ));
+    let _ = ctx
+        .builder
+        .build_call(printf, &[error_msg.into()], "print_overflow_err");
+
+    let fflush_type = ctx.context.i32_type().fn_type(
+        &[ctx
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default())
+            .into()],
+        false,
+    );
+    let fflush = ctx
+        .module
+        .get_function(ffi_names::FFLUSH)
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(ffi_names::FFLUSH, fflush_type, None)
+        });
+    let null_ptr = ctx
+        .context
+        .i8_type()
+        .ptr_type(inkwell::AddressSpace::default())
+        .const_null();
+    let _ = ctx.builder.build_call(fflush, &[null_ptr.into()], "flush");
+
+    let exit_type = ctx
+        .context
+        .void_type()
+        .fn_type(&[ctx.context.i32_type().into()], false);
+    let exit_fn = ctx
+        .module
+        .get_function(ffi_names::EXIT)
+        .unwrap_or_else(|| ctx.module.add_function(ffi_names::EXIT, exit_type, None));
+    let exit_code = ctx.context.i32_type().const_int(1, false);
+    let _ = ctx
+        .builder
+        .build_call(exit_fn, &[exit_code.into()], "exit_overflow");
+    let _ = ctx.builder.build_unreachable();
+
+    ctx.builder.position_at_end(cont_bb);
+}
+
+/// Emit a runtime guard that aborts with an error message if `divisor` is zero.
+/// Inserts a conditional branch: if divisor == 0 → print error + exit(1), else continue.
+fn emit_div_zero_guard<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    divisor: inkwell::values::IntValue<'ctx>,
+    op_name: &str,
+) {
+    let current_fn = match ctx.builder.get_insert_block().and_then(|b| b.get_parent()) {
+        Some(f) => f,
+        None => return,
+    };
+
+    let zero = divisor.get_type().const_zero();
+    let is_zero = ctx
+        .builder
+        .build_int_compare(IntPredicate::EQ, divisor, zero, "div_zero_check")
+        .unwrap_or_else(|_| return ctx.context.bool_type().const_zero());
+
+    let abort_bb = ctx.context.append_basic_block(current_fn, "div_zero_abort");
+    let cont_bb = ctx.context.append_basic_block(current_fn, "div_zero_ok");
+
+    let _ = ctx
+        .builder
+        .build_conditional_branch(is_zero, abort_bb, cont_bb);
+
+    // Abort block: print error and exit
+    ctx.builder.position_at_end(abort_bb);
+    let printf_type = ctx.context.i32_type().fn_type(
+        &[ctx
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default())
+            .into()],
+        true,
+    );
+    let printf = ctx
+        .module
+        .get_function(ffi_names::PRINTF)
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(ffi_names::PRINTF, printf_type, None)
+        });
+
+    let error_msg = ctx.const_string(&format!("fatal: {} by zero\n", op_name));
+    let _ = ctx
+        .builder
+        .build_call(printf, &[error_msg.into()], "print_div_zero_err");
+
+    // Flush
+    let fflush_type = ctx.context.i32_type().fn_type(
+        &[ctx
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default())
+            .into()],
+        false,
+    );
+    let fflush = ctx
+        .module
+        .get_function(ffi_names::FFLUSH)
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(ffi_names::FFLUSH, fflush_type, None)
+        });
+    let null_ptr = ctx
+        .context
+        .i8_type()
+        .ptr_type(inkwell::AddressSpace::default())
+        .const_null();
+    let _ = ctx.builder.build_call(fflush, &[null_ptr.into()], "flush");
+
+    // Exit(1)
+    let exit_type = ctx
+        .context
+        .void_type()
+        .fn_type(&[ctx.context.i32_type().into()], false);
+    let exit_fn = ctx
+        .module
+        .get_function(ffi_names::EXIT)
+        .unwrap_or_else(|| ctx.module.add_function(ffi_names::EXIT, exit_type, None));
+    let exit_code = ctx.context.i32_type().const_int(1, false);
+    let _ = ctx
+        .builder
+        .build_call(exit_fn, &[exit_code.into()], "exit_div_zero");
+    let _ = ctx.builder.build_unreachable();
+
+    // Continue block: safe to proceed
+    ctx.builder.position_at_end(cont_bb);
 }

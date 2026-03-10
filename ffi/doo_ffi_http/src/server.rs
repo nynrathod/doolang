@@ -694,7 +694,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                         );
                         if res.tag == 0 {
                             // Success — zero-copy: read C string as bytes, pass directly
-                            if res.data.is_null() {
+                            if res.data.is_null() || (res.data as usize) < 4096 {
+                                // Null or invalid pointer (e.g., from inttoptr of
+                                // small integer) — return empty JSON
                                 build_response_bytes(200, b"{}")
                             } else {
                                 let cstr = std::ffi::CStr::from_ptr(res.data as *const i8);

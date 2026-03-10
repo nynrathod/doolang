@@ -104,6 +104,11 @@ impl<'ctx> CodegenContext<'ctx> {
     }
 
     /// Get or create a struct type.
+    ///
+    /// P06: When creating a new struct type, fields are reordered by alignment
+    /// (largest first) to minimize padding. The logical→physical index mapping
+    /// is stored in `struct_field_remap` for use by FieldGet/FieldSet/Drop/Clone.
+    /// Callers should always pass field types in declaration (logical) order.
     pub fn get_struct_type(
         &mut self,
         name: &str,
@@ -113,10 +118,74 @@ impl<'ctx> CodegenContext<'ctx> {
             return *t;
         }
 
+        let field_count = field_types.len();
+        let (reordered_types, remap) = if field_count > 1 {
+            // Compute alignment for each field from its LLVM type
+            let mut indices: Vec<usize> = (0..field_count).collect();
+            indices.sort_by(|&a, &b| {
+                let align_a = Self::llvm_type_alignment(&field_types[a]);
+                let align_b = Self::llvm_type_alignment(&field_types[b]);
+                align_b.cmp(&align_a) // largest alignment first
+            });
+
+            // Check if reorder is identity (no change needed)
+            let is_identity = indices.iter().enumerate().all(|(i, &v)| i == v);
+            if is_identity {
+                (field_types.to_vec(), None)
+            } else {
+                // Build logical→physical map
+                let mut logical_to_physical = vec![0usize; field_count];
+                for (physical, &logical) in indices.iter().enumerate() {
+                    logical_to_physical[logical] = physical;
+                }
+                let reordered: Vec<BasicTypeEnum<'ctx>> =
+                    indices.iter().map(|&i| field_types[i]).collect();
+                (reordered, Some(logical_to_physical))
+            }
+        } else {
+            (field_types.to_vec(), None)
+        };
+
+        // Store the remap if reordering happened
+        if let Some(remap) = remap {
+            self.struct_field_remap.insert(name.to_string(), remap);
+        }
+
         let struct_type = self.context.opaque_struct_type(name);
-        struct_type.set_body(field_types, false);
+        struct_type.set_body(&reordered_types, false);
         self.struct_cache.insert(name.to_string(), struct_type);
         struct_type
+    }
+
+    /// Get alignment in bytes for an LLVM BasicTypeEnum (for P06 struct field reordering).
+    fn llvm_type_alignment(ty: &BasicTypeEnum) -> u64 {
+        match ty {
+            BasicTypeEnum::IntType(it) => {
+                let bits = it.get_bit_width();
+                if bits <= 8 {
+                    1
+                } else if bits <= 32 {
+                    4
+                } else {
+                    8
+                }
+            }
+            BasicTypeEnum::FloatType(_) => 8, // f64
+            BasicTypeEnum::PointerType(_) => 8,
+            BasicTypeEnum::StructType(_) => 8, // nested structs have pointer alignment
+            BasicTypeEnum::ArrayType(_) => 8,
+            BasicTypeEnum::VectorType(_) => 8,
+            _ => 8, // ScalableVectorType and future variants
+        }
+    }
+
+    /// Get the physical field index for a logical (declaration-order) field index.
+    /// Returns the logical index unchanged if no P06 remap exists for this struct.
+    pub fn physical_field_index(&self, struct_name: &str, logical_idx: usize) -> usize {
+        self.struct_field_remap
+            .get(struct_name)
+            .and_then(|r| r.get(logical_idx).copied())
+            .unwrap_or(logical_idx)
     }
 
     /// Get cached struct type by name.
@@ -170,10 +239,8 @@ impl<'ctx> CodegenContext<'ctx> {
             .map(|tid| self.get_llvm_type(*tid))
             .collect();
 
-        // Create and cache the struct type
-        let struct_type = self.context.opaque_struct_type(name);
-        struct_type.set_body(&field_types, false);
-        self.struct_cache.insert(name.to_string(), struct_type);
+        // Create and cache the struct type via get_struct_type (applies P06 reordering)
+        let struct_type = self.get_struct_type(name, &field_types);
         self.struct_metadata.insert(name.to_string(), field_names);
 
         Some(struct_type)

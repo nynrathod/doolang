@@ -28,12 +28,18 @@ impl From<TypeError> for CompilerError {
                 format!("expected {}, found {}", expected, found),
                 e.span,
             ),
-            TypeErrorKind::Undefined(ref name) => CompilerError::new(
-                ErrorCode::UndefinedVariable,
-                format!("'{}' is not defined", name),
-                e.span,
-            )
-            .with_suggestion(format!("check spelling of '{}'", name)),
+            TypeErrorKind::Undefined(ref name, ref suggestion) => {
+                let err = CompilerError::new(
+                    ErrorCode::UndefinedVariable,
+                    format!("'{}' is not defined", name),
+                    e.span,
+                );
+                if let Some(s) = suggestion {
+                    err.with_suggestion(format!("did you mean '{}'?", s))
+                } else {
+                    err.with_suggestion(format!("check spelling of '{}'", name))
+                }
+            }
             TypeErrorKind::UndefinedFunction(ref name) => CompilerError::new(
                 ErrorCode::UndefinedFunction,
                 format!("function '{}' is not defined", name),
@@ -344,12 +350,22 @@ impl From<ScopeError> for CompilerError {
             )
             .with_label(*original, "first defined here".to_string())
             .with_suggestion(format!("rename one of the '{}' declarations", name)),
-            ScopeError::Undeclared { name, span } => CompilerError::new(
-                ErrorCode::UndefinedVariable,
-                format!("'{}' is not defined", name),
-                *span,
-            )
-            .with_suggestion(format!("check spelling of '{}'", name)),
+            ScopeError::Undeclared {
+                name,
+                span,
+                suggestion,
+            } => {
+                let err = CompilerError::new(
+                    ErrorCode::UndefinedVariable,
+                    format!("'{}' is not defined", name),
+                    *span,
+                );
+                if let Some(s) = suggestion {
+                    err.with_suggestion(format!("did you mean '{}'?", s))
+                } else {
+                    err.with_suggestion(format!("check spelling of '{}'", name))
+                }
+            }
         }
     }
 }
@@ -469,7 +485,7 @@ mod tests {
     #[test]
     fn test_type_error_conversion() {
         let err = TypeError {
-            kind: TypeErrorKind::Undefined("foo".into()),
+            kind: TypeErrorKind::Undefined("foo".into(), None),
             span: Span::new(0, 10, 13),
         };
         let ce: CompilerError = err.into();

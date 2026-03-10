@@ -1,14 +1,12 @@
 //! For-loop desugaring to while-loops.
 
+use super::Lower;
+use crate::types::*;
 use doo_core::{
     types::{builtin, TypeKind, TypeRegistry},
     Span,
 };
-use doo_frontend::ast::{
-    Expr, ExprKind, Pattern, PatternKind, Stmt,
-};
-use crate::types::*;
-use super::Lower;
+use doo_frontend::ast::{Expr, ExprKind, Pattern, PatternKind, Stmt};
 
 impl Lower {
     /// Lower a for-loop to HIR.
@@ -220,6 +218,7 @@ impl Lower {
 
         let internal_idx = format!("__{}_idx", elem_var);
         let internal_arr = format!("__{}_arr", elem_var);
+        let internal_len = format!("__{}_len", elem_var);
 
         // Lower body statements
         let mut body_stmts: Vec<_> = body.iter().map(|s| self.lower_stmt(s)).collect();
@@ -304,7 +303,9 @@ impl Lower {
             span,
         );
 
-        // Condition: __idx < __arr.len()
+        // Condition: __idx < __len (pre-computed length, avoids array access
+        // in the loop header which triggers auto-cloning and generates complex
+        // LLVM IR that causes O3 to remove the loop exit condition)
         let condition = HirExpr::new(
             HirExprKind::BinOp {
                 op: HirBinOp::Lt,
@@ -315,6 +316,41 @@ impl Lower {
                     span,
                 )),
                 rhs: Box::new(HirExpr::new(
+                    HirExprKind::Local {
+                        name: internal_len.clone(),
+                    },
+                    span,
+                )),
+            },
+            span,
+        );
+
+        // Build desugared block:
+        // {
+        //     let __arr = array
+        //     let __len = __arr.len()
+        //     let __idx = 0
+        //     while __idx < __len { ... }
+        // }
+        let arr_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_arr.clone(),
+                type_id: None,
+                value: self.lower_expr(array_expr),
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        // Pre-compute array length to keep the loop condition pure (integer
+        // comparison only). This prevents LLVM O3 from merging array-clone
+        // code into the loop header and subsequently removing the exit branch.
+        let len_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_len,
+                type_id: None,
+                value: HirExpr::new(
                     HirExprKind::MethodCall {
                         receiver: Box::new(HirExpr::new(
                             HirExprKind::Local {
@@ -326,22 +362,7 @@ impl Lower {
                         args: vec![],
                     },
                     span,
-                )),
-            },
-            span,
-        );
-
-        // Build desugared block:
-        // {
-        //     let __arr = array
-        //     let __idx = 0
-        //     while __idx < __arr.len() { ... }
-        // }
-        let arr_init = HirStmt::new(
-            HirStmtKind::Let {
-                name: internal_arr,
-                type_id: None,
-                value: self.lower_expr(array_expr),
+                ),
                 mutable: false,
                 ownership: Ownership::Owned,
             },
@@ -370,7 +391,7 @@ impl Lower {
 
         HirStmtKind::Expr(HirExpr::new(
             HirExprKind::Block {
-                stmts: vec![arr_init, idx_init, while_stmt],
+                stmts: vec![arr_init, len_init, idx_init, while_stmt],
                 expr: None,
             },
             span,
@@ -812,6 +833,7 @@ impl Lower {
 
         let internal_idx = format!("__{}_idx", elem_var);
         let internal_arr = format!("__{}_arr", elem_var);
+        let internal_len = format!("__{}_len", elem_var);
 
         // Lower the array expression to get its type
         let lowered_arr = self.lower_expr_typed(array_expr, registry);
@@ -951,8 +973,46 @@ impl Lower {
             span,
         );
 
-        // Condition: __idx < __arr.len()
-        // Create array reference with proper type for len() call
+        // Condition: __idx < __len (pre-computed length, avoids array access
+        // in the loop header which triggers auto-cloning and generates complex
+        // LLVM IR that causes O3 to remove the loop exit condition)
+        let condition = HirExpr::with_type(
+            HirExprKind::BinOp {
+                op: HirBinOp::Lt,
+                lhs: Box::new(HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_idx.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                )),
+                rhs: Box::new(HirExpr::with_type(
+                    HirExprKind::Local {
+                        name: internal_len.clone(),
+                    },
+                    builtin::INT,
+                    span,
+                )),
+            },
+            builtin::BOOL,
+            span,
+        );
+
+        // Build desugared block
+        let arr_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_arr.clone(),
+                type_id: arr_type,
+                value: lowered_arr,
+                mutable: false,
+                ownership: Ownership::Owned,
+            },
+            span,
+        );
+
+        // Pre-compute array length to keep the loop condition pure (integer
+        // comparison only). This prevents LLVM O3 from merging array-clone
+        // code into the loop header and subsequently removing the exit branch.
         let arr_ref_for_len = if let Some(t) = arr_type {
             HirExpr::with_type(
                 HirExprKind::Local {
@@ -970,17 +1030,11 @@ impl Lower {
             )
         };
 
-        let condition = HirExpr::with_type(
-            HirExprKind::BinOp {
-                op: HirBinOp::Lt,
-                lhs: Box::new(HirExpr::with_type(
-                    HirExprKind::Local {
-                        name: internal_idx.clone(),
-                    },
-                    builtin::INT,
-                    span,
-                )),
-                rhs: Box::new(HirExpr::with_type(
+        let len_init = HirStmt::new(
+            HirStmtKind::Let {
+                name: internal_len,
+                type_id: Some(builtin::INT),
+                value: HirExpr::with_type(
                     HirExprKind::MethodCall {
                         receiver: Box::new(arr_ref_for_len),
                         method: "len".to_string(),
@@ -988,18 +1042,7 @@ impl Lower {
                     },
                     builtin::INT,
                     span,
-                )),
-            },
-            builtin::BOOL,
-            span,
-        );
-
-        // Build desugared block
-        let arr_init = HirStmt::new(
-            HirStmtKind::Let {
-                name: internal_arr,
-                type_id: arr_type,
-                value: lowered_arr,
+                ),
                 mutable: false,
                 ownership: Ownership::Owned,
             },
@@ -1032,7 +1075,7 @@ impl Lower {
 
         HirStmtKind::Expr(HirExpr::new(
             HirExprKind::Block {
-                stmts: vec![arr_init, idx_init, while_stmt],
+                stmts: vec![arr_init, len_init, idx_init, while_stmt],
                 expr: None,
             },
             span,

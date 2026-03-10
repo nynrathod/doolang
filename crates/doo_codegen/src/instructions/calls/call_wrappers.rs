@@ -528,10 +528,7 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
     let no_tail = ctx
         .context
         .create_string_attribute("disable-tail-calls", "true");
-    wrapper_fn.add_attribute(
-        inkwell::attributes::AttributeLoc::Function,
-        no_tail,
-    );
+    wrapper_fn.add_attribute(inkwell::attributes::AttributeLoc::Function, no_tail);
 
     // Save current position
     let current_block = ctx.builder.get_insert_block();
@@ -683,12 +680,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
 
         if let Some(validation_failed) = validation_failed {
             // Create error and success blocks
-            let parent = ctx
-                .builder
-                .get_insert_block()
-                .unwrap()
-                .get_parent()
-                .unwrap();
+            let Some(parent) = ctx.current_function() else {
+                return wrapper_fn;
+            };
             let error_block = ctx.context.append_basic_block(parent, "validation_error");
             let success_block = ctx.context.append_basic_block(parent, "validation_success");
 
@@ -1127,12 +1121,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         .unwrap_or_else(|_| ptr_type.const_null());
 
                     // Create blocks for Ok and Err paths
-                    let parent = ctx
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_parent()
-                        .unwrap();
+                    let Some(parent) = ctx.current_function() else {
+                        return wrapper_fn;
+                    };
                     let ok_block = ctx.context.append_basic_block(parent, "middleware_ok");
                     let err_block = ctx.context.append_basic_block(parent, "middleware_err");
                     let merge_block = ctx.context.append_basic_block(parent, "middleware_merge");
@@ -1201,12 +1192,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         )
                         .unwrap();
 
-                    let current_fn = ctx
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_parent()
-                        .unwrap();
+                    let Some(current_fn) = ctx.current_function() else {
+                        return wrapper_fn;
+                    };
                     let ok_normal = ctx.context.append_basic_block(current_fn, "ok_normal");
                     let ok_error_passthrough = ctx
                         .context
@@ -1605,12 +1593,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                             )
                             .unwrap();
 
-                        let parent = ctx
-                            .builder
-                            .get_insert_block()
-                            .unwrap()
-                            .get_parent()
-                            .unwrap();
+                        let Some(parent) = ctx.current_function() else {
+                            return wrapper_fn;
+                        };
                         let resp_ok_block = ctx.context.append_basic_block(parent, "resp_ok");
                         let resp_err_block = ctx.context.append_basic_block(parent, "resp_err");
                         let resp_merge_block = ctx.context.append_basic_block(parent, "resp_merge");
@@ -1859,12 +1844,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                         )
                         .unwrap();
 
-                    let parent = ctx
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_parent()
-                        .unwrap();
+                    let Some(parent) = ctx.current_function() else {
+                        return wrapper_fn;
+                    };
                     let resp_ok_block = ctx.context.append_basic_block(parent, "resp_ok");
                     let resp_err_block = ctx.context.append_basic_block(parent, "resp_err");
                     let resp_merge_block = ctx.context.append_basic_block(parent, "resp_merge");
@@ -2140,12 +2122,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     .unwrap_or_else(|_| ptr_type.const_null());
 
                 // Create blocks for Ok and Err paths
-                let parent = ctx
-                    .builder
-                    .get_insert_block()
-                    .unwrap()
-                    .get_parent()
-                    .unwrap();
+                let Some(parent) = ctx.current_function() else {
+                    return wrapper_fn;
+                };
                 let ok_block = ctx.context.append_basic_block(parent, "handler_ok");
                 let err_block = ctx.context.append_basic_block(parent, "handler_err");
 
@@ -2465,10 +2444,33 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
         let result_as_ptr = match final_result {
             Some(val) if val.is_pointer_value() => val.into_pointer_value(),
             Some(val) if val.is_int_value() => {
-                // Convert int to pointer (for status codes, etc.)
-                ctx.builder
-                    .build_int_to_ptr(val.into_int_value(), ptr_type, "int_to_ptr")
-                    .unwrap_or_else(|_| ptr_type.const_null())
+                // Convert int to pointer — with safety check for invalid addresses.
+                let int_val = val.into_int_value();
+                let is_positive = ctx.builder.build_int_compare(
+                    inkwell::IntPredicate::SGT,
+                    int_val,
+                    int_val.get_type().const_zero(),
+                    "is_valid_addr",
+                );
+                if let Ok(is_valid) = is_positive {
+                    if let Ok(as_ptr) =
+                        ctx.builder
+                            .build_int_to_ptr(int_val, ptr_type, "int_to_ptr")
+                    {
+                        let null_ptr = ptr_type.const_null();
+                        ctx.builder
+                            .build_select(is_valid, as_ptr, null_ptr, "safe_int_to_ptr")
+                            .ok()
+                            .map(|v| v.into_pointer_value())
+                            .unwrap_or_else(|| ptr_type.const_null())
+                    } else {
+                        ptr_type.const_null()
+                    }
+                } else {
+                    ctx.builder
+                        .build_int_to_ptr(int_val, ptr_type, "int_to_ptr_fallback")
+                        .unwrap_or_else(|_| ptr_type.const_null())
+                }
             }
             _ => ptr_type.const_null(),
         };

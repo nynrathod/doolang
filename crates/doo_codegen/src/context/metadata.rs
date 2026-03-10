@@ -24,18 +24,27 @@ impl<'ctx> CodegenContext<'ctx> {
 
     /// Get field index by name for a struct type.
     ///
-    /// Returns the index of the field in the struct, or None if not found.
+    /// Returns the PHYSICAL index of the field in the LLVM struct layout.
+    /// If P06 field reordering is active for this struct, the logical
+    /// (declaration-order) index is remapped to the physical position.
     /// First checks the struct_metadata cache, then falls back to the type registry
     /// for imported/cross-module types.
     pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Option<u32> {
         // First try the cached struct_metadata
-        if let Some(idx) = self
+        let logical_idx = self
             .struct_metadata
             .get(struct_name)
             .and_then(|fields| fields.iter().position(|f| f == field_name))
-            .map(|idx| idx as u32)
-        {
-            return Some(idx);
+            .map(|idx| idx as u32);
+
+        if let Some(logical) = logical_idx {
+            // Apply P06 remapping if active for this struct
+            if let Some(remap) = self.struct_field_remap.get(struct_name) {
+                if let Some(&physical) = remap.get(logical as usize) {
+                    return Some(physical as u32);
+                }
+            }
+            return Some(logical);
         }
 
         // Fall back to type registry - search all types for struct with matching name
@@ -44,10 +53,17 @@ impl<'ctx> CodegenContext<'ctx> {
             if let Some(info) = self.type_registry.get(type_id) {
                 if let TypeKind::Struct { name, fields } = &info.kind {
                     if name == struct_name {
-                        return fields
+                        let logical = fields
                             .iter()
                             .position(|(n, _, _)| n == field_name)
-                            .map(|idx| idx as u32);
+                            .map(|idx| idx as u32)?;
+                        // Apply P06 remapping
+                        if let Some(remap) = self.struct_field_remap.get(struct_name) {
+                            if let Some(&physical) = remap.get(logical as usize) {
+                                return Some(physical as u32);
+                            }
+                        }
+                        return Some(logical);
                     }
                 }
             }

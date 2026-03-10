@@ -105,6 +105,7 @@ fn compile_doo_file(path: &Path) -> (bool, Option<String>) {
         keep_obj: false,
         check_only: true, // Just check, don't generate executable
         show_warnings: false,
+        timings: false,
     };
 
     match compile_project(opts) {

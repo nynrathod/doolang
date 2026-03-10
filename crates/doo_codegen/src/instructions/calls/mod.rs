@@ -804,8 +804,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     .struct_type(&[ctx.i64_type().into(), ctx.ptr_type().into()], false);
 
                 // Allocate Result struct on stack
-                let result_alloca = ctx
-                    .alloca_in_entry_block(result_struct_type, "result_ok")?;
+                let result_alloca = ctx.alloca_in_entry_block(result_struct_type, "result_ok")?;
 
                 // Set tag = 0 (Ok)
                 let tag_ptr = ctx
@@ -848,8 +847,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     .struct_type(&[ctx.i64_type().into(), ctx.ptr_type().into()], false);
 
                 // Allocate Result struct on stack
-                let result_alloca = ctx
-                    .alloca_in_entry_block(result_struct_type, "result_err")?;
+                let result_alloca = ctx.alloca_in_entry_block(result_struct_type, "result_err")?;
 
                 // Set tag = 1 (Err)
                 let tag_ptr = ctx
@@ -1097,8 +1095,10 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 // Result struct layout: { i32 tag, void* value }
                 // tag == 0 means Ok, tag == 1 means Err
 
-                // IMPORTANT: Register error struct type association for field access
-                // This is needed so that FieldGet on the error can resolve field names
+                // FFI error data is ALWAYS a raw C string (from err_str/make_err_rfc7807),
+                // regardless of the declared Doo error struct type (e.g. GitError).
+                // We register the struct association for potential field access, but
+                // MUST override variable_type to Str so Clone/Drop treat it correctly.
                 let error_name_s = resolve(*error_name);
                 if error_name_s != "_" {
                     if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(*err_type) {
@@ -1112,6 +1112,10 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                             );
                         }
                     }
+                    // CRITICAL: Override variable_type to Str because FFI error data
+                    // is always a C string pointer, not an actual struct in memory.
+                    // Without this, Clone would use clone_struct on a C string → crash.
+                    ctx.set_variable_type(&error_name_s, builtin::STR);
                 }
 
                 let result_val = operand_to_value(ctx, result)?;
@@ -1291,6 +1295,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         ]);
                         let err_result = err_phi.as_basic_value();
                         ctx.set_temp(&error_name_s, err_result);
+                        // FFI error data is always a C string — ensure Clone uses clone_string
+                        ctx.set_variable_type(&error_name_s, builtin::STR);
                     }
 
                     Some(ok_result)
@@ -1341,6 +1347,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         ]);
                         let err_result = err_phi.as_basic_value();
                         ctx.set_temp(&error_name_s, err_result);
+                        // FFI error data is always a C string — ensure Clone uses clone_string
+                        ctx.set_variable_type(&error_name_s, builtin::STR);
                     }
 
                     Some(ok_result)

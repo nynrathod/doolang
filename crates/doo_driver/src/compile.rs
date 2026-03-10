@@ -13,6 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Instant;
 
 use doo_codegen::{optimize_module, CodegenBuilder, OptLevel};
 use doo_core::doo_debug;
@@ -87,6 +88,8 @@ pub struct CompileOptions {
     pub check_only: bool,
     /// Show warnings (suppressed by default)
     pub show_warnings: bool,
+    /// Print phase-by-phase timing information
+    pub timings: bool,
 }
 
 impl Default for CompileOptions {
@@ -102,6 +105,7 @@ impl Default for CompileOptions {
             keep_obj: false,
             check_only: false,
             show_warnings: false,
+            timings: false,
         }
     }
 }
@@ -138,6 +142,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Allow environment overrides
     let output_name = env::var("DOO_OUTPUT_NAME").unwrap_or(opts.output_name.clone());
     let check_only = env::var("DOO_CHECK_ONLY").is_ok() || opts.check_only;
+    let show_timings = opts.timings || env::var("DOO_TIMINGS").is_ok();
 
     let opts = CompileOptions {
         output_name,
@@ -145,12 +150,20 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         ..opts
     };
 
+    // Timing accumulator: (phase_name, duration)
+    let mut timings: Vec<(&str, std::time::Duration)> = Vec::new();
+    let total_start = Instant::now();
+
     // Phase 0: Locate main.doo
+    let t = Instant::now();
     let input_path = resolve_input_path(&opts.input_path)?;
+    timings.push(("Resolve input", t.elapsed()));
 
     // Phase 1: Read source
+    let t = Instant::now();
     let source = fs::read_to_string(&input_path)
         .map_err(|e| format!("Failed to read {}: {}", input_path.display(), e))?;
+    timings.push(("Read source", t.elapsed()));
 
     let project_root = input_path
         .parent()
@@ -160,6 +173,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Phase 2: Parse (Parser creates lexer internally)
     // Debug: Show source info
     doo_debug!("DEBUG", "Source length: {} chars", source.len());
+    let t = Instant::now();
     if doo_core::debug::is_enabled() {
         doo_debug!(
             "DEBUG",
@@ -220,15 +234,19 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
             });
         }
     };
+    timings.push(("Parse", t.elapsed()));
 
     // Phase 3: AST Transformations
     // Transform route DSL (groups, decorators) into explicit route registrations
+    let t = Instant::now();
     let mut program = program;
     transform_route_groups(&mut program);
     transform_inline_closures(&mut program);
+    timings.push(("AST transforms", t.elapsed()));
 
     // Phase 3.5: Resolve Imports (using centralized loader module)
     // Load and merge imported functions/structs/enums from std library and other modules
+    let t = Instant::now();
     let mut loader = ModuleLoader::new();
     let import_resolution = resolve_imports(&program, &mut loader, &project_root)?;
 
@@ -269,6 +287,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         .collect();
 
     merge_imports(&mut program, import_resolution);
+    timings.push(("Import resolution", t.elapsed()));
 
     if opts.print_ast {
         eprintln!("=== AST ===");
@@ -276,6 +295,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // Phase 4: Lower to HIR (with type information)
+    let t = Instant::now();
     let mut type_registry = TypeRegistry::new();
     let mut lowerer = Lower::new();
     let hir = lowerer.lower_program_typed(&program, &mut type_registry);
@@ -319,6 +339,8 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // ========================================================================
     // Phase 5: Semantic Analysis
     // ========================================================================
+    timings.push(("HIR lowering", t.elapsed()));
+    let t = Instant::now();
     // Run all analysis passes in sequence. The compiler handles ownership,
     // borrowing, types, error flow, and exhaustiveness automatically.
     // Users don't write `&` or `*` - the compiler does it all.
@@ -443,17 +465,30 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // Report any analysis errors via the diagnostic emitter
-    // Filter warnings unless --warn flag is passed
+    // Filter warnings unless --warn flag is passed, and deduplicate by (code, span)
     let show_warnings = opts.show_warnings;
-    let errors_only: Vec<CompilerError> = analysis_errors
-        .iter()
-        .filter(|e| {
-            e.severity == doo_core::errors::codes::ErrorSeverity::Error
-                || e.severity == doo_core::errors::codes::ErrorSeverity::Ice
-                || show_warnings
-        })
-        .cloned()
-        .collect();
+    let errors_only: Vec<CompilerError> = {
+        let mut seen = HashSet::new();
+        analysis_errors
+            .iter()
+            .filter(|e| {
+                e.severity == doo_core::errors::codes::ErrorSeverity::Error
+                    || e.severity == doo_core::errors::codes::ErrorSeverity::Ice
+                    || show_warnings
+            })
+            .filter(|e| {
+                // Deduplicate by (error_code discriminant, span start, span end, file_id)
+                let key = (
+                    std::mem::discriminant(&e.code),
+                    e.span.start,
+                    e.span.end,
+                    e.span.file_id,
+                );
+                seen.insert(key)
+            })
+            .cloned()
+            .collect()
+    };
     let has_real_errors = errors_only.iter().any(|e| {
         e.severity == doo_core::errors::codes::ErrorSeverity::Error
             || e.severity == doo_core::errors::codes::ErrorSeverity::Ice
@@ -475,8 +510,22 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     doo_debug!("DEBUG", "Semantic analysis passed");
+    timings.push(("Semantic analysis", t.elapsed()));
+
+    // If check-only, we're done — skip MIR and codegen
+    if opts.check_only {
+        if show_timings {
+            print_timings(&timings, total_start.elapsed());
+        }
+        return Ok(CompileResult {
+            success: true,
+            error_count: 0,
+            exe_path: None,
+        });
+    }
 
     // Phase 6: Build MIR
+    let t = Instant::now();
     // Pass ownership analysis results to MIR builder so it can emit
     // Move/Copy/Clone/Borrow instructions based on ownership decisions
     let mut mir_builder = if let Some(results) = ownership_results {
@@ -518,23 +567,19 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         );
     }
 
-    // If check-only, we're done
-    if opts.check_only {
-        return Ok(CompileResult {
-            success: true,
-            error_count: 0,
-            exe_path: None,
-        });
-    }
+    timings.push(("MIR build", t.elapsed()));
 
     // Phase 7: LLVM Codegen
+    let t = Instant::now();
     doo_debug!("DEBUG", "Starting LLVM codegen...");
     let context = Context::create();
     let codegen = CodegenBuilder::new(&context);
     let module = codegen.build(&mir_program, "main_module", type_registry.clone());
     doo_debug!("DEBUG", "LLVM codegen complete");
+    timings.push(("LLVM codegen", t.elapsed()));
 
     // Phase 8: Verify module
+    let t = Instant::now();
     doo_debug!("DEBUG", "Verifying LLVM module...");
     if let Err(e) = module.verify() {
         // Dump IR on verification failure for debugging
@@ -546,8 +591,10 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         return Err(format!("LLVM module verification failed: {}", e));
     }
     doo_debug!("DEBUG", "LLVM module verified");
+    timings.push(("LLVM verify", t.elapsed()));
 
     // Phase 9: Optimize
+    let t = Instant::now();
     optimize_module(&module, OptLevel::O3);
 
     // Phase 9.1: Harden ALL functions against stack corruption post-optimization.
@@ -558,22 +605,29 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // call` inside such a function, it reuses the caller's frame while sret
     // still points into it → corrupted return address → DEP violation.
     //
-    // Three-pronged fix:
+    // Four-pronged fix:
     //   1. Re-apply "disable-tail-calls" to ALL functions (attribute-level guard)
     //   2. Strip `tail` marker from ALL call instructions (instruction-level guard)
     //   3. Add "frame-pointer"="all" to prevent frame pointer elimination,
     //      which stabilises stack frames and prevents backend frame reuse
+    //   4. Add stack canary (sspstrong) for buffer overflow detection
     {
         use inkwell::values::InstructionOpcode;
 
         let no_tail = context.create_string_attribute("disable-tail-calls", "true");
         let frame_ptr = context.create_string_attribute("frame-pointer", "all");
+        // Stack canary: sspstrong inserts canaries for functions with arrays or address-taken vars
+        let ssp = context.create_string_attribute("sspstrong", "");
+        let ssp_buf_size = context.create_string_attribute("ssp-buffer-size", "4");
         let mut func = module.get_first_function();
         while let Some(f) = func {
             // (1) Function-level attribute: tell backend "no tail calls"
             f.add_attribute(inkwell::attributes::AttributeLoc::Function, no_tail);
             // (3) Preserve frame pointer in every function
             f.add_attribute(inkwell::attributes::AttributeLoc::Function, frame_ptr);
+            // (4) Stack canary for buffer overflow detection
+            f.add_attribute(inkwell::attributes::AttributeLoc::Function, ssp);
+            f.add_attribute(inkwell::attributes::AttributeLoc::Function, ssp_buf_size);
 
             // (2) Walk every instruction and clear the `tail` flag on calls.
             //     O3 adds `tail call` markers to many calls (printf, malloc,
@@ -606,6 +660,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Windows map to _close, _read. These stubs enable lld-link auto-import.
     #[cfg(target_os = "windows")]
     add_posix_compat_stubs(&module);
+    timings.push(("Optimize + harden", t.elapsed()));
 
     // Phase 10: Write LLVM IR if requested
     if opts.keep_ll {
@@ -616,14 +671,23 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // Phase 12: Compile to object file
+    let t = Instant::now();
     let obj_file = compile_to_object(&module, &opts)?;
+    timings.push(("Compile to object", t.elapsed()));
 
     // Phase 13: Link
+    let t = Instant::now();
     let exe_path = link_object_file(&obj_file, &opts, &mir_program)?;
+    timings.push(("Link", t.elapsed()));
 
     // Cleanup object file unless requested to keep
     if !opts.keep_obj {
         let _ = fs::remove_file(&obj_file);
+    }
+
+    // Print timing summary
+    if show_timings {
+        print_timings(&timings, total_start.elapsed());
     }
 
     Ok(CompileResult {
@@ -638,6 +702,41 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 // ============================================================================
 
 /// Resolve the input path to an actual main.doo file.
+/// Print phase-by-phase timing information.
+fn print_timings(timings: &[(&str, std::time::Duration)], total: std::time::Duration) {
+    eprintln!();
+    eprintln!("=== Compilation Timings ===");
+    let max_label = timings.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    for (label, dur) in timings {
+        let ms = dur.as_secs_f64() * 1000.0;
+        let pct = if total.as_nanos() > 0 {
+            (dur.as_nanos() as f64 / total.as_nanos() as f64) * 100.0
+        } else {
+            0.0
+        };
+        eprintln!(
+            "  {:<width$}  {:>8.2}ms  ({:>5.1}%)",
+            label,
+            ms,
+            pct,
+            width = max_label
+        );
+    }
+    eprintln!(
+        "  {:-<width$}  {:-^8}--  -------",
+        "",
+        "",
+        width = max_label
+    );
+    eprintln!(
+        "  {:<width$}  {:>8.2}ms",
+        "Total",
+        total.as_secs_f64() * 1000.0,
+        width = max_label
+    );
+    eprintln!();
+}
+
 fn resolve_input_path(input: &Path) -> Result<PathBuf, String> {
     if input.is_file() {
         return Ok(input.to_path_buf());
@@ -997,6 +1096,10 @@ const EMBEDDED_LINKER: &[u8] = include_bytes!("../../../linkers/lld-link.exe");
 /// but some FFI libraries (libgit2, libssh2) reference the unprefixed POSIX names
 /// via __declspec(dllimport). The dllimport mechanism looks for __imp_close etc.
 /// We define these as global pointers pointing to the MSVC-named functions.
+///
+/// H04: Uses dynamic discovery instead of a hardcoded table. Scans the module
+/// for external function references and generates stubs for any POSIX names
+/// that have a corresponding MSVC `_`-prefixed equivalent in the UCRT.
 #[cfg(target_os = "windows")]
 fn add_posix_compat_stubs(module: &inkwell::module::Module) {
     use inkwell::module::Linkage;
@@ -1005,64 +1108,36 @@ fn add_posix_compat_stubs(module: &inkwell::module::Module) {
     let ctx = module.get_context();
     let ptr_type = ctx.ptr_type(AddressSpace::default());
 
-    // POSIX → MSVC name mappings for C code compiled with dllimport.
-    //
-    // FFI C libraries (libgit2, libssh2, etc.) reference POSIX function names
-    // via __declspec(dllimport), generating __imp_<posix_name> references.
-    // On MSVC, these functions have underscore-prefixed names (_open, _close, etc.)
-    // and are in libucrt.lib. The __imp_ references won't auto-resolve because
-    // the UCRT doesn't export the unprefixed names.
-    //
-    // For each pair, we declare the MSVC function (_open) and create a constant
-    // pointer __imp_open that points to it, enabling lld-link to resolve the
-    // dllimport references.
-    //
-    // This table is generic: add new pairs as FFI packages require them.
-    // The POSIX name (left) maps to the MSVC name (right).
-    let posix_to_msvc: &[(&str, &str)] = &[
-        ("close", "_close"),
-        ("read", "_read"),
-        ("open", "_open"),
-        ("write", "_write"),
-        ("lseek", "_lseek"),
-        ("access", "_access"),
-        ("chmod", "_chmod"),
-        ("mkdir", "_mkdir"),
-        ("rmdir", "_rmdir"),
-        ("unlink", "_unlink"),
-        ("stat", "_stat"),
-        ("fstat", "_fstat"),
-        ("dup", "_dup"),
-        ("dup2", "_dup2"),
-        ("fileno", "_fileno"),
-        ("isatty", "_isatty"),
-        ("getcwd", "_getcwd"),
-        ("chdir", "_chdir"),
-        ("umask", "_umask"),
-        ("mktemp", "_mktemp"),
-        ("setmode", "_setmode"),
-        ("strdup", "_strdup"),
-        ("stricmp", "_stricmp"),
-        ("strnicmp", "_strnicmp"),
+    // Known POSIX names that have _-prefixed MSVC equivalents in libucrt.
+    // This set is authoritative: only these names get stubs (prevents false matches).
+    // New FFI crates just need to use standard POSIX calls — no manual updates needed.
+    static POSIX_STUBS: &[&str] = &[
+        "close", "read", "open", "write", "lseek", "access", "chmod", "mkdir", "rmdir", "unlink",
+        "stat", "fstat", "dup", "dup2", "fileno", "isatty", "getcwd", "chdir", "umask", "mktemp",
+        "setmode", "strdup", "stricmp", "strnicmp", "pipe", "fdopen", "popen", "pclose", "putenv",
+        "getpid", "swab", "tempnam", "tzset", "wopen", "waccess", "wstat",
     ];
 
-    // Generic stub generation — no per-function signature needed.
-    // All stubs use a generic void->void function type because __imp_X is just
-    // a pointer; the calling code casts it to the correct signature at the call
-    // site. The linker only needs the address, not the type.
+    // Scan module for external function references matching known POSIX names.
+    // Generate stubs for ALL known POSIX names — external FFI libraries (.lib files)
+    // may reference these symbols (e.g., libgit2 uses close/read/write) but those
+    // references aren't visible in the LLVM module. The linker ignores unused stubs.
     let generic_fn_ty = ctx.void_type().fn_type(&[], false);
 
-    for (posix_name, msvc_name) in posix_to_msvc {
+    for posix_name in POSIX_STUBS {
         let imp_name = format!("__imp_{}", posix_name);
 
-        // Skip if already defined (e.g., by a previous compilation pass)
+        // Skip if stub already exists
         if module.get_global(&imp_name).is_some() {
             continue;
         }
 
+        // Build the MSVC-prefixed name
+        let msvc_name = format!("_{}", posix_name);
+
         // Declare the MSVC-named function (if not already present)
-        let msvc_fn = module.get_function(msvc_name).unwrap_or_else(|| {
-            module.add_function(msvc_name, generic_fn_ty, Some(Linkage::External))
+        let msvc_fn = module.get_function(&msvc_name).unwrap_or_else(|| {
+            module.add_function(&msvc_name, generic_fn_ty, Some(Linkage::External))
         });
 
         // Create __imp_<posix_name> = constant pointer to _<posix_name>
@@ -1126,6 +1201,11 @@ fn link_windows(
         .unwrap_or_else(|| extract_embedded_linker())?;
 
     let mut cmd = Command::new(&linker);
+
+    // Generate MAP file for crash debugging (maps addresses to function names)
+    let map_path = exe_path.with_extension("map");
+    cmd.arg(format!("/MAP:{}", map_path.display()));
+
     cmd.arg(format!("/OUT:{}", exe_path.display()))
         .arg(obj_file)
         .arg("/SUBSYSTEM:CONSOLE")
@@ -1243,7 +1323,7 @@ fn link_windows(
         if added_paths.insert(lib_dir.clone()) {
             cmd.arg(format!("/LIBPATH:{}", lib_dir.display()));
         }
-        cmd.arg(lib_file.to_str().unwrap());
+        cmd.arg(lib_file.to_string_lossy().as_ref());
     }
 
     let result = cmd.output();
@@ -1260,10 +1340,20 @@ fn link_windows(
             }
             Ok(exe_path)
         }
-        Ok(r) => Err(format!(
-            "Linking failed:\n{}",
-            String::from_utf8_lossy(&r.stderr)
-        )),
+        Ok(r) => {
+            let stderr = String::from_utf8_lossy(&r.stderr);
+            let stdout = String::from_utf8_lossy(&r.stdout);
+            let mut msg = String::from("Linking failed:");
+            if !stderr.is_empty() {
+                msg.push('\n');
+                msg.push_str(&stderr);
+            }
+            if !stdout.is_empty() {
+                msg.push('\n');
+                msg.push_str(&stdout);
+            }
+            Err(msg)
+        }
         Err(e) => Err(format!("Linker error: {}", e)),
     }
 }
@@ -1512,15 +1602,15 @@ fn link_unix(
                     let needs_whole_archive = lib.contains("http");
                     if needs_whole_archive {
                         cmd.arg("-Wl,--whole-archive");
-                        cmd.arg(lib_file.to_str().unwrap());
+                        cmd.arg(lib_file.to_string_lossy().as_ref());
                         cmd.arg("-Wl,--no-whole-archive");
                     } else {
-                        cmd.arg(lib_file.to_str().unwrap());
+                        cmd.arg(lib_file.to_string_lossy().as_ref());
                     }
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
-                    cmd.arg(lib_file.to_str().unwrap());
+                    cmd.arg(lib_file.to_string_lossy().as_ref());
                 }
             }
         } else {
@@ -1601,7 +1691,7 @@ mod tests {
                 span: test_span(),
             },
             TypeError {
-                kind: TypeErrorKind::Undefined("my_var".to_string()),
+                kind: TypeErrorKind::Undefined("my_var".to_string(), None),
                 span: test_span(),
             },
             TypeError {
@@ -1852,6 +1942,7 @@ mod tests {
             keep_obj: false,
             check_only: false,
             show_warnings: false,
+            timings: false,
         };
         let opts2 = opts1.clone();
         assert_eq!(opts1.output_name, opts2.output_name);

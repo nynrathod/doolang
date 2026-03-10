@@ -361,6 +361,31 @@ impl JsonBuiltins {
             .basic()?
             .into_pointer_value();
 
+        // Zero-initialize to prevent garbage in unset struct fields
+        let memset_fn = ctx
+            .module
+            .get_function(ffi_names::MEMSET)
+            .unwrap_or_else(|| {
+                let fn_ty = ptr_type.fn_type(
+                    &[
+                        ptr_type.into(),
+                        ctx.context.i32_type().into(),
+                        i64_type.into(),
+                    ],
+                    false,
+                );
+                ctx.module.add_function(ffi_names::MEMSET, fn_ty, None)
+            });
+        let _ = ctx.builder.build_call(
+            memset_fn,
+            &[
+                struct_ptr.into(),
+                ctx.context.i32_type().const_zero().into(),
+                struct_size_val.into(),
+            ],
+            "",
+        );
+
         // ── For each field, use typed extraction (zero re-serialization for primitives) ──
         for (i, (fname, fty)) in fields.iter().enumerate() {
             let field_name_str = ctx.const_string(fname);
@@ -377,9 +402,11 @@ impl JsonBuiltins {
                 );
             }
 
+            // P06: use physical field index for GEP
+            let physical_i = ctx.physical_field_index(name, i) as u32;
             let field_ptr = ctx
                 .builder
-                .build_struct_gep(struct_llvm_type, struct_ptr, i as u32, "field_ptr")
+                .build_struct_gep(struct_llvm_type, struct_ptr, physical_i, "field_ptr")
                 .ok()?;
 
             match &kind {
@@ -636,7 +663,7 @@ impl JsonBuiltins {
         // Store struct pointer at data[idx]
         let elem_slot = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ptr_type, data_ptr, &[idx], "elem_slot")
+                .build_gep(ptr_type, data_ptr, &[idx], "elem_slot")
                 .ok()?
         };
         ctx.builder.build_store(elem_slot, struct_ptr).ok()?;
@@ -729,7 +756,7 @@ impl JsonBuiltins {
 
         let elem_slot = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ptr_type, data_ptr, &[idx], "elem_slot")
+                .build_gep(ptr_type, data_ptr, &[idx], "elem_slot")
                 .ok()?
         };
         ctx.builder.build_store(elem_slot, enum_ptr).ok()?;
@@ -1224,7 +1251,10 @@ impl JsonBuiltins {
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
             }
-            TypeKind::Struct { name: _, fields } => {
+            TypeKind::Struct {
+                name: struct_name,
+                fields,
+            } => {
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
                 let key_fn = Self::get_or_declare_write_key(ctx);
@@ -1240,20 +1270,15 @@ impl JsonBuiltins {
                 }
                 let struct_ptr = val.into_pointer_value();
 
-                // Cast to struct type (extract just type, ignore visibility)
-                let field_types: Vec<_> = fields
+                // Use the cached struct type if available (P06: has reordered fields),
+                // otherwise create one from field types in logical order.
+                let field_types_logical: Vec<_> = fields
                     .iter()
                     .map(|(_, t, _)| ctx.get_llvm_type(*t).into())
                     .collect();
-                let struct_llvm_type = ctx.context.struct_type(&field_types, false);
-                let typed_ptr = ctx
-                    .builder
-                    .build_pointer_cast(
-                        struct_ptr,
-                        struct_llvm_type.ptr_type(AddressSpace::default()),
-                        "struct_cast",
-                    )
-                    .ok()?;
+                let struct_llvm_type = ctx
+                    .lookup_struct_type(&struct_name)
+                    .unwrap_or_else(|| ctx.context.struct_type(&field_types_logical, false));
 
                 for (i, (fname, fty, _)) in fields.iter().enumerate() {
                     if i > 0 {
@@ -1263,9 +1288,7 @@ impl JsonBuiltins {
                     }
 
                     // Write Key
-                    // Use `write_key` which adds quotes.
-                    // Or static global string?
-                    let key_str = ctx.const_string(fname); // char*
+                    let key_str = ctx.const_string(fname);
                     ctx.builder
                         .build_call(key_fn, &[writer.into(), key_str.into()], "")
                         .ok()?;
@@ -1274,10 +1297,11 @@ impl JsonBuiltins {
                         .build_call(colon_fn, &[writer.into()], "")
                         .ok()?;
 
-                    // Read Field
+                    // Read Field using P06-remapped physical index
+                    let physical_i = ctx.physical_field_index(&struct_name, i) as u32;
                     let field_ptr = ctx
                         .builder
-                        .build_struct_gep(struct_llvm_type, typed_ptr, i as u32, "field_ptr")
+                        .build_struct_gep(struct_llvm_type, struct_ptr, physical_i, "field_ptr")
                         .ok()?;
                     let field_ty = ctx.get_llvm_type(*fty);
                     let field_val = ctx
@@ -1409,12 +1433,9 @@ impl JsonBuiltins {
                 };
 
                 // Switch
-                let current_fn = ctx
-                    .builder
-                    .get_insert_block()
-                    .unwrap()
-                    .get_parent()
-                    .unwrap();
+                let Some(current_fn) = ctx.current_function() else {
+                    return None;
+                };
                 let merge_bb = ctx.context.append_basic_block(current_fn, "json_enum_end");
                 let default_bb = ctx
                     .context

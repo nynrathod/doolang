@@ -33,6 +33,19 @@ use inkwell::IntPredicate;
 /// key/value types, this must become dynamic based on key_type.size_of() + value_type.size_of().
 pub const MAP_ENTRY_SIZE: u64 = 16;
 
+/// Compute map entry size from key and value TypeIds.
+/// Currently returns the constant MAP_ENTRY_SIZE (16) since all Doo values are 8 bytes.
+/// When struct/tuple map values are supported, this should query the TypeRegistry for
+/// actual sizes: `type_registry.size_bytes(key_ty) + type_registry.size_bytes(val_ty)`.
+pub fn map_entry_size_for_types(
+    _key_ty: doo_core::types::TypeId,
+    _val_ty: doo_core::types::TypeId,
+) -> u64 {
+    // All current Doo types are 8 bytes (i64, f64, or pointer).
+    // When different-sized types are supported, compute dynamically from TypeRegistry.
+    MAP_ENTRY_SIZE
+}
+
 // ============================================================================
 // Array Layout Helpers
 // ============================================================================
@@ -44,7 +57,7 @@ pub fn get_array_length_ptr<'ctx>(
 ) -> Option<PointerValue<'ctx>> {
     unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i64_type(),
                 arr_ptr,
                 &[ctx.context.i64_type().const_int(0, false)],
@@ -85,7 +98,7 @@ pub fn get_array_capacity_ptr<'ctx>(
 ) -> Option<PointerValue<'ctx>> {
     unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i64_type(),
                 arr_ptr,
                 &[ctx.context.i64_type().const_int(1, false)],
@@ -127,7 +140,7 @@ pub fn get_array_data_ptr<'ctx>(
 ) -> Option<PointerValue<'ctx>> {
     unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 elem_type,
                 arr_ptr,
                 &[ctx.context.i64_type().const_int(2, false)],
@@ -147,7 +160,7 @@ pub fn get_array_element_ptr<'ctx>(
     let data_ptr = get_array_data_ptr(ctx, arr_ptr, elem_type)?;
     unsafe {
         ctx.builder
-            .build_in_bounds_gep(elem_type, data_ptr, &[index], "arr_elem_ptr")
+            .build_gep(elem_type, data_ptr, &[index], "arr_elem_ptr")
             .ok()
     }
 }
@@ -165,10 +178,12 @@ pub fn header_ptr_from_data<'ctx>(
 ) -> Option<PointerValue<'ctx>> {
     // -16 to go from data to header
     // CRITICAL: Use i64 for negative offset, cast -16i64 to u64 preserves two's complement representation
+    // NOTE: Must NOT use inbounds — clone code produces PHIs with null data pointers,
+    // and inbounds GEP on null is UB that LLVM O3 exploits to remove loop exits.
     let offset = ctx.context.i64_type().const_int(-16i64 as u64, true);
     unsafe {
         ctx.builder
-            .build_in_bounds_gep(ctx.context.i8_type(), data_ptr, &[offset], "header_ptr")
+            .build_gep(ctx.context.i8_type(), data_ptr, &[offset], "header_ptr")
             .ok()
     }
 }
@@ -213,7 +228,7 @@ pub fn get_map_length_ptr<'ctx>(
 ) -> Option<PointerValue<'ctx>> {
     unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i64_type(),
                 map_ptr,
                 &[ctx.context.i64_type().const_int(0, false)],
@@ -254,7 +269,7 @@ pub fn get_map_capacity_ptr<'ctx>(
 ) -> Option<PointerValue<'ctx>> {
     unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i64_type(),
                 map_ptr,
                 &[ctx.context.i64_type().const_int(1, false)],
@@ -298,7 +313,7 @@ pub fn get_map_data_ptr<'ctx>(
 ) -> Option<PointerValue<'ctx>> {
     unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i8_type(),
                 map_ptr,
                 &[ctx.context.i64_type().const_int(16, false)],
@@ -381,19 +396,26 @@ pub fn checked_mul_or_abort<'ctx>(
     };
 
     // Declare @llvm.umul.with.overflow.i64 intrinsic
-    let overflow_struct_type = ctx.context.struct_type(&[i64_type.into(), ctx.context.bool_type().into()], false);
+    let overflow_struct_type = ctx
+        .context
+        .struct_type(&[i64_type.into(), ctx.context.bool_type().into()], false);
     let intrinsic_type = overflow_struct_type.fn_type(&[i64_type.into(), i64_type.into()], false);
     let intrinsic = ctx
         .module
         .get_function("llvm.umul.with.overflow.i64")
         .unwrap_or_else(|| {
-            ctx.module.add_function("llvm.umul.with.overflow.i64", intrinsic_type, None)
+            ctx.module
+                .add_function("llvm.umul.with.overflow.i64", intrinsic_type, None)
         });
 
     // Call the intrinsic: returns { i64 result, i1 overflow }
     let call_result = ctx
         .builder
-        .build_call(intrinsic, &[lhs_i64.into(), rhs_i64.into()], &format!("{}_overflow", name))
+        .build_call(
+            intrinsic,
+            &[lhs_i64.into(), rhs_i64.into()],
+            &format!("{}_overflow", name),
+        )
         .ok()?
         .try_as_basic_value()
         .basic()?;
@@ -406,14 +428,22 @@ pub fn checked_mul_or_abort<'ctx>(
         .into_int_value();
     let did_overflow = ctx
         .builder
-        .build_extract_value(call_result.into_struct_value(), 1, &format!("{}_flag", name))
+        .build_extract_value(
+            call_result.into_struct_value(),
+            1,
+            &format!("{}_flag", name),
+        )
         .ok()?
         .into_int_value();
 
     // Branch: if overflow, abort; else continue
     let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
-    let overflow_bb = ctx.context.append_basic_block(current_fn, &format!("{}_overflow_abort", name));
-    let ok_bb = ctx.context.append_basic_block(current_fn, &format!("{}_ok", name));
+    let overflow_bb = ctx
+        .context
+        .append_basic_block(current_fn, &format!("{}_overflow_abort", name));
+    let ok_bb = ctx
+        .context
+        .append_basic_block(current_fn, &format!("{}_ok", name));
 
     ctx.builder
         .build_conditional_branch(did_overflow, overflow_bb, ok_bb)
@@ -422,9 +452,9 @@ pub fn checked_mul_or_abort<'ctx>(
     // Overflow block: print error and abort
     ctx.builder.position_at_end(overflow_bb);
     emit_allocation_overflow_abort(ctx, "allocation size overflow: multiplication overflow");
-    // Ensure the block is terminated (emit_allocation_overflow_abort calls exit,
-    // but we add unreachable for LLVM)
-    let _ = ctx.builder.build_unreachable();
+    // Branch to ok_bb: __doo_abort terminates the process, but LLVM must
+    // see this path as returnable to prevent noreturn inference.
+    let _ = ctx.builder.build_unconditional_branch(ok_bb);
 
     // Continue in the ok block
     ctx.builder.position_at_end(ok_bb);
@@ -461,19 +491,26 @@ pub fn checked_add_or_abort<'ctx>(
     };
 
     // Declare @llvm.uadd.with.overflow.i64 intrinsic
-    let overflow_struct_type = ctx.context.struct_type(&[i64_type.into(), ctx.context.bool_type().into()], false);
+    let overflow_struct_type = ctx
+        .context
+        .struct_type(&[i64_type.into(), ctx.context.bool_type().into()], false);
     let intrinsic_type = overflow_struct_type.fn_type(&[i64_type.into(), i64_type.into()], false);
     let intrinsic = ctx
         .module
         .get_function("llvm.uadd.with.overflow.i64")
         .unwrap_or_else(|| {
-            ctx.module.add_function("llvm.uadd.with.overflow.i64", intrinsic_type, None)
+            ctx.module
+                .add_function("llvm.uadd.with.overflow.i64", intrinsic_type, None)
         });
 
     // Call the intrinsic: returns { i64 result, i1 overflow }
     let call_result = ctx
         .builder
-        .build_call(intrinsic, &[lhs_i64.into(), rhs_i64.into()], &format!("{}_overflow", name))
+        .build_call(
+            intrinsic,
+            &[lhs_i64.into(), rhs_i64.into()],
+            &format!("{}_overflow", name),
+        )
         .ok()?
         .try_as_basic_value()
         .basic()?;
@@ -486,14 +523,22 @@ pub fn checked_add_or_abort<'ctx>(
         .into_int_value();
     let did_overflow = ctx
         .builder
-        .build_extract_value(call_result.into_struct_value(), 1, &format!("{}_flag", name))
+        .build_extract_value(
+            call_result.into_struct_value(),
+            1,
+            &format!("{}_flag", name),
+        )
         .ok()?
         .into_int_value();
 
     // Branch: if overflow, abort; else continue
     let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
-    let overflow_bb = ctx.context.append_basic_block(current_fn, &format!("{}_overflow_abort", name));
-    let ok_bb = ctx.context.append_basic_block(current_fn, &format!("{}_ok", name));
+    let overflow_bb = ctx
+        .context
+        .append_basic_block(current_fn, &format!("{}_overflow_abort", name));
+    let ok_bb = ctx
+        .context
+        .append_basic_block(current_fn, &format!("{}_ok", name));
 
     ctx.builder
         .build_conditional_branch(did_overflow, overflow_bb, ok_bb)
@@ -502,7 +547,9 @@ pub fn checked_add_or_abort<'ctx>(
     // Overflow block: print error and abort
     ctx.builder.position_at_end(overflow_bb);
     emit_allocation_overflow_abort(ctx, "allocation size overflow: addition overflow");
-    let _ = ctx.builder.build_unreachable();
+    // Branch to ok_bb: __doo_abort terminates the process, but LLVM must
+    // see this path as returnable to prevent noreturn inference.
+    let _ = ctx.builder.build_unconditional_branch(ok_bb);
 
     // Continue in the ok block
     ctx.builder.position_at_end(ok_bb);
@@ -514,11 +561,21 @@ pub fn checked_add_or_abort<'ctx>(
 /// Used by overflow check helpers to abort on allocation size overflow.
 fn emit_allocation_overflow_abort<'ctx>(ctx: &mut CodegenContext<'ctx>, message: &str) {
     // Get or declare fprintf(stderr, ...)
-    let printf_type = ctx.context.i32_type().fn_type(&[ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).into()], true);
+    let printf_type = ctx.context.i32_type().fn_type(
+        &[ctx
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default())
+            .into()],
+        true,
+    );
     let printf = ctx
         .module
         .get_function(ffi_names::PRINTF)
-        .unwrap_or_else(|| ctx.module.add_function(ffi_names::PRINTF, printf_type, None));
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(ffi_names::PRINTF, printf_type, None)
+        });
 
     let error_msg = ctx.const_string(&format!("fatal: {}\n", message));
     let _ = ctx
@@ -526,30 +583,39 @@ fn emit_allocation_overflow_abort<'ctx>(ctx: &mut CodegenContext<'ctx>, message:
         .build_call(printf, &[error_msg.into()], "print_overflow_err");
 
     // Flush stdout
-    let fflush_type = ctx.context.i32_type().fn_type(&[ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).into()], false);
+    let fflush_type = ctx.context.i32_type().fn_type(
+        &[ctx
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default())
+            .into()],
+        false,
+    );
     let fflush = ctx
         .module
         .get_function(ffi_names::FFLUSH)
-        .unwrap_or_else(|| ctx.module.add_function(ffi_names::FFLUSH, fflush_type, None));
-    let null_ptr = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).const_null();
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(ffi_names::FFLUSH, fflush_type, None)
+        });
+    let null_ptr = ctx
+        .context
+        .i8_type()
+        .ptr_type(inkwell::AddressSpace::default())
+        .const_null();
     let _ = ctx.builder.build_call(fflush, &[null_ptr.into()], "flush");
 
-    // Exit with code 1
-    let exit_type = ctx
-        .context
-        .void_type()
-        .fn_type(&[ctx.context.i32_type().into()], false);
-    let exit_fn = ctx
-        .module
-        .get_function(ffi_names::EXIT)
-        .unwrap_or_else(|| ctx.module.add_function(ffi_names::EXIT, exit_type, None));
+    // Use __doo_abort() instead of exit() directly — see get_or_create_doo_abort docs.
+    let abort_fn = ctx.get_or_create_doo_abort();
     let exit_code = ctx.context.i32_type().const_int(1, false);
     let _ = ctx
         .builder
-        .build_call(exit_fn, &[exit_code.into()], "exit_overflow");
+        .build_call(abort_fn, &[exit_code.into()], "abort_overflow");
 }
 
 /// Allocate memory using centralized `doo_alloc`
+/// SAFETY: Zero-initializes all allocated memory to prevent reading garbage
+/// (including -1/0xFFFFFFFFFFFFFFFF) from uninitialized struct fields.
 pub fn alloc_memory<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     size: IntValue<'ctx>,
@@ -562,13 +628,45 @@ pub fn alloc_memory<'ctx>(
         .get_function(ffi_names::DOO_ALLOC)
         .or_else(|| ctx.module.get_function(ffi_names::MALLOC))?;
 
-    ctx.builder
+    let ptr = ctx
+        .builder
         .build_call(alloc_fn, &[size.into()], name)
         .ok()?
         .try_as_basic_value()
         .basic()?
-        .into_pointer_value()
-        .into()
+        .into_pointer_value();
+
+    // Zero the allocated memory to prevent uninitialized pointer fields
+    // from containing garbage values like -1 that crash on dereference.
+    let memset_fn = ctx
+        .module
+        .get_function(ffi_names::MEMSET)
+        .unwrap_or_else(|| {
+            let ptr_type = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let fn_ty = ptr_type.fn_type(
+                &[
+                    ptr_type.into(),
+                    ctx.context.i32_type().into(),
+                    ctx.context.i64_type().into(),
+                ],
+                false,
+            );
+            ctx.module.add_function(ffi_names::MEMSET, fn_ty, None)
+        });
+    let _ = ctx.builder.build_call(
+        memset_fn,
+        &[
+            ptr.into(),
+            ctx.context.i32_type().const_zero().into(),
+            size.into(),
+        ],
+        "",
+    );
+
+    Some(ptr)
 }
 
 /// Free memory using centralized `doo_free`
@@ -687,13 +785,12 @@ pub fn realloc_array_capacity<'ctx>(
     let grow_bb = ctx.context.append_basic_block(current_fn, "arr_grow");
     let done_bb = ctx.context.append_basic_block(current_fn, "arr_done");
 
-    let result_alloca = ctx
-        .alloca_in_entry_block(
-            ctx.context
-                .i8_type()
-                .ptr_type(inkwell::AddressSpace::default()),
-            "arr_result",
-        )?;
+    let result_alloca = ctx.alloca_in_entry_block(
+        ctx.context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default()),
+        "arr_result",
+    )?;
     // Store the current DATA pointer
     ctx.builder.build_store(result_alloca, data_ptr).ok()?;
 
@@ -738,7 +835,7 @@ pub fn realloc_array_capacity<'ctx>(
     // Calculate new data pointer from new header
     let new_data_ptr = unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i8_type(),
                 new_header_ptr,
                 &[header_size],
@@ -830,7 +927,7 @@ pub fn alloc_with_header<'ctx>(
     // Return data pointer (header_ptr + 16)
     let data_ptr = unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i8_type(),
                 header_ptr,
                 &[header_size],
@@ -903,7 +1000,7 @@ pub fn data_ptr_from_header<'ctx>(
     let header_size = ctx.context.i64_type().const_int(16, false);
     let data_ptr = unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i8_type(),
                 header_ptr,
                 &[header_size],
@@ -947,7 +1044,7 @@ pub fn store_header<'ctx>(
     // Store capacity at offset 8 (after length)
     let cap_ptr = unsafe {
         ctx.builder
-            .build_in_bounds_gep(
+            .build_gep(
                 ctx.context.i64_type(),
                 header_ptr,
                 &[ctx.context.i64_type().const_int(1, false)],

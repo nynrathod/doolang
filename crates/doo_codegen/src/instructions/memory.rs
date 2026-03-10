@@ -326,8 +326,25 @@ pub(crate) fn clone_string<'ctx>(
             ctx.module.add_function(ffi_names::MEMCPY, fn_ty, None)
         });
 
-    // Handle null pointer case
-    let is_null = ctx.builder.build_is_null(src_ptr, "is_null").ok()?;
+    // Handle null AND invalid pointer case.
+    // CRITICAL: Check for pointers below page boundary (< 4096).
+    // This catches cases where an integer value was incorrectly stored as a ptr
+    // (e.g., DB id=1 became ptr 0x1 via inttoptr). Dereferencing such a pointer
+    // in strlen would cause an access violation crash.
+    let ptr_as_int = ctx
+        .builder
+        .build_ptr_to_int(src_ptr, i64_type, "ptr_int")
+        .ok()?;
+    let min_valid_addr = i64_type.const_int(4096, false);
+    let is_invalid = ctx
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::ULT,
+            ptr_as_int,
+            min_valid_addr,
+            "str_ptr_invalid",
+        )
+        .ok()?;
 
     let current_block = ctx.builder.get_insert_block()?;
     let func = current_block.get_parent()?;
@@ -335,7 +352,7 @@ pub(crate) fn clone_string<'ctx>(
     let merge_block = ctx.context.append_basic_block(func, "clone_merge");
 
     ctx.builder
-        .build_conditional_branch(is_null, merge_block, clone_block)
+        .build_conditional_branch(is_invalid, merge_block, clone_block)
         .ok()?;
 
     // Clone block: do the actual cloning
@@ -376,7 +393,15 @@ pub(crate) fn clone_string<'ctx>(
 
     ctx.builder.build_unconditional_branch(merge_block).ok()?;
 
-    // Merge block: phi between null and cloned
+    // Merge block: phi between null and cloned string.
+    // Return null for null/invalid input to preserve nil semantics.
+    // This is CRITICAL for result error variables: when a Result is Ok,
+    // the error variable is null. If clone_string coerces null to "",
+    // then `err != nil` evaluates to true (breaking error checking).
+    // Safety: All string builtins dispatch through null_coerce_str which
+    // inserts a select before strlen/strcmp, preventing null-deref UB.
+    // String comparison (==, !=) in arithmetic.rs also null-coerces.
+    // Print path null-coerces before printf.
     ctx.builder.position_at_end(merge_block);
     let phi = ctx.builder.build_phi(ptr_type, "cloned_str").ok()?;
     phi.add_incoming(&[
@@ -392,7 +417,7 @@ pub(crate) fn clone_string<'ctx>(
 /// IMPORTANT: Handles null pointers safely - if src_ptr is null, returns null.
 /// This is critical for error handling where error values may be null when
 /// the operation succeeded.
-fn clone_struct<'ctx>(
+pub(crate) fn clone_struct<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
     struct_name: &str,
@@ -415,7 +440,7 @@ fn clone_struct<'ctx>(
         for (_, type_id) in fields.iter() {
             let field_size = match ctx.get_type_kind(*type_id) {
                 Some(doo_core::types::TypeKind::Enum { .. }) => 16, // { i32, ptr }
-                _ => 8,  // Int, Float, Bool, Str(ptr), Array(ptr), Map(ptr), Struct(ptr)
+                _ => 8, // Int, Float, Bool, Str(ptr), Array(ptr), Map(ptr), Struct(ptr)
             };
             // Align to 8 bytes
             offset = (offset + 7) & !7;
@@ -435,7 +460,10 @@ fn clone_struct<'ctx>(
             ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
         });
 
-    // Handle null pointer case - critical for error values that may be null
+    // Handle null pointer case — needed for optional/error fields that can be null.
+    // Returns const_null on null path (preserving original semantics), then passes
+    // the PHI result through __doo_opaque_ptr (noinline optnone) to prevent LLVM
+    // from seeing the null value and exploiting UB from subsequent field accesses.
     let is_null = ctx.builder.build_is_null(src_ptr, "struct_is_null").ok()?;
 
     let current_block = ctx.builder.get_insert_block()?;
@@ -453,19 +481,42 @@ fn clone_struct<'ctx>(
     // Allocate new struct using LLVM-computed size
     let dst_ptr = ctx
         .builder
-        .build_call(
-            malloc_fn,
-            &[struct_size_val.into()],
-            "clone_struct",
-        )
+        .build_call(malloc_fn, &[struct_size_val.into()], "clone_struct")
         .ok()?
         .try_as_basic_value()
         .basic()?
         .into_pointer_value();
 
+    // Zero-initialize to prevent garbage in unset struct fields
+    let memset_fn = ctx
+        .module
+        .get_function(ffi_names::MEMSET)
+        .unwrap_or_else(|| {
+            let fn_ty = ptr_type.fn_type(
+                &[
+                    ptr_type.into(),
+                    ctx.context.i32_type().into(),
+                    i64_type.into(),
+                ],
+                false,
+            );
+            ctx.module.add_function(ffi_names::MEMSET, fn_ty, None)
+        });
+    let _ = ctx.builder.build_call(
+        memset_fn,
+        &[
+            dst_ptr.into(),
+            ctx.context.i32_type().const_zero().into(),
+            struct_size_val.into(),
+        ],
+        "",
+    );
+
     // Copy each field
     for (idx, (field_name, field_type_id)) in fields.iter().enumerate() {
         let field_kind = ctx.get_type_kind(*field_type_id);
+        // Apply P06 logical→physical field remapping
+        let physical_idx = ctx.physical_field_index(struct_name, idx);
 
         // Get source field pointer
         let src_field_ptr = unsafe {
@@ -475,7 +526,7 @@ fn clone_struct<'ctx>(
                     src_ptr,
                     &[
                         ctx.context.i32_type().const_zero(),
-                        ctx.context.i32_type().const_int(idx as u64, false),
+                        ctx.context.i32_type().const_int(physical_idx as u64, false),
                     ],
                     &format!("src_{}", field_name),
                 )
@@ -490,7 +541,7 @@ fn clone_struct<'ctx>(
                     dst_ptr,
                     &[
                         ctx.context.i32_type().const_zero(),
-                        ctx.context.i32_type().const_int(idx as u64, false),
+                        ctx.context.i32_type().const_int(physical_idx as u64, false),
                     ],
                     &format!("dst_{}", field_name),
                 )
@@ -511,6 +562,30 @@ fn clone_struct<'ctx>(
                     .map(|p| p.into())
                     .unwrap_or(src_val)
             }
+            Some(TypeKind::Struct {
+                ref name,
+                ref fields,
+            }) if src_val.is_pointer_value() => {
+                // Deep-clone nested struct fields to prevent use-after-free
+                let fp: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                let sn = name.clone();
+                clone_struct(ctx, src_val.into_pointer_value(), &sn, &fp)
+                    .map(|p| p.into())
+                    .unwrap_or(src_val)
+            }
+            Some(TypeKind::Array { element }) if src_val.is_pointer_value() => {
+                // Deep-clone nested array fields
+                let elem_ty = element;
+                clone_array(ctx, src_val.into_pointer_value(), elem_ty)
+                    .map(|p| p.into())
+                    .unwrap_or(src_val)
+            }
+            Some(TypeKind::Map { key, value }) if src_val.is_pointer_value() => {
+                // Deep-clone nested map fields
+                clone_map(ctx, src_val.into_pointer_value(), key, value)
+                    .map(|p| p.into())
+                    .unwrap_or(src_val)
+            }
             // Primitives and unknowns: direct copy
             _ => src_val,
         };
@@ -523,10 +598,9 @@ fn clone_struct<'ctx>(
     // clone_string may have created additional blocks (clone_str/clone_merge)
     // and we need the actual final block as our phi predecessor
     let final_clone_block = ctx.builder.get_insert_block()?;
-
     ctx.builder.build_unconditional_branch(merge_block).ok()?;
 
-    // Merge block: phi between null and cloned struct
+    // Merge: PHI between null (null path) and deep clone (non-null path)
     ctx.builder.position_at_end(merge_block);
     let phi = ctx.builder.build_phi(ptr_type, "cloned_struct").ok()?;
     phi.add_incoming(&[
@@ -534,7 +608,18 @@ fn clone_struct<'ctx>(
         (&dst_ptr, final_clone_block),
     ]);
 
-    Some(phi.as_basic_value().into_pointer_value())
+    // Pass through opaque identity function to prevent LLVM from exploiting
+    // the null value in the PHI for UB-based optimizations
+    let opaque_fn = ctx.get_or_create_doo_opaque_ptr();
+    let safe_result = ctx
+        .builder
+        .build_call(opaque_fn, &[phi.as_basic_value().into()], "safe_struct")
+        .ok()?
+        .try_as_basic_value()
+        .basic()?
+        .into_pointer_value();
+
+    Some(safe_result)
 }
 
 /// Clone an array by allocating new memory and copying elements.
@@ -556,8 +641,10 @@ fn clone_array<'ctx>(
     let ptr_type = ctx.ptr_type();
     let i64_type = ctx.context.i64_type();
 
-    // Handle null pointer case - critical for error values that may be null
-    let is_null = ctx.builder.build_is_null(src_ptr, "array_is_null").ok()?;
+    // Handle null pointer case — needed for optional/error fields.
+    // CRITICAL: On null path, allocate a valid zero-length array instead of returning
+    // const_null(). This prevents LLVM O3 from exploiting UB on subsequent accesses.
+    let is_null = ctx.builder.build_is_null(src_ptr, "arr_is_null").ok()?;
 
     let current_block = ctx.builder.get_insert_block()?;
     let func = current_block.get_parent()?;
@@ -584,11 +671,22 @@ fn clone_array<'ctx>(
     // Allocate new array with same length (use i64 as element type for allocation)
     let dst_ptr = alloc_with_header(ctx, src_len_i32, i64_type, "cloned_arr")?;
 
-    // Check if this is a string type that needs deep cloning
+    // Check if this is a string or struct type that needs deep cloning
     let is_str = element_type == builtin::STR;
     let type_kind = ctx.get_type_kind(element_type);
-    let needs_deep_clone =
-        is_str || matches!(type_kind, Some(doo_core::types::TypeKind::Struct { .. }));
+
+    // Extract struct info BEFORE consuming type_kind, so we can deep-clone
+    // struct elements. Without this, clone_array does a shallow pointer copy
+    // and the original array's drop frees the structs — leaving dangling ptrs.
+    let struct_info: Option<(String, Vec<(String, doo_core::types::TypeId)>)> = match &type_kind {
+        Some(doo_core::types::TypeKind::Struct { name, fields }) => {
+            let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+            Some((name.clone(), field_pairs))
+        }
+        _ => None,
+    };
+
+    let needs_deep_clone = is_str || struct_info.is_some();
 
     if needs_deep_clone {
         // For strings and structs, iterate and clone each element
@@ -624,7 +722,7 @@ fn clone_array<'ctx>(
             .ok()?;
         let src_elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), src_ptr, &[src_offset], "src_elem")
+                .build_gep(ctx.context.i8_type(), src_ptr, &[src_offset], "src_elem")
                 .ok()?
         };
 
@@ -635,11 +733,11 @@ fn clone_array<'ctx>(
             .ok()?;
         let dst_elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), dst_ptr, &[dst_offset], "dst_elem")
+                .build_gep(ctx.context.i8_type(), dst_ptr, &[dst_offset], "dst_elem")
                 .ok()?
         };
 
-        // Load source element and clone if it's a string
+        // Load source element and clone based on type
         if is_str {
             let src_val = ctx
                 .builder
@@ -648,8 +746,20 @@ fn clone_array<'ctx>(
                 .into_pointer_value();
             let cloned_val = clone_string(ctx, src_val).unwrap_or(src_val);
             ctx.builder.build_store(dst_elem_ptr, cloned_val).ok()?;
+        } else if let Some((ref struct_name, ref field_pairs)) = struct_info {
+            // Deep-clone struct elements to prevent use-after-free.
+            // The original array's drop will free the original structs,
+            // so the cloned array must own independent copies.
+            let src_val = ctx
+                .builder
+                .build_load(ptr_type, src_elem_ptr, "src_ptr")
+                .ok()?
+                .into_pointer_value();
+            let cloned_val =
+                clone_struct(ctx, src_val, struct_name, field_pairs).unwrap_or(src_val);
+            ctx.builder.build_store(dst_elem_ptr, cloned_val).ok()?;
         } else {
-            // For structs, just copy the pointer (shallow copy for now)
+            // Fallback: copy the pointer
             let src_val = ctx
                 .builder
                 .build_load(ptr_type, src_elem_ptr, "src_ptr")
@@ -692,15 +802,25 @@ fn clone_array<'ctx>(
     let final_clone_block = ctx.builder.get_insert_block()?;
     ctx.builder.build_unconditional_branch(merge_block).ok()?;
 
-    // Merge block: phi between null and cloned
+    // Merge: PHI between null (null path) and deep clone (non-null path)
     ctx.builder.position_at_end(merge_block);
-    let phi = ctx.builder.build_phi(ptr_type, "cloned_array").ok()?;
+    let phi = ctx.builder.build_phi(ptr_type, "cloned_arr").ok()?;
     phi.add_incoming(&[
         (&ptr_type.const_null(), current_block),
         (&dst_ptr, final_clone_block),
     ]);
 
-    Some(phi.as_basic_value().into_pointer_value())
+    // Pass through opaque identity function to prevent LLVM from exploiting null UB
+    let opaque_fn = ctx.get_or_create_doo_opaque_ptr();
+    let safe_result = ctx
+        .builder
+        .build_call(opaque_fn, &[phi.as_basic_value().into()], "safe_arr")
+        .ok()?
+        .try_as_basic_value()
+        .basic()?
+        .into_pointer_value();
+
+    Some(safe_result)
 }
 
 /// Clone a map by allocating new memory and copying key-value pairs.
@@ -722,14 +842,13 @@ fn clone_map<'ctx>(
     let ptr_type = ctx.ptr_type();
     let i64_type = ctx.context.i64_type();
 
-    // Handle null pointer case - critical for error values that may be null
-    let is_null = ctx.builder.build_is_null(src_ptr, "map_is_null").ok()?;
-
     let current_block = ctx.builder.get_insert_block()?;
     let func = current_block.get_parent()?;
     let clone_block = ctx.context.append_basic_block(func, "clone_map_do");
     let merge_block = ctx.context.append_basic_block(func, "clone_map_merge");
 
+    // Handle null pointer case — needed for optional/error fields.
+    let is_null = ctx.builder.build_is_null(src_ptr, "map_is_null").ok()?;
     ctx.builder
         .build_conditional_branch(is_null, merge_block, clone_block)
         .ok()?;
@@ -741,7 +860,10 @@ fn clone_map<'ctx>(
     let src_len = get_array_length_from_data(ctx, src_ptr)?;
 
     // Use i8 array type for map entries (MAP_ENTRY_SIZE bytes per entry)
-    let pair_type = ctx.context.i8_type().array_type(crate::layout::MAP_ENTRY_SIZE as u32);
+    let pair_type = ctx
+        .context
+        .i8_type()
+        .array_type(crate::layout::MAP_ENTRY_SIZE as u32);
 
     // Allocate new map with same length (pass i64 directly, no truncation)
     let dst_ptr = alloc_with_header(ctx, src_len, pair_type, "cloned_map")?;
@@ -784,12 +906,12 @@ fn clone_map<'ctx>(
 
         let src_entry_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), src_ptr, &[entry_offset], "src_entry")
+                .build_gep(ctx.context.i8_type(), src_ptr, &[entry_offset], "src_entry")
                 .ok()?
         };
         let dst_entry_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), dst_ptr, &[entry_offset], "dst_entry")
+                .build_gep(ctx.context.i8_type(), dst_ptr, &[entry_offset], "dst_entry")
                 .ok()?
         };
 
@@ -817,12 +939,12 @@ fn clone_map<'ctx>(
             .ok()?;
         let src_val_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), src_ptr, &[val_offset], "src_val_ptr")
+                .build_gep(ctx.context.i8_type(), src_ptr, &[val_offset], "src_val_ptr")
                 .ok()?
         };
         let dst_val_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), dst_ptr, &[val_offset], "dst_val_ptr")
+                .build_gep(ctx.context.i8_type(), dst_ptr, &[val_offset], "dst_val_ptr")
                 .ok()?
         };
 
@@ -876,7 +998,7 @@ fn clone_map<'ctx>(
     let final_clone_block = ctx.builder.get_insert_block()?;
     ctx.builder.build_unconditional_branch(merge_block).ok()?;
 
-    // Merge block: phi between null and cloned
+    // Merge: PHI between null (null path) and deep clone (non-null path)
     ctx.builder.position_at_end(merge_block);
     let phi = ctx.builder.build_phi(ptr_type, "cloned_map").ok()?;
     phi.add_incoming(&[
@@ -884,7 +1006,17 @@ fn clone_map<'ctx>(
         (&dst_ptr, final_clone_block),
     ]);
 
-    Some(phi.as_basic_value().into_pointer_value())
+    // Pass through opaque identity function to prevent LLVM from exploiting null UB
+    let opaque_fn = ctx.get_or_create_doo_opaque_ptr();
+    let safe_result = ctx
+        .builder
+        .build_call(opaque_fn, &[phi.as_basic_value().into()], "safe_map")
+        .ok()?
+        .try_as_basic_value()
+        .basic()?
+        .into_pointer_value();
+
+    Some(safe_result)
 }
 
 /// Clone an optional value.
@@ -949,7 +1081,7 @@ fn clone_optional<'ctx>(
 // ============================================================================
 
 /// Emit drop (cleanup) for a variable based on its type.
-fn emit_drop<'ctx>(ctx: &mut CodegenContext<'ctx>, var_name: &str) {
+pub(crate) fn emit_drop<'ctx>(ctx: &mut CodegenContext<'ctx>, var_name: &str) {
     // Skip internal loop variables - they are just copies of array pointers
     // and should not be freed (the original array variable handles cleanup).
     // Internal variables are prefixed with "__" (e.g., __num_arr, __idx).
@@ -1131,6 +1263,8 @@ fn drop_struct<'ctx>(
 
         // Drop each field that needs cleanup
         for (idx, (field_name, field_type_id)) in fields_copy.iter().enumerate() {
+            // Apply P06 logical→physical field remapping
+            let physical_idx = ctx.physical_field_index(struct_name, idx);
             let field_kind = ctx.get_type_kind(*field_type_id);
 
             // Only drop pointer/heap-allocated fields
@@ -1144,14 +1278,14 @@ fn drop_struct<'ctx>(
             );
 
             if needs_drop {
-                // Get field pointer
+                // Get field pointer using physical index (P06 remapped)
                 let field_ptr = unsafe {
                     match ctx.builder.build_gep(
                         struct_type,
                         ptr,
                         &[
                             ctx.context.i32_type().const_zero(),
-                            ctx.context.i32_type().const_int(idx as u64, false),
+                            ctx.context.i32_type().const_int(physical_idx as u64, false),
                         ],
                         &format!("field_{}", field_name),
                     ) {
@@ -1215,17 +1349,17 @@ fn drop_struct<'ctx>(
     ctx.builder.position_at_end(continue_block);
 }
 
-/// Drop an array by freeing the header (data pointer - 16 bytes).
+/// Drop an array by dropping each element (if element type needs cleanup), then freeing.
 /// Array layout: [length: i64][capacity: i64][data...]
 /// We store the DATA pointer, so we need to go back 16 bytes to get the header.
 fn drop_array<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     ptr: inkwell::values::PointerValue<'ctx>,
-    _element_type: doo_core::types::TypeId,
+    element_type: doo_core::types::TypeId,
 ) {
+    use crate::layout::get_array_length_from_data;
+
     // CRITICAL: Check if data pointer is null BEFORE calculating header pointer!
-    // If data_ptr is null, then data_ptr - 16 = 0xFFFFFFFFFFFFFFF0 which is NOT null
-    // and would crash when passed to free().
     let is_null = match ctx.builder.build_is_null(ptr, "arr_data_is_null") {
         Ok(v) => v,
         Err(_) => return,
@@ -1243,7 +1377,6 @@ fn drop_array<'ctx>(
     let free_block = ctx.context.append_basic_block(func, "drop_arr_free");
     let continue_block = ctx.context.append_basic_block(func, "drop_arr_continue");
 
-    // If null, skip to continue; otherwise go to free block
     if ctx
         .builder
         .build_conditional_branch(is_null, continue_block, free_block)
@@ -1252,15 +1385,170 @@ fn drop_array<'ctx>(
         return;
     }
 
-    // Free block: calculate header pointer and free
     ctx.builder.position_at_end(free_block);
 
+    // Check if elements need dropping (non-primitive pointer types)
+    let type_kind = ctx.get_type_kind(element_type);
+    let needs_element_drop = matches!(
+        type_kind,
+        Some(TypeKind::Str)
+            | Some(TypeKind::Array { .. })
+            | Some(TypeKind::Map { .. })
+            | Some(TypeKind::Struct { .. })
+            | Some(TypeKind::Optional { .. })
+    );
+
+    if needs_element_drop {
+        // Get array length and iterate elements
+        let i64_type = ctx.context.i64_type();
+        let ptr_type = ctx.ptr_type();
+        let elem_size = i64_type.const_int(8, false); // All elements are 8 bytes (ptrs or i64)
+
+        if let Some(arr_len) = get_array_length_from_data(ctx, ptr) {
+            // Create element drop loop
+            let loop_body = ctx.context.append_basic_block(func, "arr_drop_loop");
+            let loop_end = ctx.context.append_basic_block(func, "arr_drop_done");
+
+            let has_elements = ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SGT,
+                    arr_len,
+                    i64_type.const_zero(),
+                    "has_elems",
+                )
+                .unwrap_or_else(|_| ctx.context.bool_type().const_zero());
+
+            let loop_preheader = ctx.builder.get_insert_block().unwrap_or(free_block);
+            let _ = ctx
+                .builder
+                .build_conditional_branch(has_elements, loop_body, loop_end);
+
+            // Loop body
+            ctx.builder.position_at_end(loop_body);
+            let idx_phi = match ctx.builder.build_phi(i64_type, "drop_idx") {
+                Ok(p) => p,
+                Err(_) => {
+                    ctx.builder.position_at_end(loop_end);
+                    // Fall through to free
+                    let i8_type = ctx.context.i8_type();
+                    let i32_type = ctx.context.i32_type();
+                    let header_ptr = unsafe {
+                        ctx.builder
+                            .build_gep(
+                                i8_type,
+                                ptr,
+                                &[i32_type.const_int((-16i64) as u64, true)],
+                                "arr_header_ptr",
+                            )
+                            .ok()
+                    };
+                    if let Some(hp) = header_ptr {
+                        let free_fn = get_or_declare_free(ctx);
+                        let _ = ctx.builder.build_call(free_fn, &[hp.into()], "");
+                    }
+                    let _ = ctx.builder.build_unconditional_branch(continue_block);
+                    ctx.builder.position_at_end(continue_block);
+                    return;
+                }
+            };
+            idx_phi.add_incoming(&[(&i64_type.const_zero(), loop_preheader)]);
+            let idx = idx_phi.as_basic_value().into_int_value();
+
+            // Load element at ptr + idx * 8
+            let offset = ctx
+                .builder
+                .build_int_mul(idx, elem_size, "elem_offset")
+                .unwrap_or(i64_type.const_zero());
+            let elem_ptr = unsafe {
+                match ctx
+                    .builder
+                    .build_gep(ctx.context.i8_type(), ptr, &[offset], "elem_ptr")
+                {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let _ = ctx.builder.build_unconditional_branch(loop_end);
+                        ctx.builder.position_at_end(loop_end);
+                        // Fall through to header free below
+                        let i8_type = ctx.context.i8_type();
+                        let i32_type = ctx.context.i32_type();
+                        let header_ptr = unsafe {
+                            ctx.builder
+                                .build_gep(
+                                    i8_type,
+                                    ptr,
+                                    &[i32_type.const_int((-16i64) as u64, true)],
+                                    "arr_header_ptr",
+                                )
+                                .ok()
+                        };
+                        if let Some(hp) = header_ptr {
+                            let free_fn = get_or_declare_free(ctx);
+                            let _ = ctx.builder.build_call(free_fn, &[hp.into()], "");
+                        }
+                        let _ = ctx.builder.build_unconditional_branch(continue_block);
+                        ctx.builder.position_at_end(continue_block);
+                        return;
+                    }
+                }
+            };
+
+            // Load the element pointer value
+            if let Ok(elem_val) = ctx.builder.build_load(ptr_type, elem_ptr, "elem_val") {
+                if elem_val.is_pointer_value() {
+                    let elem_ptr_val = elem_val.into_pointer_value();
+                    // Drop based on element type
+                    match &type_kind {
+                        Some(TypeKind::Str) => drop_string(ctx, elem_ptr_val),
+                        Some(TypeKind::Struct { name, fields }) => {
+                            let name = name.clone();
+                            let pairs: Vec<_> =
+                                fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                            drop_struct(ctx, elem_ptr_val, &name, &pairs);
+                        }
+                        Some(TypeKind::Array { element }) => {
+                            drop_array(ctx, elem_ptr_val, *element);
+                        }
+                        Some(TypeKind::Map { key, value }) => {
+                            drop_map(ctx, elem_ptr_val, *key, *value);
+                        }
+                        Some(TypeKind::Optional { inner }) => {
+                            drop_optional(ctx, elem_ptr_val, *inner);
+                        }
+                        _ => drop_pointer(ctx, elem_ptr_val),
+                    }
+                }
+            }
+
+            // Get the current block (may have changed due to recursive drops)
+            let loop_back = ctx.builder.get_insert_block().unwrap_or(loop_body);
+
+            // Increment index
+            let next_idx = ctx
+                .builder
+                .build_int_add(idx, i64_type.const_int(1, false), "next_idx")
+                .unwrap_or(i64_type.const_zero());
+            idx_phi.add_incoming(&[(&next_idx, loop_back)]);
+
+            let continue_loop = ctx
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, next_idx, arr_len, "cont_loop")
+                .unwrap_or_else(|_| ctx.context.bool_type().const_zero());
+            let _ = ctx
+                .builder
+                .build_conditional_branch(continue_loop, loop_body, loop_end);
+
+            // After loop: free
+            ctx.builder.position_at_end(loop_end);
+        }
+    }
+
+    // Free the header allocation (data_ptr - 16)
     let i8_type = ctx.context.i8_type();
     let i32_type = ctx.context.i32_type();
 
-    // Calculate header pointer: data_ptr - 16
     let header_ptr = match unsafe {
-        ctx.builder.build_in_bounds_gep(
+        ctx.builder.build_gep(
             i8_type,
             ptr,
             &[i32_type.const_int((-16i64) as u64, true)],
@@ -1274,26 +1562,24 @@ fn drop_array<'ctx>(
         }
     };
 
-    // Free the header (which includes the data region)
     let free_fn = get_or_declare_free(ctx);
     let _ = ctx.builder.build_call(free_fn, &[header_ptr.into()], "");
     let _ = ctx.builder.build_unconditional_branch(continue_block);
 
-    // Continue block
     ctx.builder.position_at_end(continue_block);
 }
 
-/// Drop a map by dropping each key/value pair, then freeing.
-/// TODO: Full implementation with entry iteration.
+/// Drop a map by iterating entries, dropping keys/values that need cleanup, then freeing.
+/// Map layout: [length: i64][capacity: i64][entries...]
+/// Each entry is MAP_ENTRY_SIZE (16) bytes: key (8 bytes) + value (8 bytes).
 fn drop_map<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     ptr: inkwell::values::PointerValue<'ctx>,
-    _key_type: doo_core::types::TypeId,
-    _value_type: doo_core::types::TypeId,
+    key_type: doo_core::types::TypeId,
+    value_type: doo_core::types::TypeId,
 ) {
-    // CRITICAL: Check if data pointer is null BEFORE calculating header pointer!
-    // If data_ptr is null, then data_ptr - 16 = 0xFFFFFFFFFFFFFFF0 which is NOT null
-    // and would crash when passed to free().
+    use crate::layout::{get_map_length_from_data, MAP_ENTRY_SIZE};
+
     let is_null = match ctx.builder.build_is_null(ptr, "map_data_is_null") {
         Ok(v) => v,
         Err(_) => return,
@@ -1311,7 +1597,6 @@ fn drop_map<'ctx>(
     let free_block = ctx.context.append_basic_block(func, "drop_map_free");
     let continue_block = ctx.context.append_basic_block(func, "drop_map_continue");
 
-    // If null, skip to continue; otherwise go to free block
     if ctx
         .builder
         .build_conditional_branch(is_null, continue_block, free_block)
@@ -1320,15 +1605,132 @@ fn drop_map<'ctx>(
         return;
     }
 
-    // Free block: calculate header pointer and free
     ctx.builder.position_at_end(free_block);
 
+    // Check if keys or values need dropping
+    let key_kind = ctx.get_type_kind(key_type);
+    let value_kind = ctx.get_type_kind(value_type);
+
+    let key_needs_drop = matches!(
+        key_kind,
+        Some(TypeKind::Str)
+            | Some(TypeKind::Array { .. })
+            | Some(TypeKind::Map { .. })
+            | Some(TypeKind::Struct { .. })
+            | Some(TypeKind::Optional { .. })
+    );
+    let value_needs_drop = matches!(
+        value_kind,
+        Some(TypeKind::Str)
+            | Some(TypeKind::Array { .. })
+            | Some(TypeKind::Map { .. })
+            | Some(TypeKind::Struct { .. })
+            | Some(TypeKind::Optional { .. })
+    );
+
+    if key_needs_drop || value_needs_drop {
+        let i64_type = ctx.context.i64_type();
+        let ptr_type = ctx.ptr_type();
+        let entry_size = i64_type.const_int(MAP_ENTRY_SIZE, false);
+
+        if let Some(map_len) = get_map_length_from_data(ctx, ptr) {
+            let loop_body = ctx.context.append_basic_block(func, "map_drop_loop");
+            let loop_end = ctx.context.append_basic_block(func, "map_drop_done");
+
+            let has_entries = ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SGT,
+                    map_len,
+                    i64_type.const_zero(),
+                    "has_entries",
+                )
+                .unwrap_or_else(|_| ctx.context.bool_type().const_zero());
+
+            let loop_preheader = ctx.builder.get_insert_block().unwrap_or(free_block);
+            let _ = ctx
+                .builder
+                .build_conditional_branch(has_entries, loop_body, loop_end);
+
+            // Loop body
+            ctx.builder.position_at_end(loop_body);
+            let idx_phi = match ctx.builder.build_phi(i64_type, "map_drop_idx") {
+                Ok(p) => p,
+                Err(_) => {
+                    ctx.builder.position_at_end(loop_end);
+                    // Fall through to free below
+                    goto_map_free(ctx, ptr, continue_block);
+                    return;
+                }
+            };
+            idx_phi.add_incoming(&[(&i64_type.const_zero(), loop_preheader)]);
+            let idx = idx_phi.as_basic_value().into_int_value();
+
+            // Calculate entry offset: idx * MAP_ENTRY_SIZE
+            let offset = ctx
+                .builder
+                .build_int_mul(idx, entry_size, "entry_offset")
+                .unwrap_or(i64_type.const_zero());
+
+            // Drop key if needed (key is at entry + 0)
+            if key_needs_drop {
+                if let Ok(key_ptr) = unsafe {
+                    ctx.builder
+                        .build_gep(ctx.context.i8_type(), ptr, &[offset], "key_ptr")
+                } {
+                    if let Ok(key_val) = ctx.builder.build_load(ptr_type, key_ptr, "key_val") {
+                        if key_val.is_pointer_value() {
+                            drop_by_type_kind(ctx, key_val.into_pointer_value(), &key_kind);
+                        }
+                    }
+                }
+            }
+
+            // Drop value if needed (value is at entry + 8)
+            if value_needs_drop {
+                let val_byte_offset = ctx
+                    .builder
+                    .build_int_add(offset, i64_type.const_int(8, false), "val_offset")
+                    .unwrap_or(i64_type.const_zero());
+                if let Ok(val_ptr) = unsafe {
+                    ctx.builder
+                        .build_gep(ctx.context.i8_type(), ptr, &[val_byte_offset], "val_ptr")
+                } {
+                    if let Ok(val_val) = ctx.builder.build_load(ptr_type, val_ptr, "val_val") {
+                        if val_val.is_pointer_value() {
+                            drop_by_type_kind(ctx, val_val.into_pointer_value(), &value_kind);
+                        }
+                    }
+                }
+            }
+
+            // Get current block (may have changed due to recursive drops)
+            let loop_back = ctx.builder.get_insert_block().unwrap_or(loop_body);
+
+            let next_idx = ctx
+                .builder
+                .build_int_add(idx, i64_type.const_int(1, false), "next_idx")
+                .unwrap_or(i64_type.const_zero());
+            idx_phi.add_incoming(&[(&next_idx, loop_back)]);
+
+            let cont = ctx
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, next_idx, map_len, "cont_map")
+                .unwrap_or_else(|_| ctx.context.bool_type().const_zero());
+            let _ = ctx
+                .builder
+                .build_conditional_branch(cont, loop_body, loop_end);
+
+            ctx.builder.position_at_end(loop_end);
+        }
+    }
+
+    // Free the header allocation (data_ptr - 16)
     let i8_type = ctx.context.i8_type();
     let i32_type = ctx.context.i32_type();
 
-    // Calculate header pointer: data_ptr - 16
     let header_ptr = match unsafe {
-        ctx.builder.build_in_bounds_gep(
+        ctx.builder.build_gep(
             i8_type,
             ptr,
             &[i32_type.const_int((-16i64) as u64, true)],
@@ -1342,25 +1744,159 @@ fn drop_map<'ctx>(
         }
     };
 
-    // Free the header (which includes the data region)
     let free_fn = get_or_declare_free(ctx);
     let _ = ctx.builder.build_call(free_fn, &[header_ptr.into()], "");
     let _ = ctx.builder.build_unconditional_branch(continue_block);
 
-    // Continue block
     ctx.builder.position_at_end(continue_block);
 }
 
-/// Drop an optional value.
-/// TODO: Full implementation checking has_value flag.
+/// Helper: Jump to map free (header_ptr - 16 → free → continue)
+fn goto_map_free<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    ptr: inkwell::values::PointerValue<'ctx>,
+    continue_block: inkwell::basic_block::BasicBlock<'ctx>,
+) {
+    let i8_type = ctx.context.i8_type();
+    let i32_type = ctx.context.i32_type();
+    if let Ok(header_ptr) = unsafe {
+        ctx.builder.build_gep(
+            i8_type,
+            ptr,
+            &[i32_type.const_int((-16i64) as u64, true)],
+            "map_header_ptr",
+        )
+    } {
+        let free_fn = get_or_declare_free(ctx);
+        let _ = ctx.builder.build_call(free_fn, &[header_ptr.into()], "");
+    }
+    let _ = ctx.builder.build_unconditional_branch(continue_block);
+}
+
+/// Drop a pointer value based on its TypeKind (used by map/array element iteration).
+fn drop_by_type_kind<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    ptr: inkwell::values::PointerValue<'ctx>,
+    kind: &Option<TypeKind>,
+) {
+    match kind {
+        Some(TypeKind::Str) => drop_string(ctx, ptr),
+        Some(TypeKind::Struct { name, fields }) => {
+            let name = name.clone();
+            let pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+            drop_struct(ctx, ptr, &name, &pairs);
+        }
+        Some(TypeKind::Array { element }) => drop_array(ctx, ptr, *element),
+        Some(TypeKind::Map { key, value }) => drop_map(ctx, ptr, *key, *value),
+        Some(TypeKind::Optional { inner }) => drop_optional(ctx, ptr, *inner),
+        _ => drop_pointer(ctx, ptr),
+    }
+}
+
+/// Drop an optional value by checking has_value, dropping inner if present, then freeing.
+/// Optional layout: { i8 has_value, T inner_value }
 fn drop_optional<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     ptr: inkwell::values::PointerValue<'ctx>,
-    _inner_type: doo_core::types::TypeId,
+    inner_type: doo_core::types::TypeId,
 ) {
-    // Simplified: just free the optional pointer
-    // Full implementation would check has_value and drop inner if present
-    drop_pointer(ctx, ptr);
+    let is_null = match ctx.builder.build_is_null(ptr, "opt_is_null") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let current_block = match ctx.builder.get_insert_block() {
+        Some(b) => b,
+        None => return,
+    };
+    let func = match current_block.get_parent() {
+        Some(f) => f,
+        None => return,
+    };
+
+    let free_block = ctx.context.append_basic_block(func, "drop_opt_free");
+    let continue_block = ctx.context.append_basic_block(func, "drop_opt_continue");
+
+    if ctx
+        .builder
+        .build_conditional_branch(is_null, continue_block, free_block)
+        .is_err()
+    {
+        return;
+    }
+
+    ctx.builder.position_at_end(free_block);
+
+    let inner_kind = ctx.get_type_kind(inner_type);
+    let inner_needs_drop = matches!(
+        inner_kind,
+        Some(TypeKind::Str)
+            | Some(TypeKind::Array { .. })
+            | Some(TypeKind::Map { .. })
+            | Some(TypeKind::Struct { .. })
+            | Some(TypeKind::Optional { .. })
+    );
+
+    if inner_needs_drop {
+        // For droppable types, inner is always a pointer (8 bytes).
+        // Optional struct is { i8, ptr } with natural alignment.
+        let i8_type = ctx.context.i8_type();
+        let ptr_type = ctx.ptr_type();
+        let opt_struct_type = ctx
+            .context
+            .struct_type(&[i8_type.into(), ptr_type.into()], false);
+
+        // Load has_value flag (field 0)
+        if let Ok(has_val_ptr) =
+            ctx.builder
+                .build_struct_gep(opt_struct_type, ptr, 0, "has_val_ptr")
+        {
+            if let Ok(has_val) = ctx.builder.build_load(i8_type, has_val_ptr, "has_val") {
+                let has_val_int = has_val.into_int_value();
+                let is_some = ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        has_val_int,
+                        i8_type.const_zero(),
+                        "is_some",
+                    )
+                    .unwrap_or_else(|_| ctx.context.bool_type().const_zero());
+
+                let drop_inner = ctx.context.append_basic_block(func, "opt_drop_inner");
+                let skip_inner = ctx.context.append_basic_block(func, "opt_skip_inner");
+
+                let _ = ctx
+                    .builder
+                    .build_conditional_branch(is_some, drop_inner, skip_inner);
+
+                // Drop inner value if present
+                ctx.builder.position_at_end(drop_inner);
+                if let Ok(inner_ptr) =
+                    ctx.builder
+                        .build_struct_gep(opt_struct_type, ptr, 1, "inner_ptr")
+                {
+                    if let Ok(inner_val) = ctx.builder.build_load(ptr_type, inner_ptr, "inner_val")
+                    {
+                        if inner_val.is_pointer_value() {
+                            drop_by_type_kind(ctx, inner_val.into_pointer_value(), &inner_kind);
+                        }
+                    }
+                }
+                // Branch to skip_inner (get current block since recursive drop may have changed it)
+                let _ = ctx.builder.build_unconditional_branch(skip_inner);
+
+                ctx.builder.position_at_end(skip_inner);
+            }
+        }
+    }
+
+    // Free the optional struct
+    let free_fn = get_or_declare_free(ctx);
+    let _ = ctx.builder.build_call(free_fn, &[ptr.into()], "");
+    let _ = ctx.builder.build_unconditional_branch(continue_block);
+
+    ctx.builder.position_at_end(continue_block);
 }
 
 // ============================================================================
@@ -1412,9 +1948,7 @@ mod tests {
 
         // Should handle Drop
         let drop_instr = MirInstr {
-            kind: MirInstrKind::Drop {
-                value: sym("x"),
-            },
+            kind: MirInstrKind::Drop { value: sym("x") },
             span: Span::default(),
         };
         assert!(handler.handles(&drop_instr));

@@ -206,6 +206,9 @@ pub struct MirFunction {
     pub is_async: bool,
     /// Captured variable names from outer scope (for spawn/closure env unpacking)
     pub captures: Vec<Sym>,
+    /// Escape analysis results (populated by optimization pass).
+    /// Codegen uses this to decide heap vs stack allocation.
+    pub escape_info: Option<crate::optimize::EscapeAnalysisResult>,
 }
 
 /// Parameter definition
@@ -260,6 +263,7 @@ impl MirFunction {
             captures_by_value: false,
             is_async: false,
             captures: Vec::new(),
+            escape_info: None,
         }
     }
 

@@ -124,24 +124,26 @@ fn emit_bounds_check<'ctx>(
         )
         .ok()?;
 
-    // Get or declare exit function
-    let exit_fn = ctx.module.get_function(ffi_names::EXIT).unwrap_or_else(|| {
-        let exit_type = ctx
-            .context
-            .void_type()
-            .fn_type(&[ctx.i32_type().into()], false);
-        ctx.module.add_function(ffi_names::EXIT, exit_type, None)
-    });
-
+    // CRITICAL: Use __doo_abort() instead of exit() directly.
+    // LLVM recognizes exit() as noreturn (built-in C library knowledge) and
+    // uses this to prove bounds-check panic paths never return, which lets it
+    // remove for-in loop exit conditions. __doo_abort is noinline+optnone so
+    // LLVM can't see through it and can't infer noreturn.
+    let abort_fn = ctx.get_or_create_doo_abort();
     ctx.builder
         .build_call(
-            exit_fn,
+            abort_fn,
             &[ctx.i32_type().const_int(1, false).into()],
-            "exit_bounds",
+            "abort_bounds",
         )
         .ok()?;
 
-    ctx.builder.build_unreachable().ok()?;
+    // Branch to continue block. __doo_abort(1) terminates the process before
+    // this executes, but LLVM sees the panic path as "returnable" and
+    // preserves loop exit conditions.
+    ctx.builder
+        .build_unconditional_branch(continue_block)
+        .ok()?;
 
     // === Continue block: proceed with array access ===
     ctx.builder.position_at_end(continue_block);
@@ -176,7 +178,9 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 elem_type,
             } => {
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!("CODEGEN", "ArrayCreate: {} with {} elements",
+                    doo_debug!(
+                        "CODEGEN",
+                        "ArrayCreate: {} with {} elements",
                         resolve(*dest),
                         elements.len()
                     );
@@ -184,7 +188,9 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
                 let len_i32 = ctx.i32_type().const_int(elements.len() as u64, false);
                 let data_ptr = alloc_with_header(ctx, len_i32, elem_llvm_ty, "arr");
-                if data_ptr.is_none() && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                if data_ptr.is_none()
+                    && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
+                {
                     doo_debug!("CODEGEN", "ArrayCreate: alloc_with_header failed!");
                     return None;
                 }
@@ -262,7 +268,48 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                         .build_gep(elem_llvm_ty, base, &[idx_i64], "elem_ptr")
                 }
                 .ok()?;
-                let val = ctx.builder.build_load(elem_llvm_ty, elem_ptr, &resolve(*dest)).ok()?;
+                let val = ctx
+                    .builder
+                    .build_load(elem_llvm_ty, elem_ptr, &resolve(*dest))
+                    .ok()?;
+
+                // CRITICAL: Deep-clone struct/string elements on access.
+                // Array still owns the original, so accessing an element must produce
+                // an independent copy to avoid double-free when the array is dropped.
+                // This aligns with Doo's ownership model: auto-clone when variable reused.
+                let val = match ctx.get_type_kind(*elem_type) {
+                    Some(doo_core::types::TypeKind::Struct {
+                        ref name,
+                        ref fields,
+                    }) => {
+                        if val.is_pointer_value() {
+                            let field_pairs: Vec<_> =
+                                fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                            let struct_name = name.clone();
+                            super::memory::clone_struct(
+                                ctx,
+                                val.into_pointer_value(),
+                                &struct_name,
+                                &field_pairs,
+                            )
+                            .map(|p| p.into())
+                            .unwrap_or(val)
+                        } else {
+                            val
+                        }
+                    }
+                    Some(doo_core::types::TypeKind::Str) => {
+                        if val.is_pointer_value() {
+                            super::memory::clone_string(ctx, val.into_pointer_value())
+                                .map(|p| -> BasicValueEnum { p.into() })
+                                .unwrap_or(val)
+                        } else {
+                            val
+                        }
+                    }
+                    _ => val, // Primitives (Int, Float, Bool) — copy is safe
+                };
+
                 ctx.set_temp(&resolve(*dest), val);
                 // Set the type for the temp so Clone knows the correct element type
                 ctx.set_variable_type(&resolve(*dest), *elem_type);
@@ -457,8 +504,8 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 // We need to know element SIZE for realloc.
                 let val_type = val.get_type();
                 let _elem_size = val_type.size_of()?; // This might be wrong if val is pointer but array holds structs
-                                                     // Better: rely on type info from a registry if available, but codegen usually works on LLVM types.
-                                                     // Assuming homogeneous array, element type is type of 'val'.
+                                                      // Better: rely on type info from a registry if available, but codegen usually works on LLVM types.
+                                                      // Assuming homogeneous array, element type is type of 'val'.
 
                 let elem_llvm_ty = val_type;
                 let pair_size = elem_llvm_ty.size_of()?;

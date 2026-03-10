@@ -2,7 +2,7 @@
 //!
 //! Hierarchical symbol tables for tracking declarations.
 
-use doo_core::{Span, types::TypeId};
+use doo_core::{types::TypeId, Span};
 use rustc_hash::FxHashMap;
 
 /// Symbol in a scope.
@@ -178,11 +178,73 @@ impl ScopeManager {
 
     /// Get all unused variables (for warnings).
     pub fn unused_symbols(&self) -> Vec<&Symbol> {
-        self.scopes.iter()
+        self.scopes
+            .iter()
             .flat_map(|s| s.symbols.values())
             .filter(|s| !s.used && matches!(s.kind, SymbolKind::Variable | SymbolKind::Parameter))
             .collect()
     }
+
+    /// Collect all visible symbol names from the current scope chain.
+    pub fn collect_visible_names(&self) -> Vec<&str> {
+        let mut names = Vec::new();
+        let mut scope_idx = Some(self.current);
+        while let Some(idx) = scope_idx {
+            for key in self.scopes[idx].symbols.keys() {
+                // Skip internal symbols (e.g. __struct_Foo)
+                if !key.starts_with("__") {
+                    names.push(key.as_str());
+                }
+            }
+            scope_idx = self.scopes[idx].parent;
+        }
+        names
+    }
+
+    /// Find the closest matching name for a given name using Levenshtein distance.
+    /// Returns `Some(name)` if a match is found within `max_distance` (default 3).
+    pub fn find_suggestion(&self, name: &str) -> Option<String> {
+        const MAX_DISTANCE: usize = 3;
+        let visible = self.collect_visible_names();
+        let mut best: Option<(&str, usize)> = None;
+        for candidate in &visible {
+            if *candidate == name {
+                continue;
+            }
+            let dist = levenshtein(name, candidate);
+            if dist <= MAX_DISTANCE {
+                if best.is_none() || dist < best.unwrap().1 {
+                    best = Some((candidate, dist));
+                }
+            }
+        }
+        best.map(|(s, _)| s.to_string())
+    }
+}
+
+/// Compute Levenshtein edit distance between two strings.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a_len = a.len();
+    let b_len = b.len();
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
+
+    let mut prev: Vec<usize> = (0..=b_len).collect();
+    let mut curr = vec![0usize; b_len + 1];
+
+    for (i, ac) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, bc) in b.chars().enumerate() {
+            let cost = if ac == bc { 0 } else { 1 };
+            curr[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(curr[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b_len]
 }
 
 impl Default for ScopeManager {
@@ -204,6 +266,8 @@ pub enum ScopeError {
     Undeclared {
         name: String,
         span: Span,
+        /// Closest matching name from visible scope (for "did you mean?" suggestions).
+        suggestion: Option<String>,
     },
 }
 

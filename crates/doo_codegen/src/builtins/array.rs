@@ -123,7 +123,7 @@ impl ArrayBuiltins {
         let elem_ty = ctx.context.i64_type();
         let elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, arr_ptr, &[last_idx], "last_ptr")
+                .build_gep(elem_ty, arr_ptr, &[last_idx], "last_ptr")
                 .ok()?
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "last").ok()?;
@@ -179,7 +179,7 @@ impl ArrayBuiltins {
         let elem_ty = ctx.context.i64_type();
         let elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, arr_ptr, &[last_idx], "last_ptr")
+                .build_gep(elem_ty, arr_ptr, &[last_idx], "last_ptr")
                 .ok()?
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "pop").ok()?;
@@ -228,10 +228,8 @@ impl ArrayBuiltins {
         let inc_bb = ctx.context.append_basic_block(current_fn, "idx_inc");
         let end_bb = ctx.context.append_basic_block(current_fn, "idx_end");
 
-        let idx_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
-        let res_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i32_type(), "res")?;
+        let idx_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
+        let res_alloca = ctx.alloca_in_entry_block(ctx.context.i32_type(), "res")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -261,7 +259,7 @@ impl ArrayBuiltins {
         let elem_ty = ctx.context.i64_type();
         let elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
+                .build_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
                 .ok()?
         };
         let elem = ctx
@@ -369,12 +367,12 @@ impl ArrayBuiltins {
 
         let ptr1 = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "ptr1")
+                .build_gep(elem_ty, arr_ptr, &[idx], "ptr1")
                 .ok()?
         };
         let ptr2 = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, arr_ptr, &[rev_idx], "ptr2")
+                .build_gep(elem_ty, arr_ptr, &[rev_idx], "ptr2")
                 .ok()?
         };
 
@@ -703,7 +701,49 @@ impl ArrayBuiltins {
                 .build_gep(elem_llvm, out_base, &[idx], "dst_ptr")
         }
         .ok()?;
-        ctx.builder.build_store(dst_ptr, val).ok()?;
+
+        // CRITICAL: Deep-clone elements that contain heap allocations (strings, structs)
+        // to avoid double-free when both source and sliced arrays are dropped.
+        let elem_kind = ctx.get_type_kind(elem_type);
+        match &elem_kind {
+            Some(doo_core::types::TypeKind::Struct { name, fields }) => {
+                if val.is_pointer_value() {
+                    let field_pairs: Vec<_> =
+                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                    let struct_name = name.clone();
+                    if let Some(cloned) = crate::instructions::memory::clone_struct(
+                        ctx,
+                        val.into_pointer_value(),
+                        &struct_name,
+                        &field_pairs,
+                    ) {
+                        ctx.builder.build_store(dst_ptr, cloned).ok()?;
+                    } else {
+                        ctx.builder.build_store(dst_ptr, val).ok()?;
+                    }
+                } else {
+                    ctx.builder.build_store(dst_ptr, val).ok()?;
+                }
+            }
+            Some(doo_core::types::TypeKind::Str) => {
+                if val.is_pointer_value() {
+                    if let Some(cloned) =
+                        crate::instructions::memory::clone_string(ctx, val.into_pointer_value())
+                    {
+                        let cloned_val: BasicValueEnum = cloned.into();
+                        ctx.builder.build_store(dst_ptr, cloned_val).ok()?;
+                    } else {
+                        ctx.builder.build_store(dst_ptr, val).ok()?;
+                    }
+                } else {
+                    ctx.builder.build_store(dst_ptr, val).ok()?;
+                }
+            }
+            _ => {
+                // Primitives (Int, Float, Bool) — shallow copy is safe
+                ctx.builder.build_store(dst_ptr, val).ok()?;
+            }
+        }
         let next = ctx
             .builder
             .build_int_add(idx, ctx.context.i64_type().const_int(1, false), "next")
@@ -848,9 +888,14 @@ impl ArrayBuiltins {
                 .build_load(elem_llvm, elem_ptr, "elem")
                 .ok()?
                 .into_pointer_value();
+            // CRITICAL: Null-coerce element before strlen to prevent UB.
+            // LLVM infers nonnull+dereferenceable(1) on strlen parameters.
+            // A null element would be UB that LLVM O3 exploits to remove return
+            // instructions (marking the function as noreturn).
+            let safe_elem = crate::utils::null_coerce_str(ctx, elem);
             let elen = ctx
                 .builder
-                .build_call(strlen, &[elem.into()], "elen")
+                .build_call(strlen, &[safe_elem.into()], "elen")
                 .ok()?
                 .try_as_basic_value()
                 .basic()?
@@ -896,7 +941,7 @@ impl ArrayBuiltins {
         // Calculate buffer end for bounds checking with snprintf
         let buf_end = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), out_ptr, &[total], "buf_end")
+                .build_gep(ctx.context.i8_type(), out_ptr, &[total], "buf_end")
         }
         .ok()?;
         let buf_end_alloca = ctx
@@ -974,19 +1019,22 @@ impl ArrayBuiltins {
                 .build_load(elem_llvm, elem_ptr, "elem")
                 .ok()?
                 .into_pointer_value();
+            // CRITICAL: Null-coerce element before strlen/memcpy to prevent UB.
+            // Same reason as the length calculation loop above.
+            let safe_elem = crate::utils::null_coerce_str(ctx, elem);
             let elen = ctx
                 .builder
-                .build_call(strlen, &[elem.into()], "elen")
+                .build_call(strlen, &[safe_elem.into()], "elen")
                 .ok()?
                 .try_as_basic_value()
                 .basic()?
                 .into_int_value();
             ctx.builder
-                .build_call(memcpy, &[cursor.into(), elem.into(), elen.into()], "")
+                .build_call(memcpy, &[cursor.into(), safe_elem.into(), elen.into()], "")
                 .ok()?;
             let cursor2 = unsafe {
                 ctx.builder
-                    .build_in_bounds_gep(ctx.context.i8_type(), cursor, &[elen], "cursor2")
+                    .build_gep(ctx.context.i8_type(), cursor, &[elen], "cursor2")
             }
             .ok()?;
             ctx.builder.build_store(cursor_alloca, cursor2).ok()?;
@@ -1091,12 +1139,8 @@ impl ArrayBuiltins {
                 .ok()?
                 .into_pointer_value();
             let cursor2 = unsafe {
-                ctx.builder.build_in_bounds_gep(
-                    ctx.context.i8_type(),
-                    cursor_now,
-                    &[written64],
-                    "cursor2",
-                )
+                ctx.builder
+                    .build_gep(ctx.context.i8_type(), cursor_now, &[written64], "cursor2")
             }
             .ok()?;
             ctx.builder.build_store(cursor_alloca, cursor2).ok()?;
@@ -1127,7 +1171,7 @@ impl ArrayBuiltins {
             .ok()?;
         let cursor2 = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), cursor, &[sep_len], "cursor2")
+                .build_gep(ctx.context.i8_type(), cursor, &[sep_len], "cursor2")
         }
         .ok()?;
         ctx.builder.build_store(cursor_alloca, cursor2).ok()?;
@@ -1258,7 +1302,7 @@ impl ArrayBuiltins {
         // Load element using correct element type
         let elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
+                .build_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
                 .ok()?
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
@@ -1269,7 +1313,7 @@ impl ArrayBuiltins {
         // Store result using correct element type
         let result_elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, result_data, &[idx], "res_elem")
+                .build_gep(elem_ty, result_data, &[idx], "res_elem")
                 .ok()?
         };
         ctx.builder.build_store(result_elem_ptr, mapped).ok()?;
@@ -1393,7 +1437,7 @@ impl ArrayBuiltins {
         ctx.builder.position_at_end(check_bb);
         let elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
+                .build_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
                 .ok()?
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;
@@ -1426,10 +1470,52 @@ impl ArrayBuiltins {
             .into_int_value();
         let result_elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, result_data, &[res_idx], "res_elem")
+                .build_gep(elem_ty, result_data, &[res_idx], "res_elem")
                 .ok()?
         };
-        ctx.builder.build_store(result_elem_ptr, elem).ok()?;
+
+        // CRITICAL: Deep-clone elements that contain heap allocations (strings, structs)
+        // to avoid double-free when both source and filtered arrays are dropped.
+        let elem_kind = ctx.get_type_kind(elem_type_id);
+        match &elem_kind {
+            Some(doo_core::types::TypeKind::Struct { name, fields }) => {
+                if elem.is_pointer_value() {
+                    let field_pairs: Vec<_> =
+                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                    let struct_name = name.clone();
+                    if let Some(cloned) = crate::instructions::memory::clone_struct(
+                        ctx,
+                        elem.into_pointer_value(),
+                        &struct_name,
+                        &field_pairs,
+                    ) {
+                        ctx.builder.build_store(result_elem_ptr, cloned).ok()?;
+                    } else {
+                        ctx.builder.build_store(result_elem_ptr, elem).ok()?;
+                    }
+                } else {
+                    ctx.builder.build_store(result_elem_ptr, elem).ok()?;
+                }
+            }
+            Some(doo_core::types::TypeKind::Str) => {
+                if elem.is_pointer_value() {
+                    if let Some(cloned) =
+                        crate::instructions::memory::clone_string(ctx, elem.into_pointer_value())
+                    {
+                        let cloned_val: BasicValueEnum = cloned.into();
+                        ctx.builder.build_store(result_elem_ptr, cloned_val).ok()?;
+                    } else {
+                        ctx.builder.build_store(result_elem_ptr, elem).ok()?;
+                    }
+                } else {
+                    ctx.builder.build_store(result_elem_ptr, elem).ok()?;
+                }
+            }
+            _ => {
+                // Primitives (Int, Float, Bool) — shallow copy is safe
+                ctx.builder.build_store(result_elem_ptr, elem).ok()?;
+            }
+        }
         let next_res = ctx
             .builder
             .build_int_add(
@@ -1525,7 +1611,7 @@ impl ArrayBuiltins {
         let acc = ctx.builder.build_load(acc_ty, acc_alloca, "acc").ok()?;
         let elem_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
+                .build_gep(elem_ty, arr_ptr, &[idx], "elem_ptr")
                 .ok()?
         };
         let elem = ctx.builder.build_load(elem_ty, elem_ptr, "elem").ok()?;

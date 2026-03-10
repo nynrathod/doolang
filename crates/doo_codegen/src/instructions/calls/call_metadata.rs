@@ -91,17 +91,22 @@ pub(crate) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
 ) {
     let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
 
-    // For auth: args are [server, signup_path, login_path, struct_name, db]
-    // For crud: args are [server, base_path, struct_name, db]
-    let struct_name_arg_idx = if symbol == http_pkg::DOO_HTTP_AUTH {
-        3
-    } else {
-        2
-    };
+    // Find the struct name argument by scanning for a string constant
+    // that resolves to a known struct type in the registry, instead of
+    // hardcoding the argument index per FFI function.
+    let struct_name = args.iter().find_map(|arg| {
+        if let MirOperand::Const(MirConst::Str(name)) = arg {
+            // Check if this string is a known struct type
+            if ctx.type_registry.lookup(name).is_some() {
+                return Some(name.clone());
+            }
+        }
+        None
+    });
 
-    let struct_name = match args.get(struct_name_arg_idx) {
-        Some(MirOperand::Const(MirConst::Str(name))) => name.clone(),
-        _ => return, // Not a constant string, can't determine at compile time
+    let struct_name = match struct_name {
+        Some(name) => name,
+        None => return, // No struct name found in arguments
     };
 
     if debug {
@@ -377,38 +382,57 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                     }
 
                     let mut field_list: Vec<serde_json::Value> = Vec::new();
-                    let mut current_offset: u64 = 0;
+                    let field_count = fields.len();
 
                     // Look up decorators for this struct from the MIR-populated map
                     let struct_decorators = field_decorators_map.get(name.as_str());
 
-                    for (field_name, field_type_id, _) in fields {
-                        let field_type_name = type_id_to_string_inner(registry, *field_type_id);
-
-                        // Calculate field size and alignment based on LLVM type mapping
-                        // CRITICAL: Must match get_llvm_type() in context.rs
-                        // - Int -> i64 (8 bytes), NOT i32
-                        // - Float -> f64 (8 bytes)
-                        // - Bool -> i1 (1 byte, but aligned to 8 for struct fields)
-                        // - Str/ptr -> ptr (8 bytes on 64-bit)
-                        let (field_size, field_align) =
+                    // Calculate field size and alignment based on LLVM type mapping
+                    // CRITICAL: Must match get_llvm_type() in context.rs
+                    // - Int -> i64 (8 bytes), NOT i32
+                    // - Float -> f64 (8 bytes)
+                    // - Bool -> i1 (1 byte)
+                    // - Str/ptr -> ptr (8 bytes on 64-bit)
+                    let field_size_align: Vec<(u64, u64)> = fields
+                        .iter()
+                        .map(|(_, field_type_id, _)| {
                             match registry.get(*field_type_id).map(|t| &t.kind) {
                                 Some(TypeKind::Int) => (8u64, 8u64),       // i64
                                 Some(TypeKind::Float) => (8, 8),           // f64
-                                Some(TypeKind::Bool) => (1, 1), // i1 (but struct packs with padding)
-                                Some(TypeKind::Str) => (8, 8),  // pointer
-                                Some(TypeKind::Array { .. }) => (8, 8), // pointer to array
-                                Some(TypeKind::Map { .. }) => (8, 8), // pointer to map
-                                Some(TypeKind::Struct { .. }) => (8, 8), // pointer to struct
+                                Some(TypeKind::Bool) => (1, 1),            // i1
+                                Some(TypeKind::Str) => (8, 8),             // pointer
+                                Some(TypeKind::Array { .. }) => (8, 8),    // pointer to array
+                                Some(TypeKind::Map { .. }) => (8, 8),      // pointer to map
+                                Some(TypeKind::Struct { .. }) => (8, 8),   // pointer to struct
                                 Some(TypeKind::Optional { .. }) => (8, 8), // pointer
                                 Some(TypeKind::Enum { .. }) => (16, 8), // { i32, ptr } = 16 bytes
-                                _ => (8, 8),                    // default to pointer size
-                            };
+                                _ => (8, 8),                            // default to pointer size
+                            }
+                        })
+                        .collect();
 
+                    // Apply P06 field reordering: sort by alignment descending (stable sort)
+                    // MUST match type_cache.rs create_struct_type() reordering exactly
+                    let mut sorted_indices: Vec<usize> = (0..field_count).collect();
+                    sorted_indices
+                        .sort_by(|&a, &b| field_size_align[b].1.cmp(&field_size_align[a].1));
+
+                    // Compute physical offsets using the sorted (physical) order
+                    let mut physical_offsets = vec![0u64; field_count];
+                    let mut current_offset: u64 = 0;
+                    for &logical_idx in &sorted_indices {
+                        let (field_size, field_align) = field_size_align[logical_idx];
                         // Align current offset to field's alignment
                         if field_align > 0 && current_offset % field_align != 0 {
                             current_offset = ((current_offset / field_align) + 1) * field_align;
                         }
+                        physical_offsets[logical_idx] = current_offset;
+                        current_offset += field_size;
+                    }
+
+                    // Build field list in LOGICAL order with correct PHYSICAL offsets
+                    for (i, (field_name, field_type_id, _)) in fields.iter().enumerate() {
+                        let field_type_name = type_id_to_string_inner(registry, *field_type_id);
 
                         // Look up decorators for this field (single source of truth from MIR)
                         let decorators: Vec<String> = struct_decorators
@@ -422,12 +446,9 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                         field_list.push(serde_json::json!({
                             "name": field_name,
                             "type": field_type_name,
-                            "offset": current_offset,
+                            "offset": physical_offsets[i],
                             "decorators": decorators
                         }));
-
-                        // Move offset past this field
-                        current_offset += field_size;
 
                         // Recursively collect nested structs and enums
                         collect_struct_layout(

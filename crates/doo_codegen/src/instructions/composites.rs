@@ -63,24 +63,49 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         ctx.module
                             .add_function(doo_core::constants::ffi_names::MALLOC, fn_ty, None)
                     });
-                let tuple_size_val = tuple_type
-                    .size_of()
-                    .unwrap_or_else(|| {
-                        // Fallback: tuples are simpler — sum of 8-byte fields
-                        let size = ((elements.len() as u64) * 8).max(16);
-                        i64_type.const_int(size, false)
-                    });
+                let tuple_size_val = tuple_type.size_of().unwrap_or_else(|| {
+                    // Fallback: tuples are simpler — sum of 8-byte fields
+                    let size = ((elements.len() as u64) * 8).max(16);
+                    i64_type.const_int(size, false)
+                });
                 let heap_ptr = ctx
                     .builder
-                    .build_call(
-                        malloc_fn,
-                        &[tuple_size_val.into()],
-                        "tuple_alloc",
-                    )
+                    .build_call(malloc_fn, &[tuple_size_val.into()], "tuple_alloc")
                     .ok()?
                     .try_as_basic_value()
                     .basic()?
                     .into_pointer_value();
+
+                // Zero-initialize to prevent garbage in unset tuple fields
+                {
+                    let memset_fn = ctx
+                        .module
+                        .get_function(doo_core::constants::ffi_names::MEMSET)
+                        .unwrap_or_else(|| {
+                            let fn_ty = ptr_type.fn_type(
+                                &[
+                                    ptr_type.into(),
+                                    ctx.context.i32_type().into(),
+                                    i64_type.into(),
+                                ],
+                                false,
+                            );
+                            ctx.module.add_function(
+                                doo_core::constants::ffi_names::MEMSET,
+                                fn_ty,
+                                None,
+                            )
+                        });
+                    let _ = ctx.builder.build_call(
+                        memset_fn,
+                        &[
+                            heap_ptr.into(),
+                            ctx.context.i32_type().const_zero().into(),
+                            tuple_size_val.into(),
+                        ],
+                        "",
+                    );
+                }
 
                 for (i, elem) in elements.iter().enumerate() {
                     if let Some(val) = operand_to_value(ctx, elem) {
@@ -156,11 +181,19 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             (tuple_struct, elem_llvm)
                         };
 
-                        if let Ok(field_ptr) =
-                            ctx.builder
-                                .build_struct_gep(tuple_ty, ptr, *index as u32, "field")
-                        {
-                            if let Ok(val) = ctx.builder.build_load(elem_type, field_ptr, &dest_str) {
+                        if let Ok(field_ptr) = unsafe {
+                            ctx.builder.build_gep(
+                                tuple_ty,
+                                ptr,
+                                &[
+                                    ctx.context.i32_type().const_zero(),
+                                    ctx.context.i32_type().const_int(*index as u64, false),
+                                ],
+                                "field",
+                            )
+                        } {
+                            if let Ok(val) = ctx.builder.build_load(elem_type, field_ptr, &dest_str)
+                            {
                                 ctx.set_temp(&dest_str, val);
 
                                 if let Some(tid) = ctx.get_variable_type(&dest_str) {
@@ -184,7 +217,9 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                 if let Some(inner_kind) = ctx.get_type_kind(inner) {
                                                     match inner_kind {
                                                         TypeKind::Struct { name, .. } => {
-                                                            ctx.set_temp_struct_type(&dest_str, &name);
+                                                            ctx.set_temp_struct_type(
+                                                                &dest_str, &name,
+                                                            );
                                                         }
                                                         TypeKind::TypeRef { name: ref_name } => {
                                                             if let Some(resolved_tid) =
@@ -233,16 +268,24 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     let i64_type = ctx.context.i64_type();
 
                     // Get or declare doo_map_new, doo_map_set, doo_map_set_str_array
-                    let map_new_fn = ctx.module.get_function(ffi_names::DOO_MAP_NEW).unwrap_or_else(|| {
-                        let fn_ty = ptr_type.fn_type(&[], false);
-                        ctx.module.add_function(ffi_names::DOO_MAP_NEW, fn_ty, None)
-                    });
-                    let map_set_fn = ctx.module.get_function(ffi_names::DOO_MAP_SET).unwrap_or_else(|| {
-                        let void_ty = ctx.context.void_type();
-                        let fn_ty = void_ty
-                            .fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
-                        ctx.module.add_function(ffi_names::DOO_MAP_SET, fn_ty, None)
-                    });
+                    let map_new_fn = ctx
+                        .module
+                        .get_function(ffi_names::DOO_MAP_NEW)
+                        .unwrap_or_else(|| {
+                            let fn_ty = ptr_type.fn_type(&[], false);
+                            ctx.module.add_function(ffi_names::DOO_MAP_NEW, fn_ty, None)
+                        });
+                    let map_set_fn = ctx
+                        .module
+                        .get_function(ffi_names::DOO_MAP_SET)
+                        .unwrap_or_else(|| {
+                            let void_ty = ctx.context.void_type();
+                            let fn_ty = void_ty.fn_type(
+                                &[ptr_type.into(), ptr_type.into(), ptr_type.into()],
+                                false,
+                            );
+                            ctx.module.add_function(ffi_names::DOO_MAP_SET, fn_ty, None)
+                        });
                     let map_set_arr_fn = ctx
                         .module
                         .get_function(ffi_names::DOO_MAP_SET_STR_ARRAY)
@@ -257,11 +300,15 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         });
 
                     // Get or declare sprintf for int/bool to string conversion
-                    let sprintf_fn = ctx.module.get_function(ffi_names::SPRINTF).unwrap_or_else(|| {
-                        let i32_type = ctx.i32_type();
-                        let fn_ty = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
-                        ctx.module.add_function(ffi_names::SPRINTF, fn_ty, None)
-                    });
+                    let sprintf_fn =
+                        ctx.module
+                            .get_function(ffi_names::SPRINTF)
+                            .unwrap_or_else(|| {
+                                let i32_type = ctx.i32_type();
+                                let fn_ty =
+                                    i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], true);
+                                ctx.module.add_function(ffi_names::SPRINTF, fn_ty, None)
+                            });
 
                     // Create the map
                     let map_ptr = ctx
@@ -399,8 +446,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                         .module
                                         .get_function(ffi_names::DOO_FORMAT_FLOAT)
                                         .unwrap_or_else(|| {
-                                            let fn_ty =
-                                                ptr_type.fn_type(&[f64_type.into()], false);
+                                            let fn_ty = ptr_type.fn_type(&[f64_type.into()], false);
                                             ctx.module.add_function(
                                                 ffi_names::DOO_FORMAT_FLOAT,
                                                 fn_ty,
@@ -409,22 +455,14 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                         });
                                     let str_ptr = ctx
                                         .builder
-                                        .build_call(
-                                            format_fn,
-                                            &[val.into()],
-                                            "fmt_float",
-                                        )
+                                        .build_call(format_fn, &[val.into()], "fmt_float")
                                         .ok()
                                         .and_then(|v| v.try_as_basic_value().basic());
                                     if let Some(str_ptr) = str_ptr {
                                         ctx.builder
                                             .build_call(
                                                 map_set_fn,
-                                                &[
-                                                    map_ptr.into(),
-                                                    key_str.into(),
-                                                    str_ptr.into(),
-                                                ],
+                                                &[map_ptr.into(), key_str.into(), str_ptr.into()],
                                                 "",
                                             )
                                             .ok();
@@ -445,11 +483,12 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 let field_names: Vec<String> =
                     fields.iter().map(|(name, _)| resolve(*name)).collect();
 
-                // Register struct metadata for field lookups
+                // Register struct metadata for field lookups (in declaration order)
                 ctx.register_struct_metadata(&sname, field_names);
 
-                // Build LLVM struct type with correct field types from type registry
-                // Use get_llvm_type for consistent type mapping across all code paths
+                // Build LLVM struct type with correct field types from type registry.
+                // P06 field reordering is handled inside get_struct_type() — all callers
+                // pass logical (declaration) order and the type cache sorts by alignment.
                 let field_types: Vec<inkwell::types::BasicTypeEnum> =
                     if let Some(field_type_ids) = ctx.get_struct_field_types(&sname) {
                         field_type_ids
@@ -457,7 +496,6 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             .map(|type_id| ctx.get_llvm_type(*type_id))
                             .collect()
                     } else {
-                        // Fallback: use get_llvm_type based on operand types
                         fields.iter().map(|_| ctx.i64_type().into()).collect()
                     };
                 let struct_type = ctx.get_struct_type(&sname, &field_types);
@@ -500,11 +538,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 // Heap allocate the struct (so Drop can free it)
                 let struct_ptr = ctx
                     .builder
-                    .build_call(
-                        malloc_fn,
-                        &[struct_size_val.into()],
-                        &dest_str,
-                    )
+                    .build_call(malloc_fn, &[struct_size_val.into()], &dest_str)
                     .ok()?
                     .try_as_basic_value()
                     .basic()?
@@ -513,13 +547,15 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                 // Get field type IDs for proper boxing
                 let _field_type_ids = ctx.get_struct_field_types(&sname);
 
-                // Store field values
-                for (i, (_, value)) in fields.iter().enumerate() {
+                // Store field values using P06-remapped physical indices
+                // (remap computed by get_struct_type during struct creation)
+                for (logical_i, (_, value)) in fields.iter().enumerate() {
+                    let physical_i = ctx.physical_field_index(&sname, logical_i);
                     if let Some(val) = operand_to_value(ctx, value) {
                         if let Ok(ptr) = ctx.builder.build_struct_gep(
                             struct_type,
                             struct_ptr,
-                            i as u32,
+                            physical_i as u32,
                             "field_ptr",
                         ) {
                             // Store value directly - enum struct types are now stored by value
@@ -582,8 +618,12 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                         if debug {
                             if struct_name.is_none() {
-                                doo_debug!("CODEGEN", "WARNING: FieldGet {} has no struct type for {:?}", 
-                                    dest_str, object);
+                                doo_debug!(
+                                    "CODEGEN",
+                                    "WARNING: FieldGet {} has no struct type for {:?}",
+                                    dest_str,
+                                    object
+                                );
                             } else {
                                 doo_debug!(
                                     "CODEGEN",
@@ -596,10 +636,9 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         }
 
                         if let Some(struct_name) = struct_name {
-                            let field_index =
-                                ctx.get_field_index(&struct_name, &field_str).unwrap_or_else(|| {
-                                    field_str.parse::<u32>().unwrap_or(0)
-                                });
+                            let field_index = ctx
+                                .get_field_index(&struct_name, &field_str)
+                                .unwrap_or_else(|| field_str.parse::<u32>().unwrap_or(0));
                             if debug {
                                 doo_debug!(
                                     "CODEGEN",
@@ -612,12 +651,22 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             }
 
                             if let Some(struct_type) = ctx.get_or_build_struct_type(&struct_name) {
-                                if let Ok(field_ptr) = ctx.builder.build_struct_gep(
-                                    struct_type,
-                                    ptr,
-                                    field_index,
-                                    "field_ptr",
-                                ) {
+                                // Use non-inbounds GEP to avoid UB when ptr comes from
+                                // a clone PHI that may be null. build_struct_gep always
+                                // emits inbounds which lets LLVM O3 exploit the UB.
+                                if let Ok(field_ptr) = unsafe {
+                                    ctx.builder.build_gep(
+                                        struct_type,
+                                        ptr,
+                                        &[
+                                            ctx.context.i32_type().const_zero(),
+                                            ctx.context
+                                                .i32_type()
+                                                .const_int(field_index as u64, false),
+                                        ],
+                                        "field_ptr",
+                                    )
+                                } {
                                     let field_type_id =
                                         ctx.get_struct_field_type(&struct_name, &field_str);
 
@@ -709,10 +758,17 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         } else {
                             let idx = field_str.parse::<u32>().unwrap_or(0);
                             if let Some(struct_type) = ctx.lookup_struct_type("_default") {
-                                if let Ok(field_ptr) =
-                                    ctx.builder
-                                        .build_struct_gep(struct_type, ptr, idx, "field_ptr")
-                                {
+                                if let Ok(field_ptr) = unsafe {
+                                    ctx.builder.build_gep(
+                                        struct_type,
+                                        ptr,
+                                        &[
+                                            ctx.context.i32_type().const_zero(),
+                                            ctx.context.i32_type().const_int(idx as u64, false),
+                                        ],
+                                        "field_ptr",
+                                    )
+                                } {
                                     if let Ok(val) =
                                         ctx.builder.build_load(ctx.i64_type(), field_ptr, &dest_str)
                                     {
@@ -745,20 +801,28 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                         if let Some(struct_name) = struct_name {
                             // Look up field index by name from struct metadata
-                            let field_index =
-                                ctx.get_field_index(&struct_name, &field_str).unwrap_or_else(|| {
+                            let field_index = ctx
+                                .get_field_index(&struct_name, &field_str)
+                                .unwrap_or_else(|| {
                                     // Fallback: try parsing field as numeric index
                                     field_str.parse::<u32>().unwrap_or(0)
                                 });
 
                             // Get the struct type from cache
                             if let Some(struct_type) = ctx.lookup_struct_type(&struct_name) {
-                                if let Ok(field_ptr) = ctx.builder.build_struct_gep(
-                                    struct_type,
-                                    ptr,
-                                    field_index,
-                                    "field_ptr",
-                                ) {
+                                if let Ok(field_ptr) = unsafe {
+                                    ctx.builder.build_gep(
+                                        struct_type,
+                                        ptr,
+                                        &[
+                                            ctx.context.i32_type().const_zero(),
+                                            ctx.context
+                                                .i32_type()
+                                                .const_int(field_index as u64, false),
+                                        ],
+                                        "field_ptr",
+                                    )
+                                } {
                                     ctx.builder.build_store(field_ptr, val).ok();
                                 }
                             }
@@ -766,10 +830,17 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             // Fallback: numeric index with default struct type
                             let idx = field_str.parse::<u32>().unwrap_or(0);
                             if let Some(struct_type) = ctx.lookup_struct_type("_default") {
-                                if let Ok(field_ptr) =
-                                    ctx.builder
-                                        .build_struct_gep(struct_type, ptr, idx, "field_ptr")
-                                {
+                                if let Ok(field_ptr) = unsafe {
+                                    ctx.builder.build_gep(
+                                        struct_type,
+                                        ptr,
+                                        &[
+                                            ctx.context.i32_type().const_zero(),
+                                            ctx.context.i32_type().const_int(idx as u64, false),
+                                        ],
+                                        "field_ptr",
+                                    )
+                                } {
                                     ctx.builder.build_store(field_ptr, val).ok();
                                 }
                             }

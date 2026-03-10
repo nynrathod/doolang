@@ -18,23 +18,28 @@ impl StringBuiltins {
         method: &str,
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
+        // CRITICAL: Null-coerce the receiver before dispatching to any method.
+        // String methods call strlen/strcmp/memcpy which have LLVM-inferred
+        // nonnull+dereferenceable(1) attributes. A null receiver causes UB that
+        // LLVM O3 exploits to mark the entire calling function as noreturn.
+        let safe_receiver = crate::utils::null_coerce_str(ctx, receiver_ptr);
         let result = match method {
-            "len" => Self::emit_len(ctx, receiver_ptr),
-            "charAt" => Self::emit_char_at(ctx, receiver_ptr, args),
-            "substring" => Self::emit_substring(ctx, receiver_ptr, args),
-            "concat" => Self::emit_concat(ctx, receiver_ptr, args),
-            "indexOf" => Self::emit_index_of(ctx, receiver_ptr, args),
-            "toUpper" => Self::emit_case_convert(ctx, receiver_ptr, true),
-            "toLower" => Self::emit_case_convert(ctx, receiver_ptr, false),
-            "replace" => Self::emit_replace(ctx, receiver_ptr, args),
-            "trim" => Self::emit_trim(ctx, receiver_ptr),
-            "reverse" => Self::emit_reverse(ctx, receiver_ptr),
-            "contains" => Self::emit_contains(ctx, receiver_ptr, args),
-            "startsWith" => Self::emit_starts_with(ctx, receiver_ptr, args),
-            "endsWith" => Self::emit_ends_with(ctx, receiver_ptr, args),
-            "repeat" => Self::emit_repeat(ctx, receiver_ptr, args),
-            "charCode" => Self::emit_char_code(ctx, receiver_ptr),
-            "countSubstr" => Self::emit_count_substr(ctx, receiver_ptr, args),
+            "len" => Self::emit_len(ctx, safe_receiver),
+            "charAt" => Self::emit_char_at(ctx, safe_receiver, args),
+            "substring" => Self::emit_substring(ctx, safe_receiver, args),
+            "concat" => Self::emit_concat(ctx, safe_receiver, args),
+            "indexOf" => Self::emit_index_of(ctx, safe_receiver, args),
+            "toUpper" => Self::emit_case_convert(ctx, safe_receiver, true),
+            "toLower" => Self::emit_case_convert(ctx, safe_receiver, false),
+            "replace" => Self::emit_replace(ctx, safe_receiver, args),
+            "trim" => Self::emit_trim(ctx, safe_receiver),
+            "reverse" => Self::emit_reverse(ctx, safe_receiver),
+            "contains" => Self::emit_contains(ctx, safe_receiver, args),
+            "startsWith" => Self::emit_starts_with(ctx, safe_receiver, args),
+            "endsWith" => Self::emit_ends_with(ctx, safe_receiver, args),
+            "repeat" => Self::emit_repeat(ctx, safe_receiver, args),
+            "charCode" => Self::emit_char_code(ctx, safe_receiver),
+            "countSubstr" => Self::emit_count_substr(ctx, safe_receiver, args),
             _ => return None,
         };
 
@@ -95,7 +100,7 @@ impl StringBuiltins {
             .ok()?;
         let char_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), str_ptr, &[idx_i64], "char_ptr")
+                .build_gep(ctx.context.i8_type(), str_ptr, &[idx_i64], "char_ptr")
                 .ok()?
         };
         let char_val = ctx
@@ -106,7 +111,7 @@ impl StringBuiltins {
         ctx.builder.build_store(result_ptr, char_val).ok()?;
         let null_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(
+                .build_gep(
                     ctx.context.i8_type(),
                     result_ptr,
                     &[ctx.context.i64_type().const_int(1, false)],
@@ -163,7 +168,7 @@ impl StringBuiltins {
             .ok()?;
         let src_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), str_ptr, &[start_i64], "src")
+                .build_gep(ctx.context.i8_type(), str_ptr, &[start_i64], "src")
                 .ok()?
         };
         ctx.builder
@@ -177,7 +182,7 @@ impl StringBuiltins {
         // Null terminate
         let null_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[len_i64], "null_ptr")
+                .build_gep(ctx.context.i8_type(), result_ptr, &[len_i64], "null_ptr")
                 .ok()?
         };
         ctx.builder
@@ -199,6 +204,7 @@ impl StringBuiltins {
             return None;
         }
         let other_ptr = args[0].into_pointer_value();
+        let other_ptr = crate::utils::null_coerce_str(ctx, other_ptr);
         let strlen = get_or_declare_strlen(ctx);
         let malloc = get_or_declare_malloc(ctx);
         let memcpy = get_or_declare_memcpy(ctx);
@@ -250,7 +256,7 @@ impl StringBuiltins {
         // Copy second string
         let dest2 = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[len1], "dest2")
+                .build_gep(ctx.context.i8_type(), result_ptr, &[len1], "dest2")
                 .ok()?
         };
         let len2_plus_null = ctx
@@ -280,6 +286,7 @@ impl StringBuiltins {
             return None;
         }
         let needle_ptr = args[0].into_pointer_value();
+        let needle_ptr = crate::utils::null_coerce_str(ctx, needle_ptr);
         let strstr = get_or_declare_strstr(ctx);
 
         let found_ptr = ctx
@@ -350,8 +357,7 @@ impl StringBuiltins {
         let body_bb = ctx.context.append_basic_block(current_fn, "case_body");
         let after_bb = ctx.context.append_basic_block(current_fn, "case_after");
 
-        let idx_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
+        let idx_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -376,12 +382,12 @@ impl StringBuiltins {
         ctx.builder.position_at_end(body_bb);
         let src_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), str_ptr, &[idx], "src")
+                .build_gep(ctx.context.i8_type(), str_ptr, &[idx], "src")
                 .ok()?
         };
         let dst_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[idx], "dst")
+                .build_gep(ctx.context.i8_type(), result_ptr, &[idx], "dst")
                 .ok()?
         };
         let char_val = ctx
@@ -446,7 +452,7 @@ impl StringBuiltins {
         ctx.builder.position_at_end(after_bb);
         let null_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[len], "null")
+                .build_gep(ctx.context.i8_type(), result_ptr, &[len], "null")
                 .ok()?
         };
         ctx.builder
@@ -471,7 +477,9 @@ impl StringBuiltins {
             return None;
         }
         let old_ptr = args[0].into_pointer_value();
+        let old_ptr = crate::utils::null_coerce_str(ctx, old_ptr);
         let new_ptr = args[1].into_pointer_value();
+        let new_ptr = crate::utils::null_coerce_str(ctx, new_ptr);
 
         let strlen = get_or_declare_strlen(ctx);
         let strstr = get_or_declare_strstr(ctx);
@@ -516,11 +524,10 @@ impl StringBuiltins {
         let found_bb = ctx.context.append_basic_block(current_fn, "replace_found");
         let end_bb = ctx.context.append_basic_block(current_fn, "replace_end");
 
-        let res_alloca = ctx
-            .alloca_in_entry_block(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
-                "replace_res",
-            )?;
+        let res_alloca = ctx.alloca_in_entry_block(
+            ctx.context.i8_type().ptr_type(AddressSpace::default()),
+            "replace_res",
+        )?;
 
         ctx.builder
             .build_conditional_branch(is_null, not_found_bb, found_bb)
@@ -597,12 +604,8 @@ impl StringBuiltins {
             .ok()?;
         // copy new
         let dst_new = unsafe {
-            ctx.builder.build_in_bounds_gep(
-                ctx.context.i8_type(),
-                out_ptr,
-                &[prefix_len],
-                "dst_new",
-            )
+            ctx.builder
+                .build_gep(ctx.context.i8_type(), out_ptr, &[prefix_len], "dst_new")
         }
         .ok()?;
         ctx.builder
@@ -619,16 +622,12 @@ impl StringBuiltins {
             .ok()?;
         let dst_suffix = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), out_ptr, &[dst_off], "dst_suf")
+                .build_gep(ctx.context.i8_type(), out_ptr, &[dst_off], "dst_suf")
         }
         .ok()?;
         let src_suffix = unsafe {
-            ctx.builder.build_in_bounds_gep(
-                ctx.context.i8_type(),
-                str_ptr,
-                &[suffix_start],
-                "src_suf",
-            )
+            ctx.builder
+                .build_gep(ctx.context.i8_type(), str_ptr, &[suffix_start], "src_suf")
         }
         .ok()?;
         ctx.builder
@@ -641,7 +640,7 @@ impl StringBuiltins {
         // nul
         let nul_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), out_ptr, &[total_no_nul], "nul")
+                .build_gep(ctx.context.i8_type(), out_ptr, &[total_no_nul], "nul")
         }
         .ok()?;
         ctx.builder
@@ -685,8 +684,7 @@ impl StringBuiltins {
         let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
 
         // start scan
-        let start_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "start")?;
+        let start_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "start")?;
         ctx.builder
             .build_store(start_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -716,7 +714,7 @@ impl StringBuiltins {
         ctx.builder.position_at_end(start_body);
         let ch_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), str_ptr, &[sidx], "ch_ptr")
+                .build_gep(ctx.context.i8_type(), str_ptr, &[sidx], "ch_ptr")
         }
         .ok()?;
         let ch = ctx
@@ -742,8 +740,7 @@ impl StringBuiltins {
 
         // end scan
         ctx.builder.position_at_end(start_end);
-        let end_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "end")?;
+        let end_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "end")?;
         ctx.builder.build_store(end_alloca, len).ok()?;
         let end_loop = ctx.context.append_basic_block(current_fn, "trim_end_loop");
         let end_body = ctx.context.append_basic_block(current_fn, "trim_end_body");
@@ -776,7 +773,7 @@ impl StringBuiltins {
             .ok()?;
         let ch_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), str_ptr, &[eidx_m1], "ch_ptr")
+                .build_gep(ctx.context.i8_type(), str_ptr, &[eidx_m1], "ch_ptr")
         }
         .ok()?;
         let ch = ctx
@@ -822,7 +819,7 @@ impl StringBuiltins {
             .into_pointer_value();
         let src_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), str_ptr, &[start_idx], "src")
+                .build_gep(ctx.context.i8_type(), str_ptr, &[start_idx], "src")
         }
         .ok()?;
         ctx.builder
@@ -834,7 +831,7 @@ impl StringBuiltins {
             .ok()?;
         let nul_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), out_ptr, &[out_len], "nul")
+                .build_gep(ctx.context.i8_type(), out_ptr, &[out_len], "nul")
         }
         .ok()?;
         ctx.builder
@@ -910,8 +907,7 @@ impl StringBuiltins {
         let body_bb = ctx.context.append_basic_block(current_fn, "rev_body");
         let after_bb = ctx.context.append_basic_block(current_fn, "rev_after");
 
-        let idx_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
+        let idx_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -940,12 +936,12 @@ impl StringBuiltins {
         let rev_idx = ctx.builder.build_int_sub(rev_idx, idx, "rev_idx").ok()?;
         let src_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), str_ptr, &[rev_idx], "src")
+                .build_gep(ctx.context.i8_type(), str_ptr, &[rev_idx], "src")
                 .ok()?
         };
         let dst_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[idx], "dst")
+                .build_gep(ctx.context.i8_type(), result_ptr, &[idx], "dst")
                 .ok()?
         };
         let char_val = ctx
@@ -964,7 +960,7 @@ impl StringBuiltins {
         ctx.builder.position_at_end(after_bb);
         let null_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[len], "null")
+                .build_gep(ctx.context.i8_type(), result_ptr, &[len], "null")
                 .ok()?
         };
         ctx.builder
@@ -986,6 +982,7 @@ impl StringBuiltins {
             return None;
         }
         let needle_ptr = args[0].into_pointer_value();
+        let needle_ptr = crate::utils::null_coerce_str(ctx, needle_ptr);
         let strstr = get_or_declare_strstr(ctx);
 
         let found = ctx
@@ -1016,6 +1013,7 @@ impl StringBuiltins {
             return None;
         }
         let prefix_ptr = args[0].into_pointer_value();
+        let prefix_ptr = crate::utils::null_coerce_str(ctx, prefix_ptr);
         let strlen = get_or_declare_strlen(ctx);
         let strncmp = get_or_declare_strncmp(ctx);
 
@@ -1065,6 +1063,7 @@ impl StringBuiltins {
             return None;
         }
         let suffix_ptr = args[0].into_pointer_value();
+        let suffix_ptr = crate::utils::null_coerce_str(ctx, suffix_ptr);
         let strlen = get_or_declare_strlen(ctx);
         let strncmp = get_or_declare_strncmp(ctx);
 
@@ -1091,7 +1090,7 @@ impl StringBuiltins {
 
         let start_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), str_ptr, &[offset], "start")
+                .build_gep(ctx.context.i8_type(), str_ptr, &[offset], "start")
                 .ok()?
         };
 
@@ -1173,8 +1172,7 @@ impl StringBuiltins {
         let body_bb = ctx.context.append_basic_block(current_fn, "rep_body");
         let after_bb = ctx.context.append_basic_block(current_fn, "rep_after");
 
-        let idx_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
+        let idx_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -1198,7 +1196,7 @@ impl StringBuiltins {
         let offset = ctx.builder.build_int_mul(idx, len, "off").ok()?;
         let dst = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[offset], "dst")
+                .build_gep(ctx.context.i8_type(), result_ptr, &[offset], "dst")
                 .ok()?
         };
         ctx.builder
@@ -1215,7 +1213,7 @@ impl StringBuiltins {
         ctx.builder.position_at_end(after_bb);
         let null_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), result_ptr, &[total_len], "null")
+                .build_gep(ctx.context.i8_type(), result_ptr, &[total_len], "null")
                 .ok()?
         };
         ctx.builder
@@ -1256,6 +1254,7 @@ impl StringBuiltins {
             return None;
         }
         let needle_ptr = args[0].into_pointer_value();
+        let needle_ptr = crate::utils::null_coerce_str(ctx, needle_ptr);
         let strstr = get_or_declare_strstr(ctx);
         let strlen = get_or_declare_strlen(ctx);
 
@@ -1273,13 +1272,11 @@ impl StringBuiltins {
         let body_bb = ctx.context.append_basic_block(current_fn, "count_body");
         let after_bb = ctx.context.append_basic_block(current_fn, "count_after");
 
-        let ptr_alloca = ctx
-            .alloca_in_entry_block(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
-                "ptr",
-            )?;
-        let count_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i32_type(), "count")?;
+        let ptr_alloca = ctx.alloca_in_entry_block(
+            ctx.context.i8_type().ptr_type(AddressSpace::default()),
+            "ptr",
+        )?;
+        let count_alloca = ctx.alloca_in_entry_block(ctx.context.i32_type(), "count")?;
         ctx.builder.build_store(ptr_alloca, str_ptr).ok()?;
         ctx.builder
             .build_store(count_alloca, ctx.context.i32_type().const_zero())
@@ -1320,7 +1317,7 @@ impl StringBuiltins {
         // Move pointer past the found occurrence
         let next_ptr = unsafe {
             ctx.builder
-                .build_in_bounds_gep(ctx.context.i8_type(), found, &[needle_len], "next")
+                .build_gep(ctx.context.i8_type(), found, &[needle_len], "next")
                 .ok()?
         };
         ctx.builder.build_store(ptr_alloca, next_ptr).ok()?;

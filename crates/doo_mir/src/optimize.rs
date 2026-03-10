@@ -8,14 +8,14 @@
 //! 2. Dead Code Elimination - Remove unused instructions
 //! 3. Drop Optimization - Batch adjacent drops, remove redundant drops
 
-use crate::types::*;
 use crate::sym::Sym;
+use crate::types::*;
 
 /// Optimization pass trait.
 pub trait MirPass {
     /// Pass name for debugging.
     fn name(&self) -> &'static str;
-    
+
     /// Run the pass on a program. Returns true if any changes were made.
     fn run(&mut self, program: &mut MirProgram) -> bool;
 }
@@ -39,6 +39,7 @@ impl OptimizationPipeline {
         pipeline.add_pass(Box::new(CopyPropagation));
         pipeline.add_pass(Box::new(DeadCodeElimination));
         pipeline.add_pass(Box::new(DropOptimization));
+        pipeline.add_pass(Box::new(EscapeAnalysis));
         pipeline
     }
 
@@ -139,46 +140,40 @@ impl ConstantFolding {
 
     fn fold_binop(&self, op: BinaryOp, lhs: &MirConst, rhs: &MirConst) -> Option<MirConst> {
         match (lhs, rhs) {
-            (MirConst::Int(l), MirConst::Int(r)) => {
-                Some(match op {
-                    BinaryOp::Add => MirConst::Int(l.wrapping_add(*r)),
-                    BinaryOp::Sub => MirConst::Int(l.wrapping_sub(*r)),
-                    BinaryOp::Mul => MirConst::Int(l.wrapping_mul(*r)),
-                    BinaryOp::Div if *r != 0 => MirConst::Int(l / r),
-                    BinaryOp::Mod if *r != 0 => MirConst::Int(l % r),
-                    BinaryOp::Eq => MirConst::Bool(l == r),
-                    BinaryOp::Ne => MirConst::Bool(l != r),
-                    BinaryOp::Lt => MirConst::Bool(l < r),
-                    BinaryOp::Le => MirConst::Bool(l <= r),
-                    BinaryOp::Gt => MirConst::Bool(l > r),
-                    BinaryOp::Ge => MirConst::Bool(l >= r),
-                    _ => return None,
-                })
-            }
-            (MirConst::Float(l), MirConst::Float(r)) => {
-                Some(match op {
-                    BinaryOp::Add => MirConst::Float(l + r),
-                    BinaryOp::Sub => MirConst::Float(l - r),
-                    BinaryOp::Mul => MirConst::Float(l * r),
-                    BinaryOp::Div if *r != 0.0 => MirConst::Float(l / r),
-                    BinaryOp::Eq => MirConst::Bool(l == r),
-                    BinaryOp::Ne => MirConst::Bool(l != r),
-                    BinaryOp::Lt => MirConst::Bool(l < r),
-                    BinaryOp::Le => MirConst::Bool(l <= r),
-                    BinaryOp::Gt => MirConst::Bool(l > r),
-                    BinaryOp::Ge => MirConst::Bool(l >= r),
-                    _ => return None,
-                })
-            }
-            (MirConst::Bool(l), MirConst::Bool(r)) => {
-                Some(match op {
-                    BinaryOp::And => MirConst::Bool(*l && *r),
-                    BinaryOp::Or => MirConst::Bool(*l || *r),
-                    BinaryOp::Eq => MirConst::Bool(l == r),
-                    BinaryOp::Ne => MirConst::Bool(l != r),
-                    _ => return None,
-                })
-            }
+            (MirConst::Int(l), MirConst::Int(r)) => Some(match op {
+                BinaryOp::Add => MirConst::Int(l.wrapping_add(*r)),
+                BinaryOp::Sub => MirConst::Int(l.wrapping_sub(*r)),
+                BinaryOp::Mul => MirConst::Int(l.wrapping_mul(*r)),
+                BinaryOp::Div if *r != 0 => MirConst::Int(l / r),
+                BinaryOp::Mod if *r != 0 => MirConst::Int(l % r),
+                BinaryOp::Eq => MirConst::Bool(l == r),
+                BinaryOp::Ne => MirConst::Bool(l != r),
+                BinaryOp::Lt => MirConst::Bool(l < r),
+                BinaryOp::Le => MirConst::Bool(l <= r),
+                BinaryOp::Gt => MirConst::Bool(l > r),
+                BinaryOp::Ge => MirConst::Bool(l >= r),
+                _ => return None,
+            }),
+            (MirConst::Float(l), MirConst::Float(r)) => Some(match op {
+                BinaryOp::Add => MirConst::Float(l + r),
+                BinaryOp::Sub => MirConst::Float(l - r),
+                BinaryOp::Mul => MirConst::Float(l * r),
+                BinaryOp::Div if *r != 0.0 => MirConst::Float(l / r),
+                BinaryOp::Eq => MirConst::Bool(l == r),
+                BinaryOp::Ne => MirConst::Bool(l != r),
+                BinaryOp::Lt => MirConst::Bool(l < r),
+                BinaryOp::Le => MirConst::Bool(l <= r),
+                BinaryOp::Gt => MirConst::Bool(l > r),
+                BinaryOp::Ge => MirConst::Bool(l >= r),
+                _ => return None,
+            }),
+            (MirConst::Bool(l), MirConst::Bool(r)) => Some(match op {
+                BinaryOp::And => MirConst::Bool(*l && *r),
+                BinaryOp::Or => MirConst::Bool(*l || *r),
+                BinaryOp::Eq => MirConst::Bool(l == r),
+                BinaryOp::Ne => MirConst::Bool(l != r),
+                _ => return None,
+            }),
             _ => None,
         }
     }
@@ -350,7 +345,7 @@ impl MirPass for DropOptimization {
                 // Remove consecutive duplicate drops
                 let mut prev_drop: Option<Sym> = None;
                 let before = block.instructions.len();
-                
+
                 block.instructions.retain(|instr| {
                     if let MirInstrKind::Drop { value } = &instr.kind {
                         if Some(*value) == prev_drop {
@@ -552,6 +547,204 @@ impl MirPass for CopyPropagation {
 }
 
 // ============================================================================
+// Escape Analysis (P01)
+// ============================================================================
+
+/// Escape analysis pass.
+///
+/// Determines which heap-allocated values can safely be stack-allocated:
+/// - Tracks all values that "escape" the current function (returned, stored
+///   in escaped containers, passed to external calls)
+/// - Values that DON'T escape are marked with `EscapeState::NoEscape`
+/// - Codegen can use this to replace heap alloc with stack alloca
+///
+/// ## Escape Reasons
+///
+/// A value escapes if ANY of:
+/// 1. It appears in a `Return` terminator
+/// 2. It's stored into a struct/array/map that escapes
+/// 3. It's passed as an argument to an FFI call
+/// 4. It's captured by a closure that escapes
+/// 5. It's stored into a global
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscapeState {
+    /// Value does not escape — safe for stack allocation.
+    NoEscape,
+    /// Value escapes the function — must be heap-allocated.
+    Escapes,
+    /// Unknown — conservatively treated as escaping.
+    Unknown,
+}
+
+/// Per-function escape analysis results.
+#[derive(Debug, Clone)]
+pub struct EscapeAnalysisResult {
+    /// Escape state for each variable/temp in the function.
+    pub states: rustc_hash::FxHashMap<Sym, EscapeState>,
+}
+
+pub struct EscapeAnalysis;
+
+impl MirPass for EscapeAnalysis {
+    fn name(&self) -> &'static str {
+        "escape_analysis"
+    }
+
+    fn run(&mut self, program: &mut MirProgram) -> bool {
+        // Escape analysis is an analysis pass — it annotates but doesn't
+        // transform. It populates function-level metadata that codegen reads.
+        // For now, we compute escape states per function.
+        // The actual transformation (heap→stack) happens in codegen when it
+        // checks EscapeAnalysisResult.
+
+        for func in &mut program.functions {
+            let result = Self::analyze_function(func);
+            // Store result in function metadata for codegen to read
+            func.escape_info = Some(result);
+        }
+
+        false // Analysis pass — never "changes" the program
+    }
+}
+
+impl EscapeAnalysis {
+    /// Analyze a single function's escape behavior.
+    fn analyze_function(func: &MirFunction) -> EscapeAnalysisResult {
+        use rustc_hash::FxHashSet;
+
+        let mut escaped: FxHashSet<Sym> = FxHashSet::default();
+
+        // Pass 1: Find directly escaping values
+        for block in &func.blocks {
+            // Values in return terminators escape
+            match &block.terminator {
+                MirTerminator::Return { values } => {
+                    for op in values {
+                        Self::mark_operand_escaped(op, &mut escaped);
+                    }
+                }
+                _ => {}
+            }
+
+            for instr in &block.instructions {
+                match &instr.kind {
+                    // FFI calls: all arguments escape (we can't track into FFI)
+                    MirInstrKind::FfiCall { args, .. } => {
+                        for arg in args {
+                            Self::mark_operand_escaped(arg, &mut escaped);
+                        }
+                    }
+                    // Closure captures: the captured value escapes
+                    MirInstrKind::ClosureCreate { captures, .. } => {
+                        for cap in captures {
+                            Self::mark_operand_escaped(cap, &mut escaped);
+                        }
+                    }
+                    // Spawn: captures to spawned function escape
+                    MirInstrKind::Spawn { captures, .. } => {
+                        for cap in captures {
+                            Self::mark_operand_escaped(cap, &mut escaped);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Pass 2: Propagate escape through data flow
+        // If a struct escapes, all values stored into it also escape.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in &func.blocks {
+                for instr in &block.instructions {
+                    match &instr.kind {
+                        // If a struct escapes, its field values escape
+                        MirInstrKind::StructCreate { dest, fields, .. } => {
+                            if escaped.contains(dest) {
+                                for (_, val) in fields {
+                                    if Self::mark_operand_escaped(val, &mut escaped) {
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                        // If an array escapes, its elements escape
+                        MirInstrKind::ArrayCreate { dest, elements, .. } => {
+                            if escaped.contains(dest) {
+                                for elem in elements {
+                                    if Self::mark_operand_escaped(elem, &mut escaped) {
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                        // If a map escapes, its entries escape
+                        MirInstrKind::MapCreate { dest, entries, .. } => {
+                            if escaped.contains(dest) {
+                                for (k, v) in entries {
+                                    if Self::mark_operand_escaped(k, &mut escaped) {
+                                        changed = true;
+                                    }
+                                    if Self::mark_operand_escaped(v, &mut escaped) {
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                        // Assignment/Move/Copy: if dest escapes, src escapes
+                        MirInstrKind::Assign { dest, value } => {
+                            if escaped.contains(dest) {
+                                if Self::mark_operand_escaped(value, &mut escaped) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                        MirInstrKind::Move { dest, src }
+                        | MirInstrKind::Copy { dest, src }
+                        | MirInstrKind::Clone { dest, src } => {
+                            if escaped.contains(dest) {
+                                if Self::mark_operand_escaped(src, &mut escaped) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Build result: everything NOT in `escaped` is NoEscape
+        let mut states = rustc_hash::FxHashMap::default();
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                if let Some(dest) = instr.destination() {
+                    let state = if escaped.contains(dest) {
+                        EscapeState::Escapes
+                    } else {
+                        EscapeState::NoEscape
+                    };
+                    states.insert(*dest, state);
+                }
+            }
+        }
+
+        EscapeAnalysisResult { states }
+    }
+
+    /// Mark an operand's variable as escaped. Returns true if newly escaped.
+    fn mark_operand_escaped(op: &MirOperand, escaped: &mut rustc_hash::FxHashSet<Sym>) -> bool {
+        match op {
+            MirOperand::Local(n) | MirOperand::Temp(n) | MirOperand::Global(n) => {
+                escaped.insert(*n)
+            }
+            _ => false,
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -562,22 +755,15 @@ mod tests {
     #[test]
     fn test_constant_folding_int_add() {
         let folding = ConstantFolding;
-        let result = folding.fold_binop(
-            BinaryOp::Add,
-            &MirConst::Int(1),
-            &MirConst::Int(2),
-        );
+        let result = folding.fold_binop(BinaryOp::Add, &MirConst::Int(1), &MirConst::Int(2));
         assert_eq!(result, Some(MirConst::Int(3)));
     }
 
     #[test]
     fn test_constant_folding_bool_and() {
         let folding = ConstantFolding;
-        let result = folding.fold_binop(
-            BinaryOp::And,
-            &MirConst::Bool(true),
-            &MirConst::Bool(false),
-        );
+        let result =
+            folding.fold_binop(BinaryOp::And, &MirConst::Bool(true), &MirConst::Bool(false));
         assert_eq!(result, Some(MirConst::Bool(false)));
     }
 
@@ -591,6 +777,6 @@ mod tests {
     #[test]
     fn test_pipeline_creation() {
         let pipeline = OptimizationPipeline::default_pipeline();
-        assert_eq!(pipeline.passes.len(), 5);
+        assert_eq!(pipeline.passes.len(), 6);
     }
 }

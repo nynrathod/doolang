@@ -77,6 +77,10 @@ pub enum Commands {
         /// Print MIR (debug)
         #[arg(long)]
         print_mir: bool,
+
+        /// Print phase-by-phase compilation timings
+        #[arg(long)]
+        timings: bool,
     },
 
     /// Compile and run immediately (auto-cleanup)

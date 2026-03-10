@@ -529,7 +529,9 @@ unsafe fn write_value_to_buf(
     match field_type {
         "Str" => {
             let str_ptr = *(field_ptr as *const *const c_char);
-            if str_ptr.is_null() {
+            if str_ptr.is_null() || (str_ptr as usize) < 4096 {
+                // Null or clearly invalid pointer (e.g., integer value like DB id=1
+                // that was incorrectly stored as a pointer via inttoptr)
                 buf.extend_from_slice(b"\"\"");
             } else {
                 let cstr = std::ffi::CStr::from_ptr(str_ptr);

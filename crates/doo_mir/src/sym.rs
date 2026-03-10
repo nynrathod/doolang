@@ -11,35 +11,28 @@
 //! let s: Sym = sym("my_variable");   // intern a string → 4-byte ID
 //! let name: String = resolve(s);     // resolve ID → String
 //! ```
+//!
+//! Delegates to the global shared interner in `doo_core::intern` so that
+//! symbols interned in any compiler phase share a single namespace.
 
-use doo_core::intern::{InternedStr, Interner};
-use std::sync::OnceLock;
+use doo_core::intern::Symbol;
 
 /// A MIR symbol — a 4-byte interned string ID.
 /// `Copy + Clone + Eq + Hash` — cloning is a simple integer copy (zero cost).
-pub type Sym = InternedStr;
-
-/// Global MIR string interner.
-static MIR_INTERNER: OnceLock<Interner> = OnceLock::new();
-
-fn interner() -> &'static Interner {
-    MIR_INTERNER.get_or_init(Interner::new)
-}
+pub type Sym = Symbol;
 
 /// Intern a string, returning a cheap `Sym` handle.
 /// If the string was already interned, returns the existing handle.
 #[inline]
 pub fn sym(s: &str) -> Sym {
-    interner().intern(s)
+    doo_core::intern::sym(s)
 }
 
 /// Resolve a `Sym` back to its string value.
 /// Panics if the symbol was never interned (should never happen in practice).
 #[inline]
 pub fn resolve(s: Sym) -> String {
-    interner()
-        .resolve(s)
-        .unwrap_or_else(|| format!("<unresolved:{:?}>", s))
+    doo_core::intern::resolve(s)
 }
 
 /// Resolve a `Sym` to a string reference via callback.
@@ -53,7 +46,7 @@ pub fn with_resolved<R>(s: Sym, f: impl FnOnce(&str) -> R) -> R {
 /// Check if a string is already interned.
 #[inline]
 pub fn get(s: &str) -> Option<Sym> {
-    interner().get(s)
+    doo_core::intern::get(s)
 }
 
 #[cfg(test)]

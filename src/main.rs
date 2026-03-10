@@ -38,8 +38,9 @@ fn main() {
             print_ast,
             print_hir,
             print_mir,
+            timings,
         }) => build_command(
-            path, output, keep_ll, keep_obj, print_ast, print_hir, print_mir,
+            path, output, keep_ll, keep_obj, print_ast, print_hir, print_mir, timings,
         ),
         Some(Commands::Run {
             path,
@@ -65,6 +66,7 @@ fn build_command(
     print_ast: bool,
     print_hir: bool,
     print_mir: bool,
+    timings: bool,
 ) -> i32 {
     let opts = CompileOptions {
         input_path: path,
@@ -77,6 +79,7 @@ fn build_command(
         keep_obj,
         check_only: false,
         show_warnings: std::env::var("DOO_SHOW_WARNINGS").is_ok(),
+        timings,
     };
     match compile_project(opts) {
         Ok(result) => {
@@ -121,6 +124,7 @@ fn check_command(path: std::path::PathBuf) -> i32 {
         keep_obj: false,
         check_only: true,
         show_warnings: std::env::var("DOO_SHOW_WARNINGS").is_ok(),
+        timings: false,
     };
     match compile_project(opts) {
         Ok(result) => {

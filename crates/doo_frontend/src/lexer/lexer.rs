@@ -7,6 +7,7 @@
 use super::token::{Token, TokenKind};
 use doo_core::Span;
 use rustc_hash::FxHashMap;
+use std::sync::OnceLock;
 
 /// Maximum input size (10MB) to prevent DoS attacks.
 const MAX_INPUT_SIZE: usize = 10 * 1024 * 1024;
@@ -17,45 +18,10 @@ const MAX_STRING_LENGTH: usize = 100_000;
 /// Maximum identifier length.
 const MAX_IDENTIFIER_LENGTH: usize = 1000;
 
-/// The Doo lexer.
-pub struct Lexer<'a> {
-    /// Source code as UTF-8 bytes.
-    source: &'a str,
-    /// Characters for iteration (handles UTF-8 properly).
-    chars: Vec<char>,
-    /// Current position in chars.
-    pos: usize,
-    /// Current line (1-indexed).
-    line: u32,
-    /// Current column (1-indexed).
-    col: u32,
-    /// Byte offset for spans.
-    byte_offset: u32,
-    /// File ID for spans.
-    file_id: u32,
-    /// Keyword lookup table.
-    keywords: FxHashMap<&'static str, TokenKind>,
-}
-
-impl<'a> Lexer<'a> {
-    /// Create a new lexer for the given source code.
-    pub fn new(source: &'a str, file_id: u32) -> Self {
-        let chars: Vec<char> = source.chars().collect();
-        let keywords = Self::build_keyword_map();
-
-        Self {
-            source,
-            chars,
-            pos: 0,
-            line: 1,
-            col: 1,
-            byte_offset: 0,
-            file_id,
-            keywords,
-        }
-    }
-
-    fn build_keyword_map() -> FxHashMap<&'static str, TokenKind> {
+/// Global static keyword map — built once, shared across all lexer instances.
+fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
+    static KEYWORDS: OnceLock<FxHashMap<&'static str, TokenKind>> = OnceLock::new();
+    KEYWORDS.get_or_init(|| {
         let mut map = FxHashMap::default();
 
         // Declaration keywords
@@ -94,6 +60,41 @@ impl<'a> Lexer<'a> {
         map.insert("scope", TokenKind::Scope);
 
         map
+    })
+}
+
+/// The Doo lexer.
+pub struct Lexer<'a> {
+    /// Source code as UTF-8 bytes.
+    source: &'a str,
+    /// Characters for iteration (handles UTF-8 properly).
+    chars: Vec<char>,
+    /// Current position in chars.
+    pos: usize,
+    /// Current line (1-indexed).
+    line: u32,
+    /// Current column (1-indexed).
+    col: u32,
+    /// Byte offset for spans.
+    byte_offset: u32,
+    /// File ID for spans.
+    file_id: u32,
+}
+
+impl<'a> Lexer<'a> {
+    /// Create a new lexer for the given source code.
+    pub fn new(source: &'a str, file_id: u32) -> Self {
+        let chars: Vec<char> = source.chars().collect();
+
+        Self {
+            source,
+            chars,
+            pos: 0,
+            line: 1,
+            col: 1,
+            byte_offset: 0,
+            file_id,
+        }
     }
 
     /// Tokenize all source code into a vector of tokens.
@@ -455,9 +456,8 @@ impl<'a> Lexer<'a> {
             return self.make_token_at(TokenKind::Underscore, "_", start_offset);
         }
 
-        // Look up keyword
-        let kind = self
-            .keywords
+        // Look up keyword from global static map
+        let kind = keyword_map()
             .get(text.as_str())
             .copied()
             .unwrap_or(TokenKind::Ident);

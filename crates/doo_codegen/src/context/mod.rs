@@ -48,6 +48,27 @@ pub struct ExternalFunction {
     pub variadic: bool,
 }
 
+// ============================================================================
+// Unified Value Metadata (C04)
+// ============================================================================
+
+/// Unified metadata for a variable/temporary value.
+///
+/// Consolidates information from `temp_struct_types`, `variable_types`,
+/// and `struct_metadata` into a single queryable record. New code should
+/// use `CodegenContext::value_info()` to query this instead of accessing
+/// the three separate maps directly.
+#[derive(Debug, Clone)]
+pub struct ValueInfo {
+    /// The Doo type of this variable (from `variable_types`).
+    pub type_id: Option<TypeId>,
+    /// The struct type name if this variable holds a struct instance
+    /// (from `temp_struct_types`).
+    pub struct_name: Option<String>,
+    /// The type kind (resolved from type_id via type registry).
+    pub type_kind: Option<TypeKind>,
+}
+
 /// Code generation context.
 ///
 /// Single source of truth for LLVM objects during codegen.
@@ -90,9 +111,15 @@ pub struct CodegenContext<'ctx> {
     // ========================================================================
     // Struct Metadata Tracking (for FieldGet/FieldSet)
     // ========================================================================
-    /// Struct metadata: struct_name -> field names (in order).
+    /// Struct metadata: struct_name -> field names (in declaration order).
     /// Used for looking up field indices by name.
     pub struct_metadata: FxHashMap<String, Vec<String>>,
+
+    /// Struct field reorder map: struct_name -> logical_to_physical index mapping.
+    /// When fields are reordered by alignment (P06 optimization), this maps
+    /// the declaration-order index to the physical LLVM struct index.
+    /// If a struct is NOT in this map, indices are identity (no reorder).
+    pub struct_field_remap: FxHashMap<String, Vec<usize>>,
 
     /// Struct field decorators: struct_name -> Vec<(field_name, Vec<decorator_string>)>.
     /// Populated from MIR struct definitions which carry decorator info from HIR.
@@ -246,6 +273,7 @@ impl<'ctx> CodegenContext<'ctx> {
             external_functions: FxHashMap::default(),
             module_dependencies: FxHashMap::default(),
             struct_metadata: FxHashMap::default(),
+            struct_field_remap: FxHashMap::default(),
             struct_field_decorators: FxHashMap::default(),
             temp_struct_types: FxHashMap::default(),
             variable_types: FxHashMap::default(),
@@ -273,6 +301,25 @@ impl<'ctx> CodegenContext<'ctx> {
             doo_debug!("TYPES", "get_type_kind({:?}) = {:?}", type_id, result);
         }
         result
+    }
+
+    /// C04: Unified value metadata query.
+    ///
+    /// Returns consolidated metadata for a variable by querying all three
+    /// internal tracking maps (`variable_types`, `temp_struct_types`, type registry).
+    /// New code should prefer this over directly accessing the individual maps.
+    pub fn value_info(&self, var_name: &str) -> ValueInfo {
+        let type_id = self.variable_types.get(var_name).copied();
+        let struct_name = self.temp_struct_types.get(var_name).cloned().or_else(|| {
+            // Derive struct name from type_id if not in temp_struct_types
+            type_id.and_then(|tid| self.get_struct_name_from_type_id(tid))
+        });
+        let type_kind = type_id.and_then(|tid| self.get_type_kind(tid));
+        ValueInfo {
+            type_id,
+            struct_name,
+            type_kind,
+        }
     }
 
     /// Get enum variant index by enum name and variant name.
@@ -607,6 +654,13 @@ impl<'ctx> CodegenContext<'ctx> {
         self.context.i8_type().ptr_type(AddressSpace::default())
     }
 
+    /// Get the current function from the builder's insert block.
+    /// Returns None if the builder has no insert point or the block has no parent function.
+    /// Use this instead of `.get_insert_block().unwrap().get_parent().unwrap()`.
+    pub fn current_function(&self) -> Option<FunctionValue<'ctx>> {
+        self.builder.get_insert_block()?.get_parent()
+    }
+
     /// Create an i64 constant.
     pub fn const_i64(&self, val: i64) -> inkwell::values::IntValue<'ctx> {
         self.context.i64_type().const_int(val as u64, true)
@@ -629,6 +683,125 @@ impl<'ctx> CodegenContext<'ctx> {
             .build_global_string_ptr(val, "str")
             .expect("ICE: failed to create global string constant");
         global.as_pointer_value()
+    }
+
+    // ========================================================================
+    // Opaque Abort Helper (prevents LLVM noreturn inference)
+    // ========================================================================
+
+    /// Get or create `@__doo_abort(i32)` — an opaque wrapper around `exit()`.
+    ///
+    /// LLVM recognizes `exit()` as a standard C library function and infers it
+    /// is `noreturn`. When `exit()` appears inside a loop body (e.g. in array
+    /// bounds checks), LLVM uses this to prove the panic path never returns,
+    /// deduces the loop condition is always true, and removes the loop exit
+    /// branch entirely — causing infinite iteration and crashes.
+    ///
+    /// `__doo_abort` is marked `noinline optnone`, making it completely opaque
+    /// to LLVM's interprocedural analysis. LLVM cannot see through it, cannot
+    /// infer it is noreturn, and therefore preserves loop exit conditions.
+    pub fn get_or_create_doo_abort(&self) -> FunctionValue<'ctx> {
+        const DOO_ABORT: &str = "__doo_abort";
+
+        if let Some(f) = self.module.get_function(DOO_ABORT) {
+            return f;
+        }
+
+        // Create: define void @__doo_abort(i32 %code) noinline optnone { call exit(%code); unreachable }
+        let i32_type = self.context.i32_type();
+        let fn_type = self.context.void_type().fn_type(&[i32_type.into()], false);
+        let func = self.module.add_function(DOO_ABORT, fn_type, None);
+
+        // Mark noinline + optnone to prevent LLVM from analyzing the body
+        let noinline = inkwell::attributes::Attribute::get_named_enum_kind_id("noinline");
+        let optnone = inkwell::attributes::Attribute::get_named_enum_kind_id("optnone");
+        func.add_attribute(
+            AttributeLoc::Function,
+            self.context.create_enum_attribute(noinline, 0),
+        );
+        func.add_attribute(
+            AttributeLoc::Function,
+            self.context.create_enum_attribute(optnone, 0),
+        );
+
+        // Build the body: call exit(%code), then unreachable
+        let entry = self.context.append_basic_block(func, "entry");
+        // Save current position
+        let saved_block = self.builder.get_insert_block();
+
+        self.builder.position_at_end(entry);
+
+        // Get or declare exit
+        let exit_type = self.context.void_type().fn_type(&[i32_type.into()], false);
+        let exit_fn = self
+            .module
+            .get_function("exit")
+            .unwrap_or_else(|| self.module.add_function("exit", exit_type, None));
+
+        let code_param = func.get_first_param().unwrap();
+        let _ = self
+            .builder
+            .build_call(exit_fn, &[code_param.into()], "do_exit");
+        let _ = self.builder.build_unreachable();
+
+        // Restore builder position
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+
+        func
+    }
+
+    /// Get or create the `__doo_opaque_ptr` helper function.
+    ///
+    /// This is a `noinline optnone` identity function for pointers:
+    ///   define ptr @__doo_opaque_ptr(ptr %p) noinline optnone { ret ptr %p }
+    ///
+    /// Purpose: When clone functions produce a null PHI (for optional/error fields
+    /// where null is a valid value), subsequent field accesses on the null result
+    /// are undefined behavior. LLVM O3 exploits this UB to remove loop exit
+    /// conditions and return instructions, causing crashes.
+    ///
+    /// By passing clone results through this opaque function, LLVM cannot see
+    /// through it and therefore cannot prove the pointer is null. This prevents
+    /// the UB exploitation chain while preserving correct null handling semantics.
+    pub fn get_or_create_doo_opaque_ptr(&self) -> FunctionValue<'ctx> {
+        const DOO_OPAQUE_PTR: &str = "__doo_opaque_ptr";
+
+        if let Some(f) = self.module.get_function(DOO_OPAQUE_PTR) {
+            return f;
+        }
+
+        let ptr_type = self.ptr_type();
+        let fn_type = ptr_type.fn_type(&[ptr_type.into()], false);
+        let func = self.module.add_function(DOO_OPAQUE_PTR, fn_type, None);
+
+        // Mark noinline + optnone to prevent LLVM from seeing through it
+        let noinline = inkwell::attributes::Attribute::get_named_enum_kind_id("noinline");
+        let optnone = inkwell::attributes::Attribute::get_named_enum_kind_id("optnone");
+        func.add_attribute(
+            AttributeLoc::Function,
+            self.context.create_enum_attribute(noinline, 0),
+        );
+        func.add_attribute(
+            AttributeLoc::Function,
+            self.context.create_enum_attribute(optnone, 0),
+        );
+
+        // Build the body: just return the argument
+        let entry = self.context.append_basic_block(func, "entry");
+        let saved_block = self.builder.get_insert_block();
+
+        self.builder.position_at_end(entry);
+        let param = func.get_first_param().unwrap().into_pointer_value();
+        let _ = self.builder.build_return(Some(&param));
+
+        // Restore builder position
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+
+        func
     }
 
     // ========================================================================
@@ -661,7 +834,24 @@ impl<'ctx> CodegenContext<'ctx> {
             self.builder.position_at_end(entry_block);
         }
 
-        let alloca = self.builder.build_alloca(ty, name).ok()?;
+        let basic_ty: BasicTypeEnum<'ctx> = ty.as_basic_type_enum();
+        let alloca = self.builder.build_alloca(basic_ty, name).ok()?;
+
+        // Zero-initialize the alloca to prevent reading garbage from the stack.
+        // Uninitialized allocas can contain arbitrary values (including -1/0xFFFFFFFFFFFFFFFF)
+        // that cause crashes when treated as pointers.
+        let zero: Option<BasicValueEnum<'ctx>> = match basic_ty {
+            BasicTypeEnum::IntType(t) => Some(t.const_zero().into()),
+            BasicTypeEnum::FloatType(t) => Some(t.const_zero().into()),
+            BasicTypeEnum::PointerType(t) => Some(t.const_null().into()),
+            BasicTypeEnum::StructType(t) => Some(t.const_zero().into()),
+            BasicTypeEnum::ArrayType(t) => Some(t.const_zero().into()),
+            BasicTypeEnum::VectorType(t) => Some(t.const_zero().into()),
+            _ => None,
+        };
+        if let Some(zero_val) = zero {
+            let _ = self.builder.build_store(alloca, zero_val);
+        }
 
         // Restore the builder to the original position
         self.builder.position_at_end(current_block);

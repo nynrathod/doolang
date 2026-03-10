@@ -37,7 +37,10 @@ pub const MODULE_CONSOLE: &str = "Console";
 /// Config module for environment variable access
 pub const MODULE_CONFIG: &str = "Config";
 
-/// Core language modules — true built-ins that are part of the language itself
+/// Core language modules — fallback list of true built-ins.
+/// The canonical list is discovered at runtime from the `std/` directory
+/// via `discovered_core_modules()`. This constant is only used as a fallback
+/// when the std directory cannot be found.
 pub const CORE_MODULES: &[&str] = &[
     MODULE_JSON,
     MODULE_MATH,
@@ -48,13 +51,82 @@ pub const CORE_MODULES: &[&str] = &[
     MODULE_CONFIG,
 ];
 
+/// Discover core modules by scanning the `std/` directory for `.doo` files.
+/// Falls back to `CORE_MODULES` constant if the directory cannot be found.
+/// Result is cached via OnceLock — directory is only scanned once per process.
+pub fn discovered_core_modules() -> &'static [String] {
+    use std::sync::OnceLock;
+    static DISCOVERED: OnceLock<Vec<String>> = OnceLock::new();
+
+    DISCOVERED.get_or_init(|| {
+        // Try to find the std/ directory relative to the executable
+        let mut modules = Vec::new();
+
+        // Look for std/ in several locations (executable dir, cwd, parent dirs)
+        let search_paths: Vec<std::path::PathBuf> = {
+            let mut paths = Vec::new();
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    paths.push(exe_dir.join("std"));
+                    // Also check parent (for cargo target/release/ layout)
+                    if let Some(parent) = exe_dir.parent() {
+                        paths.push(parent.join("std"));
+                        if let Some(grandparent) = parent.parent() {
+                            paths.push(grandparent.join("std"));
+                            if let Some(great) = grandparent.parent() {
+                                paths.push(great.join("std"));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Ok(cwd) = std::env::current_dir() {
+                paths.push(cwd.join("std"));
+            }
+            paths
+        };
+
+        for std_dir in &search_paths {
+            if std_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(std_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().map_or(false, |e| e == "doo") {
+                            if let Some(stem) = path.file_stem() {
+                                if let Some(name) = stem.to_str() {
+                                    if !modules.contains(&name.to_string()) {
+                                        modules.push(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !modules.is_empty() {
+                    // Also add the always-available built-ins that may not be in std/ as files
+                    for &builtin in &[MODULE_JSON, MODULE_CONSOLE] {
+                        if !modules.iter().any(|m| m == builtin) {
+                            modules.push(builtin.to_string());
+                        }
+                    }
+                    return modules;
+                }
+            }
+        }
+
+        // Fallback to the hardcoded list
+        CORE_MODULES.iter().map(|s| s.to_string()).collect()
+    })
+}
+
 /// Check if a name is a core built-in module (language-level, not packages).
+/// Uses runtime discovery from std/ directory, with fallback to CORE_MODULES constant.
 /// Package modules (Http, Auth, Database, etc.) are discovered from program
 /// imports — they are NOT hardcoded here. See TypeChecker::is_known_module()
 /// and MirBuilder::is_module_name() for the discovery-based approach.
 #[inline]
 pub fn is_core_module(name: &str) -> bool {
-    CORE_MODULES.contains(&name)
+    discovered_core_modules().iter().any(|m| m == name)
 }
 
 // ============================================================================

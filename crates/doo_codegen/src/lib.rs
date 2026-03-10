@@ -19,6 +19,8 @@
 pub mod builder;
 pub mod builtins;
 pub mod context;
+pub mod debug_info;
+pub mod fat_string;
 pub mod instructions;
 pub mod layout;
 pub mod linker;

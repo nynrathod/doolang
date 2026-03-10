@@ -19,9 +19,7 @@
 
 use crate::{Decision, OwnershipResults};
 use doo_core::Span;
-use doo_hir::{
-    HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind,
-};
+use doo_hir::{HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Drop insertion pass.
@@ -81,9 +79,15 @@ impl<'a> DropInserter<'a> {
         // Pass 1: Find all variables and their last uses
         self.find_last_uses(&func.body);
 
-        // Pass 2: Insert drops
+        // Pass 2: Insert drops at last-use points
         let drops = self.compute_drops();
+        // Keep track of which variables get dropped (not moved)
+        let dropped_vars: FxHashSet<String> = drops.iter().map(|(_, name)| name.clone()).collect();
         self.apply_drops(&mut func.body, drops);
+
+        // Pass 3: Insert cleanup drops before early returns in nested blocks
+        // This fixes Leak 3 (early return skipping drops scheduled later)
+        Self::insert_early_return_drops(&mut func.body, &dropped_vars);
     }
 
     /// Find last use of each variable.
@@ -273,11 +277,15 @@ impl<'a> DropInserter<'a> {
             HirExprKind::Borrow { expr: inner, .. } => {
                 self.scan_expr_for_uses(inner);
             }
-            HirExprKind::Closure { .. } => {
-                // Do NOT recurse into closure bodies.
+            HirExprKind::Closure { params, body } => {
                 // Closures are built as separate MIR functions with their own scope.
-                // Traversing into them would treat closure params/locals as outer variables,
-                // causing invalid Drop insertions in the outer function.
+                // Do NOT add closure params/locals to needs_drop in the outer function.
+                // BUT we MUST scan for outer-scope variable references so that
+                // captured variables aren't dropped before the closure is created.
+                // This is the same pattern used for Spawn bodies (Leak 5 fix).
+                let param_names: FxHashSet<String> =
+                    params.iter().map(|(name, _)| name.clone()).collect();
+                self.scan_closure_body_for_outer_uses(body, &param_names);
             }
             HirExprKind::Spread(inner) => {
                 self.scan_expr_for_uses(inner);
@@ -335,11 +343,15 @@ impl<'a> DropInserter<'a> {
             }
             HirExprKind::Call { func, args } => {
                 self.scan_spawn_body_for_outer_uses(func);
-                for a in args { self.scan_spawn_body_for_outer_uses(a); }
+                for a in args {
+                    self.scan_spawn_body_for_outer_uses(a);
+                }
             }
             HirExprKind::MethodCall { receiver, args, .. } => {
                 self.scan_spawn_body_for_outer_uses(receiver);
-                for a in args { self.scan_spawn_body_for_outer_uses(a); }
+                for a in args {
+                    self.scan_spawn_body_for_outer_uses(a);
+                }
             }
             HirExprKind::Field { object, .. } => {
                 self.scan_spawn_body_for_outer_uses(object);
@@ -349,7 +361,9 @@ impl<'a> DropInserter<'a> {
                 self.scan_spawn_body_for_outer_uses(index);
             }
             HirExprKind::Array(elems) | HirExprKind::Tuple(elems) => {
-                for e in elems { self.scan_spawn_body_for_outer_uses(e); }
+                for e in elems {
+                    self.scan_spawn_body_for_outer_uses(e);
+                }
             }
             HirExprKind::Map(entries) => {
                 for (k, v) in entries {
@@ -358,24 +372,42 @@ impl<'a> DropInserter<'a> {
                 }
             }
             HirExprKind::Struct { fields, .. } => {
-                for (_, v) in fields { self.scan_spawn_body_for_outer_uses(v); }
+                for (_, v) in fields {
+                    self.scan_spawn_body_for_outer_uses(v);
+                }
             }
             HirExprKind::EnumVariant { payload, .. } => {
-                for p in payload { self.scan_spawn_body_for_outer_uses(p); }
+                for p in payload {
+                    self.scan_spawn_body_for_outer_uses(p);
+                }
             }
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.scan_spawn_body_for_outer_uses(condition);
                 self.scan_spawn_body_for_outer_uses(then_expr);
-                if let Some(e) = else_expr { self.scan_spawn_body_for_outer_uses(e); }
+                if let Some(e) = else_expr {
+                    self.scan_spawn_body_for_outer_uses(e);
+                }
             }
             HirExprKind::Block { stmts, expr } => {
-                for s in stmts { self.scan_spawn_stmt_for_outer_uses(s); }
-                if let Some(e) = expr { self.scan_spawn_body_for_outer_uses(e); }
+                for s in stmts {
+                    self.scan_spawn_stmt_for_outer_uses(s);
+                }
+                if let Some(e) = expr {
+                    self.scan_spawn_body_for_outer_uses(e);
+                }
             }
             HirExprKind::Match { values, arms } => {
-                for v in values { self.scan_spawn_body_for_outer_uses(v); }
+                for v in values {
+                    self.scan_spawn_body_for_outer_uses(v);
+                }
                 for arm in arms {
-                    if let Some(g) = &arm.guard { self.scan_spawn_body_for_outer_uses(g); }
+                    if let Some(g) = &arm.guard {
+                        self.scan_spawn_body_for_outer_uses(g);
+                    }
                     self.scan_spawn_body_for_outer_uses(&arm.body);
                 }
             }
@@ -383,13 +415,20 @@ impl<'a> DropInserter<'a> {
                 self.scan_spawn_body_for_outer_uses(start);
                 self.scan_spawn_body_for_outer_uses(end);
             }
-            HirExprKind::Ok(inner) | HirExprKind::Err(inner) | HirExprKind::Try(inner)
-            | HirExprKind::Move(inner) | HirExprKind::Clone(inner)
-            | HirExprKind::Borrow { expr: inner, .. } | HirExprKind::Await(inner)
+            HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner)
+            | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Clone(inner)
+            | HirExprKind::Borrow { expr: inner, .. }
+            | HirExprKind::Await(inner)
             | HirExprKind::Spread(inner) => {
                 self.scan_spawn_body_for_outer_uses(inner);
             }
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.scan_spawn_body_for_outer_uses(inner);
                 self.scan_spawn_body_for_outer_uses(message);
             }
@@ -397,10 +436,14 @@ impl<'a> DropInserter<'a> {
                 self.scan_spawn_body_for_outer_uses(value);
             }
             HirExprKind::RouteBlock { routes } => {
-                for r in routes { self.scan_spawn_body_for_outer_uses(r); }
+                for r in routes {
+                    self.scan_spawn_body_for_outer_uses(r);
+                }
             }
             HirExprKind::ScopeBlock { stmts } => {
-                for s in stmts { self.scan_spawn_stmt_for_outer_uses(s); }
+                for s in stmts {
+                    self.scan_spawn_stmt_for_outer_uses(s);
+                }
             }
             // Don't recurse into nested spawns/closures
             HirExprKind::Spawn { .. } | HirExprKind::Closure { .. } => {}
@@ -426,22 +469,238 @@ impl<'a> DropInserter<'a> {
                 self.scan_spawn_body_for_outer_uses(e);
             }
             HirStmtKind::Return(exprs) => {
-                for e in exprs { self.scan_spawn_body_for_outer_uses(e); }
-            }
-            HirStmtKind::If { condition, then_block, else_block } => {
-                self.scan_spawn_body_for_outer_uses(condition);
-                for s in then_block { self.scan_spawn_stmt_for_outer_uses(s); }
-                if let Some(stmts) = else_block {
-                    for s in stmts { self.scan_spawn_stmt_for_outer_uses(s); }
+                for e in exprs {
+                    self.scan_spawn_body_for_outer_uses(e);
                 }
             }
-            HirStmtKind::While { condition, body, increment } => {
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.scan_spawn_body_for_outer_uses(condition);
-                for s in body { self.scan_spawn_stmt_for_outer_uses(s); }
-                for s in increment { self.scan_spawn_stmt_for_outer_uses(s); }
+                for s in then_block {
+                    self.scan_spawn_stmt_for_outer_uses(s);
+                }
+                if let Some(stmts) = else_block {
+                    for s in stmts {
+                        self.scan_spawn_stmt_for_outer_uses(s);
+                    }
+                }
+            }
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
+                self.scan_spawn_body_for_outer_uses(condition);
+                for s in body {
+                    self.scan_spawn_stmt_for_outer_uses(s);
+                }
+                for s in increment {
+                    self.scan_spawn_stmt_for_outer_uses(s);
+                }
             }
             HirStmtKind::ManualErrorExtract { expr, .. } => {
                 self.scan_spawn_body_for_outer_uses(expr);
+            }
+            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}
+        }
+    }
+
+    /// Scan a closure body for outer-scope variable references.
+    /// Extends `last_use` for captured variables so they aren't dropped
+    /// before the closure is created (Leak 5 fix).
+    /// `closure_params` are the closure's own parameters — should NOT be treated as captures.
+    fn scan_closure_body_for_outer_uses(
+        &mut self,
+        expr: &HirExpr,
+        closure_params: &FxHashSet<String>,
+    ) {
+        match &expr.kind {
+            HirExprKind::Local { name } => {
+                // Skip closure parameters — they're local to the closure
+                if closure_params.contains(name) {
+                    return;
+                }
+                // Only update if this variable is known from the outer scope
+                if self.needs_drop.contains(name) || self.last_use.contains_key(name) {
+                    self.last_use.insert(name.clone(), self.current_idx);
+                    self.last_use_span.insert(name.clone(), expr.span);
+                }
+            }
+            HirExprKind::BinOp { lhs, rhs, .. } => {
+                self.scan_closure_body_for_outer_uses(lhs, closure_params);
+                self.scan_closure_body_for_outer_uses(rhs, closure_params);
+            }
+            HirExprKind::UnaryOp { operand, .. } => {
+                self.scan_closure_body_for_outer_uses(operand, closure_params);
+            }
+            HirExprKind::Call { func, args } => {
+                self.scan_closure_body_for_outer_uses(func, closure_params);
+                for a in args {
+                    self.scan_closure_body_for_outer_uses(a, closure_params);
+                }
+            }
+            HirExprKind::MethodCall { receiver, args, .. } => {
+                self.scan_closure_body_for_outer_uses(receiver, closure_params);
+                for a in args {
+                    self.scan_closure_body_for_outer_uses(a, closure_params);
+                }
+            }
+            HirExprKind::Field { object, .. } => {
+                self.scan_closure_body_for_outer_uses(object, closure_params);
+            }
+            HirExprKind::Index { object, index } => {
+                self.scan_closure_body_for_outer_uses(object, closure_params);
+                self.scan_closure_body_for_outer_uses(index, closure_params);
+            }
+            HirExprKind::Array(elems) | HirExprKind::Tuple(elems) => {
+                for e in elems {
+                    self.scan_closure_body_for_outer_uses(e, closure_params);
+                }
+            }
+            HirExprKind::Map(entries) => {
+                for (k, v) in entries {
+                    self.scan_closure_body_for_outer_uses(k, closure_params);
+                    self.scan_closure_body_for_outer_uses(v, closure_params);
+                }
+            }
+            HirExprKind::Struct { fields, .. } => {
+                for (_, v) in fields {
+                    self.scan_closure_body_for_outer_uses(v, closure_params);
+                }
+            }
+            HirExprKind::EnumVariant { payload, .. } => {
+                for p in payload {
+                    self.scan_closure_body_for_outer_uses(p, closure_params);
+                }
+            }
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.scan_closure_body_for_outer_uses(condition, closure_params);
+                self.scan_closure_body_for_outer_uses(then_expr, closure_params);
+                if let Some(e) = else_expr {
+                    self.scan_closure_body_for_outer_uses(e, closure_params);
+                }
+            }
+            HirExprKind::Block { stmts, expr } => {
+                for s in stmts {
+                    self.scan_closure_stmt_for_outer_uses(s, closure_params);
+                }
+                if let Some(e) = expr {
+                    self.scan_closure_body_for_outer_uses(e, closure_params);
+                }
+            }
+            HirExprKind::Match { values, arms } => {
+                for v in values {
+                    self.scan_closure_body_for_outer_uses(v, closure_params);
+                }
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        self.scan_closure_body_for_outer_uses(g, closure_params);
+                    }
+                    self.scan_closure_body_for_outer_uses(&arm.body, closure_params);
+                }
+            }
+            HirExprKind::Range { start, end, .. } => {
+                self.scan_closure_body_for_outer_uses(start, closure_params);
+                self.scan_closure_body_for_outer_uses(end, closure_params);
+            }
+            HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner)
+            | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Clone(inner)
+            | HirExprKind::Borrow { expr: inner, .. }
+            | HirExprKind::Await(inner)
+            | HirExprKind::Spread(inner) => {
+                self.scan_closure_body_for_outer_uses(inner, closure_params);
+            }
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
+                self.scan_closure_body_for_outer_uses(inner, closure_params);
+                self.scan_closure_body_for_outer_uses(message, closure_params);
+            }
+            HirExprKind::Cast { value, .. } => {
+                self.scan_closure_body_for_outer_uses(value, closure_params);
+            }
+            HirExprKind::RouteBlock { routes } => {
+                for r in routes {
+                    self.scan_closure_body_for_outer_uses(r, closure_params);
+                }
+            }
+            HirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.scan_closure_stmt_for_outer_uses(s, closure_params);
+                }
+            }
+            // Don't recurse into nested closures/spawns
+            HirExprKind::Spawn { .. } | HirExprKind::Closure { .. } => {}
+            HirExprKind::Const(_) | HirExprKind::Global { .. } => {}
+        }
+    }
+
+    /// Scan a statement inside a closure body for outer-scope uses.
+    fn scan_closure_stmt_for_outer_uses(
+        &mut self,
+        stmt: &HirStmt,
+        closure_params: &FxHashSet<String>,
+    ) {
+        match &stmt.kind {
+            HirStmtKind::Let { value, .. } => {
+                self.scan_closure_body_for_outer_uses(value, closure_params);
+            }
+            HirStmtKind::TupleLet { value, .. } => {
+                self.scan_closure_body_for_outer_uses(value, closure_params);
+            }
+            HirStmtKind::Assign { target, value } => {
+                self.scan_closure_body_for_outer_uses(target, closure_params);
+                self.scan_closure_body_for_outer_uses(value, closure_params);
+            }
+            HirStmtKind::Expr(e) => {
+                self.scan_closure_body_for_outer_uses(e, closure_params);
+            }
+            HirStmtKind::Return(exprs) => {
+                for e in exprs {
+                    self.scan_closure_body_for_outer_uses(e, closure_params);
+                }
+            }
+            HirStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.scan_closure_body_for_outer_uses(condition, closure_params);
+                for s in then_block {
+                    self.scan_closure_stmt_for_outer_uses(s, closure_params);
+                }
+                if let Some(stmts) = else_block {
+                    for s in stmts {
+                        self.scan_closure_stmt_for_outer_uses(s, closure_params);
+                    }
+                }
+            }
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
+                self.scan_closure_body_for_outer_uses(condition, closure_params);
+                for s in body {
+                    self.scan_closure_stmt_for_outer_uses(s, closure_params);
+                }
+                for s in increment {
+                    self.scan_closure_stmt_for_outer_uses(s, closure_params);
+                }
+            }
+            HirStmtKind::ManualErrorExtract { expr, .. } => {
+                self.scan_closure_body_for_outer_uses(expr, closure_params);
             }
             HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}
         }
@@ -501,6 +760,210 @@ impl<'a> DropInserter<'a> {
                 let drop_stmt = HirStmt::new(HirStmtKind::Drop { name }, Span::dummy());
                 stmts.insert(idx, drop_stmt);
             }
+        }
+    }
+
+    /// Insert cleanup drops before return statements in nested blocks.
+    ///
+    /// When a function has:
+    /// ```text
+    /// let arr = [1, 2, 3]
+    /// if condition {
+    ///     return 0   // arr not dropped here!
+    /// }
+    /// // drop(arr) is here, but early return skips it
+    /// ```
+    ///
+    /// This pass scans the entire statement tree and inserts drops for all
+    /// `dropped_vars` before each Return statement, skipping variables that
+    /// appear in the return expression or have already been dropped on this path.
+    fn insert_early_return_drops(stmts: &mut Vec<HirStmt>, dropped_vars: &FxHashSet<String>) {
+        // Collect which variables have already been dropped at the top level
+        // (from the Pass 2 `apply_drops`). We only need to insert extra drops
+        // for returns that appear INSIDE nested blocks (if/while), because
+        // top-level returns are already after their scheduled drops.
+        let mut already_dropped_at_top: FxHashSet<String> = FxHashSet::default();
+
+        let mut i = 0;
+        while i < stmts.len() {
+            match &stmts[i].kind {
+                HirStmtKind::Drop { name } => {
+                    already_dropped_at_top.insert(name.clone());
+                    i += 1;
+                }
+                HirStmtKind::If {
+                    then_block: _,
+                    else_block: _,
+                    ..
+                } => {
+                    // Variables NOT yet dropped at this point in the top-level flow
+                    let still_alive: FxHashSet<String> = dropped_vars
+                        .difference(&already_dropped_at_top)
+                        .cloned()
+                        .collect();
+
+                    // Recurse into both branches to insert drops before returns
+                    if let HirStmtKind::If {
+                        then_block,
+                        else_block,
+                        ..
+                    } = &mut stmts[i].kind
+                    {
+                        Self::insert_drops_before_returns_recursive(then_block, &still_alive);
+                        if let Some(else_stmts) = else_block {
+                            Self::insert_drops_before_returns_recursive(else_stmts, &still_alive);
+                        }
+                    }
+                    i += 1;
+                }
+                HirStmtKind::While { .. } => {
+                    let still_alive: FxHashSet<String> = dropped_vars
+                        .difference(&already_dropped_at_top)
+                        .cloned()
+                        .collect();
+
+                    if let HirStmtKind::While { body, .. } = &mut stmts[i].kind {
+                        Self::insert_drops_before_returns_recursive(body, &still_alive);
+                    }
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// Recursively scan nested blocks for Return statements and insert drops before them.
+    fn insert_drops_before_returns_recursive(
+        stmts: &mut Vec<HirStmt>,
+        live_vars: &FxHashSet<String>,
+    ) {
+        let mut i = 0;
+        while i < stmts.len() {
+            match &stmts[i].kind {
+                HirStmtKind::Return(values) => {
+                    // Collect variable names used in the return expression
+                    let mut returned_names = FxHashSet::default();
+                    for v in values {
+                        Self::collect_local_names(v, &mut returned_names);
+                    }
+
+                    // Insert drops for all live variables NOT in the return expression
+                    let mut drop_count = 0;
+                    for name in live_vars {
+                        if !returned_names.contains(name) {
+                            let drop_stmt = HirStmt::new(
+                                HirStmtKind::Drop { name: name.clone() },
+                                Span::dummy(),
+                            );
+                            stmts.insert(i + drop_count, drop_stmt);
+                            drop_count += 1;
+                        }
+                    }
+                    i += drop_count + 1; // Skip past inserted drops + the return
+                }
+                HirStmtKind::If {
+                    then_block: _,
+                    else_block: _,
+                    ..
+                } => {
+                    // Recurse deeper
+                    if let HirStmtKind::If {
+                        then_block,
+                        else_block,
+                        ..
+                    } = &mut stmts[i].kind
+                    {
+                        Self::insert_drops_before_returns_recursive(then_block, live_vars);
+                        if let Some(else_stmts) = else_block {
+                            Self::insert_drops_before_returns_recursive(else_stmts, live_vars);
+                        }
+                    }
+                    i += 1;
+                }
+                HirStmtKind::While { .. } => {
+                    if let HirStmtKind::While { body, .. } = &mut stmts[i].kind {
+                        Self::insert_drops_before_returns_recursive(body, live_vars);
+                    }
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// Collect all `Local` variable names referenced in an expression.
+    fn collect_local_names(expr: &HirExpr, names: &mut FxHashSet<String>) {
+        match &expr.kind {
+            HirExprKind::Local { name } => {
+                names.insert(name.clone());
+            }
+            HirExprKind::BinOp { lhs, rhs, .. } => {
+                Self::collect_local_names(lhs, names);
+                Self::collect_local_names(rhs, names);
+            }
+            HirExprKind::UnaryOp { operand, .. } => {
+                Self::collect_local_names(operand, names);
+            }
+            HirExprKind::Call { func, args } => {
+                Self::collect_local_names(func, names);
+                for a in args {
+                    Self::collect_local_names(a, names);
+                }
+            }
+            HirExprKind::MethodCall { receiver, args, .. } => {
+                Self::collect_local_names(receiver, names);
+                for a in args {
+                    Self::collect_local_names(a, names);
+                }
+            }
+            HirExprKind::Field { object, .. } => {
+                Self::collect_local_names(object, names);
+            }
+            HirExprKind::Index { object, index } => {
+                Self::collect_local_names(object, names);
+                Self::collect_local_names(index, names);
+            }
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                Self::collect_local_names(condition, names);
+                Self::collect_local_names(then_expr, names);
+                if let Some(e) = else_expr {
+                    Self::collect_local_names(e, names);
+                }
+            }
+            HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner)
+            | HirExprKind::Try(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Clone(inner)
+            | HirExprKind::Await(inner)
+            | HirExprKind::Spread(inner) => {
+                Self::collect_local_names(inner, names);
+            }
+            HirExprKind::Borrow { expr: inner, .. } => {
+                Self::collect_local_names(inner, names);
+            }
+            HirExprKind::Cast { value, .. } => {
+                Self::collect_local_names(value, names);
+            }
+            HirExprKind::Array(elems) | HirExprKind::Tuple(elems) => {
+                for e in elems {
+                    Self::collect_local_names(e, names);
+                }
+            }
+            HirExprKind::Struct { fields, .. } => {
+                for (_, v) in fields {
+                    Self::collect_local_names(v, names);
+                }
+            }
+            _ => {}
         }
     }
 }

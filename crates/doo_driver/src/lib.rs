@@ -7,6 +7,7 @@ pub mod analytics;
 pub mod cli;
 pub mod commands;
 pub mod compile;
+pub mod incremental;
 pub mod loader;
 pub mod templates;
 
@@ -207,6 +208,7 @@ pub fn run_command_with_compiler(
         keep_obj: false,
         check_only: false,
         show_warnings: std::env::var(doo_core::constants::env_vars::DOO_SHOW_WARNINGS).is_ok(),
+        timings: false,
     };
 
     let compile_start = std::time::Instant::now();
@@ -420,6 +422,7 @@ pub fn check_command(path: PathBuf) -> i32 {
         keep_obj: false,
         check_only: true,
         show_warnings: std::env::var(doo_core::constants::env_vars::DOO_SHOW_WARNINGS).is_ok(),
+        timings: false,
     };
 
     match compile_project(opts) {

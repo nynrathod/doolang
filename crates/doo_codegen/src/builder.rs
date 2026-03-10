@@ -56,13 +56,40 @@ fn convert_return_value<'ctx>(
     }
 
     // Handle i64/i32/i1 -> ptr conversion (when function expects pointer type)
+    // SAFETY FIX: Validate the integer before inttoptr. Invalid values like 0 (null)
+    // or -1 (0xFFFFFFFFFFFFFFFF) would produce pointers that crash on dereference.
+    // On x64, valid user-space addresses have the high bit clear (positive as signed).
+    // If the integer is zero or negative, return null instead.
     if val.is_int_value() && expected_llvm_type.is_pointer_type() {
         let int_val = val.into_int_value();
-        // Convert int to pointer (inttoptr)
+        let ptr_type = expected_llvm_type.into_pointer_type();
+        // Check: value > 0 (signed) — valid user-space pointer
+        // This catches 0 (null) AND negative values like -1 (0xFFFF...FFFF)
+        let is_positive = ctx.builder.build_int_compare(
+            IntPredicate::SGT,
+            int_val,
+            int_val.get_type().const_zero(),
+            "is_valid_addr",
+        );
+        if let Ok(is_valid) = is_positive {
+            let null_ptr = ptr_type.const_null();
+            if let Ok(as_ptr) = ctx
+                .builder
+                .build_int_to_ptr(int_val, ptr_type, "int_to_ptr")
+            {
+                if let Ok(result) =
+                    ctx.builder
+                        .build_select(is_valid, as_ptr, null_ptr, "safe_int_to_ptr")
+                {
+                    return result;
+                }
+            }
+        }
+        // Fallback: inttoptr (legacy path)
         if let Ok(ptr) = ctx.builder.build_int_to_ptr(
             int_val,
             expected_llvm_type.into_pointer_type(),
-            "int_to_ptr",
+            "int_to_ptr_fallback",
         ) {
             return ptr.into();
         }
@@ -200,15 +227,35 @@ fn convert_i64_to_type<'ctx>(
                 .unwrap_or(val)
         }
         TypeKind::Str | TypeKind::Array { .. } | TypeKind::Map { .. } | TypeKind::Struct { .. } => {
-            // Convert i64 to pointer
+            // Convert i64 to pointer — with safety check for invalid addresses.
+            // Zero or negative i64 values are not valid user-space pointers.
+            let ptr_type = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let is_positive = ctx.builder.build_int_compare(
+                IntPredicate::SGT,
+                i64_val,
+                ctx.context.i64_type().const_zero(),
+                "is_valid_addr",
+            );
+            if let Ok(is_valid) = is_positive {
+                let null_ptr = ptr_type.const_null();
+                if let Ok(as_ptr) = ctx
+                    .builder
+                    .build_int_to_ptr(i64_val, ptr_type, "i64_to_ptr")
+                {
+                    if let Ok(result) =
+                        ctx.builder
+                            .build_select(is_valid, as_ptr, null_ptr, "safe_i64_to_ptr")
+                    {
+                        return result;
+                    }
+                }
+            }
+            // Fallback
             ctx.builder
-                .build_int_to_ptr(
-                    i64_val,
-                    ctx.context
-                        .i8_type()
-                        .ptr_type(inkwell::AddressSpace::default()),
-                    "i64_to_ptr",
-                )
+                .build_int_to_ptr(i64_val, ptr_type, "i64_to_ptr_fallback")
                 .map(|v| v.into())
                 .unwrap_or(val)
         }
@@ -717,16 +764,34 @@ impl<'ctx> CodegenBuilder<'ctx> {
         for (i, param) in func.params.iter().enumerate() {
             let param_name = resolve(param.name);
             let llvm_param_idx = (i + param_offset) as u32;
-            let param_value = llvm_func
-                .get_nth_param(llvm_param_idx)
-                .expect("ICE: LLVM function missing expected parameter");
+            let param_value = match llvm_func.get_nth_param(llvm_param_idx) {
+                Some(p) => p,
+                None => {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                        doo_debug!(
+                            "CODEGEN",
+                            "ICE: LLVM function missing param at index {} for {}",
+                            llvm_param_idx,
+                            param_name
+                        );
+                    }
+                    continue;
+                }
+            };
             let param_type = ctx.get_llvm_type(param.type_id);
             let alloca = ctx.create_local(&param_name, param_type);
 
             // Store param directly - closures now use actual types
-            ctx.builder
-                .build_store(alloca, param_value)
-                .expect("ICE: failed to store parameter value into alloca");
+            if let Err(_) = ctx.builder.build_store(alloca, param_value) {
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                    doo_debug!(
+                        "CODEGEN",
+                        "ICE: failed to store parameter {} into alloca",
+                        param_name
+                    );
+                }
+                continue;
+            }
 
             // Track parameter type for Clone/Drop
             ctx.set_variable_type(&param_name, param.type_id);
@@ -982,11 +1047,8 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         ctx.builder.build_return(Some(&zero)).ok();
                     } else if func.return_type.is_none() {
                         ctx.builder.build_return(None).ok();
-                    } else {
-                        let ret_type = ctx.get_llvm_type(
-                            func.return_type
-                                .expect("ICE: non-void function has no return type in MIR"),
-                        );
+                    } else if let Some(ret_type_id) = func.return_type {
+                        let ret_type = ctx.get_llvm_type(ret_type_id);
                         let default: BasicValueEnum = match ret_type {
                             BasicTypeEnum::IntType(t) => t.const_zero().into(),
                             BasicTypeEnum::FloatType(t) => t.const_zero().into(),
@@ -1151,7 +1213,15 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
                         // Allocate space for tuple on heap (so pointer is valid after return)
                         let ptr_type = ctx.context.ptr_type(inkwell::AddressSpace::default());
-                        let size = tuple_type.size_of().unwrap();
+                        let size = match tuple_type.size_of() {
+                            Some(s) => s,
+                            None => {
+                                // Fallback: use a reasonable default size (8 bytes per element)
+                                ctx.context
+                                    .i64_type()
+                                    .const_int((element_types.len() as u64) * 8, false)
+                            }
+                        };
                         let malloc_fn = ctx.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
                             let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
                             ctx.module.add_function(
@@ -1168,6 +1238,33 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             .map(|v| v.into_pointer_value());
 
                         if let Some(tuple_ptr) = tuple_ptr {
+                            // Zero-initialize to prevent garbage in unset fields
+                            let memset_fn = ctx
+                                .module
+                                .get_function(ffi_names::MEMSET)
+                                .unwrap_or_else(|| {
+                                    let ptr_t =
+                                        ctx.context.ptr_type(inkwell::AddressSpace::default());
+                                    let fn_ty = ptr_t.fn_type(
+                                        &[
+                                            ptr_t.into(),
+                                            ctx.context.i32_type().into(),
+                                            ctx.context.i64_type().into(),
+                                        ],
+                                        false,
+                                    );
+                                    ctx.module.add_function(ffi_names::MEMSET, fn_ty, None)
+                                });
+                            let _ = ctx.builder.build_call(
+                                memset_fn,
+                                &[
+                                    tuple_ptr.into(),
+                                    ctx.context.i32_type().const_zero().into(),
+                                    size.into(),
+                                ],
+                                "",
+                            );
+
                             // Store each value in the tuple
                             for (i, val) in llvm_values.iter().enumerate() {
                                 if let Ok(field_ptr) = ctx.builder.build_struct_gep(
@@ -1294,7 +1391,14 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         let default_bb = block_map
                             .get(&default_str)
                             .copied()
-                            .unwrap_or_else(|| ctx.builder.get_insert_block().unwrap());
+                            .or_else(|| ctx.builder.get_insert_block())
+                            .unwrap_or_else(|| {
+                                // Last resort: create a new block in the current function
+                                let func = ctx.builder.get_insert_block()
+                                    .and_then(|bb| bb.get_parent())
+                                    .expect("ICE: no insert block or parent function during switch codegen");
+                                ctx.context.append_basic_block(func, "switch_default_fallback")
+                            });
 
                         let llvm_cases: Vec<_> = cases
                             .iter()

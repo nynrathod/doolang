@@ -117,19 +117,45 @@ impl<'ctx> CodegenContext<'ctx> {
                 // variable was declared as a string/pointer type.
                 // Example: `let resultJson, err = Process.run(...)` where resultJson
                 // is Str (ptr alloca) but TupleGet extracts it as i64.
+                // SAFETY: Validate the integer is a plausible user-space address.
+                // Zero and negative values (like -1/0xFFFFFFFFFFFFFFFF) produce
+                // invalid pointers that crash on dereference.
                 if alloca_ty.is_pointer_type() && value.is_int_value() {
-                    if let Ok(converted) = self.builder.build_int_to_ptr(
-                        value.into_int_value(),
-                        alloca_ty.into_pointer_type(),
-                        &format!("{}_inttoptr", name),
-                    ) {
-                        let converted_val: BasicValueEnum = converted.into();
+                    let int_val = value.into_int_value();
+                    let ptr_type = alloca_ty.into_pointer_type();
+                    let is_positive = self.builder.build_int_compare(
+                        inkwell::IntPredicate::SGT,
+                        int_val,
+                        int_val.get_type().const_zero(),
+                        "is_valid_addr",
+                    );
+                    let safe_ptr = if let Ok(is_valid) = is_positive {
+                        let null_ptr = ptr_type.const_null();
+                        if let Ok(as_ptr) = self.builder.build_int_to_ptr(
+                            int_val,
+                            ptr_type,
+                            &format!("{}_inttoptr", name),
+                        ) {
+                            self.builder
+                                .build_select(is_valid, as_ptr, null_ptr, &format!("{}_safe", name))
+                                .ok()
+                                .map(|v| v.into_pointer_value())
+                        } else {
+                            None
+                        }
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(int_val, ptr_type, &format!("{}_inttoptr", name))
+                            .ok()
+                    };
+                    if let Some(safe) = safe_ptr {
+                        let converted_val: BasicValueEnum = safe.into();
                         let _ = self.builder.build_store(ptr, converted_val);
                         self.temps.remove(&name);
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             doo_debug!(
                                 "CODEGEN",
-                                "set_local '{}': converted int->ptr via inttoptr",
+                                "set_local '{}': converted int->ptr via safe inttoptr",
                                 name
                             );
                         }
