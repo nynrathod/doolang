@@ -362,7 +362,9 @@ impl<'a> MirBuilder<'a> {
         }
 
         // Generate MIR functions for all pending closures
-        while let Some((closure_name, params, body, captures, by_value)) = self.pending_closures.pop() {
+        while let Some((closure_name, params, body, captures, by_value)) =
+            self.pending_closures.pop()
+        {
             let mut closure_func =
                 self.build_closure_function(&closure_name, &params, &body, &captures);
             closure_func.captures_by_value = by_value;
@@ -403,7 +405,7 @@ impl<'a> MirBuilder<'a> {
             .iter()
             .map(|(pname, ptype)| ParamDef {
                 name: sym(pname),
-                type_id: ptype.unwrap_or(builtin::INT),
+                type_id: ptype.filter(|&t| t != builtin::ANY).unwrap_or(builtin::INT),
             })
             .collect();
         // Don't set return_type yet - we'll infer it from the body expression
@@ -414,11 +416,14 @@ impl<'a> MirBuilder<'a> {
         self.current_block = 0;
 
         // Register parameters as locals with their original types
+        // CRITICAL: Filter out ANY — if HIR couldn't determine the param type,
+        // default to INT. ANY would create ptr allocas in codegen, causing
+        // inttoptr crashes for scalar values.
         for (pname, ptype) in params {
             if let Some(f) = &mut self.current_func {
                 f.locals.push(LocalDef {
                     name: sym(pname),
-                    type_id: ptype.unwrap_or(builtin::INT),
+                    type_id: ptype.filter(|&t| t != builtin::ANY).unwrap_or(builtin::INT),
                     mutable: false,
                 });
             }

@@ -22,16 +22,23 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             // Detect container kind BEFORE building expression (for proper type tracking)
             let container_kind = builder.infer_container_kind(value);
 
-            // Use build_expr_with_expected_type if we have a type annotation
+            // CRITICAL: Treat ANY as "unknown" — it's not a real type annotation.
+            // HIR type inference may set type_id=ANY on Let stmts inside closures
+            // because it couldn't resolve types during initial lowering (e.g., BinOp
+            // on closure params where param types weren't known yet). The MIR builder
+            // CAN resolve concrete types from func.locals, so we must infer instead.
+            let effective_type_id = type_id.filter(|t| *t != doo_core::types::builtin::ANY);
+
+            // Use build_expr_with_expected_type if we have a concrete type annotation
             // This enables JSON.parse to use the expected type for proper parsing
-            let val_operand = if type_id.is_some() {
+            let val_operand = if effective_type_id.is_some() {
                 builder.build_expr_with_expected_type(value, *type_id)
             } else {
                 builder.build_expr(value)
             };
 
             // Register the local variable in the function
-            let var_type_id = type_id.unwrap_or_else(|| {
+            let var_type_id = effective_type_id.unwrap_or_else(|| {
                 // Infer type from the value operand using builder's method
                 builder.infer_operand_type(&val_operand)
             });
@@ -117,25 +124,28 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 // Get Result's ok and err types from function_result_types
                 // Resolve aliases to handle imported associated functions
                 // Check both Local and Global for namespace-qualified calls
-                let (ok_type, err_type) = if let HirExprKind::Call { func, .. } = &value.kind {
-                    let func_name = match &func.kind {
-                        HirExprKind::Local { name } => Some(name.as_str()),
-                        HirExprKind::Global { name } => Some(name.as_str()),
-                        _ => None,
-                    };
-                    if let Some(name) = func_name {
-                        let resolved_name = builder.resolve_function_name(name);
-                        builder
-                            .function_result_types
-                            .get(&resolved_name)
-                            .copied()
-                            .unwrap_or((builtin::ANY, builtin::ANY))
+                let (ok_type, err_type, is_ffi) =
+                    if let HirExprKind::Call { func, .. } = &value.kind {
+                        let func_name = match &func.kind {
+                            HirExprKind::Local { name } => Some(name.as_str()),
+                            HirExprKind::Global { name } => Some(name.as_str()),
+                            _ => None,
+                        };
+                        if let Some(name) = func_name {
+                            let resolved_name = builder.resolve_function_name(name);
+                            let types = builder
+                                .function_result_types
+                                .get(&resolved_name)
+                                .copied()
+                                .unwrap_or((builtin::ANY, builtin::ANY));
+                            let ffi = builder.ffi_functions.contains_key(&resolved_name);
+                            (types.0, types.1, ffi)
+                        } else {
+                            (builtin::ANY, builtin::ANY, false)
+                        }
                     } else {
-                        (builtin::ANY, builtin::ANY)
-                    }
-                } else {
-                    (builtin::ANY, builtin::ANY)
-                };
+                        (builtin::ANY, builtin::ANY, false)
+                    };
 
                 // Register ok variables as locals
                 for &ok_name in &ok_names {
@@ -174,6 +184,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         result: result_operand,
                         ok_type,
                         err_type,
+                        is_ffi,
                     },
                     span,
                 );
@@ -595,7 +606,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             // This matches how TupleLet handles Result-returning functions
             // Check both Local and Global - namespace-qualified calls (like File::Write)
             // are lowered to Call with Global { name } func
-            let (ok_type, err_type) = if let HirExprKind::Call { func, .. } = &expr.kind {
+            let (ok_type, err_type, is_ffi) = if let HirExprKind::Call { func, .. } = &expr.kind {
                 let func_name = match &func.kind {
                     HirExprKind::Local { name } => Some(name.as_str()),
                     HirExprKind::Global { name } => Some(name.as_str()),
@@ -603,16 +614,18 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 };
                 if let Some(name) = func_name {
                     let resolved_name = builder.resolve_function_name(name);
-                    builder
+                    let types = builder
                         .function_result_types
                         .get(&resolved_name)
                         .copied()
-                        .unwrap_or((builtin::ANY, builtin::ANY))
+                        .unwrap_or((builtin::ANY, builtin::ANY));
+                    let ffi = builder.ffi_functions.contains_key(&resolved_name);
+                    (types.0, types.1, ffi)
                 } else {
-                    (builtin::ANY, builtin::ANY)
+                    (builtin::ANY, builtin::ANY, false)
                 }
             } else {
-                (builtin::ANY, builtin::ANY)
+                (builtin::ANY, builtin::ANY, false)
             };
 
             // Register error variable type so codegen knows it's a struct
@@ -636,6 +649,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                     result: src,
                     ok_type,
                     err_type,
+                    is_ffi,
                 },
                 span,
             );

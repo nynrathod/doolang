@@ -209,8 +209,8 @@ fn main() {
 // EXPECT:
 // EXPECT: --- [Str] Array ---
 // EXPECT: map (+!): ["apple!", "banana!", "cherry!", "date!"]
-// EXPECT: filter block (len>5): ["apple", "banana", "cherry", "date"]
-// EXPECT: chain (filter>map): []
+// EXPECT: filter block (len>5): ["banana", "cherry"]
+// EXPECT: chain (filter>map): ["banana?"]
 // EXPECT: map on empty: []
 // EXPECT: filter on single: ["solo"]
 // EXPECT:

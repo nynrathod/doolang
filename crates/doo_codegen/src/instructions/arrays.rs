@@ -214,13 +214,30 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                     let Some(val) = operand_to_value(ctx, elem) else {
                         continue;
                     };
+                    // For string arrays, clone constant string elements into heap memory.
+                    // Static string constants (global pointers) cannot be safely freed,
+                    // but array Drop frees all string elements. Cloning ensures consistency.
+                    let store_val = if *elem_type == doo_core::types::builtin::STR
+                        && matches!(elem, MirOperand::Const(doo_mir::MirConst::Str(_)))
+                        && val.is_pointer_value()
+                    {
+                        if let Some(cloned) =
+                            super::memory::clone_string(ctx, val.into_pointer_value())
+                        {
+                            cloned.into()
+                        } else {
+                            val
+                        }
+                    } else {
+                        val
+                    };
                     let idx = ctx.i64_type().const_int(i as u64, false);
                     let elem_ptr = unsafe {
                         ctx.builder
                             .build_gep(elem_llvm_ty, base, &[idx], "elem_ptr")
                     }
                     .ok()?;
-                    ctx.builder.build_store(elem_ptr, val).ok();
+                    ctx.builder.build_store(elem_ptr, store_val).ok();
                 }
 
                 ctx.set_temp(&resolve(*dest), data_ptr.into());

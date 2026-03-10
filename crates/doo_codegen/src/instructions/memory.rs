@@ -665,11 +665,20 @@ fn clone_array<'ctx>(
         .build_int_truncate(src_len, ctx.context.i32_type(), "len_i32")
         .ok()?;
 
-    // In Doo, all array elements are 8 bytes (pointers or i64)
-    let elem_size = i64_type.const_int(8, false);
+    // Use actual element LLVM type for correct sizing (Bool=i8, Int=i64, etc.)
+    let elem_llvm_ty = ctx.get_llvm_type(element_type);
+    let elem_size = match elem_llvm_ty {
+        inkwell::types::BasicTypeEnum::IntType(t) => t.size_of(),
+        inkwell::types::BasicTypeEnum::FloatType(t) => t.size_of(),
+        inkwell::types::BasicTypeEnum::PointerType(t) => t.size_of(),
+        inkwell::types::BasicTypeEnum::StructType(t) => t.size_of()?,
+        inkwell::types::BasicTypeEnum::ArrayType(t) => t.size_of()?,
+        inkwell::types::BasicTypeEnum::VectorType(t) => t.size_of()?,
+        _ => i64_type.const_int(8, false),
+    };
 
-    // Allocate new array with same length (use i64 as element type for allocation)
-    let dst_ptr = alloc_with_header(ctx, src_len_i32, i64_type, "cloned_arr")?;
+    // Allocate new array with correct element type (matches source layout)
+    let dst_ptr = alloc_with_header(ctx, src_len_i32, elem_llvm_ty, "cloned_arr")?;
 
     // Check if this is a string or struct type that needs deep cloning
     let is_str = element_type == builtin::STR;

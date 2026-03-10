@@ -1076,6 +1076,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 result,
                 ok_type,
                 err_type,
+                is_ffi,
             } => {
                 // Manual error extraction: let a, b, err = expr;
                 // Result struct layout: { i32 tag, void* value }
@@ -1085,6 +1086,20 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 // regardless of the declared Doo error struct type (e.g. GitError).
                 // We register the struct association for potential field access, but
                 // MUST override variable_type to Str so Clone/Drop treat it correctly.
+                //
+                // For Doo-native functions, errors ARE actual struct/primitive values,
+                // so we use the declared err_type directly.
+                let effective_err_type = if *is_ffi {
+                    // FFI errors are always C strings - use STR for Clone/Drop
+                    if matches!(ctx.get_type_kind(*err_type), Some(TypeKind::Struct { .. })) {
+                        builtin::STR
+                    } else {
+                        *err_type
+                    }
+                } else {
+                    *err_type
+                };
+
                 let error_name_s = resolve(*error_name);
                 if error_name_s != "_" {
                     if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(*err_type) {
@@ -1098,10 +1113,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                             );
                         }
                     }
-                    // CRITICAL: Override variable_type to Str because FFI error data
-                    // is always a C string pointer, not an actual struct in memory.
-                    // Without this, Clone would use clone_struct on a C string → crash.
-                    ctx.set_variable_type(&error_name_s, builtin::STR);
+                    ctx.set_variable_type(&error_name_s, effective_err_type);
                 }
 
                 let result_val = operand_to_value(ctx, result)?;
@@ -1267,8 +1279,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         ]);
                         let err_result = err_phi.as_basic_value();
                         ctx.set_temp(&error_name_s, err_result);
-                        // FFI error data is always a C string — ensure Clone uses clone_string
-                        ctx.set_variable_type(&error_name_s, builtin::STR);
+                        // Use effective_err_type: STR for FFI struct errors, actual for Doo
+                        ctx.set_variable_type(&error_name_s, effective_err_type);
                     }
 
                     Some(ok_result)
@@ -1319,8 +1331,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         ]);
                         let err_result = err_phi.as_basic_value();
                         ctx.set_temp(&error_name_s, err_result);
-                        // FFI error data is always a C string — ensure Clone uses clone_string
-                        ctx.set_variable_type(&error_name_s, builtin::STR);
+                        // Use effective_err_type: STR for FFI struct errors, actual for Doo
+                        ctx.set_variable_type(&error_name_s, effective_err_type);
                     }
 
                     Some(ok_result)

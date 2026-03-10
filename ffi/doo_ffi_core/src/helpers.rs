@@ -83,16 +83,30 @@ pub fn make_ok_string(s: &str) -> *mut DooResult {
     DooResult::ok_string(s).into_raw()
 }
 
-/// Create an Ok `DooResult` with an integer value (as pointer-sized).
+/// Create an Ok `DooResult` with an integer value (heap-boxed).
+/// The value is allocated on the heap so UnwrapOk can load from the pointer.
 #[inline]
 pub fn make_ok_int(n: i64) -> *mut DooResult {
-    DooResult::ok(n as *mut std::ffi::c_void, 0).into_raw()
+    unsafe {
+        let ptr = libc::malloc(8) as *mut i64;
+        if !ptr.is_null() {
+            *ptr = n;
+        }
+        DooResult::ok(ptr as *mut std::ffi::c_void, 0).into_raw()
+    }
 }
 
-/// Create an Ok `DooResult` with a boolean value (0 or 1).
+/// Create an Ok `DooResult` with a boolean value (heap-boxed).
+/// The value is allocated on the heap so UnwrapOk can load from the pointer.
 #[inline]
 pub fn make_ok_bool(b: bool) -> *mut DooResult {
-    DooResult::ok((b as i64) as *mut std::ffi::c_void, 0).into_raw()
+    unsafe {
+        let ptr = libc::malloc(8) as *mut i64;
+        if !ptr.is_null() {
+            *ptr = b as i64;
+        }
+        DooResult::ok(ptr as *mut std::ffi::c_void, 0).into_raw()
+    }
 }
 
 /// Create an Err `DooResult` with a message.

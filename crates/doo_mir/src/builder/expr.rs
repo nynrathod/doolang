@@ -238,7 +238,11 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 let dest = builder.new_temp();
                 
                 // Propagate type information from the expression, or infer from operands
-                let type_id = expr.type_id.or_else(|| {
+                // CRITICAL: Treat ANY as unknown — don't short-circuit inference.
+                // Inside closure bodies, HIR analysis may set type_id=ANY on BinOps
+                // because it couldn't resolve param types. The MIR builder CAN resolve
+                // them from func.locals, so we must try inference when type_id is ANY.
+                let type_id = expr.type_id.filter(|&t| t != doo_core::types::builtin::ANY).or_else(|| {
                     // Infer result type from operands
                     // For comparison ops, result is always Bool
                     match op {
@@ -250,12 +254,23 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         }
                         _ => {
                             // For Add/Sub/Mul/Div/Mod, use LHS type, or infer from operands
-                            lhs.type_id.or_else(|| {
+                            // CRITICAL: Filter out ANY from lhs.type_id — closure params may have
+                            // type_id=ANY set by HIR when it couldn't determine the type.
+                            // The MIR builder can resolve concrete types from func.locals.
+                            lhs.type_id.filter(|&t| t != doo_core::types::builtin::ANY).or_else(|| {
                                 let inferred = builder.infer_operand_type(&l);
                                 if inferred != doo_core::types::builtin::ANY {
                                     Some(inferred)
                                 } else {
-                                    None
+                                    // Try RHS as last resort
+                                    rhs.type_id.filter(|&t| t != doo_core::types::builtin::ANY).or_else(|| {
+                                        let rhs_inferred = builder.infer_operand_type(&r);
+                                        if rhs_inferred != doo_core::types::builtin::ANY {
+                                            Some(rhs_inferred)
+                                        } else {
+                                            None
+                                        }
+                                    })
                                 }
                             })
                         }

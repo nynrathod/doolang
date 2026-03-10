@@ -724,6 +724,7 @@ pub enum MirInstrKind {
         result: MirOperand, // Result to extract from
         ok_type: TypeId,    // Type of the Ok value
         err_type: TypeId,   // Type of the Error value
+        is_ffi: bool,       // Whether the result comes from an FFI call
     },
 
     // ========================================================================

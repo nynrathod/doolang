@@ -1,16 +1,14 @@
 //! Expression lowering.
 
+use super::{hir_binop_to_kind, hir_unaryop_to_kind};
+use super::{Lower, LowerError};
+use crate::types::*;
 use doo_core::{
     constants::ffi_names,
     infer::{infer_binop_result_type, infer_unaryop_result_type},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
-use doo_frontend::ast::{
-    Expr, ExprKind,
-};
-use crate::types::*;
-use super::{Lower, LowerError};
-use super::{hir_binop_to_kind, hir_unaryop_to_kind};
+use doo_frontend::ast::{Expr, ExprKind};
 
 impl Lower {
     pub(crate) fn lower_expr(&mut self, expr: &Expr) -> HirExpr {
@@ -558,7 +556,13 @@ impl Lower {
                 return_type,
                 ..
             } => {
+                // Save var_types before lowering closure body.
+                // Closure-local variables (e.g., `let s = a + b;`) must NOT leak into
+                // subsequent closures that reuse the same name (e.g., `(s) => s.len()`).
+                let saved_var_types = self.var_types.clone();
                 let mut body_hir = self.lower_expr_typed(body, registry);
+                // Restore var_types — closure-scoped bindings are discarded
+                self.var_types = saved_var_types;
                 if let Some(ret_type) = return_type {
                     body_hir.type_id = Some(self.resolve_type_expr(ret_type, registry));
                 }

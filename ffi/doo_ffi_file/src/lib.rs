@@ -77,19 +77,19 @@ pub struct DooFileError {
 /// FileMetadata struct layout - matches Doo's FileMetadata struct exactly
 /// Field order MUST match std/File.doo declaration order
 /// LLVM struct: %FileMetadata = type { i1, i1, i1, i64, i1, i64, i64, i64 }
-/// Total: 48 bytes
-#[repr(C, align(8))]
+/// P06 field reordering: i64 fields first (alignment 8), then i8 fields (alignment 1).
+/// Matches LLVM struct layout: { i64, i64, i64, i64, i8, i8, i8, i8 }
+/// Total: 40 bytes (32 bytes for i64s + 4 bytes for i8s + 4 padding)
+#[repr(C)]
 pub struct DooFileMetadata {
-    pub is_file: u8,    // offset 0: IsFile (i1)
-    pub is_dir: u8,     // offset 1: IsDir (i1)
-    pub is_symlink: u8, // offset 2: IsSymlink (i1)
-    pub _pad1: [u8; 5], // offset 3-7: padding for i64 alignment
-    pub size: i64,      // offset 8: Size (i64)
-    pub readonly: u8,   // offset 16: Readonly (i1)
-    pub _pad2: [u8; 7], // offset 17-23: padding for i64 alignment
-    pub created: i64,   // offset 24: Created (i64)
-    pub modified: i64,  // offset 32: Modified (i64)
-    pub accessed: i64,  // offset 40: Accessed (i64)
+    pub size: i64,      // P06 physical 0: Size (i64)
+    pub created: i64,   // P06 physical 1: Created (i64)
+    pub modified: i64,  // P06 physical 2: Modified (i64)
+    pub accessed: i64,  // P06 physical 3: Accessed (i64)
+    pub is_file: u8,    // P06 physical 4: IsFile (i8)
+    pub is_dir: u8,     // P06 physical 5: IsDir (i8)
+    pub is_symlink: u8, // P06 physical 6: IsSymlink (i8)
+    pub readonly: u8,   // P06 physical 7: Readonly (i8)
 }
 
 // ============================================================================
@@ -863,16 +863,14 @@ pub extern "C" fn doo_file_metadata(path: *const c_char) -> *mut DooResult {
         match fs::metadata(&safe_path) {
             Ok(meta) => {
                 let file_meta = DooFileMetadata {
-                    is_file: if meta.is_file() { 1 } else { 0 },
-                    is_dir: if meta.is_dir() { 1 } else { 0 },
-                    is_symlink: if is_symlink { 1 } else { 0 },
-                    _pad1: [0; 5],
                     size: meta.len() as i64,
-                    readonly: if meta.permissions().readonly() { 1 } else { 0 },
-                    _pad2: [0; 7],
                     created: to_timestamp(meta.created()),
                     modified: to_timestamp(meta.modified()),
                     accessed: to_timestamp(meta.accessed()),
+                    is_file: if meta.is_file() { 1 } else { 0 },
+                    is_dir: if meta.is_dir() { 1 } else { 0 },
+                    is_symlink: if is_symlink { 1 } else { 0 },
+                    readonly: if meta.permissions().readonly() { 1 } else { 0 },
                 };
                 make_ok_metadata(file_meta)
             }

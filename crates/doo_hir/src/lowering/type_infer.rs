@@ -1,13 +1,13 @@
 //! Type inference helpers for module methods and closures.
 
+use super::Lower;
+use super::{hir_binop_to_kind, hir_unaryop_to_kind};
+use crate::types::*;
 use doo_core::{
     infer::{infer_binop_result_type, infer_unaryop_result_type},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
-use crate::types::*;
-use super::Lower;
 use rustc_hash::FxHashMap;
-use super::{hir_binop_to_kind, hir_unaryop_to_kind};
 
 impl Lower {
     /// Infer the return type of module-level method calls (e.g., JSON.stringify, JSON.parse)
@@ -141,7 +141,15 @@ impl Lower {
             "reduce" => {
                 let init_type = args
                     .get(0)
-                    .and_then(|arg| arg.type_id)
+                    .and_then(|arg| {
+                        arg.type_id.or_else(|| match &arg.kind {
+                            HirExprKind::Const(ConstValue::Int(_)) => Some(builtin::INT),
+                            HirExprKind::Const(ConstValue::Float(_)) => Some(builtin::FLOAT),
+                            HirExprKind::Const(ConstValue::Bool(_)) => Some(builtin::BOOL),
+                            HirExprKind::Const(ConstValue::Str(_)) => Some(builtin::STR),
+                            _ => None,
+                        })
+                    })
                     .unwrap_or(builtin::ANY);
                 let closure_return = args.get_mut(1).and_then(|arg| {
                     self.apply_closure_signature(
