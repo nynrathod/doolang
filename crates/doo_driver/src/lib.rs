@@ -212,21 +212,21 @@ pub fn run_command_with_compiler(
     };
 
     let compile_start = std::time::Instant::now();
+    eprint!("\x1b[90m⏳ Compiling...\x1b[0m");
+    let _ = std::io::stderr().flush();
 
     match compile_fn(opts) {
         Ok(result) => {
             if result.error_count > 0 || !result.success {
                 eprintln!(
-                    "{} Compilation failed with {} errors",
+                    "\r\x1b[2K{} Compilation failed with {} errors",
                     ERROR, result.error_count
                 );
                 cleanup_temp(&output_name);
                 return 1;
             }
             let compile_ms = compile_start.elapsed().as_millis();
-            if debug_enabled {
-                println!("{} Compiled in {} ms", CHECK, compile_ms);
-            }
+            eprintln!("\r\x1b[2K\x1b[90m{} Compiled in {}ms\x1b[0m", CHECK, compile_ms);
             let _ = std::io::stdout().flush();
         }
         Err(e) => {

@@ -281,12 +281,16 @@ pub extern "C" fn doo_db_raw(_db: *const c_void, sql: *const c_char) -> *mut Doo
             }
         };
 
+        let sql_debug = sql_str.clone();
         match run_db_async(async move { drv.query(&sql_str, &[]).await }) {
             Ok(json) => {
                 ffi_debug!("DB", "Query result, json length: {}", json.len());
                 db_result_ok(string_to_c(&json) as *mut c_void)
             }
-            Err(e) => db_result_err(500, &e),
+            Err(e) => {
+                eprintln!("[DB ERROR] raw query failed: {} | SQL: {}", e, sql_debug);
+                db_result_err(500, &e)
+            }
         }
     })
 }
@@ -363,13 +367,14 @@ pub extern "C" fn doo_db_raw_param(
         };
 
         let params_debug = format!("{:?}", params_array);
+        let sql_debug = sql_str.clone();
         match run_db_async(async move { drv.query(&sql_str, &params_array).await }) {
             Ok(json) => {
                 ffi_debug!("DB", "Query result, json length: {}", json.len());
                 db_result_ok(string_to_c(&json) as *mut c_void)
             }
             Err(e) => {
-                ffi_debug!("DB", "Query error: {} | params were: {}", e, params_debug);
+                eprintln!("[DB ERROR] parameterized query failed: {} | SQL: {} | params: {}", e, sql_debug, params_debug);
                 db_result_err(500, &format!("{} (params: {})", e, params_debug))
             }
         }

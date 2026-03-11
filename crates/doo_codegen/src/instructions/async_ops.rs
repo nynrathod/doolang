@@ -13,9 +13,12 @@
 //! No Rc/Arc — matches Doo's auto-ownership model.
 
 use super::InstructionHandler;
+use super::memory::{clone_string, clone_struct};
 use crate::context::CodegenContext;
 use crate::utils::operand_to_value;
 use doo_core::constants::ffi_names;
+use doo_core::types::registry::builtin;
+use doo_core::types::TypeKind;
 use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind};
 use inkwell::module::Linkage;
@@ -524,12 +527,15 @@ fn build_env_pack<'ctx>(
                     .build_int_z_extend(loaded.into_int_value(), i64_ty, &format!("cap_zext_{}", i))
                     .ok()?
             } else if local_ty.is_pointer_type() {
-                // Pointer capture: convert pointer to i64 for env storage.
-                // String cloning happens on the UNPACK side (spawned function context)
-                // where type info is correct.
+                // Pointer capture: CLONE at pack time to prevent use-after-free.
+                // The parent function may return (freeing locals) before the goroutine
+                // starts on its thread. Cloning here ensures the goroutine owns its
+                // own copy of all captured pointer values.
                 let loaded_ptr = loaded.into_pointer_value();
+                let cloned_ptr = clone_capture_for_spawn(ctx, loaded_ptr, &cap_name);
+                let ptr_to_store = cloned_ptr.unwrap_or(loaded_ptr);
                 ctx.builder
-                    .build_ptr_to_int(loaded_ptr, i64_ty, &format!("cap_ptoi_{}", i))
+                    .build_ptr_to_int(ptr_to_store, i64_ty, &format!("cap_ptoi_{}", i))
                     .ok()?
             } else {
                 // i64 or same-width: use directly
@@ -557,6 +563,71 @@ fn build_env_pack<'ctx>(
     }
 
     Some(env_raw)
+}
+
+/// Clone a captured pointer value at pack time for fire-and-forget Spawn.
+/// Uses type info from the codegen context to determine the correct clone strategy:
+/// - Str → strlen+malloc+memcpy (null-terminated string clone)
+/// - Struct → deep clone (allocate + clone each field recursively)
+/// - Unknown pointer → clone as string (conservative, covers most Doo captures)
+fn clone_capture_for_spawn<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    src_ptr: inkwell::values::PointerValue<'ctx>,
+    cap_name: &str,
+) -> Option<inkwell::values::PointerValue<'ctx>> {
+    // Look up the Doo-level type for this variable
+    if let Some(type_id) = ctx.variable_types.get(cap_name).copied() {
+        if let Some(kind) = ctx.get_type_kind(type_id) {
+            match kind {
+                TypeKind::Struct { ref name, ref fields } => {
+                    let field_pairs: Vec<_> =
+                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                    let sname = name.clone();
+                    return clone_struct(ctx, src_ptr, &sname, &field_pairs);
+                }
+                TypeKind::Str => {
+                    return clone_string(ctx, src_ptr);
+                }
+                _ => {}
+            }
+        }
+    }
+    // Fallback: check temp_struct_types for struct captures not in variable_types
+    if let Some(struct_name) = ctx.temp_struct_types.get(cap_name).cloned() {
+        if let Some(type_id) = ctx.variable_types.get(cap_name).copied() {
+            if let Some(TypeKind::Struct { ref fields, .. }) = ctx.get_type_kind(type_id) {
+                let field_pairs: Vec<_> =
+                    fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                return clone_struct(ctx, src_ptr, &struct_name, &field_pairs);
+            }
+        }
+        // Struct name known but no type info — shallow memcpy via struct type
+        if let Some(st) = ctx.lookup_struct_type(&struct_name) {
+            let ptr_ty = ctx.ptr_type();
+            let i64_ty = ctx.i64_type();
+            let struct_size = st.size_of()?;
+            let malloc_fn = ctx.module.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
+                let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
+                ctx.module.add_function(ffi_names::MALLOC, fn_ty, Some(Linkage::External))
+            });
+            let memcpy_fn = ctx.module.get_function(ffi_names::MEMCPY).unwrap_or_else(|| {
+                let fn_ty = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false);
+                ctx.module.add_function(ffi_names::MEMCPY, fn_ty, Some(Linkage::External))
+            });
+            let dst = ctx.builder
+                .build_call(malloc_fn, &[struct_size.into()], "cap_struct_clone")
+                .ok()?
+                .try_as_basic_value().basic()?.into_pointer_value();
+            ctx.builder.build_call(
+                memcpy_fn,
+                &[dst.into(), src_ptr.into(), struct_size.into()],
+                "",
+            ).ok()?;
+            return Some(dst);
+        }
+    }
+    // Default: treat as string (most common pointer type in Doo)
+    clone_string(ctx, src_ptr)
 }
 
 /// Emit env unpack code at the start of a spawn function.
@@ -616,9 +687,9 @@ pub fn emit_env_unpack<'ctx>(
                         }
                     } else if local_ty.is_pointer_type() {
                         // Pointer type: convert i64 back to pointer.
-                        // Safety: The drop insertion pass ensures captured variables are NOT
-                        // freed by the outer function until after the Spawn instruction,
-                        // so the pointer remains valid when the go block unpacks it.
+                        // Safety: Pointer captures are cloned at PACK time
+                        // (build_env_pack), so the goroutine owns its own copy.
+                        // The original may be freed by the parent after spawn.
                         if let Some(new_alloca) = ctx.alloca_in_entry_block(local_ty, &format!("cap_local_{}", cap_name)) {
                             if let Ok(as_ptr) = ctx.builder.build_int_to_ptr(
                                 loaded_i64.into_int_value(),

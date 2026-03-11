@@ -946,6 +946,7 @@ fn build_response_bytes_typed(
 /// - Connection draining on shutdown
 pub fn start_server(host: &str, port: u16) -> Result<(), String> {
     let _ = STARTUP_INSTANT.set(Instant::now());
+    eprintln!("[Doo] Preparing server...");
 
     // Load configuration from environment variables
     let max_connections = env_usize("DOO_MAX_CONNECTIONS", 10_000);
