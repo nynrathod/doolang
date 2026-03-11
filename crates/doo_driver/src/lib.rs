@@ -226,7 +226,10 @@ pub fn run_command_with_compiler(
                 return 1;
             }
             let compile_ms = compile_start.elapsed().as_millis();
-            eprintln!("\r\x1b[2K\x1b[90m{} Compiled in {}ms\x1b[0m", CHECK, compile_ms);
+            eprintln!(
+                "\r\x1b[2K\x1b[90m{} Compiled in {}ms\x1b[0m",
+                CHECK, compile_ms
+            );
             let _ = std::io::stdout().flush();
         }
         Err(e) => {

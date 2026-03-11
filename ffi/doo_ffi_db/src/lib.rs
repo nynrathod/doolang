@@ -374,7 +374,10 @@ pub extern "C" fn doo_db_raw_param(
                 db_result_ok(string_to_c(&json) as *mut c_void)
             }
             Err(e) => {
-                eprintln!("[DB ERROR] parameterized query failed: {} | SQL: {} | params: {}", e, sql_debug, params_debug);
+                eprintln!(
+                    "[DB ERROR] parameterized query failed: {} | SQL: {} | params: {}",
+                    e, sql_debug, params_debug
+                );
                 db_result_err(500, &format!("{} (params: {})", e, params_debug))
             }
         }

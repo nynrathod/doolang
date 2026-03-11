@@ -12,8 +12,8 @@
 //! All handles use pure ownership (Box::into_raw / Box::from_raw).
 //! No Rc/Arc — matches Doo's auto-ownership model.
 
-use super::InstructionHandler;
 use super::memory::{clone_string, clone_struct};
+use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::utils::operand_to_value;
 use doo_core::constants::ffi_names;
@@ -579,7 +579,10 @@ fn clone_capture_for_spawn<'ctx>(
     if let Some(type_id) = ctx.variable_types.get(cap_name).copied() {
         if let Some(kind) = ctx.get_type_kind(type_id) {
             match kind {
-                TypeKind::Struct { ref name, ref fields } => {
+                TypeKind::Struct {
+                    ref name,
+                    ref fields,
+                } => {
                     let field_pairs: Vec<_> =
                         fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
                     let sname = name.clone();
@@ -596,8 +599,7 @@ fn clone_capture_for_spawn<'ctx>(
     if let Some(struct_name) = ctx.temp_struct_types.get(cap_name).cloned() {
         if let Some(type_id) = ctx.variable_types.get(cap_name).copied() {
             if let Some(TypeKind::Struct { ref fields, .. }) = ctx.get_type_kind(type_id) {
-                let field_pairs: Vec<_> =
-                    fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
                 return clone_struct(ctx, src_ptr, &struct_name, &field_pairs);
             }
         }
@@ -606,23 +608,37 @@ fn clone_capture_for_spawn<'ctx>(
             let ptr_ty = ctx.ptr_type();
             let i64_ty = ctx.i64_type();
             let struct_size = st.size_of()?;
-            let malloc_fn = ctx.module.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
-                let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
-                ctx.module.add_function(ffi_names::MALLOC, fn_ty, Some(Linkage::External))
-            });
-            let memcpy_fn = ctx.module.get_function(ffi_names::MEMCPY).unwrap_or_else(|| {
-                let fn_ty = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false);
-                ctx.module.add_function(ffi_names::MEMCPY, fn_ty, Some(Linkage::External))
-            });
-            let dst = ctx.builder
+            let malloc_fn = ctx
+                .module
+                .get_function(ffi_names::MALLOC)
+                .unwrap_or_else(|| {
+                    let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
+                    ctx.module
+                        .add_function(ffi_names::MALLOC, fn_ty, Some(Linkage::External))
+                });
+            let memcpy_fn = ctx
+                .module
+                .get_function(ffi_names::MEMCPY)
+                .unwrap_or_else(|| {
+                    let fn_ty =
+                        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false);
+                    ctx.module
+                        .add_function(ffi_names::MEMCPY, fn_ty, Some(Linkage::External))
+                });
+            let dst = ctx
+                .builder
                 .build_call(malloc_fn, &[struct_size.into()], "cap_struct_clone")
                 .ok()?
-                .try_as_basic_value().basic()?.into_pointer_value();
-            ctx.builder.build_call(
-                memcpy_fn,
-                &[dst.into(), src_ptr.into(), struct_size.into()],
-                "",
-            ).ok()?;
+                .try_as_basic_value()
+                .basic()?
+                .into_pointer_value();
+            ctx.builder
+                .build_call(
+                    memcpy_fn,
+                    &[dst.into(), src_ptr.into(), struct_size.into()],
+                    "",
+                )
+                .ok()?;
             return Some(dst);
         }
     }
@@ -675,7 +691,9 @@ pub fn emit_env_unpack<'ctx>(
                     let local_ty = ctx.get_local_type(cap_name).unwrap_or(i64_ty.into());
                     if local_ty.is_int_type() && local_ty.into_int_type().get_bit_width() < 64 {
                         // Small integer (e.g., Bool=i8): truncate i64 → actual type
-                        if let Some(new_alloca) = ctx.alloca_in_entry_block(local_ty, &format!("cap_local_{}", cap_name)) {
+                        if let Some(new_alloca) =
+                            ctx.alloca_in_entry_block(local_ty, &format!("cap_local_{}", cap_name))
+                        {
                             if let Ok(truncated) = ctx.builder.build_int_truncate(
                                 loaded_i64.into_int_value(),
                                 local_ty.into_int_type(),
@@ -690,7 +708,9 @@ pub fn emit_env_unpack<'ctx>(
                         // Safety: Pointer captures are cloned at PACK time
                         // (build_env_pack), so the goroutine owns its own copy.
                         // The original may be freed by the parent after spawn.
-                        if let Some(new_alloca) = ctx.alloca_in_entry_block(local_ty, &format!("cap_local_{}", cap_name)) {
+                        if let Some(new_alloca) =
+                            ctx.alloca_in_entry_block(local_ty, &format!("cap_local_{}", cap_name))
+                        {
                             if let Ok(as_ptr) = ctx.builder.build_int_to_ptr(
                                 loaded_i64.into_int_value(),
                                 local_ty.into_pointer_type(),
@@ -702,8 +722,12 @@ pub fn emit_env_unpack<'ctx>(
                         }
                     } else {
                         // i64 or same width: store directly
-                        if let Some(new_alloca) = ctx.alloca_in_entry_block(i64_ty, &format!("cap_local_{}", cap_name)) {
-                            ctx.builder.build_store(new_alloca, loaded_i64.into_int_value()).ok();
+                        if let Some(new_alloca) =
+                            ctx.alloca_in_entry_block(i64_ty, &format!("cap_local_{}", cap_name))
+                        {
+                            ctx.builder
+                                .build_store(new_alloca, loaded_i64.into_int_value())
+                                .ok();
                             ctx.replace_local_ptr(cap_name, new_alloca, local_ty);
                         }
                     }
