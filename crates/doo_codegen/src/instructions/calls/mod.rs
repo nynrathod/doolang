@@ -1264,7 +1264,9 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                     // Store ok value(s) to all ok_names
                     for ok_name in ok_names {
-                        ctx.set_temp(&resolve(*ok_name), ok_result);
+                        let ok_name_s = resolve(*ok_name);
+                        ctx.set_temp(&ok_name_s, ok_result);
+                        ctx.set_variable_type(&ok_name_s, *ok_type);
                     }
 
                     // Create phi node for error value (if not ignored)
@@ -1317,9 +1319,11 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     ]);
                     let ok_result = ok_phi.as_basic_value();
 
-                    // Store ok value(s) to all ok_names
+                    // Store ok value(s) to all ok_names with type tracking
                     for ok_name in ok_names {
-                        ctx.set_temp(&resolve(*ok_name), ok_result);
+                        let ok_name_s = resolve(*ok_name);
+                        ctx.set_temp(&ok_name_s, ok_result);
+                        ctx.set_variable_type(&ok_name_s, *ok_type);
                     }
 
                     // Create phi node for error value (if not ignored)

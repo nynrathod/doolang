@@ -569,7 +569,7 @@ fn build_env_pack<'ctx>(
 /// Uses type info from the codegen context to determine the correct clone strategy:
 /// - Str → strlen+malloc+memcpy (null-terminated string clone)
 /// - Struct → deep clone (allocate + clone each field recursively)
-/// - Unknown pointer → clone as string (conservative, covers most Doo captures)
+/// - Unknown pointer → no clone (use original heap pointer, which remains valid)
 fn clone_capture_for_spawn<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
@@ -642,8 +642,13 @@ fn clone_capture_for_spawn<'ctx>(
             return Some(dst);
         }
     }
-    // Default: treat as string (most common pointer type in Doo)
-    clone_string(ctx, src_ptr)
+    // Default: no clone — use original heap pointer directly.
+    // Heap-allocated values (FFI returns, string operations, struct allocations)
+    // remain valid after the parent function returns. The pack step already
+    // loaded the pointer value from the alloca, so we have the actual heap
+    // address. Cloning unknown types (e.g., using clone_string on a struct)
+    // would corrupt the data.
+    None
 }
 
 /// Emit env unpack code at the start of a spawn function.
