@@ -1,0 +1,82 @@
+{
+	"name": "doo-lang",
+	"displayName": "Doo Language",
+	"description": "Full language support for the Doo programming language — syntax highlighting, autocomplete, go-to-definition, hover, diagnostics, and more.",
+	"version": "0.1.0",
+	"publisher": "doolang",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"categories": [
+		"Programming Languages",
+		"Linters",
+		"Snippets"
+	],
+	"keywords": [
+		"doo",
+		"doolang",
+		"programming language",
+		"compiled",
+		"static typing"
+	],
+	"activationEvents": [
+		"onLanguage:doo"
+	],
+	"main": "./out/extension.js",
+	"contributes": {
+		"languages": [
+			{
+				"id": "doo",
+				"aliases": [
+					"Doo",
+					"doo"
+				],
+				"extensions": [
+					".doo"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "doo",
+				"scopeName": "source.doo",
+				"path": "./syntaxes/doo.tmLanguage.json"
+			}
+		],
+		"configuration": {
+			"title": "Doo Language",
+			"properties": {
+				"doo.lsp.path": {
+					"type": "string",
+					"default": "",
+					"description": "Path to the native doo-lsp binary. If empty, searches PATH for 'doo-lsp'. Falls back to built-in TypeScript server if not found."
+				},
+				"doo.lsp.useNative": {
+					"type": "boolean",
+					"default": true,
+					"description": "Prefer the native doo-lsp binary over the built-in TypeScript server."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"lint": "eslint src --ext ts",
+		"package": "vsce package --no-dependencies --no-yarn",
+		"install-ext": "vsce package --no-dependencies --no-yarn -o doo-lang.vsix && code --install-extension doo-lang.vsix --force"
+	},
+	"dependencies": {
+		"vscode-languageclient": "^9.0.1",
+		"vscode-languageserver": "^9.0.1",
+		"vscode-languageserver-textdocument": "^1.0.11"
+	},
+	"devDependencies": {
+		"@types/node": "^20.11.0",
+		"@types/vscode": "^1.85.0",
+		"@vscode/vsce": "^3.7.1",
+		"typescript": "^5.3.0"
+	}
+}
