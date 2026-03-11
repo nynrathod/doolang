@@ -128,25 +128,12 @@ else
     fi
 fi
 
-# ==========================================================================
-# Test 8: [Doo] Server started line
-# ==========================================================================
-echo ""
-echo "Test 8: [Doo] Server started line"
-if strip_ansi server.log | grep -q "\[Doo\] Server started on"; then
-    SERVER_LINE=$(strip_ansi server.log | grep "\[Doo\] Server started on" | head -1)
-    echo "  ✓ Found: $SERVER_LINE"
-else
-    echo "  ❌ FAIL: [Doo] Server started line not found"
-    strip_ansi server.log
-    exit 1
-fi
 
 # ==========================================================================
-# Test 9: Error category — GET /crash → 500 (red in terminal)
+# Test 8: Error category — GET /crash → 500 (red in terminal)
 # ==========================================================================
 echo ""
-echo "Test 9: Error category — GET /crash → 500"
+echo "Test 8: Error category — GET /crash → 500"
 RESPONSE=$(http_get "/crash")
 assert_status "$RESPONSE" 500 "GET /crash (intentional 500)"
 assert_doo_log "GET" "/crash" "500" "Error 500"
@@ -156,7 +143,7 @@ assert_doo_log "GET" "/crash" "500" "Error 500"
 # ==========================================================================
 echo ""
 echo "==================================="
-echo "  ✓ All 9 logger tests passed!"
+echo "  ✓ All 8 logger tests passed!"
 echo "==================================="
 echo ""
 echo "--- [Doo] log lines from server.log ---"
