@@ -9,22 +9,20 @@
 //! - `for x in iter` → while loop (basic structure)
 //! - Range expressions → Range construction
 
-mod items;
-mod stmt;
-mod route;
 mod expr;
 mod for_loops;
-mod type_infer;
 mod helpers;
+mod items;
+mod route;
+mod stmt;
+mod type_infer;
 
 use doo_core::{
     infer::{BinOpKind, UnaryOpKind},
     types::{TypeId, TypeRegistry},
     Span,
 };
-use doo_frontend::ast::{
-    Item, Program,
-};
+use doo_frontend::ast::{Item, Program};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::types::*;
@@ -397,7 +395,6 @@ impl Lower {
     }
 }
 
-
 impl Default for Lower {
     fn default() -> Self {
         Self::new()
@@ -569,24 +566,29 @@ mod tests {
                                          // Second statement is desugared for loop
             if let HirStmtKind::Expr(expr) = &f.body[1].kind {
                 if let HirExprKind::Block { stmts, .. } = &expr.kind {
-                    // Should have: let __arr = arr; let __idx = 0; while __idx < __arr.len() { ... }
-                    assert_eq!(stmts.len(), 3);
+                    // Should have: let __arr = arr; let __len = __arr.len(); let __idx = 0; while __idx < __len { ... }
+                    assert_eq!(stmts.len(), 4);
                     // First: let __arr = arr
                     if let HirStmtKind::Let { name, mutable, .. } = &stmts[0].kind {
                         assert!(name.contains("_arr"));
                         assert!(!*mutable);
                     }
-                    // Second: let __idx = 0
+                    // Second: let __len = __arr.len()
                     if let HirStmtKind::Let { name, mutable, .. } = &stmts[1].kind {
+                        assert!(name.contains("_len"));
+                        assert!(!*mutable);
+                    }
+                    // Third: let __idx = 0
+                    if let HirStmtKind::Let { name, mutable, .. } = &stmts[2].kind {
                         assert!(name.contains("_idx"));
                         assert!(*mutable);
                     }
-                    // Third: while loop
+                    // Fourth: while loop
                     if let HirStmtKind::While {
                         condition, body, ..
-                    } = &stmts[2].kind
+                    } = &stmts[3].kind
                     {
-                        // Condition should be __idx < __arr.len()
+                        // Condition should be __idx < __len
                         if let HirExprKind::BinOp { op, .. } = &condition.kind {
                             assert_eq!(*op, HirBinOp::Lt);
                         }
