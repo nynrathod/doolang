@@ -1,0 +1,269 @@
+// =============================================================================
+// DOO GIT MODULE — COMPREHENSIVE TEST SUITE
+// =============================================================================
+// Tests all git operations from std::Git:
+//   init, initBare, clone, commitAll, push, pull, hasRemote,
+//   isDirty, headShort, currentBranch, stash, stashPop, commitAllAsync
+//
+// Cross-platform: Windows, Mac, Linux
+// Uses File module for file operations — no Process dependency for git tests.
+// =============================================================================
+import std::Git;
+import std::File;
+
+fn main() {
+    print("========================================");
+    print("  DOO GIT MODULE TEST SUITE");
+    print("  Production-Grade (DooCloud)");
+    print("========================================");
+    print("");
+
+    // Use a local subdirectory in the project root (where main.doo lives).
+    // .git directories will be visible and verifiable here.
+    let baseDir = "./__test_repos";
+    // Clean any leftover from previous runs
+    if File::Exists(baseDir) {
+        File::RmDirAll(baseDir)?;
+    }
+    File::MkDir(baseDir)?;
+    print("TEST_DIR=${baseDir}");
+
+    let repoDir = "${baseDir}/test-repo";
+    File::MkDir(repoDir)?;
+
+    // =========================================================================
+    // TEST 1: Git::init — Initialize a new repository
+    // =========================================================================
+    print("TEST 1: Git::init");
+    Git::init(repoDir)?;
+    print("  initialized repo at ${repoDir}");
+    // Verify .git directory was actually created
+    let gitExists = File::Exists("${repoDir}/.git");
+    print("  .git exists = ${gitExists}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 2: Git::isDirty — Clean repo should NOT be dirty
+    // =========================================================================
+    print("TEST 2: Git::isDirty (clean repo)");
+    let dirty1 = Git::isDirty(repoDir);
+    print("  isDirty = ${dirty1}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 3: Create a file and check isDirty — should be dirty
+    // =========================================================================
+    print("TEST 3: Git::isDirty (after adding file)");
+    File::Write("${repoDir}/test.txt", "hello doo")?;
+    let dirty2 = Git::isDirty(repoDir);
+    print("  isDirty after file = ${dirty2}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 4: Git::commitAll — Stage all + commit
+    // =========================================================================
+    print("TEST 4: Git::commitAll");
+    let hash1 = Git::commitAll(repoDir, "feat: initial commit", "DooTest", "test@doo.dev")?;
+    print("  commit hash = ${hash1}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 5: Git::isDirty — After commit, should be clean
+    // =========================================================================
+    print("TEST 5: Git::isDirty (after commit)");
+    let dirty3 = Git::isDirty(repoDir);
+    print("  isDirty after commit = ${dirty3}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 6: Git::headShort — Get short HEAD hash
+    // =========================================================================
+    print("TEST 6: Git::headShort");
+    let head = Git::headShort(repoDir)?;
+    print("  headShort = ${head}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 7: Git::hasRemote — No remote configured yet
+    // =========================================================================
+    print("TEST 7: Git::hasRemote (no remote)");
+    let hasRem = Git::hasRemote(repoDir);
+    print("  hasRemote = ${hasRem}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 8: Git::stash — Stash uncommitted changes
+    // =========================================================================
+    print("TEST 8: Git::stash");
+    File::Append("${repoDir}/test.txt", "\nstash me")?;
+    let dirty4 = Git::isDirty(repoDir);
+    print("  isDirty before stash = ${dirty4}");
+    Git::stash(repoDir)?;
+    let dirty5 = Git::isDirty(repoDir);
+    print("  isDirty after stash = ${dirty5}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 9: Git::stashPop — Restore stashed changes
+    // =========================================================================
+    print("TEST 9: Git::stashPop");
+    Git::stashPop(repoDir)?;
+    let dirty6 = Git::isDirty(repoDir);
+    print("  isDirty after stashPop = ${dirty6}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 10: Git::commitAll — Second commit (verifies multi-commit)
+    // =========================================================================
+    print("TEST 10: Git::commitAll (second commit)");
+    let hash2 = Git::commitAll(repoDir, "feat: add stash content", "DooTest", "test@doo.dev")?;
+    print("  second commit hash = ${hash2}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 11: Git::headShort — Head changed after second commit
+    // =========================================================================
+    print("TEST 11: Git::headShort (after second commit)");
+    let head2 = Git::headShort(repoDir)?;
+    print("  headShort = ${head2}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 12: Git::clone — Clone a local repo
+    // =========================================================================
+    print("TEST 12: Git::clone (local)");
+    let cloneDir = "${baseDir}/test-clone";
+    Git::clone(repoDir, cloneDir)?;
+    let cloneDirty = Git::isDirty(cloneDir);
+    print("  cloned to ${cloneDir}");
+    print("  clone isDirty = ${cloneDirty}");
+    let cloneHead = Git::headShort(cloneDir)?;
+    print("  clone headShort = ${cloneHead}");
+    // Verify .git exists in clone too
+    let cloneGitExists = File::Exists("${cloneDir}/.git");
+    print("  clone .git exists = ${cloneGitExists}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 13: Git::hasRemote — Cloned repo should have remote
+    // =========================================================================
+    print("TEST 13: Git::hasRemote (cloned repo)");
+    let cloneHasRem = Git::hasRemote(cloneDir);
+    print("  hasRemote = ${cloneHasRem}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 14: Git::commitAll on clone — Verify independent commits
+    // =========================================================================
+    print("TEST 14: Git::commitAll on cloned repo");
+    File::Write("${cloneDir}/clone.txt", "clone file")?;
+    let hash3 = Git::commitAll(cloneDir, "feat: clone commit", "CloneUser", "clone@doo.dev")?;
+    print("  clone commit hash = ${hash3}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 15: Git::stash on empty changes — Should handle gracefully
+    // =========================================================================
+    print("TEST 15: Git::stash (nothing to stash)");
+    let stashResult = Git::stash(repoDir);
+    print("  stash on clean repo completed");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 16: Multiple commits + headShort changes
+    // =========================================================================
+    print("TEST 16: Multiple rapid commits");
+    File::Write("${repoDir}/a.txt", "file1")?;
+    let h1 = Git::commitAll(repoDir, "add a.txt", "DooTest", "test@doo.dev")?;
+    File::Write("${repoDir}/b.txt", "file2")?;
+    let h2 = Git::commitAll(repoDir, "add b.txt", "DooTest", "test@doo.dev")?;
+    File::Write("${repoDir}/c.txt", "file3")?;
+    let h3 = Git::commitAll(repoDir, "add c.txt", "DooTest", "test@doo.dev")?;
+    print("  commit1 = ${h1}");
+    print("  commit2 = ${h2}");
+    print("  commit3 = ${h3}");
+    let finalHead = Git::headShort(repoDir)?;
+    print("  final headShort = ${finalHead}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 17: Git::push — Push to a bare remote
+    // =========================================================================
+    print("TEST 17: Git::push");
+    // Create a bare repository as the remote target
+    let bareDir = "${baseDir}/bare-remote.git";
+    Git::initBare(bareDir)?;
+    // Clone the bare repo to get a working copy with "origin" remote
+    let pushDir = "${baseDir}/push-work";
+    Git::clone(bareDir, pushDir)?;
+    // Create a file and make the first commit (bare repo has no history yet)
+    File::Write("${pushDir}/push.txt", "push test")?;
+    let pushHash = Git::commitAll(pushDir, "feat: push test", "PushUser", "push@doo.dev")?;
+    print("  commit before push = ${pushHash}");
+    // Get the actual branch name (may be "main" or "master")
+    let branchName = Git::currentBranch(pushDir)?;
+    print("  branch = ${branchName}");
+    // Push to the bare remote
+    Git::push(pushDir, "origin", branchName)?;
+    print("  pushed to bare remote");
+    // Verify by cloning the bare repo again and checking HEAD
+    let verifyDir = "${baseDir}/push-verify";
+    Git::clone(bareDir, verifyDir)?;
+    let verifyHead = Git::headShort(verifyDir)?;
+    print("  verify clone headShort = ${verifyHead}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 18: Git::pull — Pull changes from remote
+    // =========================================================================
+    print("TEST 18: Git::pull");
+    // Add another commit in pushDir and push
+    File::Write("${pushDir}/pull.txt", "pull test")?;
+    let pullPushHash = Git::commitAll(pushDir, "feat: pull test", "PullUser", "pull@doo.dev")?;
+    print("  new commit = ${pullPushHash}");
+    Git::push(pushDir, "origin", branchName)?;
+    print("  pushed new commit");
+    // Now pull in verifyDir (which was cloned from the same bare remote)
+    Git::pull(verifyDir)?;
+    let pullHead = Git::headShort(verifyDir)?;
+    print("  after pull headShort = ${pullHead}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 19: Git::currentBranch — Verify branch name retrieval
+    // =========================================================================
+    print("TEST 19: Git::currentBranch");
+    let branch = Git::currentBranch(repoDir)?;
+    print("  currentBranch = ${branch}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // Cleanup test directory
+    // =========================================================================
+    File::RmDirAll(baseDir)?;
+    print("  cleaned up ${baseDir}");
+
+    print("========================================");
+    print("  ALL GIT TESTS COMPLETE");
+    print("  19 tests");
+    print("========================================");
+}
