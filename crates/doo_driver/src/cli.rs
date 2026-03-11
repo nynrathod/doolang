@@ -97,6 +97,10 @@ pub enum Commands {
         #[arg(long)]
         debug: bool,
 
+        /// Show verbose startup output (routes, timings, etc.)
+        #[arg(long, short)]
+        verbose: bool,
+
         /// Arguments to pass to the program
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

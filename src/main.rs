@@ -29,7 +29,7 @@ fn main() {
 
     // Route commands
     let exit_code = match cli.command {
-        None => run_command(std::path::PathBuf::from("."), false, false, Vec::new()),
+        None => run_command(std::path::PathBuf::from("."), false, false, false, Vec::new()),
         Some(Commands::Build {
             path,
             output,
@@ -46,8 +46,9 @@ fn main() {
             path,
             keep_ll,
             debug,
+            verbose,
             args,
-        }) => run_command(path, keep_ll, debug, args),
+        }) => run_command(path, keep_ll, debug, verbose, args),
         Some(Commands::Check { path }) => check_command(path),
         Some(Commands::Migrate { path, dry_run }) => migrate_command(path, dry_run),
         Some(Commands::Init { name, template }) => doo_driver::run_init(name, template),
@@ -101,7 +102,10 @@ fn build_command(
     }
 }
 
-fn run_command(path: std::path::PathBuf, keep_ll: bool, debug: bool, args: Vec<String>) -> i32 {
+fn run_command(path: std::path::PathBuf, keep_ll: bool, debug: bool, verbose: bool, args: Vec<String>) -> i32 {
+    if verbose {
+        std::env::set_var("DOO_VERBOSE", "1");
+    }
     doo_driver::run_command_with_compiler(
         path,
         keep_ll,

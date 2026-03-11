@@ -197,55 +197,127 @@ pub fn run_command_with_compiler(
     let output_path_buf = target_dir.join(&temp_name);
     let output_name = output_path_buf.to_string_lossy().to_string();
 
-    let opts = CompileOptions {
-        input_path: path.clone(),
-        output_name: output_name.clone(),
-        dev_mode: false,
-        print_ast: false,
-        print_hir: false,
-        print_mir: false,
-        keep_ll,
-        keep_obj: false,
-        check_only: false,
-        show_warnings: std::env::var(doo_core::constants::env_vars::DOO_SHOW_WARNINGS).is_ok(),
-        timings: false,
-    };
-
-    let compile_start = std::time::Instant::now();
-    eprint!("\x1b[90m⏳ Compiling...\x1b[0m");
-    let _ = std::io::stderr().flush();
-
-    match compile_fn(opts) {
-        Ok(result) => {
-            if result.error_count > 0 || !result.success {
-                eprintln!(
-                    "\r\x1b[2K{} Compilation failed with {} errors",
-                    ERROR, result.error_count
-                );
-                cleanup_temp(&output_name);
-                return 1;
-            }
-            let compile_ms = compile_start.elapsed().as_millis();
-            eprintln!(
-                "\r\x1b[2K\x1b[90m{} Compiled in {}ms\x1b[0m",
-                CHECK, compile_ms
-            );
-            let _ = std::io::stdout().flush();
-        }
-        Err(e) => {
-            eprintln!("{} Failed to compile: {}", ERROR, e);
-            cleanup_temp(&output_name);
-            return 1;
-        }
-    }
-
     let exe_name = if cfg!(windows) {
         format!("{}.exe", temp_name)
     } else {
         temp_name.clone()
     };
-
     let exe_full_path = target_dir.join(&exe_name);
+
+    // ========================================================================
+    // Incremental Compilation — skip rebuild when source files haven't changed
+    // ========================================================================
+    let cache_dir = run_root.join(".doo-cache");
+    let cached_exe_name = if cfg!(windows) {
+        "cached_exe.exe"
+    } else {
+        "cached_exe"
+    };
+    let cached_exe_path = cache_dir.join(cached_exe_name);
+
+    // Discover all .doo files in the project directory
+    let doo_files = discover_doo_sources(&run_root);
+
+    let mut cache = incremental::CompilationCache::load(&cache_dir).unwrap_or_else(|_| {
+        let mut c = incremental::CompilationCache::new_empty(&cache_dir);
+        c.invalidate();
+        c
+    });
+
+    // Hash all source files and check for changes
+    for f in &doo_files {
+        let _ = cache.needs_rebuild(f);
+    }
+
+    let mut used_cache = false;
+
+    // If nothing changed and a cached executable exists, skip compilation
+    if !cache.has_changes() && cached_exe_path.exists() && !doo_files.is_empty() {
+        let t = std::time::Instant::now();
+        if let Ok(()) = fs::copy(&cached_exe_path, &exe_full_path).map(|_| ()) {
+            let elapsed = t.elapsed().as_millis();
+            eprintln!(
+                "\x1b[90m{} No changes, cached build ({}ms)\x1b[0m",
+                CHECK, elapsed
+            );
+            used_cache = true;
+        }
+        // If copy fails, fall through to full recompile
+    }
+
+    if !used_cache {
+        let opts = CompileOptions {
+            input_path: path.clone(),
+            output_name: output_name.clone(),
+            dev_mode: false,
+            print_ast: false,
+            print_hir: false,
+            print_mir: false,
+            keep_ll,
+            keep_obj: false,
+            check_only: false,
+            show_warnings: std::env::var(doo_core::constants::env_vars::DOO_SHOW_WARNINGS).is_ok(),
+            timings: false,
+        };
+
+        let compile_start = std::time::Instant::now();
+
+        // Smooth spinner — cycles braille frames without flicker
+        let spinner_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spinner_done_clone = spinner_done.clone();
+        let spinner_handle = std::thread::spawn(move || {
+            let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let mut i = 0;
+            // Hide cursor to prevent blink
+            eprint!("\x1b[?25l");
+            let _ = std::io::stderr().flush();
+            loop {
+                if spinner_done_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                eprint!("\r\x1b[90m{} Compiling...\x1b[0m", frames[i % frames.len()]);
+                let _ = std::io::stderr().flush();
+                i += 1;
+                std::thread::sleep(std::time::Duration::from_millis(80));
+            }
+            // Restore cursor
+            eprint!("\x1b[?25h");
+            let _ = std::io::stderr().flush();
+        });
+
+        match compile_fn(opts) {
+            Ok(result) => {
+                spinner_done.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = spinner_handle.join();
+                if result.error_count > 0 || !result.success {
+                    eprintln!(
+                        "\r\x1b[2K{} Compilation failed with {} errors",
+                        ERROR, result.error_count
+                    );
+                    cleanup_temp(&output_name);
+                    return 1;
+                }
+                let compile_ms = compile_start.elapsed().as_millis();
+                eprintln!(
+                    "\r\x1b[2K\x1b[90m{} Compiled in {}ms\x1b[0m",
+                    CHECK, compile_ms
+                );
+                let _ = std::io::stdout().flush();
+
+                // Cache the compiled executable for incremental reuse
+                let _ = fs::create_dir_all(&cache_dir);
+                let _ = fs::copy(&exe_full_path, &cached_exe_path);
+                let _ = cache.save();
+            }
+            Err(e) => {
+                spinner_done.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = spinner_handle.join();
+                eprintln!("\r\x1b[2K{} Failed to compile: {}", ERROR, e);
+                cleanup_temp(&output_name);
+                return 1;
+            }
+        }
+    }
 
     // Build command with full environment setup
     let mut cmd = Command::new(&exe_full_path);
@@ -364,6 +436,11 @@ pub fn run_command_with_compiler(
 
     if debug_enabled {
         cmd.env("DOO_DEBUG", "1");
+    }
+
+    // Forward verbose flag to child process (FFI reads DOO_VERBOSE)
+    if env::var(doo_core::constants::env_vars::DOO_VERBOSE).is_ok() {
+        cmd.env(doo_core::constants::env_vars::DOO_VERBOSE, "1");
     }
 
     let child = cmd.spawn();
@@ -504,4 +581,38 @@ fn cleanup_temp(output_name: &str) {
     if cfg!(windows) {
         let _ = fs::remove_file(format!("{}.exe", output_name));
     }
+}
+
+/// Recursively discover all .doo source files in a project directory.
+fn discover_doo_sources(root: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(root.to_path_buf());
+
+    while let Some(dir) = queue.pop_front() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                // Skip hidden dirs, target dirs, cache dirs, node_modules
+                if name.starts_with('.')
+                    || name == "target"
+                    || name == "target-windows"
+                    || name == "target-linux"
+                    || name == "node_modules"
+                {
+                    continue;
+                }
+                queue.push_back(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("doo") {
+                results.push(path);
+            }
+        }
+    }
+    results.sort();
+    results
 }

@@ -100,6 +100,17 @@ impl CompilationCache {
         })
     }
 
+    /// Create an empty cache (no previous manifest).
+    pub fn new_empty(cache_dir: &Path) -> Self {
+        Self {
+            cache_dir: cache_dir.to_path_buf(),
+            previous: CacheManifest::default(),
+            current: CacheManifest::default(),
+            dirty_files: Vec::new(),
+            has_changes: false,
+        }
+    }
+
     /// Check if a source file needs recompilation.
     ///
     /// Computes the file's content hash and compares with the cached hash.

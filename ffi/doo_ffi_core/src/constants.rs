@@ -52,6 +52,9 @@ pub const ENV_DOO_DEBUG: &str = "DOO_DEBUG";
 /// Suppresses the HTTP server startup banner.
 pub const ENV_DOO_NO_BANNER: &str = "DOO_NO_BANNER";
 
+/// Verbose mode — shows detailed startup info (routes, timings, etc.).
+pub const ENV_DOO_VERBOSE: &str = "DOO_VERBOSE";
+
 /// JWT secret key for token signing/verification.
 pub const ENV_JWT_SECRET: &str = "JWT_SECRET";
 

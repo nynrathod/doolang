@@ -946,7 +946,12 @@ fn build_response_bytes_typed(
 /// - Connection draining on shutdown
 pub fn start_server(host: &str, port: u16) -> Result<(), String> {
     let _ = STARTUP_INSTANT.set(Instant::now());
-    eprintln!("[Doo] Preparing server...");
+    let verbose = std::env::var(doo_ffi_core::constants::ENV_DOO_VERBOSE)
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if verbose {
+        eprintln!("[Doo] Preparing server...");
+    }
 
     // Load configuration from environment variables
     let max_connections = env_usize("DOO_MAX_CONNECTIONS", 10_000);
@@ -1062,8 +1067,7 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             use std::io::Write;
             let _ = std::io::stdout().flush();
         }
-        // Always print the server started line (useful for container health checks)
-        eprintln!("[Doo] Server started on http://{}:{} (pid={})", addr.ip(), port, std::process::id());
+        // Server start info available via the banner table above
 
         // ====================================================================
         // Graceful shutdown signal handling

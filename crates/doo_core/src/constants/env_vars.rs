@@ -28,6 +28,9 @@ pub const DOO_STDLIB_PATH: &str = "DOO_STDLIB_PATH";
 /// Overrides the output binary name.
 pub const DOO_OUTPUT_NAME: &str = "DOO_OUTPUT_NAME";
 
+/// Verbose output — shows detailed startup/runtime info.
+pub const DOO_VERBOSE: &str = "DOO_VERBOSE";
+
 /// When set, only check for errors without compiling.
 pub const DOO_CHECK_ONLY: &str = "DOO_CHECK_ONLY";
 
