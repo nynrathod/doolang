@@ -15,8 +15,7 @@ pub fn diagnostics_for_document(state: &ServerState, uri: &str) -> Vec<Diagnosti
 
     for err in &doc.parse_errors {
         let start = Position::new(err.line, err.column);
-        // Estimate end position — highlight at least one character
-        let end = Position::new(err.line, err.column.saturating_add(1));
+        let end = Position::new(err.end_line, err.end_column);
 
         diagnostics.push(Diagnostic {
             range: Range::new(start, end),
