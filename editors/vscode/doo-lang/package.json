@@ -65,8 +65,8 @@
 		"compile": "tsc -p ./",
 		"watch": "tsc -watch -p ./",
 		"lint": "eslint src --ext ts",
-		"package": "vsce package --no-dependencies --no-yarn",
-		"install-ext": "vsce package --no-dependencies --no-yarn -o doo-lang.vsix && code --install-extension doo-lang.vsix --force"
+		"package": "vsce package --no-dependencies --no-yarn --allow-missing-repository",
+		"install-ext": "npm run compile && node scripts/install-local.js"
 	},
 	"dependencies": {
 		"vscode-languageclient": "^9.0.1",
