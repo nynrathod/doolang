@@ -29,7 +29,13 @@ fn main() {
 
     // Route commands
     let exit_code = match cli.command {
-        None => run_command(std::path::PathBuf::from("."), false, false, false, Vec::new()),
+        None => run_command(
+            std::path::PathBuf::from("."),
+            false,
+            false,
+            false,
+            Vec::new(),
+        ),
         Some(Commands::Build {
             path,
             output,
@@ -54,6 +60,7 @@ fn main() {
         Some(Commands::Init { name, template }) => doo_driver::run_init(name, template),
         Some(Commands::Deploy { verbose }) => doo_driver::run_deploy(verbose),
         Some(Commands::Upgrade) => doo_driver::run_upgrade(),
+        Some(Commands::Clean { path }) => doo_driver::clean_command(path),
     };
 
     std::process::exit(exit_code);
@@ -102,7 +109,13 @@ fn build_command(
     }
 }
 
-fn run_command(path: std::path::PathBuf, keep_ll: bool, debug: bool, verbose: bool, args: Vec<String>) -> i32 {
+fn run_command(
+    path: std::path::PathBuf,
+    keep_ll: bool,
+    debug: bool,
+    verbose: bool,
+    args: Vec<String>,
+) -> i32 {
     if verbose {
         std::env::set_var("DOO_VERBOSE", "1");
     }

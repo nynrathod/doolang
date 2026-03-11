@@ -91,24 +91,57 @@ impl CompilationCache {
             CacheManifest::default()
         };
 
-        Ok(Self {
+        let compiler_hash = Self::current_compiler_hash();
+
+        let mut cache = Self {
             cache_dir: cache_dir.to_path_buf(),
             previous,
             current: CacheManifest::default(),
             dirty_files: Vec::new(),
             has_changes: false,
-        })
+        };
+
+        // Invalidate cache if compiler binary changed
+        if cache.previous.compiler_hash != compiler_hash {
+            cache.invalidate();
+        }
+        cache.current.compiler_hash = compiler_hash;
+
+        Ok(cache)
     }
 
     /// Create an empty cache (no previous manifest).
     pub fn new_empty(cache_dir: &Path) -> Self {
+        let mut current = CacheManifest::default();
+        current.compiler_hash = Self::current_compiler_hash();
         Self {
             cache_dir: cache_dir.to_path_buf(),
             previous: CacheManifest::default(),
-            current: CacheManifest::default(),
+            current,
             dirty_files: Vec::new(),
             has_changes: false,
         }
+    }
+
+    /// Hash the current compiler binary by reading its header bytes + file size.
+    /// Different builds produce different binary content, making this reliable
+    /// across WSL/Windows filesystem boundaries (unlike mtime).
+    fn current_compiler_hash() -> u64 {
+        use std::io::Read;
+        if let Ok(exe) = std::env::current_exe() {
+            if let Ok(mut f) = std::fs::File::open(&exe) {
+                let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+                // Read first 8KB of binary (PE/ELF header + code start)
+                let mut buf = [0u8; 8192];
+                let n = f.read(&mut buf).unwrap_or(0);
+                // Append file size for additional discrimination
+                let mut data = Vec::with_capacity(n + 8);
+                data.extend_from_slice(&buf[..n]);
+                data.extend_from_slice(&len.to_le_bytes());
+                return Self::hash_bytes(&data);
+            }
+        }
+        0
     }
 
     /// Check if a source file needs recompilation.

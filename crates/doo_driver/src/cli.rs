@@ -126,4 +126,11 @@ pub enum Commands {
 
     /// Upgrade doo to the latest version
     Upgrade,
+
+    /// Clean build caches and temporary files
+    Clean {
+        /// Path to the project directory (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
 }

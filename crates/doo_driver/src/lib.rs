@@ -208,12 +208,18 @@ pub fn run_command_with_compiler(
     // Incremental Compilation — skip rebuild when source files haven't changed
     // ========================================================================
     let cache_dir = run_root.join(".doo-cache");
+    // Per-file cached executable: use the input file's stem so different
+    // entry points in the same directory each get their own cached binary.
+    let input_stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
     let cached_exe_name = if cfg!(windows) {
-        "cached_exe.exe"
+        format!("cached_{}.exe", input_stem)
     } else {
-        "cached_exe"
+        format!("cached_{}", input_stem)
     };
-    let cached_exe_path = cache_dir.join(cached_exe_name);
+    let cached_exe_path = cache_dir.join(&cached_exe_name);
 
     // Discover all .doo files in the project directory
     let doo_files = discover_doo_sources(&run_root);
@@ -528,6 +534,153 @@ pub fn migrate_command(_path: PathBuf, dry_run: bool) -> i32 {
         eprintln!("  Dry-run mode");
     }
     1
+}
+
+/// Clean all build caches and temporary files under the given path.
+/// Recursively finds and removes `.doo-cache` directories and temp executables.
+pub fn clean_command(path: PathBuf) -> i32 {
+    let root = if path.is_file() {
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    } else {
+        path
+    };
+
+    if !root.exists() {
+        eprintln!(
+            "\x1b[1;31m{} Directory does not exist: {}\x1b[0m",
+            ERROR,
+            root.display()
+        );
+        return 1;
+    }
+
+    eprintln!("\x1b[1m  Cleaning\x1b[0m {}", root.display());
+
+    let mut removed_count = 0u64;
+    let mut freed_bytes = 0u64;
+    let mut temp_removed = 0u64;
+
+    // Recursively find and remove .doo-cache directories
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(root.clone());
+
+    while let Some(dir) = queue.pop_front() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if name == ".doo-cache" {
+                    freed_bytes += dir_size(&p);
+                    if fs::remove_dir_all(&p).is_ok() {
+                        removed_count += 1;
+                    }
+                } else if !name.starts_with('.')
+                    && name != "target"
+                    && name != "target-windows"
+                    && name != "target-linux"
+                    && name != "node_modules"
+                {
+                    queue.push_back(p);
+                }
+            } else {
+                // Clean temp executables (temp_doo_*)
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if name.starts_with("temp_doo_") {
+                    if let Ok(meta) = p.metadata() {
+                        freed_bytes += meta.len();
+                    }
+                    if fs::remove_file(&p).is_ok() {
+                        temp_removed += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Also clean temp files in target directories
+    for target_name in &["target-windows", "target", "target-linux"] {
+        let target_release = root.join(target_name).join("release");
+        if target_release.exists() {
+            if let Ok(entries) = fs::read_dir(&target_release) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    if name.starts_with("temp_doo_") {
+                        if let Ok(meta) = p.metadata() {
+                            freed_bytes += meta.len();
+                        }
+                        if fs::remove_file(&p).is_ok() {
+                            temp_removed += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let total = removed_count + temp_removed;
+    if total == 0 {
+        eprintln!("  \x1b[90mNothing to clean\x1b[0m");
+    } else {
+        let (size_str, unit) = format_bytes(freed_bytes);
+        let mut parts = Vec::new();
+        if removed_count > 0 {
+            parts.push(format!(
+                "{} cache{}",
+                removed_count,
+                if removed_count == 1 { "" } else { "s" }
+            ));
+        }
+        if temp_removed > 0 {
+            parts.push(format!(
+                "{} temp file{}",
+                temp_removed,
+                if temp_removed == 1 { "" } else { "s" }
+            ));
+        }
+        eprintln!(
+            "\x1b[1;32m  Removed\x1b[0m {} ({:.1} {})",
+            parts.join(", "),
+            size_str,
+            unit,
+        );
+    }
+    0
+}
+
+/// Format bytes into a human-readable (value, unit) pair.
+fn format_bytes(bytes: u64) -> (f64, &'static str) {
+    if bytes >= 1_073_741_824 {
+        (bytes as f64 / 1_073_741_824.0, "GiB")
+    } else if bytes >= 1_048_576 {
+        (bytes as f64 / 1_048_576.0, "MiB")
+    } else if bytes >= 1024 {
+        (bytes as f64 / 1024.0, "KiB")
+    } else {
+        (bytes as f64, "B")
+    }
+}
+
+/// Recursively compute total size of a directory.
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                total += dir_size(&p);
+            } else if let Ok(meta) = p.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total
 }
 
 pub fn explain_error(code: &str) {
